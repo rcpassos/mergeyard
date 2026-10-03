@@ -1,7 +1,7 @@
 # Mergeyard — Product Requirements Document
 
 **Status:** Implementation-ready MVP specification  
-**Version:** 0.6  
+**Version:** 0.7  
 **Product:** Mergeyard  
 **Tagline:** Turn issues into merged code.
 
@@ -183,8 +183,10 @@ Required tools:
 - `git`;
 - `gh`, authenticated;
 - `tmux`;
-- `claude` and/or `codex`, logged in, for the agents assigned to roles;
+- `claude` (Claude Code ≥ 2.1.277) and/or `codex` (Codex CLI ≥ 0.156.1), logged in, for the agents assigned to roles;
 - the project's own runtime/build dependencies.
+
+Minimum versions come from the harness research in `docs/research/harness-spikes.md`: Claude Code 2.1.277 is the first version that reads `AGENTS.md`; Codex 0.156.1 is the version whose behavior was verified.
 
 The MVP assumes one logged-in account per harness. Mergeyard does not manage, select, or rotate harness accounts.
 
@@ -345,7 +347,13 @@ Mergeyard uses managed checkouts instead of an arbitrary developer working direc
   runs/
     <run-id>/
       phases/
-      logs/
+        <phase>-<round>-<attempt>/
+          input.md
+          schema.json
+          events.jsonl
+          stderr.log
+          last-message.json   # Codex only
+          exit.json
 ```
 
 ### Base checkout
@@ -437,7 +445,9 @@ session_resume
 usage_limit_detection
 ```
 
-`session_resume` is required for MVP adapters. Configuration that requests an unsupported capability, such as an effort level on a harness without effort selection, fails validation before scheduling begins.
+`structured_output` and `session_resume` are required for MVP adapters. Adapters also declare their `session_id_source`: `preassigned` (Mergeyard chooses the ID) or `discovered` (read from the harness output).
+
+Configuration that requests an unsupported capability fails validation before scheduling begins. Model and effort values are passed through to the harness and are not validated against a catalog: Claude falls back to the highest supported effort at or below the requested one; Codex effort levels vary by model.
 
 ### Agent sessions
 
@@ -446,11 +456,43 @@ Each role in a run owns one agent session:
 - the **implementer session** starts in `implement` and is resumed for every `fix`;
 - the **reviewer session** starts in the first `review` and is resumed for every later review.
 
-Each phase attempt still runs as a new, non-interactive harness process that resumes the role's conversation by its harness session ID. Mergeyard records the session ID for each role.
+Each phase attempt still runs as a new, non-interactive harness process that resumes the role's conversation by its harness session ID.
 
-If a resume fails (session missing, corrupted, or out of context), Mergeyard starts a new agent session for that role, relies on the full phase input file for context, records a `harness.session_resume_failed` warning, and continues.
+#### Session IDs
+
+- **Claude Code:** Mergeyard generates a UUID, persists it, and passes it with `--session-id` on the role's first phase. Later phases use `--resume <id>`.
+- **Codex:** IDs cannot be pre-assigned. The adapter reads `thread_id` from the first JSONL event (`thread.started`) while the phase is still running and persists it immediately, so a crash or usage limit mid-phase can still resume. Later phases use `codex exec … resume <id>`.
+
+Adapters always resume by explicit ID. They never use "most recent session" options (Claude `--continue`, Codex `--last`) or options that disable session persistence (Claude `--no-session-persistence`, Codex `--ephemeral`). Resumed sessions do not keep per-invocation flags, so the adapter passes every flag (permissions, sandbox, directories, model, effort, schema) on every invocation.
+
+#### Resume failure
+
+If a resume fails, Mergeyard starts a new agent session for that role, relies on the full phase input file for context, records a `harness.session_resume_failed` warning, and continues. Known causes:
+
+- Claude reports `No conversation found with session ID: <id>`. Claude deletes transcripts after `cleanupPeriodDays` (30 days by default), so a long-waiting run can lose its session.
+- Codex's error for an unknown ID is not yet verified (research open question 7); until it is, any failed resume attempt that exits before `thread.started` is treated as a resume failure.
 
 The implementer and reviewer never share an agent session.
+
+### Harness specifics
+
+Verified invocation details live in `docs/research/harness-spikes.md`. Summary:
+
+| Concern | Claude Code | Codex |
+|---|---|---|
+| New session | `claude -p --session-id <uuid>` | `codex exec` |
+| Resume | `claude -p --resume <id>` | `codex exec [-s …] [-C …] resume <id>` (sandbox and cwd options must come **before** `resume`) |
+| Output stream | `--output-format stream-json --verbose` | `--json` |
+| Structured result | `--json-schema '<inline schema>'` → `structured_output` in the final `result` event | `--output-schema <file>` (OpenAI strict mode) + `-o <file>` |
+| Model / effort | `--model`, `--effort` | `-m`, `-c model_reasoning_effort=<level>` |
+| Skill invocation | `/skill-name` at the start of the prompt | `$skill-name` mention in the prompt |
+| Skill locations | `~/.claude/skills`, `<repo>/.claude/skills`, plugins | `<repo>/.agents/skills`, `~/.agents/skills`, `/etc/codex/skills` |
+| Instruction files | `CLAUDE.md`; `AGENTS.md` only when no `CLAUDE.md` exists | `AGENTS.md` only (`CLAUDE.md` only via `project_doc_fallback_filenames`) |
+| Unattended permissions | `--permission-mode` (section 26) | `-s workspace-write`, network via `-c sandbox_workspace_write.network_access=true` |
+| Interactive resume | `claude --resume <id>` from the worktree | `codex resume -C <worktree> <id>` |
+| Auth check | `claude auth status` (exit 0 = logged in) | `codex login status` (exit 0 = logged in) |
+
+Sessions created headlessly do not appear in either harness's interactive session picker; they must be resumed by exact ID.
 
 ---
 
@@ -460,9 +502,25 @@ Subscription-backed harnesses enforce usage limits, such as rolling 5-hour or we
 
 ### Detection
 
-- When a phase attempt exits unsuccessfully, the adapter classifies whether the cause was a usage limit using the harness's exit code, structured output, or known error messages in the phase log, and extracts the reset time when the harness reports one.
+- When a phase attempt exits unsuccessfully, the adapter classifies whether the cause was a usage limit using the harness's exit code, structured output, or known error messages in the phase output, and extracts the reset time when the harness reports one.
 - This classification applies only to failed exits. Phase completion is still determined by exit metadata and the structured result (section 13).
 - Detection patterns are adapter-specific and maintained with the adapter. Unrecognized failures follow the normal phase-failure path. An adapter without the `usage_limit_detection` capability treats every failure as a normal phase failure.
+
+Adapter signals, preferring structured sources over message text:
+
+| | Claude Code | Codex |
+|---|---|---|
+| Structured | `rate_limit_event` with `status: "rejected"` and `resetsAt`; `api_error_status: 429` / `error: "rate_limit"` | exit code 1 plus, in the session's rollout file under `$CODEX_HOME/sessions/`, `codex_error_info: "usage_limit_exceeded"` and `rate_limits.*.resets_at` (epoch seconds) |
+| Message | `You've hit your <session\|weekly\|model> limit · resets <time>` | `turn.failed.error.message` containing `hit your usage limit` (match straight and curly apostrophes; never match the full string, which changes between versions) |
+| Reset text | `5pm`, `7:30pm`, optional weekday prefix, optional `(IANA time zone)` | `5:19 PM` (same day) or `Oct 3rd, 2026 6:23 PM` |
+
+Reset times in messages are often local wall-clock times without a date. Parse them as the next occurrence of that time in the stated time zone, or the machine's time zone when none is stated. When no reset time can be parsed, use the cooldown.
+
+The exact Claude Code headless output for a usage limit is not yet verified (research open question 1). The classifier must be confirmed with a live run before M3 ships.
+
+### Not time-bound limits
+
+Spend caps and exhausted credits (Claude `spend limit` / `credits_required`; Codex `out of credits` / `spend cap`) do not reset on a schedule. They move the run directly to `NEEDS_ATTENTION` with `harness.credits_exhausted` and mark the harness limited until the user retries.
 
 ### Scope
 
@@ -502,7 +560,9 @@ Before every phase attempt Mergeyard writes a context file outside the worktree:
 ~/.mergeyard/runs/<run-id>/phases/<phase>-<round>-<attempt>/input.md
 ```
 
-The harness prompt references that file. The full input is written even when the agent session is resumed, so a fresh session can always continue from it.
+The full input is written even when the agent session is resumed, so a fresh session can always continue from it.
+
+The harness prompt is a fixed Mergeyard template that contains only Mergeyard-generated values: the input path, skill invocations, and standing instructions (for example "do not commit"). The agent reads the input file directly: Claude gets access through `--add-dir <phase-dir>`; Codex can read outside the worktree by default.
 
 | Phase | Input contains |
 |---|---|
@@ -512,17 +572,23 @@ The harness prompt references that file. The full input is written even when the
 
 Issue, PR, review, and CI text must be written to files or passed through stdin. It must never be interpolated into shell command strings.
 
-Mergeyard does not merge or reinterpret repository instruction files such as `AGENTS.md` or `CLAUDE.md`. The harness consumes them naturally.
+Mergeyard does not merge or reinterpret repository instruction files. Each harness reads its own: Codex reads `AGENTS.md` only; Claude Code reads `CLAUDE.md`, and reads `AGENTS.md` only when no `CLAUDE.md` exists. A repository that has only one of the two files may give the other harness no instructions; `doctor` warns about this (section 30).
 
 ### 13.2 Result
 
-Every phase returns a machine-readable result independent of harness prose.
+Every phase returns a machine-readable result independent of harness prose, through the harness's **native structured output**:
 
-Adapters use the harness's native structured output where available. When it is not, the prompt instructs the agent to write:
+- Claude Code: `--json-schema` with the phase schema; the validated object is `structured_output` in the final `result` event.
+- Codex: `--output-schema <schema file>` and `-o <file>`; the final message is the JSON result.
 
-```text
-~/.mergeyard/runs/<run-id>/phases/<phase>-<round>-<attempt>/result.json
-```
+There is no agent-written `result.json` fallback: both harnesses block writes outside the worktree by default.
+
+Phase schemas must follow OpenAI strict mode so one schema serves both harnesses:
+
+- every property is listed in `required`;
+- `additionalProperties: false` on every object;
+- optional values are nullable (for example `"type": ["string", "null"]`) instead of omitted;
+- `schema_version` is a `const`.
 
 Common fields:
 
@@ -560,7 +626,7 @@ Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safel
 
 Statuses: `approved`, `changes_required`, `blocked`, `failed`.
 
-Severities: `blocking`, `warning`, `note`. Only `blocking` findings prevent approval. On later rounds the reviewer returns the complete current list of blocking findings, not only new ones.
+Severities: `blocking`, `warning`, `note`. Only `blocking` findings prevent approval. On later rounds the reviewer returns the complete current list of blocking findings, not only new ones. `file` and `line` are `null` when a finding has no location.
 
 #### Fix result
 
@@ -580,7 +646,9 @@ Statuses: `success`, `blocked`, `failed`. Resolutions: `fixed`, `disputed`. The 
 
 ### 13.3 Missing or invalid result
 
-If the harness exits successfully but the result is missing or invalid, the attempt is failed and the run moves to `NEEDS_ATTENTION` unless a phase retry remains (`max_attempts`, default `1`).
+If the harness exits successfully but the structured result is missing or fails Mergeyard's schema validation, or the harness reports that it could not produce valid structured output (Claude subtype `error_max_structured_output_retries`), the attempt is failed and the run moves to `NEEDS_ATTENTION` unless a phase retry remains (`max_attempts`, default `1`).
+
+Success requires all of: exit code 0, the harness's completion event (Claude `result` with `is_error: false`; Codex `turn.completed`), and a valid structured result.
 
 ---
 
@@ -606,12 +674,12 @@ Mergeyard starts a generated wrapper script inside tmux. The wrapper:
 
 1. changes to the run worktree;
 2. applies only the environment explicitly configured;
-3. executes the harness invocation;
-4. streams stdout/stderr to the phase log file;
+3. executes the harness invocation with stdin closed or fed from a file;
+4. writes stdout (the harness's machine-readable event stream) to `events.jsonl` and stderr to `stderr.log`, as separate files in the phase directory;
 5. records the exit code in phase metadata;
 6. exits when the harness exits.
 
-Mergeyard determines completion from exit metadata plus the structured result. It does not infer completion from terminal text.
+The adapter parses `events.jsonl`; the Codex adapter tails it during the run to capture the session ID. Mergeyard determines completion from exit metadata plus the structured result. It does not infer completion from terminal text.
 
 ### Control-plane shutdown
 
@@ -655,7 +723,9 @@ round 3: approved → CI passed → READY_TO_MERGE
 
 ### Review is read-only
 
-Mergeyard records the worktree Git state before a review. Repository changes made by the reviewer are discarded: Mergeyard restores the pre-review state and records a warning.
+Mergeyard records the worktree Git state before a review. Repository changes made by the reviewer are discarded: Mergeyard restores the pre-review state and records a warning. This restore is the guarantee.
+
+Where the harness supports it without blocking test runs, the reviewer also runs with file-editing tools disabled (Claude: `--disallowedTools Edit Write NotebookEdit`). The Codex reviewer uses the same sandbox as the implementer so it can run tests; `-s read-only` would block test caches and build output.
 
 ### PR conversation
 
@@ -672,7 +742,7 @@ Mergeyard posts these comments from the structured results; agents do not need G
 
 Every run starts from the fetched remote base branch.
 
-Harnesses may create commits but are not required to. After each `implement` or `fix`:
+Mergeyard owns all commits. Agent prompts instruct harnesses not to commit: Codex's sandbox protects `.git`, and in a linked worktree the Git metadata lives outside the writable area, so agent commits would likely fail. If an agent commits anyway, the commits are kept. After each `implement` or `fix`:
 
 - if there are staged/unstaged tracked changes, Mergeyard creates a commit;
 - only non-ignored untracked files are included;
@@ -754,11 +824,16 @@ Automated phases run non-interactively, so attaching to their tmux session only 
 
 `mergeyard takeover <run-id>`:
 
-1. stops the running phase process gracefully, if any;
-2. moves the run to `MANUAL`;
-3. starts the implementer's harness interactively in the worktree, resuming the implementer's agent session (for example `claude --resume <session-id>` or `codex resume <session-id>`).
+1. stops the running phase process, if any: SIGINT first, then SIGTERM after a grace period (Claude exits on SIGTERM with the turn unfinished);
+2. waits until the process has exited, because two processes resuming the same session interleave into one transcript;
+3. moves the run to `MANUAL`;
+4. starts the implementer's harness interactively in the worktree, resuming the implementer's agent session by its exact ID:
+   - Claude Code: `cd <worktree> && claude --resume <session-id>`;
+   - Codex: `codex resume -C <worktree> <session-id>`.
 
-The dashboard's `Take over` action performs steps 1–2 and shows a copyable command for step 3.
+The dashboard's `Take over` action performs steps 1–3 and shows the copyable command with the exact session ID for step 4. Headless sessions are not listed in the harnesses' own session pickers.
+
+The interactive session uses the harness's normal interactive permissions. Claude Code does not restore `bypassPermissions` on interactive resume, so the user is prompted as usual.
 
 No automated phase starts while the run is `MANUAL`.
 
@@ -771,7 +846,7 @@ The user selects `Hand back` (or runs `mergeyard handback <run-id>`). Mergeyard 
 3. commits and pushes any manual changes;
 4. starts the next required step: `implement` if no PR exists yet, otherwise a review round.
 
-The implementer's later fixes resume the same agent session, including the user's manual conversation. The user is responsible for exiting the interactive harness before handing back.
+The implementer's later fixes resume the same agent session, including the user's manual conversation. If the user clears or branches the conversation during takeover, the harness creates a new session ID; Mergeyard keeps resuming the original ID. The user is responsible for exiting the interactive harness before handing back.
 
 ---
 
@@ -836,8 +911,8 @@ Transitions are enforced centrally. UI and CLI actions must not mutate arbitrary
 
 `mergeyard stop <run-id>`:
 
-1. interrupts a running phase process gracefully;
-2. waits for a grace period, then kills the tmux session if still active;
+1. sends SIGINT to a running phase process;
+2. waits for a grace period, sends SIGTERM, then kills the tmux session if still active;
 3. preserves the worktree, branch, and PR;
 4. removes the `running` label;
 5. adds `needs-attention` unless no work was ever created;
@@ -995,7 +1070,7 @@ ci.updated
 
 Each event is written to SQLite, the structured application log, and the browser via SSE.
 
-Full phase output is written to `~/.mergeyard/runs/<run-id>/logs/<phase>-<round>-<attempt>.log`. The dashboard shows a bounded tail.
+Full phase output is written to the phase directory, `~/.mergeyard/runs/<run-id>/phases/<phase>-<round>-<attempt>/`, as `events.jsonl` (harness event stream) and `stderr.log`. The dashboard shows a bounded, human-readable tail rendered from the event stream.
 
 Mergeyard must not intentionally log environment-variable values or credentials. It does not provide a complete secret-redaction engine for harness output.
 
@@ -1068,9 +1143,15 @@ labels:
   running: agent-running
   needs_attention: agent-needs-attention
 
-agents:                   # optional executable overrides
-  claude: { executable: claude }
-  codex:  { executable: codex }
+agents:
+  claude:
+    executable: claude
+    permission_mode: bypassPermissions   # auto | acceptEdits | bypassPermissions
+    allowed_tools: []                    # extra allow rules, used with acceptEdits
+  codex:
+    executable: codex
+    sandbox: workspace-write             # workspace-write | danger-full-access
+    network_access: true
 
 implementer:
   agent: claude
@@ -1107,7 +1188,16 @@ repositories:
 
 A repository-level `implementer` or `reviewer` block overrides only the fields it sets.
 
-Model identifiers are passed through to the harness. Mergeyard does not maintain a model catalog.
+Model identifiers and effort levels are passed through to the harness. Mergeyard does not maintain a model catalog.
+
+### Harness permissions
+
+Neither harness edits files and runs tests unattended by default, so the `agents` block sets how each harness runs:
+
+- **Claude Code** `permission_mode` defaults to `bypassPermissions`, which lets the agent edit and run commands without prompts. In headless mode any action that would prompt is denied, so `acceptEdits` requires `allowed_tools` rules for every command the agent needs (tests, builds). `auto` uses Claude's action classifier and can silently deny commands. Claude refuses `bypassPermissions` when run as root.
+- **Codex** `sandbox` defaults to `workspace-write`, which allows writes inside the worktree only. `network_access` defaults to `true` because tests and dependency installs often need it; Codex's own default is no network.
+
+These settings apply to both roles; the reviewer additionally has edit tools disabled where supported (section 15).
 
 ---
 
@@ -1258,8 +1348,9 @@ Re-runs reconciliation and reports orphaned claims, worktrees, and sessions. It 
 - dashboard port available;
 - `git`, `tmux` present;
 - `gh` present and authenticated;
-- every harness assigned to a role is present and logged in;
-- requested capabilities (model, effort, skills) are supported by each assigned harness.
+- every harness assigned to a role is present, meets the minimum version (section 6), and is logged in (`claude auth status`, `codex login status`);
+- requested capabilities (model, effort, skills) are supported by each assigned harness;
+- Claude `bypassPermissions` is not combined with running as root.
 
 ### Per repository
 
@@ -1268,7 +1359,8 @@ Re-runs reconciliation and reports orphaned claims, worktrees, and sessions. It 
 - fetch works;
 - push permission available;
 - labels exist;
-- reviewer/implementer skills available, where the adapter can verify it.
+- role skills exist in the harness's skill locations (section 11); plugin-provided Claude skills are reported as unverifiable. Claude confirms loaded skills at runtime in its `system/init` event;
+- instruction files match the assigned harnesses: warn when Codex is assigned and the repository has `CLAUDE.md` but no `AGENTS.md`, or when Claude is assigned and the repository has `AGENTS.md` but no `CLAUDE.md` and the Claude version is below 2.1.277.
 
 Results are grouped as `error`, `warning`, or `unverifiable`.
 
@@ -1301,6 +1393,10 @@ The MVP binds only to loopback addresses. Remote dashboard exposure is unsupport
 Agents run with the user's local permissions. An issue body is effectively executable intent once it receives the ready label. The ready label is a trusted-maintainer authorization boundary.
 
 Mergeyard does not sandbox agent code or protect the machine from malicious instructions in an approved issue.
+
+### Harness permissions
+
+By default, Claude Code runs with `bypassPermissions` and Codex runs in `workspace-write` with network access (section 26). This matches the trust boundary above: an approved issue runs with the user's permissions. Users who want tighter control can choose `acceptEdits` with explicit allow rules, at the cost of more `NEEDS_ATTENTION` runs from denied commands.
 
 ### Provider secrets
 
@@ -1343,9 +1439,11 @@ git.no_changes
 git.branch_conflict
 git.push_rejected
 harness.not_logged_in
+harness.version_unsupported
 harness.session_resume_failed
 harness.usage_limited
 harness.usage_limit_waits_exhausted
+harness.credits_exhausted
 phase.result_missing
 phase.result_invalid
 phase.blocked
@@ -1463,14 +1561,26 @@ mergeyard/
 
 ## 37. Pre-Implementation Spikes
 
-These facts about the harnesses must be verified against current versions before the adapters are built. Record findings in `docs/`.
+Findings are in `docs/research/harness-spikes.md`, researched from official docs, CLI help, and Codex source without paid model calls.
 
-1. **Headless resume:** how to resume a session non-interactively with a new prompt (`claude -p --resume <id>`, `codex exec resume <id>`), and how to obtain the session ID from a new session.
-2. **Structured output:** native JSON / JSON-schema output options for each harness in non-interactive mode.
-3. **Usage limits:** exit codes, messages, and reset-time format when a limit is hit, in non-interactive mode.
-4. **Skills:** how each harness invokes a named skill non-interactively.
-5. **Model and effort:** flags for model and reasoning effort in each harness.
-6. **Interactive resume:** the command that reopens a headless session interactively for takeover.
+| Spike | Status |
+|---|---|
+| 1. Headless resume and session IDs | Answered (section 11) |
+| 2. Structured output | Answered (section 13.2) |
+| 3. Usage limits | Partly answered (section 12); Claude headless output unverified |
+| 4. Skills | Answered (section 11) |
+| 5. Model and effort | Answered (section 11) |
+| 6. Interactive resume | Answered (section 20) |
+
+The research lists 12 open questions that need a short live (paid) run, notably:
+
+- Claude's exact headless output and exit code on a usage limit;
+- Codex's behavior when committing inside a linked worktree under `workspace-write`;
+- skill invocation in headless mode for both harnesses;
+- resume of an unknown session ID in Codex;
+- that resumed sessions apply new model, effort, sandbox, and schema options.
+
+These live checks run during M1 (adapter basics) and before M3 (usage-limit classifier).
 
 ---
 
@@ -1485,6 +1595,7 @@ These facts about the harnesses must be verified against current versions before
 - managed checkout and worktree;
 - tmux process sessions and phase wrapper;
 - one harness adapter for the implementer, with structured output and session ID capture;
+- live verification of the adapter-related open questions in the harness research;
 - commit/push and draft PR creation;
 - SQLite state and restart reconciliation;
 - basic dashboard and run detail;
@@ -1507,7 +1618,7 @@ Stops after the draft PR is opened.
 ### M3 — Hardening
 
 - multiple repositories with global and per-repository concurrency;
-- usage-limit detection, waiting, and resumption;
+- usage-limit detection, waiting, and resumption, after a live check of each harness's usage-limit output;
 - takeover and hand back;
 - orphaned-claim detection and reconciliation edge cases;
 - effective-config diagnostics.
@@ -1705,7 +1816,7 @@ These decisions are locked for the MVP and must not be reinterpreted without cha
 5. Every run has two roles: implementer (implements and fixes) and reviewer (reviews and re-checks).
 6. Each role keeps one agent session per run, resumed across its phases; implementer and reviewer never share a session. A failed resume falls back to a fresh session.
 7. Every phase attempt runs as a new non-interactive process inside tmux.
-8. Every phase returns a normalized structured result, from native structured output when available, otherwise `result.json`.
+8. Every phase returns a normalized structured result through the harness's native structured output, using OpenAI-strict schemas. There is no agent-written result file.
 9. The workflow is fixed: implement → draft PR → review ↔ fix → CI → ready to merge.
 10. Every fix, including CI fixes, is followed by a review. Reviews per run are bounded by `max_rounds`.
 11. Review and fix reports are posted as PR comments by default.
@@ -1722,3 +1833,6 @@ These decisions are locked for the MVP and must not be reinterpreted without cha
 22. Mergeyard never bypasses branch protection or required checks.
 23. One Mergeyard instance per repository.
 24. The ready label is the authorization boundary for executing issue instructions with the user's permissions.
+25. Mergeyard owns all commits; agents are instructed not to commit.
+26. Harnesses run unattended by default: Claude Code with `bypassPermissions`, Codex with `workspace-write` and network access. Both are configurable.
+27. Sessions are always resumed by explicit ID, with every invocation flag passed again on each resume.
