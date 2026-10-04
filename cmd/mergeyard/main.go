@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/fault"
 )
 
 // command is one entry in the PRD §29 command table.
@@ -85,7 +86,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if cmd.name == "start" {
 		if opts.configPath != "" {
-			fmt.Fprintln(stderr, "mergeyard start: config.not_implemented: configuration loading is not implemented")
+			err := &fault.Error{Code: "config.start_not_implemented", Path: opts.configPath, Err: errors.New("configuration startup integration is not implemented yet (see #14)")}
+			fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
 			return 1
 		}
 		return start(stdout, stderr)
@@ -102,10 +104,10 @@ func start(stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s (scheduler and dashboard not implemented yet)\n", runtime.Workspace.Root)
+	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s (configuration startup integration, scheduler and dashboard not implemented yet; see #14)\n", runtime.Workspace.Root)
 	<-ctx.Done()
 	if err := runtime.Close(); err != nil {
-		fmt.Fprintf(stderr, "mergeyard: internal.shutdown: %v\n", err)
+		fmt.Fprintf(stderr, "mergeyard shutdown: %v\n", err)
 		return 1
 	}
 	return 0

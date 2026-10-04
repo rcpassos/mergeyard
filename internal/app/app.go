@@ -9,12 +9,13 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/store"
 	"github.com/rcpassos/mergeyard/internal/workspace"
 )
 
 // ErrWorkspaceLocked means another process already owns this workspace.
-var ErrWorkspaceLocked = errors.New("workspace.locked: workspace is held by another mergeyard process")
+var ErrWorkspaceLocked = errors.New("workspace is held by another mergeyard process")
 
 // Runtime owns a workspace lock and its migrated runtime database.
 type Runtime struct {
@@ -33,14 +34,14 @@ func Open(ctx context.Context, path string) (*Runtime, error) {
 	}
 	lock, err := os.OpenFile(w.LockPath(), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return nil, fmt.Errorf("workspace.lock_open: open workspace lock: %w", err)
+		return nil, &fault.Error{Code: "workspace.lock_open", Path: w.LockPath(), Err: fmt.Errorf("open workspace lock: %w", err)}
 	}
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lock.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
-			return nil, fmt.Errorf("%w (%s)", ErrWorkspaceLocked, w.LockPath())
+			return nil, &fault.Error{Code: "workspace.locked", Path: w.LockPath(), Err: ErrWorkspaceLocked}
 		}
-		return nil, fmt.Errorf("workspace.lock_acquire: acquire workspace lock %s: %w", w.LockPath(), err)
+		return nil, &fault.Error{Code: "workspace.lock_acquire", Path: w.LockPath(), Err: fmt.Errorf("acquire workspace lock: %w", err)}
 	}
 	db, err := store.Open(ctx, w.DatabasePath())
 	if err != nil {
@@ -54,7 +55,9 @@ func Open(ctx context.Context, path string) (*Runtime, error) {
 // unlinking it could let two processes lock different inodes for the same path.
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {
-		r.closeErr = errors.Join(r.DB.Close(), r.lock.Close())
+		if err := errors.Join(r.DB.Close(), r.lock.Close()); err != nil {
+			r.closeErr = &fault.Error{Code: "internal.shutdown", Path: r.Workspace.Root, Err: err}
+		}
 	})
 	return r.closeErr
 }

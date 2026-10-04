@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/fault"
 )
 
 func TestWorkspaceOwnershipAndRelease(t *testing.T) {
@@ -23,6 +24,11 @@ func TestWorkspaceOwnershipAndRelease(t *testing.T) {
 		t.Fatal("second owner acquired the workspace")
 	} else if !errors.Is(err, app.ErrWorkspaceLocked) {
 		t.Fatalf("expected lock error, got %v", err)
+	} else {
+		var failure *fault.Error
+		if !errors.As(err, &failure) || failure.Code != "workspace.locked" || failure.Path != filepath.Join(root, "mergeyard.lock") {
+			t.Fatalf("expected structured lock error, got %v", err)
+		}
 	}
 	if err := first.Close(); err != nil {
 		t.Fatal(err)

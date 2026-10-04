@@ -2,10 +2,12 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
 
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/store"
 )
 
@@ -57,6 +59,20 @@ func TestFreshDatabaseSchemaAndRestart(t *testing.T) {
 	var state string
 	if err := db.QueryRowContext(ctx, "SELECT state FROM runs WHERE id = 'run-1'").Scan(&state); err != nil || state != "CLAIMING" {
 		t.Fatalf("restart lost the run: %q, %v", state, err)
+	}
+}
+
+func TestCanceledOpenPreservesCodePathAndCause(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	path := filepath.Join(t.TempDir(), "state.db")
+	_, err := store.Open(ctx, path)
+	var failure *fault.Error
+	if !errors.As(err, &failure) || failure.Code != "workspace.database_migrate" || failure.Path != path {
+		t.Fatalf("expected structured database failure, got %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("lost cancellation cause: %v", err)
 	}
 }
 
