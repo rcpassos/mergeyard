@@ -2,12 +2,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"slices"
 	"strings"
+	"syscall"
+
+	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/fault"
 )
 
 // command is one entry in the PRD §29 command table.
@@ -78,8 +84,33 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "usage: mergeyard %s\n", cmd.usage())
 		return 2
 	}
+	if cmd.name == "start" {
+		if opts.configPath != "" {
+			err := &fault.Error{Code: "config.start_not_implemented", Path: opts.configPath, Err: errors.New("configuration startup integration is not implemented yet (see #14)")}
+			fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
+			return 1
+		}
+		return start(stdout, stderr)
+	}
 	fmt.Fprintf(stderr, "mergeyard %s: not implemented\n", cmd.name)
 	return 1
+}
+
+func start(stdout, stderr io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	runtime, err := app.Open(ctx, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s (configuration startup integration, scheduler and dashboard not implemented yet; see #14)\n", runtime.Workspace.Root)
+	<-ctx.Done()
+	if err := runtime.Close(); err != nil {
+		fmt.Fprintf(stderr, "mergeyard shutdown: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 // parseGlobalFlags extracts global flags from anywhere in args, so

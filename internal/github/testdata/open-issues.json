@@ -1,0 +1,42 @@
+[
+  {
+    "body": "Blocked by: #3, #15\n\n### Context\nPRD \u00a729 (`init`), \u00a74.1 (simple by default), \u00a739 \"Setup\".\n\n### Scope\n- `init`:\n  - detect `git`, `gh`, `tmux`, `claude`, `codex`;\n  - ask which agent to use for implementer and reviewer, offering only installed ones;\n  - ask for the first repository;\n  - after confirmation, create missing labels (`ready-for-agent`, `agent-running`, `agent-needs-attention`) in it;\n  - write the config;\n  - run `doctor`.\n- `repo add <owner/repo>`: validate access, append to config, offer to create labels.\n- Both use the config writer from #3.\n\n### Acceptance criteria\n- On a machine with `git`, `gh`, `tmux`, and Claude Code installed and logged in, `mergeyard init` followed by `mergeyard` reaches a running dashboard watching one repository without hand-editing YAML (\u00a739 \"Setup\").\n- Re-running `init` with an existing config asks before overwriting.",
+    "created_at": "2026-10-03T21:26:16Z",
+    "html_url": "https://github.com/rcpassos/mergeyard/issues/18",
+    "issue_dependencies_summary": {
+      "blocked_by": 2,
+      "blocking": 0,
+      "total_blocked_by": 2,
+      "total_blocking": 0
+    },
+    "labels": [
+      {
+        "name": "ready-for-agent"
+      }
+    ],
+    "number": 18,
+    "pull_request": null,
+    "state": "open",
+    "title": "[M1] `mergeyard init` and `mergeyard repo add`"
+  },
+  {
+    "body": "Blocked by: #2\n\n### Context\nPRD \u00a77 (GitHub contract), \u00a78 (eligibility).\n\n### Scope\nThin wrapper over `gh`, with JSON output parsed into typed structs:\n- list open issues for a repository with labels, creation time, and body;\n- read unresolved blockers from GitHub's native issue dependencies (`issue_dependencies_summary.blocked_by` / the dependencies endpoints);\n- add / remove labels;\n- read a single issue's state;\n- `github.*` error codes, bounded retry with backoff for transient failures (\u00a722).\n\nUntrusted issue text is never passed through a shell (\u00a732).\n\n### Acceptance criteria\n- Unit tests with recorded `gh` JSON fixtures, including issues with open and closed blockers.\n- An integration test (opt-in, against a dedicated test repository) lists issues, reads blockers, and adds/removes a label.",
+    "created_at": "2026-10-03T21:25:53Z",
+    "html_url": "https://github.com/rcpassos/mergeyard/issues/6",
+    "issue_dependencies_summary": {
+      "blocked_by": 0,
+      "blocking": 3,
+      "total_blocked_by": 1,
+      "total_blocking": 3
+    },
+    "labels": [
+      {
+        "name": "ready-for-agent"
+      }
+    ],
+    "number": 6,
+    "pull_request": null,
+    "state": "open",
+    "title": "[M1] GitHub adapter: issues, blockers, labels"
+  }
+]
