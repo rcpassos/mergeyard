@@ -137,6 +137,10 @@ func TestConfigFlag(t *testing.T) {
 	}{
 		{[]string{"status", "--config"}, "flag needs an argument: --config"},
 		{[]string{"--config="}, "flag needs an argument: --config"},
+		{[]string{"--config", "--help"}, "flag needs an argument: --config"},
+		{[]string{"status", "--config", "--", "x"}, "flag needs an argument: --config"},
+		{[]string{"---config=x", "status"}, "unknown flag: ---config=x"},
+		{[]string{"--help=false", "status"}, "flag does not take a value: --help=false"},
 		{[]string{"--verbose", "status"}, "unknown flag: --verbose"},
 		{[]string{"status", "-x"}, "unknown flag: -x"},
 	}

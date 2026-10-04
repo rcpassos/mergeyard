@@ -12,11 +12,20 @@ import (
 
 // command is one entry in the PRD §29 command table.
 type command struct {
-	name    string
-	args    string // usage placeholder, e.g. "<run-id>"
+	name    string // one or more words, e.g. "repo add"
+	args    string // required positional placeholders, e.g. "<run-id>"
 	summary string
-	// run executes the command; nil means it is not implemented yet.
-	run func(opts globalOptions, args []string) error
+}
+
+func (c command) usage() string {
+	if c.args == "" {
+		return c.name
+	}
+	return c.name + " " + c.args
+}
+
+func (c command) arity() int {
+	return len(strings.Fields(c.args))
 }
 
 var commands = []command{
@@ -36,14 +45,14 @@ var commands = []command{
 	{name: "reconcile", summary: "report orphaned claims, worktrees, and sessions"},
 }
 
-func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
-}
-
 // globalOptions holds flags accepted by every command.
 type globalOptions struct {
 	configPath string // empty means use the PRD §26 search order
 	help       bool
+}
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -59,44 +68,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		args = []string{"start"}
 	}
-	cmd, rest, ok := lookup(args)
-	if !ok {
-		fmt.Fprintf(stderr, "mergeyard: unknown command %q\n\n", unknownName(args))
+	cmd, rest, err := lookup(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "mergeyard: %v\n\n", err)
 		printUsage(stderr)
 		return 2
 	}
-	if len(rest) != len(strings.Fields(cmd.args)) {
+	if len(rest) != cmd.arity() {
 		fmt.Fprintf(stderr, "usage: mergeyard %s\n", cmd.usage())
 		return 2
 	}
-	if cmd.run == nil {
-		fmt.Fprintf(stderr, "mergeyard %s: not implemented\n", cmd.name)
-		return 1
-	}
-	if err := cmd.run(opts, rest); err != nil {
-		fmt.Fprintf(stderr, "mergeyard %s: %v\n", cmd.name, err)
-		return 1
-	}
-	return 0
-}
-
-func (c command) usage() string {
-	if c.args == "" {
-		return c.name
-	}
-	return c.name + " " + c.args
-}
-
-// unknownName names an unmatched command for error messages, keeping the
-// subcommand word when args[0] is a command group such as "repo".
-func unknownName(args []string) string {
-	for _, c := range commands {
-		words := strings.Fields(c.name)
-		if len(words) > 1 && words[0] == args[0] && len(args) > 1 {
-			return args[0] + " " + args[1]
-		}
-	}
-	return args[0]
+	fmt.Fprintf(stderr, "mergeyard %s: not implemented\n", cmd.name)
+	return 1
 }
 
 // parseGlobalFlags extracts global flags from anywhere in args, so
@@ -115,16 +98,19 @@ func parseGlobalFlags(args []string) (globalOptions, []string, error) {
 			positional = append(positional, arg)
 			continue
 		}
-		name, value, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		name, value, hasValue := strings.Cut(strings.TrimPrefix(arg[1:], "-"), "=")
 		switch name {
 		case "h", "help":
+			if hasValue {
+				return opts, nil, fmt.Errorf("flag does not take a value: %s", arg)
+			}
 			opts.help = true
 		case "config":
-			if !hasValue {
-				if i+1 < len(args) {
-					i++
-					value = args[i]
-				}
+			// A separate value starting with "-" is a missing value, not a path;
+			// "--config=-x" remains possible.
+			if !hasValue && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				value = args[i]
 			}
 			if value == "" {
 				return opts, nil, errors.New("flag needs an argument: --config")
@@ -139,22 +125,27 @@ func parseGlobalFlags(args []string) (globalOptions, []string, error) {
 
 // lookup finds the command whose name matches the leading words of args and
 // returns it with the remaining arguments.
-func lookup(args []string) (command, []string, bool) {
+func lookup(args []string) (command, []string, error) {
+	unknown := args[0]
 	for _, c := range commands {
 		words := strings.Fields(c.name)
 		if len(args) >= len(words) && slices.Equal(args[:len(words)], words) {
-			return c, args[len(words):], true
+			return c, args[len(words):], nil
+		}
+		// Name the subcommand too when args[0] is a group such as "repo".
+		if len(words) > 1 && words[0] == args[0] && len(args) > 1 {
+			unknown = args[0] + " " + args[1]
 		}
 	}
-	return command{}, nil, false
+	return command{}, nil, fmt.Errorf("unknown command %q", unknown)
 }
 
 func printUsage(w io.Writer) {
-	var b strings.Builder
-	b.WriteString("Usage: mergeyard [--config <path>] <command> [args]\n\nCommands:\n")
+	fmt.Fprint(w, "Usage: mergeyard [--config <path>] <command> [args]\n\nCommands:\n")
 	for _, c := range commands {
-		fmt.Fprintf(&b, "  mergeyard %-24s %s\n", c.usage(), c.summary)
+		fmt.Fprintf(w, "  mergeyard %-24s %s\n", c.usage(), c.summary)
 	}
-	b.WriteString("\nGlobal flags:\n  --config <path>   config file (default: ./mergeyard.yaml, then ~/.config/mergeyard/config.yaml)\n")
-	io.WriteString(w, b.String())
+	fmt.Fprint(w, "\nGlobal flags:\n"+
+		"  --config <path>   config file (default: ./mergeyard.yaml, then ~/.config/mergeyard/config.yaml)\n"+
+		"  -h, --help        show this help\n")
 }
