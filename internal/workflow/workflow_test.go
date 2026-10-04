@@ -563,28 +563,25 @@ func TestTransitionCommitsRelatedMetadata(t *testing.T) {
 		state     workflow.State
 		phase     workflow.Phase
 		request   workflow.Request
-		query     string
+		patch     workflow.MetadataPatch
 		wantState workflow.State
 		wantPR    int
 		wantRound int
 		wantSHA   string
 	}{
 		{"opened PR", workflow.Active, workflow.Implement, workflow.Request{Trigger: workflow.ImplementSucceeded},
-			"UPDATE runs SET pr_number = 25, review_round = 1 WHERE id = 'run'", workflow.Active, 25, 1, ""},
+			workflow.MetadataPatch{PRNumber: ptr(25), ReviewRound: ptr(1)}, workflow.Active, 25, 1, ""},
 		{"approved head", workflow.Active, workflow.Review, workflow.Request{Trigger: workflow.ReviewApproved},
-			"UPDATE runs SET approved_sha = 'approved-head' WHERE id = 'run'", workflow.WaitingForCI, 0, 0, "approved-head"},
+			workflow.MetadataPatch{ApprovedSHA: ptr("approved-head")}, workflow.WaitingForCI, 0, 0, "approved-head"},
 		{"additional round on retry", workflow.Failed, workflow.Review, workflow.Request{Trigger: workflow.Retry, NextState: workflow.Active, NextPhase: workflow.Review},
-			"UPDATE runs SET review_round = review_round + 1 WHERE id = 'run'", workflow.Active, 0, 1, ""},
+			workflow.MetadataPatch{IncrementReviewRound: true}, workflow.Active, 0, 1, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			w, bus, _ := newWorkflow(t)
 			seed(t, w, row.state, row.phase)
 			before, _ := bus.History(ctx, 0, 100)
 			request := row.request
-			request.UpdateMetadata = func(ctx context.Context, tx *sql.Tx) error {
-				_, err := tx.ExecContext(ctx, row.query)
-				return err
-			}
+			request.Metadata = row.patch
 			run, err := w.Transition(ctx, "run", request)
 			if err != nil || run.State != row.wantState || run.PRNumber != row.wantPR || run.ReviewRound != row.wantRound || run.ApprovedSHA != row.wantSHA {
 				t.Fatalf("transition metadata = %+v, %v", run, err)
@@ -607,44 +604,30 @@ func TestTransitionCommitsRelatedMetadata(t *testing.T) {
 
 func TestMetadataAndTransitionRollBackTogether(t *testing.T) {
 	ctx := context.Background()
-	for _, failureMode := range []string{"metadata error", "event error", "lifecycle overwrite"} {
+	for _, failureMode := range []string{"metadata error", "event error"} {
 		t.Run(failureMode, func(t *testing.T) {
 			w, bus, db := newWorkflow(t)
 			before := seed(t, w, workflow.Active, workflow.Review)
 			history, _ := bus.History(ctx, 0, 100)
 			live, cancel := bus.Subscribe(1)
 			defer cancel()
-			metadataFailure := errors.New("metadata update failed")
+			if failureMode == "metadata error" {
+				if _, err := db.ExecContext(ctx, `CREATE TRIGGER reject_metadata BEFORE UPDATE OF approved_sha ON runs BEGIN SELECT RAISE(ABORT, 'metadata update failed'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if failureMode == "event error" {
 				if _, err := db.ExecContext(ctx, `CREATE TRIGGER reject_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'event storage unavailable'); END`); err != nil {
 					t.Fatal(err)
 				}
 			}
 			_, err := w.Transition(ctx, "run", workflow.Request{Trigger: workflow.ReviewApproved,
-				UpdateMetadata: func(ctx context.Context, tx *sql.Tx) error {
-					if _, err := tx.ExecContext(ctx, "UPDATE runs SET approved_sha = 'approved-head', review_round = 2 WHERE id = 'run'"); err != nil {
-						return err
-					}
-					if failureMode == "metadata error" {
-						return metadataFailure
-					}
-					if failureMode == "lifecycle overwrite" {
-						_, err := tx.ExecContext(ctx, "UPDATE runs SET state = 'COMPLETED' WHERE id = 'run'")
-						return err
-					}
-					return nil
-				}})
+				Metadata: workflow.MetadataPatch{ApprovedSHA: ptr("approved-head"), ReviewRound: ptr(2)}})
 			if err == nil {
 				t.Fatal("transition succeeded despite failed or invalid metadata update")
 			}
-			if failureMode == "metadata error" && !errors.Is(err, metadataFailure) {
+			if failureMode == "metadata error" && !strings.Contains(err.Error(), "metadata update failed") {
 				t.Fatalf("metadata error lost cause: %v", err)
-			}
-			if failureMode == "lifecycle overwrite" {
-				var failure *fault.Error
-				if !errors.As(err, &failure) || failure.Code != "internal.invalid_transition" {
-					t.Fatalf("metadata overwrote lifecycle: %v", err)
-				}
 			}
 			after, err := w.Get(ctx, "run")
 			if err != nil || after != before {
@@ -659,6 +642,82 @@ func TestMetadataAndTransitionRollBackTogether(t *testing.T) {
 				t.Fatalf("rollback notified subscriber: %+v", event)
 			default:
 			}
+		})
+	}
+}
+
+func TestMetadataPatchOnlyChangesTransitionedRun(t *testing.T) {
+	ctx := context.Background()
+	w, bus, _ := newWorkflow(t)
+	seed(t, w, workflow.Active, workflow.Review)
+	other, err := w.Transition(ctx, "other-run", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := bus.History(ctx, 0, 100)
+	run, err := w.Transition(ctx, "run", workflow.Request{Trigger: workflow.ReviewApproved,
+		Metadata: workflow.MetadataPatch{PRNumber: ptr(25), ApprovedSHA: ptr("approved-head"), ReviewRound: ptr(2)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.State != workflow.WaitingForCI || run.PRNumber != 25 || run.ApprovedSHA != "approved-head" || run.ReviewRound != 2 {
+		t.Fatalf("metadata patch was not applied to the transitioned run: %+v", run)
+	}
+	got, err := w.Get(ctx, "other-run")
+	if err != nil || got != other {
+		t.Fatalf("metadata operation changed another run without a transition: %+v, %v; want %+v", got, err, other)
+	}
+	assertOneEvent(t, bus, before[len(before)-1].ID)
+	history, err := bus.History(ctx, before[len(before)-1].ID, 100)
+	if err != nil || history[0].RunID != "run" {
+		t.Fatalf("metadata patch emitted an event for another run: %+v, %v", history, err)
+	}
+}
+
+func ptr[T any](value T) *T { return &value }
+
+func TestMetadataPatchPreservesOmittedFieldsAndSupportsClearing(t *testing.T) {
+	ctx := context.Background()
+	w, _, _ := newWorkflow(t)
+	seed(t, w, workflow.Active, workflow.Implement)
+	requests := []struct {
+		request workflow.Request
+		want    workflow.RunMetadata
+	}{
+		{workflow.Request{Trigger: workflow.ImplementSucceeded, Metadata: workflow.MetadataPatch{PRNumber: ptr(25), ReviewRound: ptr(3)}},
+			workflow.RunMetadata{PRNumber: 25, ReviewRound: 3}},
+		{workflow.Request{Trigger: workflow.ReviewApproved, Metadata: workflow.MetadataPatch{ApprovedSHA: ptr("approved-head")}},
+			workflow.RunMetadata{PRNumber: 25, ReviewRound: 3, ApprovedSHA: "approved-head"}},
+		{workflow.Request{Trigger: workflow.CIPassed},
+			workflow.RunMetadata{PRNumber: 25, ReviewRound: 3, ApprovedSHA: "approved-head"}},
+		{workflow.Request{Trigger: workflow.TakeOver, Metadata: workflow.MetadataPatch{IncrementReviewRound: true}},
+			workflow.RunMetadata{PRNumber: 25, ReviewRound: 4, ApprovedSHA: "approved-head"}},
+		{workflow.Request{Trigger: workflow.HandBack, NextPhase: workflow.Review, Metadata: workflow.MetadataPatch{ApprovedSHA: ptr(""), ReviewRound: ptr(0)}},
+			workflow.RunMetadata{PRNumber: 25, ReviewRound: 0}},
+	}
+	for _, step := range requests {
+		run, err := w.Transition(ctx, "run", step.request)
+		if err != nil || run.RunMetadata != step.want {
+			t.Fatalf("metadata after %s = %+v, %v; want %+v", step.request.Trigger, run.RunMetadata, err, step.want)
+		}
+		saved, err := w.Get(ctx, "run")
+		if err != nil || saved != run {
+			t.Fatalf("metadata patch was not persisted: %+v, %v", saved, err)
+		}
+	}
+}
+
+func TestInvalidMetadataPatchesAreRejectedAtomically(t *testing.T) {
+	for name, patch := range map[string]workflow.MetadataPatch{
+		"zero PR":                 {PRNumber: ptr(0)},
+		"negative PR":             {PRNumber: ptr(-1)},
+		"negative round":          {ReviewRound: ptr(-1)},
+		"set and increment round": {ReviewRound: ptr(1), IncrementReviewRound: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w, bus, _ := newWorkflow(t)
+			seed(t, w, workflow.Active, workflow.Review)
+			assertInvalid(t, w, bus, workflow.Request{Trigger: workflow.ReviewApproved, Metadata: patch})
 		})
 	}
 }

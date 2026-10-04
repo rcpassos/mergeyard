@@ -75,6 +75,16 @@ type RunMetadata struct {
 	ApprovedSHA string `json:"approved_sha,omitempty"`
 }
 
+// MetadataPatch changes only PR/review metadata on the transitioned run.
+// Nil fields preserve their values; an empty ApprovedSHA clears approval.
+// IncrementReviewRound advances the persisted round within the transaction.
+type MetadataPatch struct {
+	PRNumber             *int
+	ReviewRound          *int
+	ApprovedSHA          *string
+	IncrementReviewRound bool
+}
+
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
@@ -101,11 +111,8 @@ type Request struct {
 	// NextPhase is required for HandBack and retrying an agent-backed state.
 	NextPhase Phase
 	Failure   *fault.Error
-	// UpdateMetadata runs after the validated lifecycle write, in the same
-	// transaction as the event. Do not commit or roll back tx, call the Bus
-	// or Workflow, or update anything except component-owned metadata. Lifecycle changes
-	// to this run are rejected. Any error rolls back the entire transition.
-	UpdateMetadata func(context.Context, *sql.Tx) error
+	// Metadata is applied by the workflow in the lifecycle/event transaction.
+	Metadata MetadataPatch
 }
 
 type Workflow struct {
@@ -132,6 +139,9 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		}
 		next, eventType, err := destination(current, request)
 		if err != nil {
+			return events.Draft{}, err
+		}
+		if err := request.Metadata.validate(); err != nil {
 			return events.Draft{}, err
 		}
 		if current.ID == "" {
@@ -161,24 +171,12 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		if err != nil {
 			return events.Draft{}, storageError(err)
 		}
+		if err := request.Metadata.apply(ctx, tx, id); err != nil {
+			return events.Draft{}, &fault.Error{Code: "internal.run_metadata", Message: "Could not update run metadata", Err: err}
+		}
 		run, err = readRun(ctx, tx, id)
 		if err != nil {
 			return events.Draft{}, err
-		}
-		if request.UpdateMetadata != nil {
-			beforeMetadata := run
-			if err := request.UpdateMetadata(ctx, tx); err != nil {
-				return events.Draft{}, &fault.Error{Code: "internal.run_metadata", Message: "Could not update run metadata", Err: err}
-			}
-			run, err = readRun(ctx, tx, id)
-			if err != nil {
-				return events.Draft{}, err
-			}
-			lifecycle := run
-			lifecycle.RunMetadata = beforeMetadata.RunMetadata
-			if lifecycle != beforeMetadata {
-				return events.Draft{}, invalid("Metadata updates must not change the run lifecycle or identity")
-			}
 		}
 		payload := transitionEvent{From: current.State, FromPhase: current.Phase, Trigger: request.Trigger, Run: run}
 		return events.Draft{RunID: id, Type: eventType, Payload: payload}, nil
@@ -187,6 +185,32 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		return Run{}, err
 	}
 	return run, nil
+}
+
+func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string) error {
+	if patch.PRNumber == nil && patch.ReviewRound == nil && patch.ApprovedSHA == nil && !patch.IncrementReviewRound {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE runs SET pr_number = COALESCE(?, pr_number),
+		review_round = CASE WHEN ? THEN review_round + 1 ELSE COALESCE(?, review_round) END,
+		approved_sha = COALESCE(?, approved_sha) WHERE id = ?`,
+		patch.PRNumber, patch.IncrementReviewRound, patch.ReviewRound, patch.ApprovedSHA, id)
+	return err
+}
+
+func (patch MetadataPatch) validate() error {
+	if patch.PRNumber != nil && *patch.PRNumber < 1 {
+		return invalid("PR number must be positive")
+	}
+	if patch.ReviewRound != nil {
+		if *patch.ReviewRound < 0 {
+			return invalid("Review round must be nonnegative")
+		}
+		if patch.IncrementReviewRound {
+			return invalid("Metadata must either set or increment the review round")
+		}
+	}
+	return nil
 }
 
 type transitionEvent struct {

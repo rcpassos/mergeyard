@@ -4,7 +4,7 @@ The runtime exposes `Runtime.Workflow` and `Runtime.Events`. Scheduler, CLI,
 and dashboard handlers must use `Workflow.Transition` for all lifecycle writes.
 `Workflow.Get` returns the persisted lifecycle and PR/review metadata snapshot.
 Transitions preserve component-owned metadata unless the caller supplies an
-atomic `Request.UpdateMetadata` callback.
+atomic `Request.Metadata` patch.
 
 States, phases, and triggers are typed strings in `internal/workflow`. The
 central rules implement PRD §21. An `ACTIVE` run always has an `implement`,
@@ -45,14 +45,20 @@ The other retry destinations emit `run.claimed`, `run.preparing`, `ci.updated`,
 transitions and storage failures leave both the run and event history unchanged.
 Logging and in-process delivery happen only after commit.
 
-`Request.UpdateMetadata` runs after validation and the lifecycle write, using
-the same transaction as the event. PR creation can persist `pr_number` and
-`review_round`, reviewer approval can persist `approved_sha`, and retry can
-grant a round before the transaction commits. The returned run and event
-snapshot include those updates. A metadata or event-write failure rolls back
-all three writes. The callback must use the supplied transaction, update only
-component-owned metadata, and never commit, roll back, or call the bus or workflow. Changes to the
-current run's lifecycle or identity are rejected and rolled back.
+`Request.Metadata` is a typed `MetadataPatch` applied by the workflow in the
+same transaction as the lifecycle write and event. Its optional `PRNumber`,
+`ReviewRound`, and `ApprovedSHA` fields update only those columns on the run
+being transitioned. Nil fields preserve their values; an empty `ApprovedSHA`
+clears approval. `IncrementReviewRound` atomically advances the persisted round
+without exposing a transaction to callers. A patch cannot both set and increment
+the round. PR numbers must be positive and review rounds nonnegative.
+
+PR creation can persist `pr_number` and `review_round`, reviewer approval can
+persist `approved_sha`, and retry can grant a round before the transaction
+commits. The returned run and event snapshot include those updates. Invalid
+patches and metadata/event-write failures leave all writes rolled back.
+Patches contain no lifecycle fields, run ID, SQL, or callbacks, so they cannot
+change another run or bypass transition validation.
 
 Use `Events.Publish` for standalone events such as `scheduler.paused`.
 `Events.Commit` supports other mutations that need an atomic event: its callback
