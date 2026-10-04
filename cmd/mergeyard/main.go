@@ -96,18 +96,44 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if cmd.name == "doctor" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		report := doctor.Check(ctx, opts.configPath, doctor.Options{})
-		if err := report.Write(stdout); err != nil {
-			fmt.Fprintf(stderr, "mergeyard doctor: write report: %v\n", err)
+		return checkSetup(ctx, opts.configPath, stdout, stderr)
+	}
+	if cmd.name == "init" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		path, err := initialize(ctx, opts.configPath, os.Stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "mergeyard init: %v\n", err)
 			return 1
 		}
-		if report.HasErrors() {
+		if path == "" {
+			return 0
+		}
+		return checkSetup(ctx, path, stdout, stderr)
+	}
+	if cmd.name == "repo add" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := addRepository(ctx, opts.configPath, rest[0], os.Stdin, stdout); err != nil {
+			fmt.Fprintf(stderr, "mergeyard repo add: %v\n", err)
 			return 1
 		}
 		return 0
 	}
 	fmt.Fprintf(stderr, "mergeyard %s: not implemented\n", cmd.name)
 	return 1
+}
+
+func checkSetup(ctx context.Context, path string, stdout, stderr io.Writer) int {
+	report := doctor.Check(ctx, path, doctor.Options{})
+	if err := report.Write(stdout); err != nil {
+		fmt.Fprintf(stderr, "mergeyard doctor: write report: %v\n", err)
+		return 1
+	}
+	if report.HasErrors() {
+		return 1
+	}
+	return 0
 }
 
 func start(stdout, stderr io.Writer) int {

@@ -69,8 +69,6 @@ func TestHelpListsEveryCommand(t *testing.T) {
 
 func TestUnimplementedCommandsFail(t *testing.T) {
 	invocations := [][]string{
-		{"init"},
-		{"repo", "add", "octo/repo"},
 		{"status"},
 		{"open"},
 		{"pause"},
@@ -135,7 +133,6 @@ func TestConfigFlag(t *testing.T) {
 		{"-config", "my.yaml", "status"},
 		{"status", "--config", "my.yaml"},
 		{"watch", "run-1", "--config", "my.yaml"},
-		{"repo", "--config", "my.yaml", "add", "octo/repo"},
 	}
 	for _, args := range accepted {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
