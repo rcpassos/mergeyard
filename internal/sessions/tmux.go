@@ -62,7 +62,9 @@ func (m *Manager) exists(ctx context.Context, name string) (bool, error) {
 		return false, failure("phase.canceled", name, ctx.Err())
 	}
 	text := string(out)
-	if strings.Contains(text, "can't find session") || strings.Contains(text, "no server running") || strings.Contains(text, "No such file or directory") {
+	// An empty server can still accept connections just after its last session
+	// exits. tmux 3.4 reports "no current target" instead of "can't find session".
+	if strings.Contains(text, "can't find session") || strings.Contains(text, "no current target") || strings.Contains(text, "no server running") || strings.Contains(text, "No such file or directory") {
 		return false, nil
 	}
 	return false, err

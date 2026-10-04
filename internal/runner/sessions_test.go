@@ -312,6 +312,25 @@ func TestSessionNamesAreSafeBoundedAndDistinguishAttempts(t *testing.T) {
 	awaitExit(t, r, second)
 }
 
+func TestSessionStartsOnEmptyTmuxServer(t *testing.T) {
+	r, options := localSessions(t)
+	// Keep the server alive with no sessions to reproduce the interval between
+	// the last phase exiting and tmux shutting down, without depending on timing.
+	cmd := exec.Command("tmux", "-L", options.SocketName, "-f", "/dev/null",
+		"start-server", ";", "set-option", "-g", "exit-empty", "off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("prepare empty tmux server: %v: %s", err, out)
+	}
+	ref, err := r.StartSession(context.Background(), phaseRequest(t, "exit 0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := awaitExit(t, r, ref)
+	if status.ExitCode == nil || *status.ExitCode != 0 {
+		t.Fatalf("status = %+v, want successful exit", status)
+	}
+}
+
 func TestInvalidEnvironmentCannotExecuteShellText(t *testing.T) {
 	r, _ := localSessions(t)
 	req := phaseRequest(t, "exit 0")
