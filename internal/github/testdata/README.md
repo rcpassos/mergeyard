@@ -41,6 +41,26 @@ MERGEYARD_GITHUB_TEST_ISSUE=<number> \
 go test ./internal/github -run '^TestGitHubIntegration$' -count=1 -v
 ```
 
+## Opt-in pull request integration test
+
+The PR test has a separate opt-in flag. Use the same dedicated test repository
+and an issue in it. Prepare a unique, pushed `mergeyard-integration/<name>` branch
+with a file change relative to the chosen base branch, and no existing open PR.
+The repository must support draft PRs to exercise the live draft assertion.
+Run one test per head branch at a time. The test creates a draft, discovers it,
+adds user-written text around the generated section, updates the section, and
+reads it back. Cleanup closes the PR, including after an ambiguous creation
+failure; it leaves the prepared branch and closed PR in the test repository.
+
+```sh
+MERGEYARD_GITHUB_PR_INTEGRATION=1 \
+MERGEYARD_GITHUB_TEST_REPO=<owner>/mergeyard-integration-test \
+MERGEYARD_GITHUB_TEST_ISSUE=<number> \
+MERGEYARD_GITHUB_TEST_HEAD=mergeyard-integration/<unique-name> \
+MERGEYARD_GITHUB_TEST_BASE=main \
+go test ./internal/github -run '^TestGitHubPullRequestIntegration$' -count=1 -v
+```
+
 ## Client behavior
 
 `github.New(nil)` uses `exec.CommandContext` to execute `gh` directly. Tests inject
@@ -58,10 +78,35 @@ segment. Removing an already absent label succeeds, including after a transient
 failure whose deletion was applied server-side; missing issues and repositories
 still return errors. Repository names use the same shared validator as
 configuration, and issue numbers are validated before executing `gh`. Issue
-bodies never become command arguments or stdin.
+bodies never become command arguments or stdin during issue reads.
 
-Transient transport failures and HTTP 408/5xx responses receive at most three
-attempts with 250ms and 500ms context-aware backoff. Rate-limited HTTP 403/429
+`FindOpenPullRequest` checks every REST page for an open PR whose head repository
+and branch match the requested source. It returns nil for no match and
+`pr.multiple_open` for multiple matches. `CreateDraftPullRequest` sends the title
+`#<issue> <issue title>`, head/base, and generated body as JSON stdin. An explicit
+HTTP 422 "Draft pull requests are not supported in this repository" response
+triggers one normal-PR creation attempt. The returned `PullRequest.Draft` records
+the actual state, including this fallback, alongside the number and URL. Other
+creation failures are returned without retry: a server/transport error may have
+occurred after creation, so callers should rediscover before trying again.
+
+`GeneratePullRequestBody` includes the closing reference, implementation summary,
+and run ID between `<!-- mergeyard:generated:start -->` and
+`<!-- mergeyard:generated:end -->`. `UpdatePullRequest` reads the latest body,
+replaces only that section through JSON stdin, and leaves all text outside it
+byte-for-byte unchanged. If no markers exist, it appends the section. Incomplete,
+reversed, or duplicate markers return `pr.invalid_generated_section` without a
+write. Generated content cannot contain these reserved markers. An unchanged body
+does not trigger a write; updates never change the title or draft state.
+Body writes are attempted once. An ambiguous failure may hide an applied PATCH;
+replaying its captured body could overwrite intervening human edits. Callers
+receive the original coded error and can invoke `UpdatePullRequest` again to
+re-fetch and merge the current body. If the generated section already matches,
+that new attempt succeeds without another write.
+
+For reads and label changes, transient transport failures and
+HTTP 408/5xx responses receive at most three attempts with 250ms and 500ms
+context-aware backoff. Rate-limited HTTP 403/429
 responses return immediately so callers can defer polling; the adapter does not
 receive reset or Retry-After headers through gh stderr. Other failures also return
 immediately. `*github.Error` aliases the shared `*fault.Error`, exposes a stable
