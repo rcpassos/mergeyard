@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/workspace"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -77,20 +79,13 @@ type Repository struct {
 	Labels      Labels
 }
 
-// Error provides a stable code and a field path for CLI/UI callers.
-type Error struct {
-	Code string
-	Path string
-	Err  error
-}
-
-func (e *Error) Error() string { return fmt.Sprintf("%s: %s: %v", e.Code, e.Path, e.Err) }
-func (e *Error) Unwrap() error { return e.Err }
+// Error retains the configuration API while sharing the runtime error shape.
+type Error = fault.Error
 
 func defaults() Config {
 	role := Role{Agent: "claude", Skills: []string{}, MaxAttempts: 1}
 	return Config{
-		Version: 1, Port: 7331, OpenBrowser: true, Workspace: "~/.mergeyard",
+		Version: 1, Port: 7331, OpenBrowser: true, Workspace: workspace.DefaultPath,
 		PollInterval: 30 * time.Second, Concurrency: 1,
 		Labels: Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
 		Agents: Agents{
