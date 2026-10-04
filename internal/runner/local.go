@@ -27,8 +27,11 @@ func NewLocal(options Options) *Local {
 	return &Local{sessions: sessions.New(sessions.Options{SocketName: options.SocketName, GracePeriod: options.GracePeriod})}
 }
 
-// Exec reports non-zero process exits in ExitCode; launch and cancellation
-// failures are errors. It captures stdout and stderr separately.
+// Exec reports process exits in ExitCode and captures stdout and stderr separately.
+// Launch and cancellation failures are errors. If a successful command leaves
+// output pipes open past the drain limit, it returns internal.exec_output_incomplete
+// with exit code 0 and the output captured so far. It attempts to stop remaining
+// processes in the command's group before returning.
 func (l *Local) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
 	var out, errOut bytes.Buffer
 	cmd := exec.CommandContext(ctx, req.Executable, req.Args...)
@@ -69,6 +72,9 @@ func (l *Local) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
 	}
 	if err != nil && ctx.Err() != nil {
 		return result, localFailure("internal.canceled", req.Executable, errors.Join(ctx.Err(), cleanupErr))
+	}
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && result.ExitCode == 0 {
+		return result, localFailure("internal.exec_output_incomplete", req.Executable, errors.Join(err, cleanupErr))
 	}
 	if cleanupErr != nil {
 		return result, localFailure("internal.exec_failed", req.Executable, errors.Join(err, cleanupErr))

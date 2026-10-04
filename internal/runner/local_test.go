@@ -137,9 +137,16 @@ func TestLocalErrorsHaveCodesAndPreserveCauses(t *testing.T) {
 func TestExecBoundsPipeDrainingAfterParentExits(t *testing.T) {
 	r := runner.NewLocal(runner.Options{})
 	start := time.Now()
-	_, err := r.Exec(context.Background(), runner.ExecRequest{Executable: "/bin/sh", Args: []string{"-c", "sleep 3 &"}})
+	result, err := r.Exec(context.Background(), runner.ExecRequest{Executable: "/bin/sh", Args: []string{"-c", "(sleep 2; echo late) & echo hi"}})
 	if !errors.Is(err, exec.ErrWaitDelay) {
 		t.Fatalf("unclosed descendant pipes: %v", err)
+	}
+	var failure *fault.Error
+	if !errors.As(err, &failure) || failure.Code != "internal.exec_output_incomplete" {
+		t.Fatalf("successful command reported as execution failure: %v", err)
+	}
+	if result.ExitCode != 0 || string(result.Stdout) != "hi\n" {
+		t.Fatalf("successful exit and captured output were lost: %+v", result)
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("pipe draining took %v", elapsed)
@@ -157,5 +164,16 @@ func TestExecCleansDescendantsAfterNonzeroParentExit(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("child survived nonzero parent exit: %v", err)
+	}
+}
+
+func TestExecCapturesDescendantOutputBeforeDrainLimit(t *testing.T) {
+	r := runner.NewLocal(runner.Options{})
+	result, err := r.Exec(context.Background(), runner.ExecRequest{Executable: "/bin/sh", Args: []string{"-c", "echo hi; (sleep 0.05; echo late) &"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 0 || string(result.Stdout) != "hi\nlate\n" {
+		t.Fatalf("complete output = %+v", result)
 	}
 }
