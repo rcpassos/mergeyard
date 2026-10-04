@@ -1,0 +1,16 @@
+@import "tailwindcss" source(none);
+@source "../templates/*.html";
+@plugin "daisyui" {
+  themes: light --default;
+  logs: false;
+  include: button, badge;
+}
+
+:root { font-family: "Avenir Next", "Segoe UI", sans-serif; color: #233c50; background: #f5f8fa; }
+body { min-height: 100vh; }
+.shell { max-width: 52rem; margin: auto; padding: clamp(1rem, 5vw, 3rem); }
+.brand { font-size: 1.25rem; font-weight: 700; color: #245779; }
+.workbench { margin-top: 3rem; padding-top: 1.5rem; border-top: 3px solid #245779; }
+.icon { width: 1.125rem; height: 1.125rem; }
+.connection { color: #516778; font-size: .875rem; }
+:focus-visible { outline: 3px solid #245779; outline-offset: 3px; }

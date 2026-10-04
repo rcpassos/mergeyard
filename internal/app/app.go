@@ -11,6 +11,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/store"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 	"github.com/rcpassos/mergeyard/internal/workspace"
@@ -25,6 +26,7 @@ type Runtime struct {
 	DB        *sql.DB
 	Events    *events.Bus
 	Workflow  *workflow.Workflow
+	Scheduler *scheduler.Control
 	lock      *os.File
 	closeOnce sync.Once
 	closeErr  error
@@ -53,7 +55,7 @@ func Open(ctx context.Context, path string) (*Runtime, error) {
 		return nil, err
 	}
 	bus := events.New(db, nil)
-	return &Runtime{Workspace: w, DB: db, Events: bus, Workflow: workflow.New(db, bus), lock: lock}, nil
+	return &Runtime{Workspace: w, DB: db, Events: bus, Workflow: workflow.New(db, bus), Scheduler: scheduler.NewControl(bus), lock: lock}, nil
 }
 
 // Close closes SQLite before releasing ownership. The lock file stays on disk:
