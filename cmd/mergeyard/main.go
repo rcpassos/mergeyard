@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/doctor"
 	"github.com/rcpassos/mergeyard/internal/fault"
 )
 
@@ -91,6 +92,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return start(stdout, stderr)
+	}
+	if cmd.name == "doctor" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		report := doctor.Check(ctx, opts.configPath, doctor.Options{})
+		if err := report.Write(stdout); err != nil {
+			fmt.Fprintf(stderr, "mergeyard doctor: write report: %v\n", err)
+			return 1
+		}
+		if report.HasErrors() {
+			return 1
+		}
+		return 0
 	}
 	fmt.Fprintf(stderr, "mergeyard %s: not implemented\n", cmd.name)
 	return 1

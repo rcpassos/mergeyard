@@ -72,7 +72,6 @@ func TestUnimplementedCommandsFail(t *testing.T) {
 		{"init"},
 		{"repo", "add", "octo/repo"},
 		{"status"},
-		{"doctor"},
 		{"open"},
 		{"pause"},
 		{"resume"},
