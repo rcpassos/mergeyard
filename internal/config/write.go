@@ -12,8 +12,9 @@ import (
 )
 
 // Set edits a mapping field or sequence entry. Paths use mapping keys and
-// zero-based sequence indices; "-" appends to an existing sequence. Missing
-// mapping parents are created, so init can start with Parse([]byte("{}")).
+// zero-based sequence indices; a final "-" appends, creating a missing sequence.
+// Missing mapping parents are created. Adding fields to Parse([]byte("{}"))
+// produces block YAML for init; existing nonempty document styles are retained.
 // Replacing a container intentionally replaces its children; edit individual
 // leaves or append repositories to preserve their comments and unknown fields.
 func (d *Document) Set(path []string, value any) error {
@@ -23,9 +24,12 @@ func (d *Document) Set(path []string, value any) error {
 	if len(path) == 0 || len(d.root.Content) != 1 {
 		return invalid("expected a nonempty path in a document")
 	}
-	for _, key := range path {
+	for i, key := range path {
 		if key == "" {
 			return invalid("path keys cannot be empty")
+		}
+		if key == "-" && i != len(path)-1 {
+			return invalid("append must be the final path segment")
 		}
 	}
 	var replacement yaml.Node
@@ -33,6 +37,9 @@ func (d *Document) Set(path []string, value any) error {
 		return &Error{Code: "config.invalid_yaml", Path: fmt.Sprint(path), Err: err}
 	}
 	n := d.root.Content[0]
+	if n.Kind == yaml.MappingNode && len(n.Content) == 0 {
+		n.Style &^= yaml.FlowStyle
+	}
 	for i, key := range path {
 		last := i == len(path)-1
 		var next *yaml.Node
@@ -46,6 +53,9 @@ func (d *Document) Set(path []string, value any) error {
 			}
 			if next == nil {
 				next = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+				if !last && path[i+1] == "-" {
+					next.Kind, next.Tag = yaml.SequenceNode, "!!seq"
+				}
 				n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, next)
 			}
 		case yaml.SequenceNode:
@@ -84,6 +94,7 @@ func (d *Document) Set(path []string, value any) error {
 // use mode 0600; existing permission bits are preserved. Comments, unknown
 // fields, key order and unchanged node styles survive, but whitespace may be
 // normalized by the YAML encoder. Concurrent external edits are not merged.
+// Existing symlinks are preserved by atomically updating their resolved target.
 func (d *Document) Write(path string) error {
 	var buf bytes.Buffer
 	encoder := yaml.NewEncoder(&buf)
@@ -105,6 +116,15 @@ func (d *Document) Write(path string) error {
 }
 
 func writeAtomic(path string, data []byte) error {
+	if _, err := os.Lstat(path); err == nil {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return err
+		}
+		path = resolved
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	mode := os.FileMode(0600)
 	info, err := os.Stat(path)
 	if err == nil {

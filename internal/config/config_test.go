@@ -230,7 +230,7 @@ func TestWriterRejectsInvalidChangesWithoutReplacingFile(t *testing.T) {
 }
 
 func TestDocumentRejectsInvalidPaths(t *testing.T) {
-	for _, path := range [][]string{nil, {""}, {"implementer", "agent", "child"}, {"repositories", "-1"}, {"repositories", "1"}, {"repositories", "many"}, {"repositories", "-", "repo"}, {"role_alias", "agent"}, {"role_alias"}, {"missing", "", "child"}} {
+	for _, path := range [][]string{nil, {""}, {"implementer", "agent", "child"}, {"repositories", "-1"}, {"repositories", "1"}, {"repositories", "many"}, {"repositories", "-", "repo"}, {"role_alias", "agent"}, {"role_alias"}, {"missing", "", "child"}, {"missing", "nested", "-", "repo"}} {
 		t.Run(strings.Join(path, "/"), func(t *testing.T) {
 			_, doc, err := config.Parse([]byte("implementer: &role {agent: claude}\nrole_alias: *role\nrepositories: [{repo: owner/repo}]"))
 			if err != nil {
@@ -304,6 +304,14 @@ func TestExampleConfigLoads(t *testing.T) {
 	if len(cfg.Repositories) != 2 || cfg.Repositories[1].Reviewer.Agent != "codex" || cfg.Repositories[1].Reviewer.Effort != "high" {
 		t.Errorf("example config = %#v", cfg)
 	}
+	minimal, _, err := config.Parse([]byte("repositories: [{repo: owner/repo}]"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Repositories, minimal.Repositories = nil, nil
+	if !reflect.DeepEqual(cfg, minimal) {
+		t.Errorf("example globals differ from built-in defaults:\ngot %#v\nwant %#v", cfg, minimal)
+	}
 }
 
 func TestGlobalFieldsOverrideDefaults(t *testing.T) {
@@ -348,6 +356,14 @@ func TestValidationErrorsHaveStableCodesAndPaths(t *testing.T) {
 		{"repo format", "repositories: [{repo: owner/repo/extra}]", "config.invalid_repo", "repositories[0].repo"},
 		{"repo whitespace", "repositories: [{repo: 'owner/re po'}]", "config.invalid_repo", "repositories[0].repo"},
 		{"repo dot", "repositories: [{repo: owner/..}]", "config.invalid_repo", "repositories[0].repo"},
+		{"duplicate repository", "repositories: [{repo: owner/repo}, {repo: owner/repo}]", "config.duplicate_repo", "repositories[1].repo"},
+		{"case variant repository", "repositories: [{repo: owner/repo}, {repo: OWNER/REPO, enabled: false}]", "config.duplicate_repo", "repositories[1].repo"},
+		{"empty ready label", "labels: {ready: ''}", "config.invalid_labels", "labels.ready"},
+		{"blank running label", "labels: {running: '   '}", "config.invalid_labels", "labels.running"},
+		{"identical labels", "labels: {ready: same, running: same}", "config.invalid_labels", "labels.running"},
+		{"case variant labels", "labels: {ready: same, needs_attention: SAME}", "config.invalid_labels", "labels.needs_attention"},
+		{"empty repository label", "repositories: [{repo: owner/repo, labels: {needs_attention: ''}}]", "config.invalid_labels", "repositories[0].labels.needs_attention"},
+		{"inherited label collision", "labels: {ready: custom}\nrepositories: [{repo: owner/repo, labels: {running: custom}}]", "config.invalid_labels", "repositories[0].labels.running"},
 		{"implementer agent", "implementer: {agent: other}", "config.invalid_agent", "implementer.agent"},
 		{"reviewer agent", "reviewer: {agent: ''}", "config.invalid_agent", "reviewer.agent"},
 		{"repository agent", "repositories: [{repo: owner/repo, reviewer: {agent: other}}]", "config.invalid_agent", "repositories[0].reviewer.agent"},
@@ -361,6 +377,10 @@ func TestValidationErrorsHaveStableCodesAndPaths(t *testing.T) {
 		{"poll duration", "poll_interval: tomorrow", "config.invalid_duration", "poll_interval"},
 		{"cooldown duration", "usage_limits: {cooldown: 3days}", "config.invalid_duration", "usage_limits.cooldown"},
 		{"numeric duration", "poll_interval: 30", "config.invalid_duration", "poll_interval"},
+		{"zero poll interval", "poll_interval: 0s", "config.invalid_duration", "poll_interval"},
+		{"negative poll interval", "poll_interval: -5s", "config.invalid_duration", "poll_interval"},
+		{"zero cooldown", "usage_limits: {cooldown: 0s}", "config.invalid_duration", "usage_limits.cooldown"},
+		{"negative cooldown", "usage_limits: {cooldown: -5m}", "config.invalid_duration", "usage_limits.cooldown"},
 		{"permission", "agents: {claude: {permission_mode: prompt}}", "config.invalid_permission_mode", "agents.claude.permission_mode"},
 		{"sandbox", "agents: {codex: {sandbox: read-only}}", "config.invalid_sandbox", "agents.codex.sandbox"},
 		{"malformed YAML", "repositories: [", "config.invalid_yaml", "document"},

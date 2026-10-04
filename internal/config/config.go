@@ -104,8 +104,17 @@ func defaults() Config {
 
 // Document retains the source YAML rather than serializing resolved defaults.
 type Document struct {
-	Path string // selected source file; empty for Parse
-	root yaml.Node
+	Path     string    // selected source file; empty for Parse
+	Warnings []Warning // diagnostics from Parse/Load; refresh by reloading after edits
+	root     yaml.Node
+}
+
+// Warning reports a tolerated unknown field so callers can surface likely
+// typos without rejecting future options or discarding their YAML.
+type Warning struct {
+	Code    string
+	Path    string
+	Message string
 }
 
 // Parse resolves one YAML file: defaults, then global fields, then repository
@@ -123,52 +132,65 @@ func Parse(data []byte) (Config, *Document, error) {
 	}
 	cfg := defaults()
 	var err error
-	m := newMapping(doc.root.Content[0], "", &err)
+	m := newMapping(doc.root.Content[0], "", &err, &doc.Warnings)
 	m.read("version", &cfg.Version)
 	m.read("port", &cfg.Port)
 	m.read("open_browser", &cfg.OpenBrowser)
 	m.read("workspace", &cfg.Workspace)
-	m.read("poll_interval", &cfg.PollInterval)
-	m.read("concurrency", &cfg.Concurrency)
+	m.readDuration("poll_interval", &cfg.PollInterval)
+	m.readPositiveInt("concurrency", &cfg.Concurrency, "config.invalid_concurrency")
 	readLabels(m.child("labels"), &cfg.Labels)
-	claude := m.child("agents").child("claude")
+	agents := m.child("agents")
+	claude := agents.child("claude")
 	claude.read("executable", &cfg.Agents.Claude.Executable)
-	claude.read("permission_mode", &cfg.Agents.Claude.PermissionMode)
+	claude.readEnum("permission_mode", &cfg.Agents.Claude.PermissionMode, "config.invalid_permission_mode", "auto", "acceptEdits", "bypassPermissions")
 	claude.read("allowed_tools", &cfg.Agents.Claude.AllowedTools)
-	codex := m.child("agents").child("codex")
+	claude.finish()
+	codex := agents.child("codex")
 	codex.read("executable", &cfg.Agents.Codex.Executable)
-	codex.read("sandbox", &cfg.Agents.Codex.Sandbox)
+	codex.readEnum("sandbox", &cfg.Agents.Codex.Sandbox, "config.invalid_sandbox", "workspace-write", "danger-full-access")
 	codex.read("network_access", &cfg.Agents.Codex.NetworkAccess)
+	codex.finish()
+	agents.finish()
 	readRole(m.child("implementer"), &cfg.Implementer)
 	readRole(m.child("reviewer"), &cfg.Reviewer)
-	m.read("max_rounds", &cfg.MaxRounds)
+	m.readPositiveInt("max_rounds", &cfg.MaxRounds, "config.invalid_max_rounds")
 	m.read("pr_comments", &cfg.PRComments)
 	usage := m.child("usage_limits")
-	usage.read("cooldown", &cfg.UsageLimits.Cooldown)
-	usage.read("max_waits", &cfg.UsageLimits.MaxWaits)
-	if repos := m.fields["repositories"]; repos != nil && err == nil {
+	usage.readDuration("cooldown", &cfg.UsageLimits.Cooldown)
+	usage.readPositiveInt("max_waits", &cfg.UsageLimits.MaxWaits, "config.invalid_max_waits")
+	usage.finish()
+	if repos := m.node("repositories"); repos != nil {
 		repos = dereference(repos)
 		if repos.Kind != yaml.SequenceNode {
 			m.fail("config.invalid_yaml", "repositories", "expected a sequence")
 		} else {
+			seenRepos := make(map[string]bool)
 			for i, node := range repos.Content {
 				r := Repository{Concurrency: cfg.Concurrency, Enabled: true,
 					Implementer: cloneRole(cfg.Implementer), Reviewer: cloneRole(cfg.Reviewer), Labels: cfg.Labels}
-				rm := newMapping(node, fmt.Sprintf("repositories[%d]", i), &err)
-				rm.read("repo", &r.Repo)
+				rm := newMapping(node, fmt.Sprintf("repositories[%d]", i), &err, &doc.Warnings)
+				rm.readRepo("repo", &r.Repo)
 				if !validRepo(r.Repo) {
 					rm.fail("config.invalid_repo", "repo", "expected owner/repo")
 				}
+				name := strings.ToLower(r.Repo)
+				if seenRepos[name] {
+					rm.fail("config.duplicate_repo", "repo", "repository is already configured (case-insensitive)")
+				}
+				seenRepos[name] = true
 				rm.read("base_branch", &r.BaseBranch)
-				rm.read("concurrency", &r.Concurrency)
+				rm.readPositiveInt("concurrency", &r.Concurrency, "config.invalid_concurrency")
 				rm.read("enabled", &r.Enabled)
 				readRole(rm.child("implementer"), &r.Implementer)
 				readRole(rm.child("reviewer"), &r.Reviewer)
 				readLabels(rm.child("labels"), &r.Labels)
+				rm.finish()
 				cfg.Repositories = append(cfg.Repositories, r)
 			}
 		}
 	}
+	m.finish()
 	if err != nil {
 		return Config{}, nil, err
 	}
@@ -181,29 +203,45 @@ func cloneRole(r Role) Role {
 }
 
 func readRole(m mapping, r *Role) {
-	m.read("agent", &r.Agent)
-	m.read("model", &r.Model)
-	m.read("effort", &r.Effort)
+	m.readEnum("agent", &r.Agent, "config.invalid_agent", "claude", "codex")
+	m.readNullableString("model", &r.Model)
+	m.readNullableString("effort", &r.Effort)
 	m.read("skills", &r.Skills)
-	m.read("max_attempts", &r.MaxAttempts)
+	m.readPositiveInt("max_attempts", &r.MaxAttempts, "config.invalid_max_attempts")
+	m.finish()
 }
 
 func readLabels(m mapping, l *Labels) {
 	m.read("ready", &l.Ready)
 	m.read("running", &l.Running)
 	m.read("needs_attention", &l.NeedsAttention)
+	seen := make(map[string]bool)
+	for _, field := range []struct{ key, value string }{
+		{"ready", l.Ready}, {"running", l.Running}, {"needs_attention", l.NeedsAttention},
+	} {
+		name := strings.ToLower(field.value)
+		if strings.TrimSpace(field.value) == "" || seen[name] {
+			m.fail("config.invalid_labels", field.key, "labels must be nonempty and distinct (case-insensitive)")
+			return
+		}
+		seen[name] = true
+	}
+	m.finish()
 }
 
 // mapping applies only explicitly supplied fields, including false, empty
 // lists, and null model/effort. All readers share the first decoding error.
 type mapping struct {
-	fields map[string]*yaml.Node
-	path   string
-	err    *error
+	fields   map[string]*yaml.Node
+	keys     []string
+	known    map[string]bool
+	warnings *[]Warning
+	path     string
+	err      *error
 }
 
-func newMapping(n *yaml.Node, path string, err *error) mapping {
-	m := mapping{fields: make(map[string]*yaml.Node), path: path, err: err}
+func newMapping(n *yaml.Node, path string, err *error, warnings *[]Warning) mapping {
+	m := mapping{fields: make(map[string]*yaml.Node), known: make(map[string]bool), path: path, err: err, warnings: warnings}
 	if n == nil || *err != nil {
 		return m
 	}
@@ -219,6 +257,7 @@ func newMapping(n *yaml.Node, path string, err *error) mapping {
 			return m
 		}
 		m.fields[key.Value] = n.Content[i+1]
+		m.keys = append(m.keys, key.Value)
 	}
 	return m
 }
@@ -247,67 +286,110 @@ func (m mapping) fail(code, key, message string) {
 }
 
 func (m mapping) child(key string) mapping {
-	return newMapping(m.fields[key], m.fieldPath(key), m.err)
+	return newMapping(m.node(key), m.fieldPath(key), m.err, m.warnings)
+}
+
+func (m mapping) finish() {
+	if *m.err != nil {
+		return
+	}
+	for _, key := range m.keys {
+		if !m.known[key] {
+			*m.warnings = append(*m.warnings, Warning{Code: "config.unknown_field", Path: m.fieldPath(key), Message: "unknown field is ignored when resolving configuration; check for a typo"})
+		}
+	}
 }
 
 func (m mapping) read(key string, target any) {
-	n := m.fields[key]
-	if n == nil || *m.err != nil {
+	n := m.node(key)
+	if n == nil {
 		return
-	}
-	n = dereference(n)
-	code := "config.invalid_yaml"
-	switch key {
-	case "concurrency", "max_rounds", "max_attempts", "max_waits":
-		code = "config.invalid_" + key
-		var value int
-		if n.Tag != "!!int" || n.Decode(&value) != nil || value <= 0 {
-			m.fail(code, key, "expected a positive finite integer")
-			return
-		}
-		*target.(*int) = value
-		return
-	case "poll_interval", "cooldown":
-		if n.Tag != "!!str" {
-			m.fail("config.invalid_duration", key, "expected a duration string such as 30s or 30m")
-			return
-		}
-		value, err := time.ParseDuration(n.Value)
-		if err != nil {
-			m.fail("config.invalid_duration", key, err.Error())
-			return
-		}
-		*target.(*time.Duration) = value
-		return
-	case "repo", "agent", "permission_mode", "sandbox":
-		code = "config.invalid_" + key
-		valid := n.Tag == "!!str"
-		switch key {
-		case "repo":
-			valid = valid && validRepo(n.Value)
-		case "agent":
-			valid = valid && slices.Contains([]string{"claude", "codex"}, n.Value)
-		case "permission_mode":
-			valid = valid && slices.Contains([]string{"auto", "acceptEdits", "bypassPermissions"}, n.Value)
-		case "sandbox":
-			valid = valid && slices.Contains([]string{"workspace-write", "danger-full-access"}, n.Value)
-		}
-		if !valid {
-			m.fail(code, key, fmt.Sprintf("unsupported value %q", n.Value))
-			return
-		}
 	}
 	if n.Tag == "!!null" {
-		if key == "model" || key == "effort" {
-			*target.(*string) = ""
-			return
-		}
 		m.fail("config.invalid_yaml", key, "null is allowed only for model and effort")
 		return
 	}
 	if err := n.Decode(target); err != nil {
-		m.fail(code, key, err.Error())
+		m.fail("config.invalid_yaml", key, err.Error())
 	}
+}
+
+func (m mapping) node(key string) *yaml.Node {
+	m.known[key] = true
+	if n := m.fields[key]; n != nil && *m.err == nil {
+		return dereference(n)
+	}
+	return nil
+}
+
+func (m mapping) readPositiveInt(key string, target *int, code string) {
+	n := m.node(key)
+	if n == nil {
+		return
+	}
+	var value int
+	if n.Tag != "!!int" || n.Decode(&value) != nil || value <= 0 {
+		m.fail(code, key, "expected a positive finite integer")
+		return
+	}
+	*target = value
+}
+
+func (m mapping) readDuration(key string, target *time.Duration) {
+	n := m.node(key)
+	if n == nil {
+		return
+	}
+	if n.Tag != "!!str" {
+		m.fail("config.invalid_duration", key, "expected a duration string such as 30s or 30m")
+		return
+	}
+	value, err := time.ParseDuration(n.Value)
+	if err != nil {
+		m.fail("config.invalid_duration", key, err.Error())
+		return
+	}
+	if value <= 0 {
+		m.fail("config.invalid_duration", key, "expected a positive duration")
+		return
+	}
+	*target = value
+}
+
+func (m mapping) readEnum(key string, target *string, code string, choices ...string) {
+	n := m.node(key)
+	if n == nil {
+		return
+	}
+	if n.Tag != "!!str" || !slices.Contains(choices, n.Value) {
+		m.fail(code, key, fmt.Sprintf("expected one of %v, got %q", choices, n.Value))
+		return
+	}
+	*target = n.Value
+}
+
+func (m mapping) readNullableString(key string, target *string) {
+	n := m.node(key)
+	if n == nil {
+		return
+	}
+	if n.Tag == "!!null" {
+		*target = ""
+		return
+	}
+	m.read(key, target)
+}
+
+func (m mapping) readRepo(key string, target *string) {
+	n := m.node(key)
+	if n == nil {
+		return
+	}
+	if n.Tag != "!!str" {
+		m.fail("config.invalid_repo", key, "expected owner/repo")
+		return
+	}
+	*target = n.Value
 }
 
 var repoPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100}$`)
