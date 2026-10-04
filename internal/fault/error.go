@@ -13,16 +13,17 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
+	diagnostic := e.Code
+	if e.Path != "" {
+		diagnostic += ": " + e.Path
+	}
 	if e.Message != "" {
-		if e.Path != "" {
-			return fmt.Sprintf("%s: %s: %s", e.Code, e.Path, e.Message)
-		}
-		return fmt.Sprintf("%s: %s", e.Code, e.Message)
+		diagnostic += ": " + e.Message
 	}
-	if e.Path == "" {
-		return fmt.Sprintf("%s: %v", e.Code, e.Err)
+	if e.Err != nil || e.Message == "" {
+		diagnostic += fmt.Sprintf(": %v", e.Err)
 	}
-	return fmt.Sprintf("%s: %s: %v", e.Code, e.Path, e.Err)
+	return diagnostic
 }
 
 func (e *Error) Unwrap() error { return e.Err }

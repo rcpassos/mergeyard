@@ -9,6 +9,8 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type State string
@@ -66,9 +68,17 @@ const (
 	InternalFailure       Trigger = "internal_failure"
 )
 
-// Run is the lifecycle view of a persisted run. Other run metadata belongs to
-// the components responsible for worktrees, agents, and pull requests.
+// RunMetadata contains the workflow metadata owned by PR and review components.
+type RunMetadata struct {
+	PRNumber    int    `json:"pr_number,omitempty"`
+	ReviewRound int    `json:"review_round"`
+	ApprovedSHA string `json:"approved_sha,omitempty"`
+}
+
+// Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
+// agent metadata belongs to the components responsible for those resources.
 type Run struct {
+	RunMetadata
 	ID               string `json:"id"`
 	Repository       string `json:"repository"`
 	IssueNumber      int    `json:"issue_number"`
@@ -91,6 +101,11 @@ type Request struct {
 	// NextPhase is required for HandBack and retrying an agent-backed state.
 	NextPhase Phase
 	Failure   *fault.Error
+	// UpdateMetadata runs after the validated lifecycle write, in the same
+	// transaction as the event. Do not commit or roll back tx, call the Bus
+	// or Workflow, or update anything except component-owned metadata. Lifecycle changes
+	// to this run are rejected. Any error rolls back the entire transition.
+	UpdateMetadata func(context.Context, *sql.Tx) error
 }
 
 type Workflow struct {
@@ -147,8 +162,26 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 			return events.Draft{}, storageError(err)
 		}
 		run, err = readRun(ctx, tx, id)
+		if err != nil {
+			return events.Draft{}, err
+		}
+		if request.UpdateMetadata != nil {
+			beforeMetadata := run
+			if err := request.UpdateMetadata(ctx, tx); err != nil {
+				return events.Draft{}, &fault.Error{Code: "internal.run_metadata", Message: "Could not update run metadata", Err: err}
+			}
+			run, err = readRun(ctx, tx, id)
+			if err != nil {
+				return events.Draft{}, err
+			}
+			lifecycle := run
+			lifecycle.RunMetadata = beforeMetadata.RunMetadata
+			if lifecycle != beforeMetadata {
+				return events.Draft{}, invalid("Metadata updates must not change the run lifecycle or identity")
+			}
+		}
 		payload := transitionEvent{From: current.State, FromPhase: current.Phase, Trigger: request.Trigger, Run: run}
-		return events.Draft{RunID: id, Type: eventType, Payload: payload}, err
+		return events.Draft{RunID: id, Type: eventType, Payload: payload}, nil
 	})
 	if err != nil {
 		return Run{}, err
@@ -195,13 +228,22 @@ var rules = []rule{
 	{Active, "", PhaseRetriesExhausted, NeedsAttention, "", "run.needs_attention"},
 }
 
+// Reconciliation emits the destination's lifecycle event; the payload retains
+// Trigger=Retry so consumers can distinguish recovery from normal progression.
+var reconciledEvents = map[State]string{
+	Claiming:          "run.claimed",
+	Preparing:         "run.preparing",
+	Active:            "phase.started",
+	WaitingForCI:      "ci.updated",
+	WaitingForHarness: "harness.usage_limited",
+	ReadyToMerge:      "pr.ready_for_review",
+	Completed:         "run.completed",
+}
+
 func destination(current Run, request Request) (Run, string, error) {
 	if (request.NextState != "" && request.Trigger != Retry) ||
 		(request.NextPhase != "" && request.Trigger != Retry && request.Trigger != HandBack) {
 		return Run{}, "", invalid("This trigger does not accept a destination override")
-	}
-	if (current.State == Active || current.State == WaitingForHarness) && !validPhase(current.Phase) {
-		return Run{}, "", invalid("An active or harness-waiting run must have an agent phase")
 	}
 	if current.ID != "" {
 		next := current
@@ -220,14 +262,13 @@ func destination(current Run, request Request) (Run, string, error) {
 			next.State = Failed
 			return next, "run.failed", nil
 		case HandBack:
-			if current.State == Manual && validPhase(request.NextPhase) {
+			if current.State == Manual && (request.NextPhase == Implement || request.NextPhase == Review) {
 				next.State, next.Phase = Active, request.NextPhase
 				return next, "run.handed_back", nil
 			}
 		case Retry:
 			if current.State == NeedsAttention || current.State == Failed {
-				switch request.NextState {
-				case Claiming, Preparing, Active, WaitingForCI, WaitingForHarness, ReadyToMerge, Completed:
+				if eventType, ok := reconciledEvents[request.NextState]; ok {
 					if request.NextPhase != "" && !validPhase(request.NextPhase) {
 						return Run{}, "", invalid("Reconciliation supplied an unknown phase")
 					}
@@ -235,10 +276,15 @@ func destination(current Run, request Request) (Run, string, error) {
 						return Run{}, "", invalid("Reconciliation must choose an agent phase")
 					}
 					next.State, next.Phase = request.NextState, request.NextPhase
-					return next, "run.retried", nil
+					return next, eventType, nil
 				}
 			}
 		}
+	}
+	// Recovery actions above must remain available even if persisted phase data
+	// is malformed. Normal progression still requires a valid agent phase.
+	if (current.State == Active || current.State == WaitingForHarness) && !validPhase(current.Phase) {
+		return Run{}, "", invalid("An active or harness-waiting run must have an agent phase")
 	}
 	for _, r := range rules {
 		if current.State == r.from && (r.phase == "" || current.Phase == r.phase) && request.Trigger == r.trigger {
@@ -260,6 +306,10 @@ func invalid(message string) error {
 }
 
 func storageError(err error) error {
+	var constraint *sqlite.Error
+	if errors.As(err, &constraint) && constraint.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE {
+		return &fault.Error{Code: "internal.run_conflict", Message: "Issue already has an active run", Err: err}
+	}
 	return &fault.Error{Code: "internal.run_store", Message: "Could not persist or read the run", Err: err}
 }
 
@@ -274,9 +324,11 @@ type queryer interface {
 func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	var run Run
 	err := db.QueryRowContext(ctx, `SELECT id, repository, issue_number, state, COALESCE(current_phase, ''),
-		created_at, updated_at, COALESCE(completed_at, ''), COALESCE(last_error_code, ''), COALESCE(last_error_message, '')
+		created_at, updated_at, COALESCE(completed_at, ''), COALESCE(last_error_code, ''), COALESCE(last_error_message, ''),
+		COALESCE(pr_number, 0), review_round, COALESCE(approved_sha, '')
 		FROM runs WHERE id = ?`, id).Scan(&run.ID, &run.Repository, &run.IssueNumber, &run.State, &run.Phase,
-		&run.CreatedAt, &run.UpdatedAt, &run.CompletedAt, &run.LastErrorCode, &run.LastErrorMessage)
+		&run.CreatedAt, &run.UpdatedAt, &run.CompletedAt, &run.LastErrorCode, &run.LastErrorMessage,
+		&run.PRNumber, &run.ReviewRound, &run.ApprovedSHA)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, &fault.Error{Code: "internal.run_not_found", Message: "Run does not exist", Path: id, Err: err}
 	}

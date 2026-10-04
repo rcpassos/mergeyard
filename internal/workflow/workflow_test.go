@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -271,7 +272,7 @@ func assertOneEvent(t *testing.T, bus *events.Bus, after int64) {
 
 func TestHandBackAndReconciledRetryRows(t *testing.T) {
 	ctx := context.Background()
-	for _, phase := range []workflow.Phase{workflow.Implement, workflow.Review, workflow.Fix} {
+	for _, phase := range []workflow.Phase{workflow.Implement, workflow.Review} {
 		t.Run("handback/"+string(phase), func(t *testing.T) {
 			w, bus, _ := newWorkflow(t)
 			seed(t, w, workflow.Manual, workflow.Implement)
@@ -284,7 +285,11 @@ func TestHandBackAndReconciledRetryRows(t *testing.T) {
 		})
 	}
 	for _, from := range []workflow.State{workflow.NeedsAttention, workflow.Failed} {
-		for _, to := range []workflow.State{workflow.Claiming, workflow.Preparing, workflow.Active, workflow.WaitingForCI, workflow.WaitingForHarness, workflow.ReadyToMerge, workflow.Completed} {
+		for to, eventType := range map[workflow.State]string{
+			workflow.Claiming: "run.claimed", workflow.Preparing: "run.preparing", workflow.Active: "phase.started",
+			workflow.WaitingForCI: "ci.updated", workflow.WaitingForHarness: "harness.usage_limited",
+			workflow.ReadyToMerge: "pr.ready_for_review", workflow.Completed: "run.completed",
+		} {
 			t.Run(string(from)+"/retry/"+string(to), func(t *testing.T) {
 				w, bus, _ := newWorkflow(t)
 				seed(t, w, from, workflow.Implement)
@@ -301,6 +306,10 @@ func TestHandBackAndReconciledRetryRows(t *testing.T) {
 					t.Fatalf("retry has incorrect terminal timestamp: %+v", run)
 				}
 				assertOneEvent(t, bus, before[len(before)-1].ID)
+				added, err := bus.History(ctx, before[len(before)-1].ID, 100)
+				if err != nil || added[0].Type != eventType || !strings.Contains(string(added[0].Payload), `"trigger":"retry"`) {
+					t.Fatalf("retry event = %+v, %v; want %s with retry trigger", added, err, eventType)
+				}
 			})
 		}
 	}
@@ -373,6 +382,7 @@ func TestInvalidDestinationsAndMissingErrors(t *testing.T) {
 		{workflow.Active, workflow.Request{Trigger: workflow.ImplementSucceeded, NextPhase: workflow.Fix}},
 		{workflow.Manual, workflow.Request{Trigger: workflow.HandBack}},
 		{workflow.Manual, workflow.Request{Trigger: workflow.HandBack, NextPhase: "unknown"}},
+		{workflow.Manual, workflow.Request{Trigger: workflow.HandBack, NextPhase: workflow.Fix}},
 		{workflow.Manual, workflow.Request{Trigger: workflow.HandBack, NextPhase: workflow.Review, NextState: workflow.Completed}},
 		{workflow.NeedsAttention, workflow.Request{Trigger: workflow.Retry}},
 		{workflow.NeedsAttention, workflow.Request{Trigger: workflow.Retry, NextState: workflow.Active}},
@@ -405,6 +415,8 @@ func TestEventFailureRollsBackTransition(t *testing.T) {
 	}
 	if _, err := w.Transition(ctx, "run", workflow.Request{Trigger: workflow.WorktreeReady}); err == nil {
 		t.Fatal("transition succeeded when the event could not be stored")
+	} else if !strings.Contains(err.Error(), "Could not persist or read run events") || !strings.Contains(err.Error(), "event storage unavailable") {
+		t.Fatalf("event failure lost its human message or storage cause: %v", err)
 	}
 	after, err := w.Get(ctx, "run")
 	if err != nil || after != before {
@@ -462,15 +474,13 @@ func TestDuplicateClaimAndConflictingRetryAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	history, _ := bus.History(ctx, 0, 100)
-	if _, err := w.Transition(ctx, "duplicate", request); err == nil {
-		t.Fatal("allowed a second non-terminal run for the issue")
-	}
+	_, err := w.Transition(ctx, "duplicate", request)
+	assertConflict(t, err)
 	if _, err := w.Get(ctx, "duplicate"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("failed claim left a run behind: %v", err)
 	}
-	if _, err := w.Transition(ctx, "run", workflow.Request{Trigger: workflow.Retry, NextState: workflow.Active, NextPhase: workflow.Implement}); err == nil {
-		t.Fatal("reactivated a failed run alongside an active run for the issue")
-	}
+	_, err = w.Transition(ctx, "run", workflow.Request{Trigger: workflow.Retry, NextState: workflow.Active, NextPhase: workflow.Implement})
+	assertConflict(t, err)
 	got, err := w.Get(ctx, "run")
 	if err != nil || got != failed {
 		t.Fatalf("conflicting retry changed failed history: %+v, %v", got, err)
@@ -478,5 +488,177 @@ func TestDuplicateClaimAndConflictingRetryAreAtomic(t *testing.T) {
 	added, err := bus.History(ctx, history[len(history)-1].ID, 100)
 	if err != nil || len(added) != 0 {
 		t.Fatalf("conflicts produced events: %+v, %v", added, err)
+	}
+}
+
+func assertConflict(t *testing.T, err error) {
+	t.Helper()
+	var failure *fault.Error
+	if !errors.As(err, &failure) || failure.Code != "internal.run_conflict" || failure.Message != "Issue already has an active run" {
+		t.Fatalf("expected actionable run conflict, got %v", err)
+	}
+}
+
+func TestRunErrorsPreserveDiagnosticCause(t *testing.T) {
+	w, _, db := newWorkflow(t)
+	ctx := context.Background()
+	_, err := w.Get(ctx, "missing")
+	if !errors.Is(err, sql.ErrNoRows) || !strings.Contains(err.Error(), "Run does not exist") || !strings.Contains(err.Error(), "missing") || !strings.Contains(err.Error(), sql.ErrNoRows.Error()) {
+		t.Fatalf("missing-run failure lost its message, path, or cause: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.Get(ctx, "run")
+	if !strings.Contains(err.Error(), "Could not persist or read the run") || !strings.Contains(err.Error(), "database is closed") {
+		t.Fatalf("database failure lost its message or cause: %v", err)
+	}
+}
+
+func TestMalformedPhaseAllowsRecoveryActions(t *testing.T) {
+	ctx := context.Background()
+	for _, state := range []workflow.State{workflow.Active, workflow.WaitingForHarness} {
+		for _, phase := range []string{"", "retired-phase"} {
+			for trigger, want := range map[workflow.Trigger]workflow.State{
+				workflow.Stop: workflow.Stopped, workflow.InternalFailure: workflow.Failed, workflow.TakeOver: workflow.Manual,
+			} {
+				t.Run(string(state)+"/"+phase+"/"+string(trigger), func(t *testing.T) {
+					w, bus, db := newWorkflow(t)
+					seed(t, w, state, workflow.Implement)
+					// Represent malformed persisted data from an old or interrupted writer.
+					if _, err := db.ExecContext(ctx, "UPDATE runs SET current_phase = NULLIF(?, '') WHERE id = 'run'", phase); err != nil {
+						t.Fatal(err)
+					}
+					progress := workflow.ImplementSucceeded
+					if state == workflow.WaitingForHarness {
+						progress = workflow.HarnessAvailable
+					}
+					assertInvalid(t, w, bus, workflow.Request{Trigger: progress})
+					before, _ := bus.History(ctx, 0, 100)
+					request := workflow.Request{Trigger: trigger}
+					if trigger == workflow.InternalFailure {
+						request.Failure = blocked()
+					}
+					run, err := w.Transition(ctx, "run", request)
+					if err != nil || run.State != want {
+						t.Fatalf("recovery action failed: %+v, %v", run, err)
+					}
+					assertOneEvent(t, bus, before[len(before)-1].ID)
+					if trigger == workflow.TakeOver {
+						run, err = w.Transition(ctx, "run", workflow.Request{Trigger: workflow.HandBack, NextPhase: workflow.Review})
+						if err != nil || run.State != workflow.Active || run.Phase != workflow.Review {
+							t.Fatalf("handback failed to restore a valid phase: %+v, %v", run, err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestTransitionCommitsRelatedMetadata(t *testing.T) {
+	ctx := context.Background()
+	for _, row := range []struct {
+		name      string
+		state     workflow.State
+		phase     workflow.Phase
+		request   workflow.Request
+		query     string
+		wantState workflow.State
+		wantPR    int
+		wantRound int
+		wantSHA   string
+	}{
+		{"opened PR", workflow.Active, workflow.Implement, workflow.Request{Trigger: workflow.ImplementSucceeded},
+			"UPDATE runs SET pr_number = 25, review_round = 1 WHERE id = 'run'", workflow.Active, 25, 1, ""},
+		{"approved head", workflow.Active, workflow.Review, workflow.Request{Trigger: workflow.ReviewApproved},
+			"UPDATE runs SET approved_sha = 'approved-head' WHERE id = 'run'", workflow.WaitingForCI, 0, 0, "approved-head"},
+		{"additional round on retry", workflow.Failed, workflow.Review, workflow.Request{Trigger: workflow.Retry, NextState: workflow.Active, NextPhase: workflow.Review},
+			"UPDATE runs SET review_round = review_round + 1 WHERE id = 'run'", workflow.Active, 0, 1, ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			w, bus, _ := newWorkflow(t)
+			seed(t, w, row.state, row.phase)
+			before, _ := bus.History(ctx, 0, 100)
+			request := row.request
+			request.UpdateMetadata = func(ctx context.Context, tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, row.query)
+				return err
+			}
+			run, err := w.Transition(ctx, "run", request)
+			if err != nil || run.State != row.wantState || run.PRNumber != row.wantPR || run.ReviewRound != row.wantRound || run.ApprovedSHA != row.wantSHA {
+				t.Fatalf("transition metadata = %+v, %v", run, err)
+			}
+			saved, err := w.Get(ctx, "run")
+			if err != nil || saved != run {
+				t.Fatalf("saved metadata = %+v, %v; want %+v", saved, err, run)
+			}
+			assertOneEvent(t, bus, before[len(before)-1].ID)
+			history, _ := bus.History(ctx, before[len(before)-1].ID, 100)
+			var payload struct {
+				Run workflow.Run `json:"run"`
+			}
+			if err := json.Unmarshal(history[0].Payload, &payload); err != nil || payload.Run != run {
+				t.Fatalf("event does not contain committed metadata: %+v, %v", payload, err)
+			}
+		})
+	}
+}
+
+func TestMetadataAndTransitionRollBackTogether(t *testing.T) {
+	ctx := context.Background()
+	for _, failureMode := range []string{"metadata error", "event error", "lifecycle overwrite"} {
+		t.Run(failureMode, func(t *testing.T) {
+			w, bus, db := newWorkflow(t)
+			before := seed(t, w, workflow.Active, workflow.Review)
+			history, _ := bus.History(ctx, 0, 100)
+			live, cancel := bus.Subscribe(1)
+			defer cancel()
+			metadataFailure := errors.New("metadata update failed")
+			if failureMode == "event error" {
+				if _, err := db.ExecContext(ctx, `CREATE TRIGGER reject_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'event storage unavailable'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := w.Transition(ctx, "run", workflow.Request{Trigger: workflow.ReviewApproved,
+				UpdateMetadata: func(ctx context.Context, tx *sql.Tx) error {
+					if _, err := tx.ExecContext(ctx, "UPDATE runs SET approved_sha = 'approved-head', review_round = 2 WHERE id = 'run'"); err != nil {
+						return err
+					}
+					if failureMode == "metadata error" {
+						return metadataFailure
+					}
+					if failureMode == "lifecycle overwrite" {
+						_, err := tx.ExecContext(ctx, "UPDATE runs SET state = 'COMPLETED' WHERE id = 'run'")
+						return err
+					}
+					return nil
+				}})
+			if err == nil {
+				t.Fatal("transition succeeded despite failed or invalid metadata update")
+			}
+			if failureMode == "metadata error" && !errors.Is(err, metadataFailure) {
+				t.Fatalf("metadata error lost cause: %v", err)
+			}
+			if failureMode == "lifecycle overwrite" {
+				var failure *fault.Error
+				if !errors.As(err, &failure) || failure.Code != "internal.invalid_transition" {
+					t.Fatalf("metadata overwrote lifecycle: %v", err)
+				}
+			}
+			after, err := w.Get(ctx, "run")
+			if err != nil || after != before {
+				t.Fatalf("rollback changed run or metadata: %+v, %v", after, err)
+			}
+			added, err := bus.History(ctx, history[len(history)-1].ID, 100)
+			if err != nil || len(added) != 0 {
+				t.Fatalf("rollback persisted event: %+v, %v", added, err)
+			}
+			select {
+			case event := <-live:
+				t.Fatalf("rollback notified subscriber: %+v", event)
+			default:
+			}
+		})
 	}
 }
