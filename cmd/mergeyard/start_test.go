@@ -1,0 +1,96 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func TestStartProcessesLockAndShutdown(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	binary := filepath.Join(t.TempDir(), "mergeyard")
+	build := exec.CommandContext(ctx, "go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build CLI: %v\n%s", err, output)
+	}
+	home := t.TempDir()
+	env := append(os.Environ(), "HOME="+home)
+	start := func(args ...string) *exec.Cmd {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, binary, args...)
+		cmd.Env = env
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+		ready := make(chan string, 1)
+		go func() {
+			scanner := bufio.NewScanner(stdout)
+			scanner.Scan()
+			ready <- scanner.Text()
+		}()
+		select {
+		case line := <-ready:
+			if !strings.Contains(line, "workspace ready") {
+				cmd.Process.Kill()
+				cmd.Wait()
+				t.Fatalf("CLI not ready: %q, stderr: %s", line, &stderr)
+			}
+		case <-ctx.Done():
+			t.Fatal("CLI did not become ready")
+		}
+		return cmd
+	}
+	first := start("start")
+	root := filepath.Join(home, ".mergeyard")
+	for _, name := range []string{"state.db", "mergeyard.lock", "repos", "worktrees", "runs"} {
+		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
+			t.Fatalf("startup did not create %s: %v", name, err)
+		}
+	}
+	second := exec.CommandContext(ctx, binary, "start")
+	second.Env = env
+	output, err := second.CombinedOutput()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() == 0 || !strings.Contains(string(output), "workspace.locked") {
+		t.Fatalf("second process must fail with a lock error: %v, %s", err, output)
+	}
+	if err := first.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Wait(); err != nil {
+		t.Fatalf("SIGTERM shutdown: %v", err)
+	}
+	// No arguments also dispatches start; the persistent lock file is reusable.
+	restarted := start()
+	if err := restarted.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Wait(); err != nil {
+		t.Fatalf("SIGINT shutdown: %v", err)
+	}
+	// An ungraceful exit must also release the OS lock.
+	killed := start("start")
+	if err := killed.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	killed.Wait()
+	afterKill := start("start")
+	afterKill.Process.Signal(syscall.SIGTERM)
+	if err := afterKill.Wait(); err != nil {
+		t.Fatalf("restart after kill: %v", err)
+	}
+}

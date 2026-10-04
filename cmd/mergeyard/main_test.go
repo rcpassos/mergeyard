@@ -51,8 +51,6 @@ func TestHelpListsEveryCommand(t *testing.T) {
 
 func TestUnimplementedCommandsFail(t *testing.T) {
 	invocations := [][]string{
-		{},
-		{"start"},
 		{"init"},
 		{"repo", "add", "octo/repo"},
 		{"status"},
