@@ -161,6 +161,41 @@ func TestSessionUsesOnlyExplicitEnvironmentAndClosedStdin(t *testing.T) {
 	}
 }
 
+func TestSessionStartsWhenTmuxHasNoCurrentTarget(t *testing.T) {
+	r, _ := localSessions(t)
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyDir := t.TempDir()
+	t.Setenv("MERGEYARD_TEST_TMUX", realTmux)
+	t.Setenv("MERGEYARD_TEST_PROBE", filepath.Join(proxyDir, "probed"))
+	// The last session may disappear while the has-session client connects.
+	// Reproduce that transient tmux response before delegating to real tmux.
+	proxy := `#!/bin/sh
+for arg in "$@"; do
+ if [ "$arg" = has-session ] && [ ! -f "$MERGEYARD_TEST_PROBE" ]; then
+  : >"$MERGEYARD_TEST_PROBE"
+  printf 'no current target\n' >&2
+  exit 1
+ fi
+done
+exec "$MERGEYARD_TEST_TMUX" "$@"
+`
+	if err := os.WriteFile(filepath.Join(proxyDir, "tmux"), []byte(proxy), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", proxyDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ref, err := r.StartSession(context.Background(), phaseRequest(t, "exit 0"))
+	if err != nil {
+		t.Fatalf("session absence prevented phase startup: %v", err)
+	}
+	status := awaitExit(t, r, ref)
+	if status.ExitCode == nil || *status.ExitCode != 0 {
+		t.Fatalf("phase did not complete successfully: %+v", status)
+	}
+}
+
 func TestSessionReportsWrapperSetupFailure(t *testing.T) {
 	r, _ := localSessions(t)
 	req := phaseRequest(t, "exit 0")
