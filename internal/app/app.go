@@ -9,8 +9,10 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/store"
+	"github.com/rcpassos/mergeyard/internal/workflow"
 	"github.com/rcpassos/mergeyard/internal/workspace"
 )
 
@@ -21,6 +23,8 @@ var ErrWorkspaceLocked = errors.New("workspace is held by another mergeyard proc
 type Runtime struct {
 	Workspace *workspace.Workspace
 	DB        *sql.DB
+	Events    *events.Bus
+	Workflow  *workflow.Workflow
 	lock      *os.File
 	closeOnce sync.Once
 	closeErr  error
@@ -48,13 +52,15 @@ func Open(ctx context.Context, path string) (*Runtime, error) {
 		lock.Close()
 		return nil, err
 	}
-	return &Runtime{Workspace: w, DB: db, lock: lock}, nil
+	bus := events.New(db, nil)
+	return &Runtime{Workspace: w, DB: db, Events: bus, Workflow: workflow.New(db, bus), lock: lock}, nil
 }
 
 // Close closes SQLite before releasing ownership. The lock file stays on disk:
 // unlinking it could let two processes lock different inodes for the same path.
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {
+		r.Events.Close()
 		if err := errors.Join(r.DB.Close(), r.lock.Close()); err != nil {
 			r.closeErr = &fault.Error{Code: "internal.shutdown", Path: r.Workspace.Root, Err: err}
 		}
