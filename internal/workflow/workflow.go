@@ -244,8 +244,8 @@ var rules = []rule{
 	{WaitingForCI, "", CIRoundsExhausted, NeedsAttention, "", "run.needs_attention"},
 	{ReadyToMerge, "", PRMerged, Completed, "", "run.completed"},
 	{ReadyToMerge, "", PRClosedUnmerged, NeedsAttention, "", "run.needs_attention"},
-	{Active, "", HarnessLimited, WaitingForHarness, "", "harness.usage_limited"},
-	{WaitingForHarness, "", HarnessAvailable, Active, "", "harness.available"},
+	{Active, "", HarnessLimited, WaitingForHarness, "", "run.waiting_for_harness"},
+	{WaitingForHarness, "", HarnessAvailable, Active, "", "phase.started"},
 	{WaitingForHarness, "", HarnessWaitsExhausted, NeedsAttention, "", "run.needs_attention"},
 	{Active, "", PhaseBlocked, NeedsAttention, "", "run.needs_attention"},
 	{Active, "", ResultInvalid, NeedsAttention, "", "run.needs_attention"},
@@ -259,7 +259,7 @@ var reconciledEvents = map[State]string{
 	Preparing:         "run.preparing",
 	Active:            "phase.started",
 	WaitingForCI:      "ci.updated",
-	WaitingForHarness: "harness.usage_limited",
+	WaitingForHarness: "run.waiting_for_harness",
 	ReadyToMerge:      "pr.ready_for_review",
 	Completed:         "run.completed",
 }
@@ -278,13 +278,15 @@ func destination(current Run, request Request) (Run, string, error) {
 				return next, "run.manual", nil
 			}
 		case Stop:
-			if current.State != Completed {
+			if !current.State.Terminal() {
 				next.State = Stopped
 				return next, "run.stopped", nil
 			}
 		case InternalFailure:
-			next.State = Failed
-			return next, "run.failed", nil
+			if !current.State.Terminal() {
+				next.State = Failed
+				return next, "run.failed", nil
+			}
 		case HandBack:
 			if current.State == Manual && (request.NextPhase == Implement || request.NextPhase == Review) {
 				next.State, next.Phase = Active, request.NextPhase

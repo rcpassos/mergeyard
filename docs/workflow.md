@@ -22,8 +22,10 @@ for `ACTIVE` or `WAITING_FOR_HARNESS`. Reconciliation may choose `CLAIMING`,
 or `COMPLETED`. The caller must first verify the relevant GitHub, Git, harness,
 and CI facts as specified in PRD §22–23. Other triggers reject destination
 overrides. Retry accepts both `NEEDS_ATTENTION` (§21) and `FAILED` (§22).
-Stop, internal failure, and takeover remain available for runs with malformed
-persisted phases; normal automated progression rejects those phases.
+Stop, internal failure, and takeover apply only to non-terminal runs, so a
+completed run cannot be revived and a failed run keeps its error and retry path.
+They remain available for runs with malformed persisted phases; normal automated
+progression rejects those phases.
 
 Transitions to `NEEDS_ATTENTION` or `FAILED` require `fault.Error` with nonempty
 `Code` and `Message`. Both fields are persisted and included in the event's run
@@ -41,7 +43,11 @@ the trigger, and the resulting run snapshot. Event types use the core §25
 vocabulary. Reconciled retries emit the destination's event (for example,
 `run.completed` or `phase.started`), with `retry` retained as the payload trigger.
 The other retry destinations emit `run.claimed`, `run.preparing`, `ci.updated`,
-`harness.usage_limited`, or `pr.ready_for_review`. Rejected
+`run.waiting_for_harness`, or `pr.ready_for_review`. A run entering
+`WAITING_FOR_HARNESS` emits `run.waiting_for_harness`; resuming it emits
+`phase.started` because §21 starts a new attempt. `harness.usage_limited` and
+`harness.available` are application events without a run ID, published once per
+harness limit by the component that writes `harness_limits`. Rejected
 transitions and storage failures leave both the run and event history unchanged.
 Logging and in-process delivery happen only after commit.
 

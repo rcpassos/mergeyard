@@ -217,12 +217,14 @@ func TestWildcardTransitionRows(t *testing.T) {
 				}
 				assertOneEvent(t, bus, before[len(before)-1].ID)
 				if trigger == workflow.HarnessLimited {
+					assertLastEvent(t, bus, "run.waiting_for_harness")
 					before, _ = bus.History(ctx, 0, 100)
 					run, err = w.Transition(ctx, "run", workflow.Request{Trigger: workflow.HarnessAvailable})
 					if err != nil || run.State != workflow.Active || run.Phase != phase {
 						t.Fatalf("resume did not retain interrupted phase: %+v, %v", run, err)
 					}
 					assertOneEvent(t, bus, before[len(before)-1].ID)
+					assertLastEvent(t, bus, "phase.started")
 				}
 			})
 		}
@@ -235,7 +237,8 @@ func TestWildcardTransitionRows(t *testing.T) {
 				w, bus, _ := newWorkflow(t)
 				seed(t, w, state, workflow.Implement)
 				request := workflow.Request{Trigger: trigger}
-				if (trigger == workflow.TakeOver && state.Terminal()) || (trigger == workflow.Stop && state == workflow.Completed) {
+				// Terminal runs keep their outcome and diagnosis; only Retry leaves FAILED.
+				if state.Terminal() {
 					assertInvalid(t, w, bus, request)
 					return
 				}
@@ -259,6 +262,18 @@ func TestWildcardTransitionRows(t *testing.T) {
 				assertOneEvent(t, bus, before[len(before)-1].ID)
 			})
 		}
+	}
+}
+
+func assertLastEvent(t *testing.T, bus *events.Bus, eventType string) {
+	t.Helper()
+	history, err := bus.History(context.Background(), 0, 1000)
+	if err != nil || len(history) == 0 || history[len(history)-1].Type != eventType {
+		t.Fatalf("last event = %+v, %v; want %s", history, err, eventType)
+	}
+	// Harness-wide limit events belong to the limits component, not run transitions.
+	if history[len(history)-1].RunID == "" {
+		t.Fatalf("run transition emitted an application event: %+v", history[len(history)-1])
 	}
 }
 
@@ -287,7 +302,7 @@ func TestHandBackAndReconciledRetryRows(t *testing.T) {
 	for _, from := range []workflow.State{workflow.NeedsAttention, workflow.Failed} {
 		for to, eventType := range map[workflow.State]string{
 			workflow.Claiming: "run.claimed", workflow.Preparing: "run.preparing", workflow.Active: "phase.started",
-			workflow.WaitingForCI: "ci.updated", workflow.WaitingForHarness: "harness.usage_limited",
+			workflow.WaitingForCI: "ci.updated", workflow.WaitingForHarness: "run.waiting_for_harness",
 			workflow.ReadyToMerge: "pr.ready_for_review", workflow.Completed: "run.completed",
 		} {
 			t.Run(string(from)+"/retry/"+string(to), func(t *testing.T) {
@@ -328,9 +343,9 @@ func TestInvalidStateTriggerPairs(t *testing.T) {
 		workflow.ReadyToMerge:      {workflow.PRMerged, workflow.PRClosedUnmerged, workflow.TakeOver, workflow.Stop, workflow.InternalFailure},
 		workflow.Manual:            {workflow.HandBack, workflow.TakeOver, workflow.Stop, workflow.InternalFailure},
 		workflow.NeedsAttention:    {workflow.Retry, workflow.TakeOver, workflow.Stop, workflow.InternalFailure},
-		workflow.Failed:            {workflow.Retry, workflow.Stop, workflow.InternalFailure},
-		workflow.Stopped:           {workflow.Stop, workflow.InternalFailure},
-		workflow.Completed:         {workflow.InternalFailure},
+		workflow.Failed:            {workflow.Retry},
+		workflow.Stopped:           {},
+		workflow.Completed:         {},
 	}
 	triggers := []workflow.Trigger{workflow.IssueClaimed, workflow.ClaimSucceeded, workflow.WorktreeReady, workflow.ImplementSucceeded,
 		workflow.ReviewApproved, workflow.ReviewChangesRequired, workflow.ReviewRoundsExhausted, workflow.FixSucceeded,
