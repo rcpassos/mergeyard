@@ -10,6 +10,9 @@ for (const type of ['scheduler.paused', 'scheduler.resumed']) {
     htmx.ajax('GET', '/scheduler', { target: '#scheduler', swap: 'outerHTML' });
   });
 }
-document.body.addEventListener('htmx:responseError', () => {
-  document.querySelector('#action-error').textContent = 'The scheduler action failed. Refresh the page and try again.';
+document.body.addEventListener('htmx:responseError', (event) => {
+  const code = event.detail.xhr.getResponseHeader('X-Mergeyard-Error-Code');
+  document.querySelector('#action-error').textContent = code
+    ? `${code}: The scheduler action failed. Check the application log for details.`
+    : 'The scheduler action failed. Refresh the page and try again.';
 });

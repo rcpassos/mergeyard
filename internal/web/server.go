@@ -9,8 +9,10 @@ import (
 	"errors"
 	"html/template"
 	"io/fs"
+	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,6 +29,8 @@ type Scheduler interface {
 	Resume(context.Context) error
 	Paused() bool
 }
+
+var errorCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
 
 // Server serves the local dashboard and the runtime's shared event bus.
 type Server struct {
@@ -178,7 +182,14 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		err = s.scheduler.Resume(r.Context())
 	}
 	if err != nil {
-		http.Error(w, "Could not change scheduler state", http.StatusInternalServerError)
+		code := "internal.scheduler_control"
+		var failure *fault.Error
+		if errors.As(err, &failure) && errorCodePattern.MatchString(failure.Code) {
+			code = failure.Code
+		}
+		slog.ErrorContext(r.Context(), "Scheduler action failed", "error_code", code, "action", r.URL.Path, "error", err)
+		w.Header().Set("X-Mergeyard-Error-Code", code)
+		http.Error(w, code+": Could not change scheduler state. Check the application log for details.", http.StatusInternalServerError)
 		return
 	}
 	if r.Header.Get("HX-Request") == "true" {

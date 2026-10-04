@@ -24,6 +24,12 @@ header. Missing origins are rejected, including requests from CLI clients.
 Host checks also protect GET requests against DNS rebinding. Restarting the
 server invalidates tokens; refresh open dashboard pages after a restart.
 
+Failed scheduler actions return HTTP 500 with a safe diagnostic code in the
+response body and `X-Mergeyard-Error-Code` header. The dashboard displays that
+code. Structured logs retain the action, code, and underlying cause; the cause
+is not sent to the browser. Uncoded or malformed errors use
+`internal.scheduler_control`.
+
 SSE carries the event type as `event`, the durable numeric ID as `id`, and the
 complete JSON event as `data`. Fresh connections start with live events.
 Reconnects with `Last-Event-ID` replay durable history and deduplicate live
