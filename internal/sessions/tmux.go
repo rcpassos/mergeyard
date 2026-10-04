@@ -62,7 +62,9 @@ func (m *Manager) exists(ctx context.Context, name string) (bool, error) {
 		return false, failure("phase.canceled", name, ctx.Err())
 	}
 	text := string(out)
-	if strings.Contains(text, "can't find session") || strings.Contains(text, "no server running") || strings.Contains(text, "No such file or directory") {
+	// A client can reach the server after its last session has exited but
+	// before shutdown. In that interval has-session reports no current target.
+	if strings.Contains(text, "can't find session") || strings.Contains(text, "no current target") || strings.Contains(text, "no server running") || strings.Contains(text, "No such file or directory") {
 		return false, nil
 	}
 	return false, err
