@@ -1,0 +1,21 @@
+[
+  {
+    "body": "Blocked by: #2\n\n### Context\nPRD \u00a726 (configuration), \u00a711 (capability validation), \u00a76 (minimum versions).\n\n### Scope\n- Search order: `--config`, `./mergeyard.yaml`, `~/.config/mergeyard/config.yaml`.\n- Built-in defaults for every field in the \u00a726 \"full configuration\" example.\n- Precedence: built-in defaults \u2192 global \u2192 repository. Repository `implementer` / `reviewer` blocks override only the fields they set.\n- Resolved per-repository config (role settings, base branch, concurrency, labels).\n- Validation with stable `config.*` error codes (\u00a733):\n  - repo format;\n  - agent is `claude` or `codex`;\n  - positive, finite `max_rounds`, `max_attempts`, `concurrency`, and `usage_limits.max_waits`;\n  - durations parse;\n  - `agents.claude.permission_mode` is `auto`, `acceptEdits`, or `bypassPermissions`;\n  - `agents.codex.sandbox` is `workspace-write` or `danger-full-access`.\n- A config writer that preserves user content, used later by `init` and `repo add`.\n- `mergeyard.example.yaml` at the repo root.\n\n### Out of scope\nResolving the base branch from GitHub (when `base_branch` is unset) happens at run time (#7).\n\n### Acceptance criteria\n- Minimal config (`repositories: [{repo: \u2026}]`) loads with all defaults from \u00a726.\n- Table-driven tests cover precedence, repository overrides, and every validation error.\n- Writer round-trips a config without losing comments or unknown fields, or documents clearly why it can't.",
+    "created_at": "2026-10-03T21:25:48Z",
+    "html_url": "https://github.com/rcpassos/mergeyard/issues/3",
+    "issue_dependencies_summary": {
+      "blocked_by": 0,
+      "blocking": 4,
+      "total_blocked_by": 1,
+      "total_blocking": 4
+    },
+    "labels": [
+      {
+        "name": "ready-for-agent"
+      }
+    ],
+    "number": 3,
+    "state": "open",
+    "title": "[M1] Configuration: load, defaults, validation"
+  }
+]
