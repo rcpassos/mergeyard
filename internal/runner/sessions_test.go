@@ -2,6 +2,7 @@ package runner_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/runner"
 )
 
@@ -288,6 +290,11 @@ func TestSessionNamesAreSafeBoundedAndDistinguishAttempts(t *testing.T) {
 	}
 	if _, err := r.StartSession(context.Background(), req); err == nil {
 		t.Fatal("duplicate session was accepted")
+	} else {
+		var failure *fault.Error
+		if !errors.As(err, &failure) || failure.Code != "phase.session_exists" {
+			t.Fatalf("duplicate error = %v", err)
+		}
 	}
 	if err := r.WriteFile(context.Background(), filepath.Join(req.Command.Dir, "release"), nil, 0600); err != nil {
 		t.Fatal(err)
@@ -362,4 +369,57 @@ func TestStopContinuesEscalationAfterParentExits(t *testing.T) {
 	if status.ExitCode == nil || *status.ExitCode != 0 {
 		t.Fatalf("parent exit was not preserved: %+v", status)
 	}
+}
+
+func TestStartRecoversSessionCreatedBeforeClientCancellation(t *testing.T) {
+	r, _ := localSessions(t)
+	realTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyDir := t.TempDir()
+	marker := filepath.Join(proxyDir, "created")
+	t.Setenv("REAL_TMUX", realTmux)
+	t.Setenv("CREATED_MARKER", marker)
+	proxy := `#!/bin/sh
+for arg in "$@"; do
+ if [ "$arg" = new-session ]; then
+  "$REAL_TMUX" "$@" || exit $?
+  : >"$CREATED_MARKER"
+  exec /bin/sleep 3
+ fi
+done
+exec "$REAL_TMUX" "$@"
+`
+	if err := os.WriteFile(filepath.Join(proxyDir, "tmux"), []byte(proxy), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", proxyDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(marker); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+	}()
+	req := phaseRequest(t, "printf 'ready\\n'; while [ ! -f release ]; do sleep 0.02; done")
+	ref, err := r.StartSession(ctx, req)
+	if err != nil {
+		t.Fatalf("created session became untracked: ref=%+v, err=%v", ref, err)
+	}
+	t.Cleanup(func() { r.StopSession(context.Background(), ref) })
+	status, err := r.SessionStatus(context.Background(), ref)
+	if err != nil || status.State != runner.SessionRunning {
+		t.Fatalf("recovered status=%+v, err=%v", status, err)
+	}
+	if err := r.WriteFile(context.Background(), filepath.Join(req.Command.Dir, "release"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	awaitExit(t, r, ref)
 }
