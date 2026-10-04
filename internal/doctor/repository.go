@@ -31,13 +31,16 @@ func (c *checker) repository(repo config.Repository) {
 		c.report.add(Unverifiable, "harness.repository_files_unverifiable", repo.Repo, "cannot inspect instruction files and repository skills without a fetched base branch")
 		return
 	}
+	if files["CLAUDE.md"] == fileUnverifiable || files["AGENTS.md"] == fileUnverifiable {
+		c.report.add(Unverifiable, "harness.instructions_unverifiable", repo.Repo, "instruction-file symlink targets leave the repository and cannot be verified for the future worktree")
+	}
 	for _, role := range []config.Role{repo.Implementer, repo.Reviewer} {
-		if role.Agent == "codex" && files["CLAUDE.md"] && !files["AGENTS.md"] {
+		if role.Agent == "codex" && files["CLAUDE.md"] == fileRegular && files["AGENTS.md"] != fileRegular && files["AGENTS.md"] != fileUnverifiable {
 			c.report.add(Warning, "harness.instructions_missing", repo.Repo, "Codex is assigned but the base branch has CLAUDE.md without AGENTS.md; add AGENTS.md for repository instructions")
 			break
 		}
 	}
-	if v, known := c.versions["claude"]; known && v.less(claudeMinimum) && files["AGENTS.md"] && !files["CLAUDE.md"] && (repo.Implementer.Agent == "claude" || repo.Reviewer.Agent == "claude") {
+	if v, known := c.versions["claude"]; known && v.less(claudeMinimum) && files["AGENTS.md"] == fileRegular && files["CLAUDE.md"] != fileRegular && files["CLAUDE.md"] != fileUnverifiable && (repo.Implementer.Agent == "claude" || repo.Reviewer.Agent == "claude") {
 		c.report.add(Warning, "harness.instructions_missing", repo.Repo, "Claude below 2.1.277 cannot read AGENTS.md without CLAUDE.md; upgrade Claude or add CLAUDE.md")
 	}
 }
@@ -125,7 +128,7 @@ func labelNames(data []byte) (map[string]bool, error) {
 
 // Fetch into a disposable bare repository. No managed clone, index, worktree,
 // branch, or FETCH_HEAD is touched, and no checkout hooks can run.
-func (c *checker) repositoryFiles(repo config.Repository, pushAllowed bool) map[string]bool {
+func (c *checker) repositoryFiles(repo config.Repository, pushAllowed bool) map[string]repositoryFileType {
 	if !c.tools["git"] {
 		c.report.add(Unverifiable, "git.access_unverifiable", repo.Repo, "origin, base branch, fetch, and push transport cannot be checked without git")
 		return nil
@@ -187,14 +190,28 @@ func (c *checker) repositoryFiles(repo config.Repository, pushAllowed bool) map[
 			c.report.add(Error, "git.push_access", repo.Repo, "push transport check failed (dry run): "+err.Error())
 		}
 	}
-	tree, err := c.command(dir, "git", "ls-tree", "-r", "--name-only", "refs/heads/doctor")
+	paths := repositoryFilePaths(repo)
+	inputPath := filepath.Join(dir, "doctor-file-checks")
+	var input strings.Builder
+	for _, path := range paths {
+		fmt.Fprintf(&input, "refs/heads/doctor:%s\n", path)
+	}
+	if err := os.WriteFile(inputPath, []byte(input.String()), 0600); err != nil {
+		c.report.add(Unverifiable, "git.tree_unverifiable", repo.Repo, "cannot prepare repository file checks: "+err.Error())
+		return nil
+	}
+	// Git follows the committed entry modes, including symlinked ancestors,
+	// and returns the target's object type. A symlink blob alone never counts
+	// as an available regular file; dangling links and loops are explicit.
+	tree, err := c.commandInput(dir, inputPath, "git", "cat-file", "--batch-check=%(objecttype)", "--follow-symlinks")
 	if err != nil {
 		c.report.add(Unverifiable, "git.tree_unverifiable", repo.Repo, "cannot inspect fetched base branch: "+err.Error())
 		return nil
 	}
-	files := make(map[string]bool)
-	for _, file := range strings.Split(string(tree.Stdout), "\n") {
-		files[file] = true
+	files, err := repositoryFileTypes(tree.Stdout, paths)
+	if err != nil {
+		c.report.add(Unverifiable, "git.tree_unverifiable", repo.Repo, "cannot interpret repository file checks: "+err.Error())
+		return nil
 	}
 	return files
 }

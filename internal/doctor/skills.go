@@ -13,7 +13,15 @@ import (
 
 var skillName = regexp.MustCompile(`^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?$`)
 
-func (c *checker) skills(role config.Role, scope string, files map[string]bool) {
+func repositorySkillPath(agent, skill string) string {
+	dir := ".claude"
+	if agent == "codex" {
+		dir = ".agents"
+	}
+	return dir + "/skills/" + skill + "/SKILL.md"
+}
+
+func (c *checker) skills(role config.Role, scope string, files map[string]repositoryFileType) {
 	for _, skill := range role.Skills {
 		if !skillName.MatchString(skill) || (role.Agent != "claude" && strings.Contains(skill, ":")) {
 			c.report.add(Error, "harness.skill_invalid", scope, fmt.Sprintf("%q is not a supported skill name", skill))
@@ -23,11 +31,8 @@ func (c *checker) skills(role config.Role, scope string, files map[string]bool) 
 			c.report.add(Unverifiable, "harness.skill_unverifiable", scope, fmt.Sprintf("Claude plugin skill %q can only be confirmed in the runtime system/init event", skill))
 			continue
 		}
-		projectDir := ".claude"
-		if role.Agent == "codex" {
-			projectDir = ".agents"
-		}
-		if files[projectDir+"/skills/"+skill+"/SKILL.md"] {
+		projectType := files[repositorySkillPath(role.Agent, skill)]
+		if projectType == fileRegular {
 			continue
 		}
 		roots, err := personalSkillRoots(role.Agent)
@@ -65,7 +70,7 @@ func (c *checker) skills(role config.Role, scope string, files map[string]bool) 
 		if found {
 			continue
 		}
-		if accessErr != nil || files == nil {
+		if accessErr != nil || files == nil || projectType == fileUnverifiable {
 			c.report.add(Unverifiable, "harness.skill_unverifiable", scope, fmt.Sprintf("cannot inspect every location for skill %q", skill))
 		} else {
 			c.report.add(Error, "harness.skill_missing", scope, fmt.Sprintf("skill %q has no SKILL.md in repository or personal/system %s skill locations", skill, role.Agent))

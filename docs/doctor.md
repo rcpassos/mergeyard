@@ -58,7 +58,11 @@ using its resolved roles, labels, and base branch.
 - All three configured labels exist; pagination and case-insensitive names
   are supported.
 - Role skills have a `SKILL.md` at a supported repository or personal/system
-  location. Claude uses `.claude/skills` in the repository and its personal
+  location that resolves to a regular file. Repository checks use Git's native
+  symlink resolution, including symlinked directories and chains. Dangling
+  links, cycles, and directory targets do not establish availability; targets
+  outside the fetched repository are unverifiable for the future worktree.
+  Claude uses `.claude/skills` in the repository and its personal
   configuration directory (`CLAUDE_CONFIG_DIR`, default `~/.claude`). Codex
   uses repository `.agents/skills`, `~/.agents/skills`, `/etc/codex/skills`, and
   bundled `CODEX_HOME/skills/.system` skills. Its personal `.agents` directory
@@ -71,7 +75,8 @@ using its resolved roles, labels, and base branch.
 
 Instruction and repository skill checks inspect the fetched base branch, not
 uncommitted local files. If fetching fails, dependent checks are reported as
-unverifiable; personal skills can still be checked.
+unverifiable; personal skills can still be checked. Instruction files also
+must resolve to regular files before counting as available.
 
 Doctor never changes labels, creates remote branches, logs in, invokes a model,
 or alters a managed checkout. Temporary probes are removed. Git hooks are
@@ -85,5 +90,7 @@ has a 30-second timeout; SIGINT/SIGTERM cancels the checks.
 real temporary filesystem/port probes. It also exercises actual Git fetch and
 dry-run push against a local bare repository, verifies unchanged remote refs,
 and checks that configured Git hooks never run. No test requires paid harness
-calls or live GitHub writes. `go test ./cmd/mergeyard -run TestDoctor` checks
+calls or live GitHub writes. Real-Git skill fixtures also cover valid and
+dangling symlinks, chains, symlinked directories, cycles, and non-file targets.
+`go test ./cmd/mergeyard -run TestDoctor` checks
 CLI output grouping and exit statuses with fake tool executables.

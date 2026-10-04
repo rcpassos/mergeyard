@@ -137,6 +137,10 @@ type checker struct {
 }
 
 func (c *checker) command(dir, executable string, args ...string) (runner.ExecResult, error) {
+	return c.commandInput(dir, "", executable, args...)
+}
+
+func (c *checker) commandInput(dir, inputPath, executable string, args ...string) (runner.ExecResult, error) {
 	ctx, cancel := context.WithTimeout(c.ctx, c.options.CommandTimeout)
 	defer cancel()
 	env := c.env
@@ -153,7 +157,7 @@ func (c *checker) command(dir, executable string, args ...string) (runner.ExecRe
 		}
 		args = append([]string{"-c", "core.hooksPath=/dev/null"}, args...)
 	}
-	result, err := c.options.Executor.Exec(ctx, runner.ExecRequest{Executable: executable, Args: args, Dir: dir, Env: env})
+	result, err := c.options.Executor.Exec(ctx, runner.ExecRequest{Executable: executable, Args: args, Dir: dir, Env: env, StdinPath: inputPath})
 	if err != nil {
 		return result, err
 	}

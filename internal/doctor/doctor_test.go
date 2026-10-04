@@ -26,9 +26,10 @@ func TestInvalidConfigurationIsAnError(t *testing.T) {
 }
 
 type fakeCommands struct {
-	t         *testing.T
-	responses map[string]runner.ExecResult
-	calls     []runner.ExecRequest
+	t               *testing.T
+	responses       map[string]runner.ExecResult
+	calls           []runner.ExecRequest
+	repositoryFiles map[string]string
 }
 
 func (f *fakeCommands) Exec(ctx context.Context, req runner.ExecRequest) (runner.ExecResult, error) {
@@ -43,6 +44,22 @@ func (f *fakeCommands) Exec(ctx context.Context, req runner.ExecRequest) (runner
 	}
 	if result, ok := f.responses[key]; ok {
 		return result, nil
+	}
+	if key == "git cat-file --batch-check=%(objecttype) --follow-symlinks" {
+		input, err := os.ReadFile(req.StdinPath)
+		if err != nil {
+			return runner.ExecResult{}, err
+		}
+		var output strings.Builder
+		for _, query := range strings.Split(strings.TrimSuffix(string(input), "\n"), "\n") {
+			path := strings.TrimPrefix(query, "refs/heads/doctor:")
+			if result, found := f.repositoryFiles[path]; found {
+				output.WriteString(result)
+			} else {
+				fmt.Fprintf(&output, "%s missing\n", query)
+			}
+		}
+		return runner.ExecResult{Stdout: []byte(output.String())}, nil
 	}
 	f.t.Errorf("unexpected external command: %s", key)
 	return runner.ExecResult{}, fmt.Errorf("unexpected command: %s", key)
@@ -87,6 +104,7 @@ func TestGitProbesAreIsolatedAndNeverPushChanges(t *testing.T) {
 func repositorySetup(t *testing.T, extra string) (string, *fakeCommands, doctor.Options) {
 	t.Helper()
 	path, fake, opts := setup(t, "implementer: {agent: codex}\nreviewer: {agent: codex}\nrepositories: [{repo: octo/repo}]\n"+extra)
+	fake.repositoryFiles = fakeRegularRepositoryFiles("CLAUDE.md\n")
 	for command, output := range map[string]string{
 		"gh api --hostname github.com --method GET repos/octo/repo":                                                                   `{"permissions":{"push":true}}`,
 		"gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100":                                    `[{"name":"ready-for-agent"},{"name":"agent-running"},{"name":"agent-needs-attention"}]`,
@@ -95,12 +113,19 @@ func repositorySetup(t *testing.T, extra string) (string, *fakeCommands, doctor.
 		"git ls-remote --exit-code --heads -- https://github.com/octo/repo.git refs/heads/main":                                       "abcdef\trefs/heads/main\n",
 		"git init --bare --template= --object-format=sha1":                                                                            "",
 		"git fetch --depth=1 --no-tags --no-recurse-submodules -- https://github.com/octo/repo.git refs/heads/main:refs/heads/doctor": "",
-		"git ls-tree -r --name-only refs/heads/doctor":                                                                                "CLAUDE.md\n",
 		"git push probe": "",
 	} {
 		fake.responses[command] = runner.ExecResult{Stdout: []byte(output)}
 	}
 	return path, fake, opts
+}
+
+func fakeRegularRepositoryFiles(paths string) map[string]string {
+	files := make(map[string]string)
+	for _, path := range strings.Split(strings.TrimSuffix(paths, "\n"), "\n") {
+		files[path] = "blob\n"
+	}
+	return files
 }
 
 func TestMisconfiguredRepositoryReportsMissingLabelsAndInstructions(t *testing.T) {
@@ -327,7 +352,7 @@ func TestRoleSkills(t *testing.T) {
 			path, fake, opts := repositorySetup(t, "")
 			setConfig(t, path, "repositories.0.implementer", map[string]any{"agent": tc.agent, "skills": []string{tc.skill}})
 			setConfig(t, path, "repositories.0.reviewer.agent", tc.agent)
-			fake.responses["git ls-tree -r --name-only refs/heads/doctor"] = runner.ExecResult{Stdout: []byte(tc.files)}
+			fake.repositoryFiles = fakeRegularRepositoryFiles(tc.files)
 			if tc.personal != "" {
 				file := filepath.Join(os.Getenv("HOME"), tc.personal)
 				if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
@@ -345,6 +370,46 @@ func TestRoleSkills(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRepositoryFileCheckFailuresAreUnverifiable(t *testing.T) {
+	for _, output := range []string{"blob\n", "blob\nblob\nsymlink 9999\nshort\n", "blob\nblob\nunknown\n", "blob\nblob\nblob\nextra\n"} {
+		t.Run(fmt.Sprintf("%q", output), func(t *testing.T) {
+			path, fake, opts := repositorySetup(t, "")
+			setConfig(t, path, "repositories.0.implementer.skills", []string{"review"})
+			fake.responses["git cat-file --batch-check=%(objecttype) --follow-symlinks"] = runner.ExecResult{Stdout: []byte(output)}
+			report := doctor.Check(context.Background(), path, opts)
+			requireFinding(t, report, doctor.Unverifiable, "git.tree_unverifiable", "octo/repo")
+			requireFinding(t, report, doctor.Unverifiable, "harness.skill_unverifiable", "octo/repo implementer")
+		})
+	}
+}
+
+func TestUnavailableRepositorySkillCanUsePersonalSkill(t *testing.T) {
+	path, fake, opts := repositorySetup(t, "")
+	setConfig(t, path, "repositories.0.implementer.skills", []string{"review"})
+	fake.repositoryFiles = fakeRegularRepositoryFiles("AGENTS.md\n")
+	query := "refs/heads/doctor:.agents/skills/review/SKILL.md"
+	fake.repositoryFiles[".agents/skills/review/SKILL.md"] = fmt.Sprintf("dangling %d\n%s\n", len(query), query)
+	file := filepath.Join(os.Getenv("HOME"), ".agents", "skills", "review", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("# Skill\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report := doctor.Check(context.Background(), path, opts)
+	if len(report.Findings) != 0 {
+		t.Fatalf("readable personal skill fallback: %+v", report)
+	}
+}
+
+func TestInstructionFilesMustResolveToRegularFiles(t *testing.T) {
+	path, fake, opts := repositorySetup(t, "")
+	fake.repositoryFiles["AGENTS.md"] = "tree\n"
+	requireFinding(t, doctor.Check(context.Background(), path, opts), doctor.Warning, "harness.instructions_missing", "octo/repo")
+	fake.repositoryFiles["AGENTS.md"] = "symlink 11\n../external\n"
+	requireFinding(t, doctor.Check(context.Background(), path, opts), doctor.Unverifiable, "harness.instructions_unverifiable", "octo/repo")
 }
 
 func TestRepositoryCheckFailures(t *testing.T) {
@@ -366,7 +431,7 @@ func TestRepositoryCheckFailures(t *testing.T) {
 		{"invalid metadata", "gh api --hostname github.com --method GET repos/octo/repo", `null`, 0, doctor.Error, "github.invalid_response"},
 		{"label request failed", "gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100", "", 1, doctor.Error, "github.labels_check_failed"},
 		{"invalid labels", "gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100", `{}`, 0, doctor.Error, "github.invalid_response"},
-		{"tree unavailable", "git ls-tree -r --name-only refs/heads/doctor", "", 1, doctor.Unverifiable, "git.tree_unverifiable"},
+		{"tree unavailable", "git cat-file --batch-check=%(objecttype) --follow-symlinks", "", 1, doctor.Unverifiable, "git.tree_unverifiable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path, fake, opts := repositorySetup(t, "")
@@ -380,7 +445,7 @@ func TestRepositoryLabelOverridesAcrossPages(t *testing.T) {
 	path, fake, opts := repositorySetup(t, "")
 	setConfig(t, path, "repositories.0.labels", map[string]string{"ready": "work", "running": "busy", "needs_attention": "help"})
 	fake.responses["gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100"] = runner.ExecResult{Stdout: []byte(`[{"name":"WORK"}][{"name":"busy"},{"name":"help"}]`)}
-	fake.responses["git ls-tree -r --name-only refs/heads/doctor"] = runner.ExecResult{Stdout: []byte("AGENTS.md\n")}
+	fake.repositoryFiles = fakeRegularRepositoryFiles("AGENTS.md\n")
 	report := doctor.Check(context.Background(), path, opts)
 	if len(report.Findings) != 0 {
 		t.Fatalf("configured labels on separate pages: %+v", report)
@@ -391,7 +456,7 @@ func TestClaudeInstructionWarningBelowMinimumVersion(t *testing.T) {
 	path, fake, opts := repositorySetup(t, "")
 	setConfig(t, path, "repositories.0.implementer.agent", "claude")
 	fake.responses["claude --version"] = runner.ExecResult{Stdout: []byte("2.1.276 (Claude Code)")}
-	fake.responses["git ls-tree -r --name-only refs/heads/doctor"] = runner.ExecResult{Stdout: []byte("AGENTS.md\n")}
+	fake.repositoryFiles = fakeRegularRepositoryFiles("AGENTS.md\n")
 	report := doctor.Check(context.Background(), path, opts)
 	requireFinding(t, report, doctor.Warning, "harness.instructions_missing", "octo/repo")
 	requireFinding(t, report, doctor.Error, "harness.version_unsupported", "claude")
