@@ -1,0 +1,55 @@
+# Copy to ./mergeyard.yaml or ~/.config/mergeyard/config.yaml.
+# A minimal config needs only repositories: [{repo: owner/repo}].
+version: 1
+port: 7331
+open_browser: true
+workspace: ~/.mergeyard
+poll_interval: 30s
+concurrency: 1 # global active runs
+
+labels:
+  ready: ready-for-agent
+  running: agent-running
+  needs_attention: agent-needs-attention
+
+agents:
+  claude:
+    executable: claude
+    permission_mode: bypassPermissions # auto | acceptEdits | bypassPermissions
+    allowed_tools: []
+  codex:
+    executable: codex
+    sandbox: workspace-write # workspace-write | danger-full-access
+    network_access: true
+
+implementer:
+  agent: claude
+  model: null # harness default
+  effort: null # harness default; passed through without a catalog
+  skills: []
+  max_attempts: 1
+
+reviewer:
+  agent: claude
+  model: null
+  effort: null
+  skills: []
+  max_attempts: 1
+
+max_rounds: 5
+pr_comments: true
+usage_limits:
+  cooldown: 30m
+  max_waits: 3
+
+repositories:
+  - repo: company/api
+    # Omit base_branch to discover the repository default branch at runtime.
+    base_branch: main
+    concurrency: 1 # optional per-repository limit; otherwise inherits global
+    enabled: true
+
+  - repo: company/frontend
+    reviewer: # only supplied fields override the global reviewer
+      agent: codex
+      effort: high
