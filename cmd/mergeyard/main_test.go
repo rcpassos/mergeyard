@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -10,6 +12,22 @@ func runCLI(args ...string) (code int, stdout, stderr string) {
 	var out, errOut bytes.Buffer
 	code = run(args, &out, &errOut)
 	return code, out.String(), errOut.String()
+}
+
+func TestStartConfigIntegrationIsDeferredToIssue14(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	for _, args := range [][]string{{"start", "--config", path}, {"--config", path}} {
+		code, stdout, stderr := runCLI(args...)
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "config.start_not_implemented") || !strings.Contains(stderr, "#14") {
+			t.Fatalf("startup deferral: code %d, stdout %q, stderr %q", code, stdout, stderr)
+		}
+		if strings.Contains(stderr, "configuration loading is not implemented") {
+			t.Fatalf("stale configuration message: %q", stderr)
+		}
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("deferred startup changed config path: %v", err)
+	}
 }
 
 // PRD §29.
@@ -51,8 +69,6 @@ func TestHelpListsEveryCommand(t *testing.T) {
 
 func TestUnimplementedCommandsFail(t *testing.T) {
 	invocations := [][]string{
-		{},
-		{"start"},
 		{"init"},
 		{"repo", "add", "octo/repo"},
 		{"status"},
