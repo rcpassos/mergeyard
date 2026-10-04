@@ -170,6 +170,65 @@ func TestUpdatePullRequestReadsLatestBodyAndChangesOnlyGeneratedSection(t *testi
 	}
 }
 
+// Model a PATCH that applies remotely, followed by a human edit before the
+// client receives an ambiguous failure. Replaying the payload erases that edit.
+type editedPullRequest struct {
+	body    string
+	patches int
+	stderr  string
+	failure error
+}
+
+func (r *editedPullRequest) Run(_ context.Context, input []byte, args ...string) ([]byte, []byte, error) {
+	if contains(args, "GET") {
+		return pullRequestJSON(24, true, r.body), nil, nil
+	}
+	if !contains(args, "PATCH") {
+		return nil, nil, fmt.Errorf("unexpected command: %v", args)
+	}
+	var payload struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal(input, &payload); err != nil {
+		return nil, nil, err
+	}
+	r.patches++
+	r.body = payload.Body
+	if r.patches == 1 {
+		r.body += "\n\nHuman edit made after the PATCH applied.\n"
+		return nil, []byte(r.stderr), r.failure
+	}
+	return pullRequestJSON(24, true, r.body), nil, nil
+}
+
+func TestPullRequestUpdatePreservesHumanEditAfterAmbiguousFailure(t *testing.T) {
+	for _, stderr := range []string{"gh: Bad Gateway (HTTP 502)", "connection reset by peer", "i/o timeout"} {
+		t.Run(stderr, func(t *testing.T) {
+			cause := errors.New("exit status 1")
+			runner := &editedPullRequest{
+				body:   "User introduction.\n\n<!-- mergeyard:generated:start -->\nOld summary\n<!-- mergeyard:generated:end -->",
+				stderr: stderr, failure: cause,
+			}
+			content := github.PullRequestContent{IssueNumber: 12, IssueTitle: "Pull requests", Summary: "New summary", RunID: "run-456"}
+			client := github.New(runner)
+			pr, err := client.UpdatePullRequest(context.Background(), "rcpassos/mergeyard", 24, content)
+			if !strings.HasSuffix(runner.body, "\n\nHuman edit made after the PATCH applied.\n") {
+				t.Fatalf("human edit erased by a stale PATCH retry: %q", runner.body)
+			}
+			requireCode(t, err, "github.unavailable")
+			if pr != nil || !errors.Is(err, cause) || runner.patches != 1 {
+				t.Fatalf("ambiguous failure = %+v, %v; PATCH count = %d", pr, err, runner.patches)
+			}
+			// A new caller attempt reads the edited body, recognizes the applied
+			// generated section, and succeeds without replaying the old snapshot.
+			pr, err = client.UpdatePullRequest(context.Background(), "rcpassos/mergeyard", 24, content)
+			if err != nil || pr == nil || pr.Body != runner.body || runner.patches != 1 {
+				t.Fatalf("reconciliation = %+v, %v; PATCH count = %d", pr, err, runner.patches)
+			}
+		})
+	}
+}
+
 func TestPullRequestBodyRejectsAmbiguousMarkers(t *testing.T) {
 	content := github.PullRequestContent{IssueNumber: 12, IssueTitle: "Pull requests", Summary: "Summary", RunID: "run-123"}
 	for _, body := range []string{

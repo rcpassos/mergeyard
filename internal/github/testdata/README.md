@@ -98,8 +98,13 @@ byte-for-byte unchanged. If no markers exist, it appends the section. Incomplete
 reversed, or duplicate markers return `pr.invalid_generated_section` without a
 write. Generated content cannot contain these reserved markers. An unchanged body
 does not trigger a write; updates never change the title or draft state.
+Body writes are attempted once. An ambiguous failure may hide an applied PATCH;
+replaying its captured body could overwrite intervening human edits. Callers
+receive the original coded error and can invoke `UpdatePullRequest` again to
+re-fetch and merge the current body. If the generated section already matches,
+that new attempt succeeds without another write.
 
-For reads, label changes, and PR body updates, transient transport failures and
+For reads and label changes, transient transport failures and
 HTTP 408/5xx responses receive at most three attempts with 250ms and 500ms
 context-aware backoff. Rate-limited HTTP 403/429
 responses return immediately so callers can defer polling; the adapter does not

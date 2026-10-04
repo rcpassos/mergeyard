@@ -250,8 +250,9 @@ func (c *Client) requestWithAttempts(ctx context.Context, input []byte, method, 
 	if input != nil {
 		args = append(args, "--input", "-")
 	}
-	// Idempotent operations get three attempts with 250ms then 500ms backoff.
-	// PR creation gets one: an ambiguous failure may have created the PR already.
+	// Retry-safe operations get three attempts with 250ms then 500ms backoff.
+	// PR creation and body writes get one: replaying an ambiguous write may
+	// create duplicates or overwrite human edits made after the original request.
 	for attempt := 0; attempt < attempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, canceled(err)

@@ -147,6 +147,7 @@ func decodePullRequest(data []byte) (*PullRequest, error) {
 
 // UpdatePullRequest reads the latest body and updates only Mergeyard's section.
 // User-authored text and the PR title, base, and draft state are left intact.
+// A failed write may have applied remotely; a later attempt must read again.
 func (c *Client) UpdatePullRequest(ctx context.Context, repo string, number int, content PullRequestContent) (*PullRequest, error) {
 	if number <= 0 {
 		return nil, codedError("github.invalid_input", "PR number must be positive", nil)
@@ -179,7 +180,9 @@ func (c *Client) UpdatePullRequest(ctx context.Context, repo string, number int,
 	if err != nil {
 		return nil, codedError("github.invalid_input", "cannot encode PR body", err)
 	}
-	data, err = c.request(ctx, input, "PATCH", path, false)
+	// Never replay this body snapshot: after an ambiguous failure a human may
+	// have edited the body, and retrying the same PATCH would erase their changes.
+	data, err = c.requestWithAttempts(ctx, input, "PATCH", path, false, 1)
 	if err != nil {
 		return nil, err
 	}
