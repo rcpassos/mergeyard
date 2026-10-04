@@ -11,6 +11,88 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// SetRoleAgents updates the global agents independently. Unchanged roles retain
+// aliases; aliases sharing a changed role or agent are copied before editing so
+// repository overrides and the other role keep their existing values. Comments,
+// unknown fields and unrelated anchors/aliases are retained. Set itself continues
+// to reject edits through aliases.
+func (d *Document) SetRoleAgents(implementer, reviewer string) error {
+	if len(d.root.Content) != 1 {
+		return &Error{Code: "config.invalid_path", Err: errors.New("expected a document")}
+	}
+	var err error
+	var warnings []Warning
+	root := newMapping(d.root.Content[0], "", &err, &warnings)
+	roleTargets, agentTargets := make(map[*yaml.Node]bool), make(map[*yaml.Node]bool)
+	var changes []struct{ role, agent string }
+	for _, choice := range []struct{ role, agent string }{{"implementer", implementer}, {"reviewer", reviewer}} {
+		if choice.agent != "claude" && choice.agent != "codex" {
+			return &Error{Code: "config.invalid_agent", Path: choice.role + ".agent", Err: errors.New("expected claude or codex")}
+		}
+		role := root.child(choice.role)
+		current := "claude"
+		role.read("agent", &current)
+		if current == choice.agent {
+			continue
+		}
+		changes = append(changes, choice)
+		if node := root.node(choice.role); node != nil {
+			roleTargets[dereference(node)] = true
+		}
+		if node := role.node("agent"); node != nil {
+			agentTargets[dereference(node)] = true
+		}
+	}
+	if err != nil {
+		return err
+	}
+	// Snapshot mapping aliases first, then scalar aliases inside those copies.
+	// Neither pass follows alias edges, so recursive unknown YAML fields remain
+	// representable and are not recursively expanded.
+	materializeAliases(&d.root, roleTargets)
+	materializeAliases(&d.root, agentTargets)
+	for _, change := range changes {
+		if err := d.Set([]string{change.role, "agent"}, change.agent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func materializeAliases(node *yaml.Node, targets map[*yaml.Node]bool) {
+	if node.Kind == yaml.AliasNode {
+		if target := dereference(node); targets[target] {
+			copy := copyYAMLNode(target)
+			if node.HeadComment != "" {
+				copy.HeadComment = node.HeadComment
+			}
+			if node.LineComment != "" {
+				copy.LineComment = node.LineComment
+			}
+			if node.FootComment != "" {
+				copy.FootComment = node.FootComment
+			}
+			*node = *copy
+		}
+		return
+	}
+	for _, child := range node.Content {
+		materializeAliases(child, targets)
+	}
+}
+
+func copyYAMLNode(node *yaml.Node) *yaml.Node {
+	copy := *node
+	// Keep alias references to their original definitions. Copied definitions
+	// must not reuse anchor names; all original definitions remain in the tree.
+	copy.Anchor = ""
+	copy.Content = make([]*yaml.Node, len(node.Content))
+	for i, child := range node.Content {
+		copy.Content[i] = copyYAMLNode(child)
+	}
+	return &copy
+}
+
 // Set edits a mapping field or sequence entry. Paths use mapping keys and
 // zero-based sequence indices; a final "-" appends, creating a missing sequence.
 // Missing mapping parents are created. Adding fields to Parse([]byte("{}"))
