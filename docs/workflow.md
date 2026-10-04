@@ -78,3 +78,18 @@ from the client's last event ID in pages, and discard duplicate live IDs. If
 the stream closes, reconnect and replay from the last delivered ID. Subscriber
 payloads are independent copies. Runtime shutdown closes the bus and streams
 before closing SQLite.
+
+`OperationFailed` moves any nonterminal run to `NEEDS_ATTENTION` with a required
+coded failure. The scheduler uses it for failed claims, preparation, and Git/PR
+system steps, including failures that occur before an agent phase exists. It
+preserves the current phase and component-owned metadata and records the normal
+`run.needs_attention` event. Terminal runs reject it.
+
+`Workflow.WithRunOperation` holds a per-run gate while a scheduler operation
+performs external effects. Every `Transition` acquires the same gate. The
+operation callback receives a fresh snapshot and a context to pass to its own
+transitions, which can proceed under the held gate. Other callers, including
+takeover and stop, wait for the operation or their context cancellation. Use the
+runtime's shared `Workflow` instance and do not retain the callback context
+beyond the operation. Once a takeover or stop has persisted, a scheduler operation
+reads that new state before deciding whether to proceed.

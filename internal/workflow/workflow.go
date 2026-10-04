@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
@@ -66,6 +67,7 @@ const (
 	Retry                 Trigger = "retry"
 	Stop                  Trigger = "stop"
 	InternalFailure       Trigger = "internal_failure"
+	OperationFailed       Trigger = "operation_failed"
 )
 
 // RunMetadata contains the workflow metadata owned by PR and review components.
@@ -116,8 +118,9 @@ type Request struct {
 }
 
 type Workflow struct {
-	db     *sql.DB
-	events *events.Bus
+	db         *sql.DB
+	events     *events.Bus
+	operations sync.Map
 }
 
 // New uses the runtime database and its shared event bus.
@@ -127,8 +130,13 @@ func New(db *sql.DB, bus *events.Bus) *Workflow {
 
 // Transition is the only lifecycle write boundary for scheduler, UI, and CLI.
 func (w *Workflow) Transition(ctx context.Context, id string, request Request) (Run, error) {
+	release, err := w.acquireOperation(ctx, id)
+	if err != nil {
+		return Run{}, err
+	}
+	defer release()
 	var run Run
-	_, err := w.events.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+	_, err = w.events.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
 		if strings.TrimSpace(id) == "" {
 			return events.Draft{}, invalid("Run ID is required")
 		}
@@ -185,6 +193,48 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		return Run{}, err
 	}
 	return run, nil
+}
+
+// WithRunOperation coordinates external scheduler operations with all lifecycle
+// transitions, including takeover and stop. The callback receives a fresh run
+// and a context it must pass to Transition to avoid reacquiring its own gate.
+// The supplied context is valid only for the duration of the callback.
+func (w *Workflow) WithRunOperation(ctx context.Context, id string, operation func(context.Context, Run) error) error {
+	release, err := w.acquireOperation(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer release()
+	run, err := w.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	operationContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	return operation(context.WithValue(operationContext, operationContextKey{}, heldOperation{workflow: w, id: id}), run)
+}
+
+type operationContextKey struct{}
+type heldOperation struct {
+	workflow *Workflow
+	id       string
+}
+
+func (w *Workflow) acquireOperation(ctx context.Context, id string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if held, ok := ctx.Value(operationContextKey{}).(heldOperation); ok && held.workflow == w && held.id == id {
+		return func() {}, nil
+	}
+	value, _ := w.operations.LoadOrStore(id, make(chan struct{}, 1))
+	gate := value.(chan struct{})
+	select {
+	case gate <- struct{}{}:
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string) error {
@@ -281,6 +331,11 @@ func destination(current Run, request Request) (Run, string, error) {
 			if !current.State.Terminal() {
 				next.State = Stopped
 				return next, "run.stopped", nil
+			}
+		case OperationFailed:
+			if !current.State.Terminal() {
+				next.State = NeedsAttention
+				return next, "run.needs_attention", nil
 			}
 		case InternalFailure:
 			if !current.State.Terminal() {
