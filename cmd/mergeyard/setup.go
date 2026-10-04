@@ -187,10 +187,7 @@ func initialize(ctx context.Context, path string, input io.Reader, output io.Wri
 	if err := validateSetupRepo(ctx, repo); err != nil {
 		return "", err
 	}
-	if err := doc.Set([]string{"implementer", "agent"}, implementer); err != nil {
-		return "", err
-	}
-	if err := doc.Set([]string{"reviewer", "agent"}, reviewer); err != nil {
+	if err := doc.SetRoleAgents(implementer, reviewer); err != nil {
 		return "", err
 	}
 	labels := cfg.Labels
@@ -281,7 +278,7 @@ func createSetupLabels(ctx context.Context, repo string, labels config.Labels) e
 		if names[strings.ToLower(label.name)] {
 			continue
 		}
-		if _, err := setupGH(ctx, "label", "create", label.name, "--repo", "github.com/"+repo, "--color", label.color, "--description", label.description); err != nil {
+		if _, err := setupGH(ctx, "label", "create", "--repo", "github.com/"+repo, "--color", label.color, "--description", label.description, "--", label.name); err != nil {
 			return err
 		}
 	}

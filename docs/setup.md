@@ -15,6 +15,8 @@ On re-running init, the selected agents update the global implementer and review
 settings. Existing repository overrides, settings, comments, and unknown fields
 are preserved. The entered repository is added if it is not already configured;
 other repositories remain. YAML whitespace may be normalized by the config writer.
+Role aliases are supported: unchanged agents keep their aliases, while changed
+agents get independent settings without changing aliased repository overrides.
 
 After verifying GitHub access, init offers to create missing labels. Confirmation
 is required; the default is no. Existing labels are matched ignoring case and

@@ -76,7 +76,7 @@ func TestInitWritesConfigCreatesOnlyMissingLabelsAndRunsDoctor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(commands), "label create agent-needs-attention") || strings.Contains(string(commands), "label create ready-for-agent") || strings.Contains(string(commands), "label create agent-running") || strings.Contains(string(commands), "--force") {
+	if !strings.Contains(string(commands), "-- agent-needs-attention") || strings.Contains(string(commands), "-- ready-for-agent") || strings.Contains(string(commands), "-- agent-running") || strings.Contains(string(commands), "--force") {
 		t.Fatalf("label mutations: %s", commands)
 	}
 }
@@ -223,7 +223,7 @@ func TestRepoAddCreatesConfiguredLabels(t *testing.T) {
 	}
 	commands, _ := os.ReadFile(log)
 	for _, name := range []string{"queue", "working", "help"} {
-		if !strings.Contains(string(commands), "label create "+name+" --repo github.com/octo/repo") {
+		if !strings.Contains(string(commands), "label create --repo github.com/octo/repo") || !strings.Contains(string(commands), "-- "+name+"\n") {
 			t.Fatalf("missing configured label %s: %s", name, commands)
 		}
 	}
@@ -369,5 +369,128 @@ func TestSetupInterruptsPendingPromptWithoutSaving(t *testing.T) {
 				t.Fatalf("interrupted repo add changed config: %q %v", after, err)
 			}
 		})
+	}
+}
+
+func TestInitUpdatesAliasedRolesIndependently(t *testing.T) {
+	for _, tc := range []struct{ name, implementer, reviewer string }{
+		{"unchanged agents", "claude", "claude"},
+		{"change implementer", "codex", "claude"},
+		{"change reviewer", "claude", "codex"},
+		{"change both", "codex", "codex"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, _ := setupTools(t)
+			path := filepath.Join(home, "config.yaml")
+			if err := os.WriteFile(filepath.Join(os.Getenv("PATH"), "codex"), []byte("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.134.0'; fi\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			original := `# shared roles
+implementer: &role
+  agent: claude # keep choice comment
+  max_attempts: 2
+  future_role_option: kept
+reviewer: *role # keep reviewer comment
+future_setting: &other preserved
+future_alias: *other
+repositories:
+  - repo: octo/repo
+    implementer: *role
+`
+			if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+				t.Fatal(err)
+			}
+			input := "y\n" + tc.implementer + "\n" + tc.reviewer + "\nocto/repo\nn\n"
+			code, out, errOut := setupCLI(t, input, "init", "--config", path)
+			cfg, _, err := config.Load(path)
+			if err != nil || errOut != "" || !strings.Contains(out, "Config saved") || cfg.Implementer.Agent != tc.implementer || cfg.Reviewer.Agent != tc.reviewer {
+				t.Fatalf("aliased init: exit=%d out=%q stderr=%q config=%+v load=%v", code, out, errOut, cfg, err)
+			}
+			if cfg.Implementer.MaxAttempts != 2 || cfg.Reviewer.MaxAttempts != 2 || cfg.Repositories[0].Implementer.Agent != "claude" {
+				t.Fatalf("init changed preserved role settings: %+v", cfg)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, text := range []string{"# shared roles", "# keep choice comment", "# keep reviewer comment", "future_role_option: kept", "future_alias: *other"} {
+				if !strings.Contains(string(after), text) {
+					t.Fatalf("lost user content %q: %s", text, after)
+				}
+			}
+			if tc.implementer == "claude" && tc.reviewer == "claude" && !strings.Contains(string(after), "reviewer: *role") {
+				t.Fatalf("unchanged setup expanded alias: %s", after)
+			}
+		})
+	}
+}
+
+func TestRepoAddCreatesLabelsWhoseNamesLookLikeOptions(t *testing.T) {
+	home, _ := setupTools(t)
+	path := filepath.Join(home, "config.yaml")
+	data := "labels: {ready: '--help', running: '-R', needs_attention: '--description'}\n"
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	created := filepath.Join(home, "created-labels")
+	t.Setenv("SETUP_CREATED_LABELS", created)
+	// Model the CLI parser at the process boundary: --help returns success
+	// without a write, while operands after -- are treated as literal names.
+	gh := `#!/bin/sh
+case "$1 $2" in
+ 'api --hostname')
+  case "$*" in *'/labels?'*) echo '[]';; *) echo '{}';; esac
+  exit 0;;
+ 'label create') shift 2;;
+ *) exit 1;;
+esac
+while [ "$#" -gt 0 ]; do
+ case "$1" in
+  --help) exit 0;;
+  --repo|--color|--description) shift 2;;
+  --) shift; [ "$#" -eq 1 ] || exit 2
+      printf '%s\n' "$1" >> "$SETUP_CREATED_LABELS"; exit 0;;
+  *) shift;;
+ esac
+done
+`
+	if err := os.WriteFile(filepath.Join(os.Getenv("PATH"), "gh"), []byte(gh), 0700); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := setupCLI(t, "y\n", "repo", "add", "octo/repo", "--config", path)
+	after, err := os.ReadFile(created)
+	if code != 0 || errOut != "" || err != nil || string(after) != "--help\n-R\n--description\n" {
+		t.Fatalf("literal label creation: exit=%d out=%q stderr=%q created=%q read=%v", code, out, errOut, after, err)
+	}
+	cfg, _, err := config.Load(path)
+	if err != nil || len(cfg.Repositories) != 1 {
+		t.Fatalf("repo add config: %+v, %v", cfg, err)
+	}
+}
+
+func TestInitUpdatesScalarAgentAliasesWithoutChangingSharedValues(t *testing.T) {
+	home, _ := setupTools(t)
+	path := filepath.Join(home, "config.yaml")
+	if err := os.WriteFile(filepath.Join(os.Getenv("PATH"), "codex"), []byte("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.134.0'; fi\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := `future_agent: &agent claude
+implementer: {agent: *agent, max_attempts: 2}
+reviewer: {agent: *agent, max_attempts: 2}
+repositories:
+  - repo: octo/repo
+    implementer: {agent: *agent}
+`
+	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, out, errOut := setupCLI(t, "y\ncodex\nclaude\nocto/repo\nn\n", "init", "--config", path)
+	cfg, _, err := config.Load(path)
+	if err != nil || errOut != "" || !strings.Contains(out, "Config saved") || cfg.Implementer.Agent != "codex" || cfg.Reviewer.Agent != "claude" || cfg.Repositories[0].Implementer.Agent != "claude" {
+		t.Fatalf("scalar aliases: out=%q stderr=%q config=%+v load=%v", out, errOut, cfg, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(after), "future_agent: &agent claude") {
+		t.Fatalf("changed shared value: %s %v", after, err)
 	}
 }

@@ -54,6 +54,12 @@ to keep existing comments and unknown fields. Edits through aliases are rejected
 edit the anchor's original field instead. Resolved `Config` values do not change
 when the document is edited; reload after saving to get the new effective config.
 
+For setup, `Document.SetRoleAgents(implementer, reviewer)` updates the global
+agents independently. Unchanged roles keep their aliases. When an agent changes,
+aliases sharing its role mapping or agent scalar are copied before editing, so
+the other role and explicit repository overrides retain their values. Comments,
+unknown fields, and unrelated anchors and aliases are preserved.
+
 `Write(path)` revalidates the edited document, writes a temporary file in the same
 directory, and renames it over the destination. For an existing symlinked config,
 the target is resolved and updated while the symlink remains intact. Dangling
