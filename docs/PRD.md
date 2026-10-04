@@ -872,7 +872,7 @@ COMPLETED
 
 `ACTIVE` is paired with a phase: `implement`, `review`, or `fix`.
 
-Terminal states: `FAILED`, `STOPPED`, `COMPLETED`. `NEEDS_ATTENTION` is non-terminal because the user may retry.
+Terminal states: `FAILED`, `STOPPED`, `COMPLETED`. Terminal runs never progress automatically and accept no other transition, except that the user may retry a `FAILED` run (§22). `NEEDS_ATTENTION` is non-terminal because the user may retry.
 
 ### Transitions
 
@@ -898,8 +898,9 @@ Terminal states: `FAILED`, `STOPPED`, `COMPLETED`. `NEEDS_ATTENTION` is non-term
 | MANUAL | user hands back | ACTIVE/next phase |
 | ACTIVE/any | `blocked`, invalid result, or retries exhausted | NEEDS_ATTENTION |
 | NEEDS_ATTENTION | user retries | reconciled next state |
-| any non-completed | user stops | STOPPED |
-| any | unrecoverable internal failure | FAILED |
+| FAILED | user retries | reconciled next state |
+| any non-terminal | user stops | STOPPED |
+| any non-terminal | unrecoverable internal failure | FAILED |
 
 Transitions are enforced centrally. UI and CLI actions must not mutate arbitrary states.
 
@@ -1052,6 +1053,7 @@ run.claimed
 run.preparing
 run.manual
 run.handed_back
+run.waiting_for_harness
 run.needs_attention
 run.failed
 run.stopped
@@ -1067,6 +1069,8 @@ review.completed
 fix.completed
 ci.updated
 ```
+
+`scheduler.*` and `harness.*` events are application-wide and have no run ID; `harness.usage_limited` and `harness.available` are emitted once per harness limit, not once per waiting run. Run transitions use `run.*`, `phase.*`, `pr.*`, `review.*`, `fix.*`, and `ci.*` events.
 
 Each event is written to SQLite, the structured application log, and the browser via SSE.
 
