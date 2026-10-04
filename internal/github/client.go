@@ -239,6 +239,10 @@ func validateIssue(issue Issue) error {
 }
 
 func (c *Client) request(ctx context.Context, input []byte, method, endpoint string, paginate bool) ([]byte, error) {
+	return c.requestWithAttempts(ctx, input, method, endpoint, paginate, 3)
+}
+
+func (c *Client) requestWithAttempts(ctx context.Context, input []byte, method, endpoint string, paginate bool, attempts int) ([]byte, error) {
 	args := []string{"api", "--method", method, "--header", "Accept: application/vnd.github+json", endpoint}
 	if paginate {
 		args = append(args, "--paginate")
@@ -246,9 +250,9 @@ func (c *Client) request(ctx context.Context, input []byte, method, endpoint str
 	if input != nil {
 		args = append(args, "--input", "-")
 	}
-	// Three attempts total, with 250ms then 500ms backoff. Label additions and
-	// removals are idempotent, so retrying after an ambiguous network failure is safe.
-	for attempt := 0; attempt < 3; attempt++ {
+	// Idempotent operations get three attempts with 250ms then 500ms backoff.
+	// PR creation gets one: an ambiguous failure may have created the PR already.
+	for attempt := 0; attempt < attempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, canceled(err)
 		}
@@ -260,7 +264,7 @@ func (c *Client) request(ctx context.Context, input []byte, method, endpoint str
 			return stdout, nil
 		}
 		failure, transient := commandError(stderr, err)
-		if !transient || attempt == 2 {
+		if !transient || attempt == attempts-1 {
 			return nil, failure
 		}
 		timer := time.NewTimer(250 * time.Millisecond << attempt)
