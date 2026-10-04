@@ -1,0 +1,35 @@
+{{define "layout"}}<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="htmx-config" content='{"selfRequestsOnly":true,"allowEval":false,"includeIndicatorStyles":false}'>
+  <title>Mergeyard</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="flex flex-wrap items-center justify-between gap-4">
+      <span class="brand">Mergeyard</span>
+      <span id="connection" class="connection" role="status">Connecting to live updates…</span>
+    </header>
+    <section class="workbench" aria-labelledby="scheduler-title">
+      <h1 id="scheduler-title" class="text-3xl font-semibold mb-6">Scheduler</h1>
+      {{template "scheduler" .}}
+      <p id="action-error" class="text-error mt-4" role="alert"></p>
+    </section>
+  </main>
+</body>
+</html>{{end}}
+{{define "scheduler"}}<div id="scheduler" class="space-y-4">
+  <p class="flex items-center gap-3"><span class="badge {{if .Paused}}badge-warning{{else}}badge-info{{end}}">{{if .Paused}}Paused{{else}}Running{{end}}</span>
+    {{if .Paused}}New issue claims are paused.{{else}}New issue claims are enabled.{{end}}</p>
+  <p>Existing runs, CI monitoring, and merge detection continue while paused.</p>
+  <form method="post" action="/scheduler/{{if .Paused}}resume{{else}}pause{{end}}"
+        hx-post="/scheduler/{{if .Paused}}resume{{else}}pause{{end}}" hx-target="#scheduler" hx-swap="outerHTML">
+    <input type="hidden" name="csrf_token" value="{{.Token}}">
+    <button class="btn btn-primary" type="submit"><img class="icon" src="/static/icons/{{if .Paused}}play{{else}}pause{{end}}.svg" alt="">{{if .Paused}}Resume scheduler{{else}}Pause scheduler{{end}}</button>
+  </form>
+</div>{{end}}

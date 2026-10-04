@@ -103,7 +103,7 @@ func fixture(t *testing.T, api *fakeGitHub) (*scheduler.Scheduler, *app.Runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := scheduler.New(cfg, runtime, scheduler.Dependencies{GitHub: api})
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func localFlow(t *testing.T, script string) (*scheduler.Scheduler, *app.Runtime,
 	t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
 	r := runner.NewLocal(runner.Options{SocketName: socket})
 	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
-	s, err := scheduler.New(cfg, runtime, scheduler.Dependencies{GitHub: api, Runner: r})
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestIssueToDraftPRAndRepeatedTicksAfterRestart(t *testing.T) {
 	}
 	// Simulate an accidental ready label and a fresh control plane using the same DB.
 	api.issues["owner/repo"][0].Labels = []github.Label{{Name: "ready-for-agent"}}
-	restarted, err := scheduler.New(cfg, runtime, scheduler.Dependencies{GitHub: api, Runner: r})
+	restarted, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func configured(t *testing.T, api *fakeGitHub, yaml string, g scheduler.Git) (*s
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := scheduler.New(cfg, runtime, scheduler.Dependencies{GitHub: api, Git: g})
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Git: g})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestPhaseRetryIsBoundedAndKeepsOneRun(t *testing.T) {
 			}
 			_, runtime, api, _, cfg, r := localFlow(t, script)
 			cfg.Repositories[0].Implementer.MaxAttempts = 2
-			s, err := scheduler.New(cfg, runtime, scheduler.Dependencies{GitHub: api, Runner: r})
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -592,7 +592,7 @@ func TestPauseDuringEligibilityStopsPendingClaim(t *testing.T) {
 	_, runtime := fixture(t, api)
 	cfg, _, _ := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
 	g := gatedGitHub{fakeGitHub: api, entered: make(chan struct{}, 1), release: make(chan struct{})}
-	s, err := scheduler.New(cfg, runtime, scheduler.Dependencies{GitHub: g, Git: rejectingGit{}})
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: g, Git: rejectingGit{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +626,7 @@ func TestSchedulerRestartObservesExistingTmuxAttempt(t *testing.T) {
 	if len(runs) != 1 || runs[0].Phase != workflow.Implement {
 		t.Fatalf("running attempt = %+v", runs)
 	}
-	restarted, err := scheduler.New(cfg, runtime, scheduler.Dependencies{GitHub: api, Runner: r})
+	restarted, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +678,7 @@ func TestRunPollsImmediatelyAndPeriodically(t *testing.T) {
 	_, runtime := fixture(t, api)
 	cfg, _, _ := config.Parse([]byte("poll_interval: 10ms\nrepositories:\n  - repo: owner/repo\n"))
 	observed := observingGitHub{fakeGitHub: api, polls: make(chan struct{}, 4)}
-	s, err := scheduler.New(cfg, runtime, scheduler.Dependencies{GitHub: observed})
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: observed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -758,5 +758,38 @@ func TestTakeoverDuringPreparationPreservesManualState(t *testing.T) {
 	run, err := runtime.Workflow.Get(context.Background(), req.RunID)
 	if err != nil || run.State != workflow.Manual {
 		t.Fatalf("scheduler overwrote takeover: %+v, %v", run, err)
+	}
+}
+
+func schedulerResources(runtime *app.Runtime) scheduler.Resources {
+	return scheduler.Resources{DB: runtime.DB, Events: runtime.Events, Workflow: runtime.Workflow, Workspace: runtime.Workspace, Control: runtime.Scheduler}
+}
+
+func TestRuntimeDashboardControlSharesDispatchGate(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
+	s, runtime := configured(t, api, "repositories:\n  - repo: owner/repo\n", rejectingGit{})
+	ctx := context.Background()
+	if err := runtime.Scheduler.Pause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, _ := s.Runs(ctx)
+	if len(runs) != 0 {
+		t.Fatal("dashboard pause did not prevent dispatch")
+	}
+	if err := s.Pause(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Scheduler.Paused() {
+		t.Fatal("scheduler resume did not update dashboard control")
+	}
+	if err := s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, _ = s.Runs(ctx)
+	if len(runs) != 1 {
+		t.Fatal("shared gate did not resume dispatch")
 	}
 }

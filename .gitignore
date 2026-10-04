@@ -1,3 +1,4 @@
 .DS_Store
 /bin/
 .scratch
+/web/node_modules/

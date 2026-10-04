@@ -1,7 +1,10 @@
 # M1 scheduler
 
-`internal/scheduler.New` uses the effective config and a locked `app.Runtime`,
-including its SQLite database, shared workflow, and event bus. `Run(ctx)` polls immediately and then every
+`internal/scheduler.New` takes the effective config and `scheduler.Resources`
+from a locked runtime: its database, shared workflow, event bus, workspace, and
+scheduler control. These explicit resources keep the scheduler independent of
+application startup. Pass `Runtime.Scheduler` as the control to share the
+dashboard's pause/resume gate. `Run(ctx)` polls immediately and then every
 `poll_interval` (default 30 seconds). `Tick(ctx)` is also available for explicit
 reconciliation. Ticks serialize, and run operations coordinate with lifecycle controls so takeover
 or stop waits for an in-flight operation before changing state. Running tmux agents are observed without waiting

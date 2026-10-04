@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
@@ -42,6 +41,17 @@ type Git interface {
 	CommitAndPush(context.Context, managedgit.Run, managedgit.Phase) (managedgit.CommitResult, error)
 }
 
+// Resources are the shared components of an exclusively owned runtime.
+// Workflow must be the same instance used for lifecycle controls. Pass the
+// runtime's Control to share the dashboard claim gate; nil creates a local gate.
+type Resources struct {
+	DB        *sql.DB
+	Events    *events.Bus
+	Workflow  *workflow.Workflow
+	Workspace *workspace.Workspace
+	Control   *Control
+}
+
 type Dependencies struct {
 	GitHub GitHub
 	Git    Git
@@ -59,13 +69,19 @@ type Scheduler struct {
 	deps      Dependencies
 	claude    *harness.Claude
 	tick      sync.Mutex
-	pause     sync.Mutex
-	paused    atomic.Bool
+	control   *Control
 	running   atomic.Bool
 }
 
 // New requires an exclusively owned runtime workspace. Startup wiring lives in #14.
-func New(cfg config.Config, runtime *app.Runtime, deps Dependencies) (*Scheduler, error) {
+func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler, error) {
+	if resources.DB == nil || resources.Events == nil || resources.Workflow == nil || resources.Workspace == nil {
+		return nil, &fault.Error{Code: "internal.scheduler_runtime", Message: "Scheduler requires a database, event bus, shared workflow, and workspace"}
+	}
+	control := resources.Control
+	if control == nil {
+		control = NewControl(resources.Events)
+	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 30 * time.Second
 	}
@@ -84,7 +100,7 @@ func New(cfg config.Config, runtime *app.Runtime, deps Dependencies) (*Scheduler
 		deps.GitHub = github.New(nil)
 	}
 	if deps.Git == nil {
-		deps.Git = managedgit.New(runtime.Workspace)
+		deps.Git = managedgit.New(resources.Workspace)
 	}
 	if deps.Runner == nil {
 		deps.Runner = runner.NewLocal(runner.Options{})
@@ -94,25 +110,15 @@ func New(cfg config.Config, runtime *app.Runtime, deps Dependencies) (*Scheduler
 		env[k] = v
 	}
 	deps.Env = env
-	return &Scheduler{cfg: cfg, db: runtime.DB, bus: runtime.Events, workflow: runtime.Workflow, workspace: runtime.Workspace, deps: deps, claude: claude}, nil
+	return &Scheduler{cfg: cfg, db: resources.DB, bus: resources.Events, workflow: resources.Workflow, workspace: resources.Workspace, deps: deps, claude: claude, control: control}, nil
 }
 
 // Pause only stops new claims. Existing implement attempts continue on ticks.
 func (s *Scheduler) Pause(ctx context.Context, paused bool) error {
-	s.pause.Lock()
-	defer s.pause.Unlock()
-	if s.paused.Load() == paused {
-		return nil
-	}
-	event := "scheduler.resumed"
 	if paused {
-		event = "scheduler.paused"
+		return s.control.Pause(ctx)
 	}
-	if _, err := s.bus.Publish(ctx, events.Draft{Type: event, Payload: map[string]bool{"paused": paused}}); err != nil {
-		return err
-	}
-	s.paused.Store(paused)
-	return nil
+	return s.control.Resume(ctx)
 }
 
 // Run polls immediately and then at the configured interval. A transient tick
@@ -192,7 +198,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if s.paused.Load() {
+	if s.control.Paused() {
 		return errors.Join(failures...)
 	}
 	runs, err = s.Runs(ctx)
@@ -212,7 +218,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		}
 	}
 	for _, repo := range s.cfg.Repositories {
-		if !repo.Enabled || slots >= s.cfg.Concurrency || s.paused.Load() {
+		if !repo.Enabled || slots >= s.cfg.Concurrency || s.control.Paused() {
 			continue
 		}
 		limit := repo.Concurrency
@@ -233,7 +239,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			return issues[i].CreatedAt.Before(issues[j].CreatedAt)
 		})
 		for _, issue := range issues {
-			if s.paused.Load() || slots >= s.cfg.Concurrency || repoSlots[strings.ToLower(repo.Repo)] >= limit {
+			if s.control.Paused() || slots >= s.cfg.Concurrency || repoSlots[strings.ToLower(repo.Repo)] >= limit {
 				break
 			}
 			if issue.State != github.Open || !hasLabel(issue, repo.Labels.Ready) || hasLabel(issue, repo.Labels.Running) || hasLabel(issue, repo.Labels.NeedsAttention) || existing[issueKey(repo.Repo, issue.Number)] {
@@ -247,13 +253,13 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			if len(blockers) > 0 {
 				continue
 			}
-			s.pause.Lock()
-			if s.paused.Load() {
-				s.pause.Unlock()
+			s.control.mu.Lock()
+			if s.control.paused {
+				s.control.mu.Unlock()
 				break
 			}
 			run, err := s.workflow.Transition(ctx, uuid.NewString(), workflow.Request{Trigger: workflow.IssueClaimed, Repository: repo.Repo, IssueNumber: issue.Number})
-			s.pause.Unlock()
+			s.control.mu.Unlock()
 			if err != nil {
 				failures = append(failures, err)
 				continue

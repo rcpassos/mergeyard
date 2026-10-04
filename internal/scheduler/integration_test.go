@@ -129,7 +129,7 @@ func TestGitHubSchedulerIntegration(t *testing.T) {
 			}
 		}
 	})
-	s, err := scheduler.New(cfg, runtime, scheduler.Dependencies{GitHub: api, Runner: r})
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
