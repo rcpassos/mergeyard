@@ -14,6 +14,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/web"
 )
 
 // command is one entry in the PRD §29 command table.
@@ -104,9 +105,20 @@ func start(stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s (configuration startup integration, scheduler and dashboard not implemented yet; see #14)\n", runtime.Workspace.Root)
-	<-ctx.Done()
-	if err := runtime.Close(); err != nil {
+	defer runtime.Close()
+	dashboard, err := web.New(runtime.Events, runtime.Scheduler)
+	if err != nil {
+		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
+		return 1
+	}
+	listener, err := web.Listen("127.0.0.1:7331")
+	if err != nil {
+		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s; dashboard at http://%s (configuration startup integration and issue dispatch not implemented yet; see #14)\n", runtime.Workspace.Root, listener.Addr())
+	serveErr := dashboard.Serve(ctx, listener)
+	if err := errors.Join(serveErr, runtime.Close()); err != nil {
 		fmt.Fprintf(stderr, "mergeyard shutdown: %v\n", err)
 		return 1
 	}

@@ -1,9 +1,12 @@
 BIN := bin/mergeyard
 
-.PHONY: build test lint
+.PHONY: build assets test lint
 
-build:
+build: assets
 	go build -o $(BIN) ./cmd/mergeyard
+
+assets:
+	cd web && npm ci && npm run build
 
 test:
 	go test ./...
