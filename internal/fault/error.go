@@ -3,15 +3,22 @@ package fault
 
 import "fmt"
 
-// Error exposes a stable code, a field or filesystem path, and the underlying
+// Error exposes a stable code, a human message, a field or filesystem path, and the underlying
 // cause. Callers can inspect it with errors.As and the cause with errors.Is.
 type Error struct {
-	Code string
-	Path string
-	Err  error
+	Code    string
+	Message string
+	Path    string
+	Err     error
 }
 
 func (e *Error) Error() string {
+	if e.Message != "" {
+		if e.Path != "" {
+			return fmt.Sprintf("%s: %s: %s", e.Code, e.Path, e.Message)
+		}
+		return fmt.Sprintf("%s: %s", e.Code, e.Message)
+	}
 	if e.Path == "" {
 		return fmt.Sprintf("%s: %v", e.Code, e.Err)
 	}
