@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 )
 
@@ -159,8 +162,10 @@ func TestGitHubErrorCodesAndRetryBound(t *testing.T) {
 		{"invalid mutation", "gh: Validation Failed (HTTP 422)", "github.command_failed", false},
 		{"server error", "gh: Internal Server Error (HTTP 500)", "github.unavailable", true},
 		{"bad gateway", "gh: Bad Gateway (HTTP 502)", "github.unavailable", true},
-		{"rate limited", "gh: API rate limit exceeded (HTTP 403)", "github.rate_limited", true},
-		{"secondary limit", "gh: Too Many Requests (HTTP 429)", "github.rate_limited", true},
+		{"rate limited", "gh: API rate limit exceeded (HTTP 403)", "github.rate_limited", false},
+		{"secondary limit", "gh: Too Many Requests (HTTP 429)", "github.rate_limited", false},
+		{"secondary forbidden", "gh: You have exceeded a secondary rate limit (HTTP 403)", "github.rate_limited", false},
+		{"abuse limit", "gh: You have triggered an abuse detection mechanism (HTTP 403)", "github.rate_limited", false},
 		{"network", "error connecting to api.github.com", "github.unavailable", true},
 		{"unknown", "unexpected gh failure", "github.command_failed", false},
 	}
@@ -316,5 +321,91 @@ func TestCanceledContextDoesNotInvokeGH(t *testing.T) {
 	requireCode(t, err, "github.canceled")
 	if len(runner.calls) != 0 {
 		t.Fatal("canceled request invoked gh")
+	}
+}
+
+func TestRemoveLabelIsIdempotent(t *testing.T) {
+	cases := []struct {
+		name      string
+		responses []response
+	}{
+		{"absent label", []response{{stderr: []byte("gh: Label does not exist (HTTP 404)"), err: errors.New("exit status 1")}}},
+		{"applied before server error", []response{
+			{stderr: []byte("gh: Bad Gateway (HTTP 502)"), err: errors.New("exit status 1")},
+			{stderr: []byte("gh: Label does not exist (HTTP 404)"), err: errors.New("exit status 1")},
+		}},
+		{"applied before connection reset", []response{
+			{stderr: []byte("connection reset by peer"), err: errors.New("exit status 1")},
+			{stderr: []byte("gh: Label does not exist (HTTP 404)"), err: errors.New("exit status 1")},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &recordedGH{responses: tc.responses}
+			err := github.New(runner).RemoveLabel(context.Background(), "rcpassos/mergeyard", 6, "ready-for-agent")
+			if err != nil {
+				t.Fatalf("removing an already absent label failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestRemoveLabelPreservesNotFoundFailures(t *testing.T) {
+	for _, message := range []string{"gh: Not Found (HTTP 404)", "gh: Gone (HTTP 410)"} {
+		cause := errors.New("exit status 1")
+		runner := &recordedGH{responses: []response{{stderr: []byte(message), err: cause}}}
+		err := github.New(runner).RemoveLabel(context.Background(), "rcpassos/mergeyard", 6, "ready-for-agent")
+		requireCode(t, err, "github.not_found")
+		if !errors.Is(err, cause) {
+			t.Fatalf("lost underlying error: %v", err)
+		}
+	}
+}
+
+func TestErrorsUseSharedFaultType(t *testing.T) {
+	cause := errors.New("exit status 1")
+	runner := &recordedGH{responses: []response{{stderr: []byte("gh: Forbidden (HTTP 403)"), err: cause}}}
+	_, err := github.New(runner).IssueState(context.Background(), "rcpassos/mergeyard", 6)
+	var failure *fault.Error
+	if !errors.As(err, &failure) || failure.Code != "github.forbidden" {
+		t.Fatalf("error is not a shared coded fault: %v", err)
+	}
+	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "gh: Forbidden (HTTP 403)") {
+		t.Fatalf("lost message or underlying cause: %v", err)
+	}
+}
+
+func TestRepositoryNamesMatchConfiguration(t *testing.T) {
+	cases := []struct {
+		name, repo string
+		valid      bool
+	}{
+		{"short", "a/b", true},
+		{"leading repository dot", "rcpassos/.github", true},
+		{"maximum lengths", strings.Repeat("a", 39) + "/" + strings.Repeat("r", 100), true},
+		{"trailing owner hyphen", "owner-/repo", false},
+		{"owner too long", strings.Repeat("a", 40) + "/repo", false},
+		{"repository too long", "owner/" + strings.Repeat("r", 101), false},
+		{"path traversal", "owner/..", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, configErr := config.Parse([]byte(fmt.Sprintf("repositories: [{repo: %q}]", tc.repo)))
+			if (configErr == nil) != tc.valid {
+				t.Fatalf("configuration validity = %v, want %v: %v", configErr == nil, tc.valid, configErr)
+			}
+			runner := &recordedGH{responses: []response{{stdout: []byte("[]")}}}
+			_, err := github.New(runner).ListOpenIssues(context.Background(), tc.repo)
+			if tc.valid {
+				if err != nil {
+					t.Fatalf("valid repository rejected: %v", err)
+				}
+			} else {
+				requireCode(t, err, "github.invalid_input")
+				if len(runner.calls) != 0 {
+					t.Fatal("invalid repository invoked gh")
+				}
+			}
+		})
 	}
 }

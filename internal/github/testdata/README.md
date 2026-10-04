@@ -54,13 +54,18 @@ state. `Issue.Dependencies` exposes the native unresolved count when supplied;
 a missing summary is represented by nil.
 
 Label additions use JSON stdin; removals escape the label as one URL path
-segment. Repository and issue-number arguments are validated before executing
-`gh`. Issue bodies never become command arguments or stdin.
+segment. Removing an already absent label succeeds, including after a transient
+failure whose deletion was applied server-side; missing issues and repositories
+still return errors. Repository names use the same shared validator as
+configuration, and issue numbers are validated before executing `gh`. Issue
+bodies never become command arguments or stdin.
 
-Transient transport failures, HTTP 408/429/5xx, and rate-limited HTTP 403 responses
-receive at most three attempts with 250ms and 500ms context-aware backoff. Other
-failures return immediately. `*github.Error` exposes a stable `Code` and unwraps
-the original error:
+Transient transport failures and HTTP 408/5xx responses receive at most three
+attempts with 250ms and 500ms context-aware backoff. Rate-limited HTTP 403/429
+responses return immediately so callers can defer polling; the adapter does not
+receive reset or Retry-After headers through gh stderr. Other failures also return
+immediately. `*github.Error` aliases the shared `*fault.Error`, exposes a stable
+`Code`, and unwraps the original error:
 
 - `github.invalid_input`
 - `github.invalid_response`

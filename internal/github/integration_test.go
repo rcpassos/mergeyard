@@ -53,17 +53,8 @@ func TestGitHubIntegration(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		issues, err := client.ListOpenIssues(cleanupCtx, repo)
-		if err != nil {
-			t.Errorf("cleanup label check: %v", err)
-			return
-		}
-		for _, issue := range issues {
-			if issue.Number == number && hasLabel(issue, label) {
-				if err := client.RemoveLabel(cleanupCtx, repo, number, label); err != nil {
-					t.Errorf("cleanup: remove test label manually: %v", err)
-				}
-			}
+		if err := client.RemoveLabel(cleanupCtx, repo, number, label); err != nil {
+			t.Errorf("cleanup: remove test label manually: %v", err)
 		}
 	})
 	if err := client.AddLabel(ctx, repo, number, label); err != nil {

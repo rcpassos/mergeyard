@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/repository"
 	"github.com/rcpassos/mergeyard/internal/workspace"
 	"go.yaml.in/yaml/v3"
 )
@@ -166,7 +166,7 @@ func Parse(data []byte) (Config, *Document, error) {
 					Implementer: cloneRole(cfg.Implementer), Reviewer: cloneRole(cfg.Reviewer), Labels: cfg.Labels}
 				rm := newMapping(node, fmt.Sprintf("repositories[%d]", i), &err, &doc.Warnings)
 				rm.readRepo("repo", &r.Repo)
-				if !validRepo(r.Repo) {
+				if !repository.ValidName(r.Repo) {
 					rm.fail("config.invalid_repo", "repo", "expected owner/repo")
 				}
 				name := strings.ToLower(r.Repo)
@@ -385,11 +385,4 @@ func (m mapping) readRepo(key string, target *string) {
 		return
 	}
 	*target = n.Value
-}
-
-var repoPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100}$`)
-
-func validRepo(repo string) bool {
-	_, name, _ := strings.Cut(repo, "/")
-	return repoPattern.MatchString(repo) && name != "." && name != ".."
 }

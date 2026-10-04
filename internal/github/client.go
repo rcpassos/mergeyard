@@ -13,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/repository"
 )
 
 // State is GitHub's issue state.
@@ -73,21 +76,19 @@ func New(runner CommandRunner) *Client {
 	return &Client{runner: runner}
 }
 
-// Error provides a stable github.* code and preserves its underlying cause.
-type Error struct {
-	Code    string
-	Message string
-	Err     error
+// Error retains the GitHub adapter API while sharing the runtime error type.
+type Error = fault.Error
+
+func codedError(code, message string, cause error) *Error {
+	if cause != nil {
+		return &Error{Code: code, Err: fmt.Errorf("%s: %w", message, cause)}
+	}
+	return &Error{Code: code, Err: errors.New(message)}
 }
 
-func (e *Error) Error() string { return e.Code + ": " + e.Message }
-func (e *Error) Unwrap() error { return e.Err }
-
-var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$`)
-
 func issuePath(repo string, number int) (string, error) {
-	if !repositoryPattern.MatchString(repo) || strings.HasSuffix(repo, "/.") || strings.HasSuffix(repo, "/..") || number < 0 {
-		return "", &Error{Code: "github.invalid_input", Message: "expected owner/repo and a positive issue number"}
+	if !repository.ValidName(repo) || number < 0 {
+		return "", codedError("github.invalid_input", "expected owner/repo and a positive issue number", nil)
 	}
 	path := "repos/" + repo + "/issues"
 	if number > 0 {
@@ -118,7 +119,7 @@ type apiIssue struct {
 // IssueState reads the current issue state from GitHub.
 func (c *Client) IssueState(ctx context.Context, repo string, number int) (State, error) {
 	if number <= 0 {
-		return "", &Error{Code: "github.invalid_input", Message: "issue number must be positive"}
+		return "", codedError("github.invalid_input", "issue number must be positive", nil)
 	}
 	path, err := issuePath(repo, number)
 	if err != nil {
@@ -130,13 +131,13 @@ func (c *Client) IssueState(ctx context.Context, repo string, number int) (State
 	}
 	var issue apiIssue
 	if err := json.Unmarshal(data, &issue); err != nil {
-		return "", &Error{Code: "github.invalid_response", Message: "expected an issue", Err: err}
+		return "", codedError("github.invalid_response", "expected an issue", err)
 	}
 	if err := validateIssue(issue.Issue); err != nil {
 		return "", err
 	}
 	if len(issue.PullRequest) != 0 && string(issue.PullRequest) != "null" {
-		return "", &Error{Code: "github.invalid_response", Message: "expected an issue, received a pull request"}
+		return "", codedError("github.invalid_response", "expected an issue, received a pull request", nil)
 	}
 	return issue.State, nil
 }
@@ -151,25 +152,30 @@ func (c *Client) AddLabel(ctx context.Context, repo string, number int, label st
 		Labels []string `json:"labels"`
 	}{[]string{label}})
 	if err != nil {
-		return &Error{Code: "github.invalid_input", Message: "cannot encode label", Err: err}
+		return codedError("github.invalid_input", "cannot encode label", err)
 	}
 	_, err = c.request(ctx, input, "POST", path, false)
 	return err
 }
 
-// RemoveLabel removes one literal label name without touching other labels.
+// RemoveLabel ensures one literal label is absent without touching other labels.
+// An already absent label succeeds; missing issues and repositories still fail.
 func (c *Client) RemoveLabel(ctx context.Context, repo string, number int, label string) error {
 	path, err := labelPath(repo, number, label)
 	if err != nil {
 		return err
 	}
 	_, err = c.request(ctx, nil, "DELETE", path+"/"+url.PathEscape(label), false)
+	var failure *Error
+	if errors.As(err, &failure) && failure.Code == "github.label_not_found" {
+		return nil
+	}
 	return err
 }
 
 func labelPath(repo string, number int, label string) (string, error) {
 	if number <= 0 || label == "" {
-		return "", &Error{Code: "github.invalid_input", Message: "issue number must be positive and label nonempty"}
+		return "", codedError("github.invalid_input", "issue number must be positive and label nonempty", nil)
 	}
 	path, err := issuePath(repo, number)
 	return path + "/labels", err
@@ -179,7 +185,7 @@ func labelPath(repo string, number int, label string) (string, error) {
 // and returns only those still open. Body text is never interpreted as a dependency.
 func (c *Client) UnresolvedBlockers(ctx context.Context, repo string, number int) ([]Issue, error) {
 	if number <= 0 {
-		return nil, &Error{Code: "github.invalid_input", Message: "issue number must be positive"}
+		return nil, codedError("github.invalid_input", "issue number must be positive", nil)
 	}
 	path, err := issuePath(repo, number)
 	if err != nil {
@@ -204,7 +210,7 @@ func decodeOpenIssues(data []byte) ([]Issue, error) {
 			break
 		}
 		if err != nil || page == nil {
-			return nil, &Error{Code: "github.invalid_response", Message: "expected an issue array", Err: err}
+			return nil, codedError("github.invalid_response", "expected an issue array", err)
 		}
 		pages++
 		for _, issue := range page {
@@ -220,14 +226,14 @@ func decodeOpenIssues(data []byte) ([]Issue, error) {
 		}
 	}
 	if pages == 0 {
-		return nil, &Error{Code: "github.invalid_response", Message: "missing issue array"}
+		return nil, codedError("github.invalid_response", "missing issue array", nil)
 	}
 	return issues, nil
 }
 
 func validateIssue(issue Issue) error {
 	if issue.Number <= 0 || issue.CreatedAt.IsZero() || (issue.State != Open && issue.State != Closed) || (issue.Dependencies != nil && issue.Dependencies.BlockedBy < 0) {
-		return &Error{Code: "github.invalid_response", Message: "issue number, creation time, state, or dependency summary is invalid"}
+		return codedError("github.invalid_response", "issue number, creation time, state, or dependency summary is invalid", nil)
 	}
 	return nil
 }
@@ -269,7 +275,7 @@ func (c *Client) request(ctx context.Context, input []byte, method, endpoint str
 }
 
 func canceled(err error) *Error {
-	return &Error{Code: "github.canceled", Message: err.Error(), Err: err}
+	return &Error{Code: "github.canceled", Err: err}
 }
 
 var httpStatusPattern = regexp.MustCompile(`\(HTTP ([0-9]{3})\)`)
@@ -292,9 +298,13 @@ func commandError(stderr []byte, cause error) (*Error, bool) {
 	case status == 401 || (errors.As(cause, &exit) && exit.ExitCode() == 4) || strings.Contains(lower, "gh auth login"):
 		code = "github.not_logged_in"
 	case status == 429 || (status == 403 && (strings.Contains(lower, "rate limit") || strings.Contains(lower, "abuse"))):
-		code, transient = "github.rate_limited", true
+		// gh stderr carries no reset/Retry-After headers. Surface the limit
+		// immediately so callers can defer polling rather than retry too soon.
+		code = "github.rate_limited"
 	case status == 403:
 		code = "github.forbidden"
+	case status == 404 && strings.Contains(lower, "label does not exist"):
+		code = "github.label_not_found"
 	case status == 404 || status == 410:
 		code = "github.not_found"
 	case status == 408 || (status >= 500 && status < 600):
@@ -307,5 +317,5 @@ func commandError(stderr []byte, cause error) (*Error, bool) {
 			}
 		}
 	}
-	return &Error{Code: code, Message: message, Err: cause}, transient
+	return codedError(code, message, cause), transient
 }
