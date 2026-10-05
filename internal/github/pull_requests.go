@@ -15,12 +15,19 @@ import (
 
 // PullRequest contains the identity, current body, and actual draft state from GitHub.
 type PullRequest struct {
-	Number int    `json:"number"`
-	URL    string `json:"html_url"`
-	Body   string `json:"body"`
-	State  State  `json:"state"`
-	Draft  bool   `json:"draft"`
-	Head   struct {
+	Number         int    `json:"number"`
+	Merged         bool   `json:"merged"`
+	Mergeable      *bool  `json:"mergeable"`
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	Base           struct {
+		Ref string `json:"ref"`
+		SHA string `json:"sha"`
+	} `json:"base"`
+	URL   string `json:"html_url"`
+	Body  string `json:"body"`
+	State State  `json:"state"`
+	Draft bool   `json:"draft"`
+	Head  struct {
 		Ref  string `json:"ref"`
 		SHA  string `json:"sha"`
 		Repo struct {

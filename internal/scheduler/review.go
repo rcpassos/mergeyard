@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
@@ -152,7 +153,12 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			failure = &fault.Error{Code: "review.max_rounds_exceeded", Message: "Review requested changes with no review rounds remaining"}
 		}
 	}
-	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: trigger, Failure: failure, Metadata: workflow.MetadataPatch{ApprovedSHA: &approved, Review: &workflow.ReviewCompletion{AttemptID: a.id, Report: *report, ExitCode: *status.ExitCode}}})
+	var wait *ci.Snapshot
+	if trigger == workflow.ReviewApproved {
+		now := s.deps.Now().UTC()
+		wait = &ci.Snapshot{SHA: approved, StartedAt: now, Deadline: now.Add(s.cfg.CITimeout)}
+	}
+	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: trigger, Failure: failure, Metadata: workflow.MetadataPatch{CI: wait, ApprovedSHA: &approved, Review: &workflow.ReviewCompletion{AttemptID: a.id, Report: *report, ExitCode: *status.ExitCode}}})
 	if err != nil {
 		return err
 	}

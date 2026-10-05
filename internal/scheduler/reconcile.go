@@ -124,6 +124,12 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 	if stopRequested {
 		return s.stopRun(ctx, run)
 	}
+	if run.State == workflow.WaitingForCI {
+		return s.waitCI(ctx, repo, run)
+	}
+	if run.State == workflow.ReadyToMerge {
+		return s.observeReady(ctx, repo, run)
+	}
 	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
 		return err

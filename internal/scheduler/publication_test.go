@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
@@ -243,5 +244,58 @@ func TestUntrustedReportTextIsLiteralLocallyAndInComment(t *testing.T) {
 	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	if response.Code != 200 || strings.Contains(response.Body.String(), "<script>finding</script>") || !strings.Contains(response.Body.String(), "&lt;script&gt;finding&lt;/script&gt;") {
 		t.Fatalf("untrusted content not escaped: %s", response.Body.String())
+	}
+}
+
+// Retain the publishing boundary while exercising the CI boundary on the same PR.
+type publishingCIGitHub struct {
+	*reportGitHub
+	checks *ciGitHub
+}
+
+func (f publishingCIGitHub) PullRequestEvidence(ctx context.Context, repo string, pr github.PullRequest) (ci.Evidence, error) {
+	return f.checks.PullRequestEvidence(ctx, repo, pr)
+}
+func (f publishingCIGitHub) MarkReady(ctx context.Context, repo string, n int) error {
+	return f.checks.MarkReady(ctx, repo, n)
+}
+
+func TestPublicationWarningDoesNotBlockCIReadiness(t *testing.T) {
+	_, runtime, api, _, cfg, r := localFlow(t, successfulScript)
+	publisher := &reportGitHub{branchGitHub: branchGitHub{api}, failure: true}
+	checks := &ciGitHub{fakeGitHub: api, applyReady: true, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: publishingCIGitHub{publisher, checks}, Runner: r, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	if len(run.Publications) != 1 || run.Publications[0].WarningCode != "github.unavailable" || run.CI == nil {
+		t.Fatal("publication or CI state lost")
+	}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+	if err != nil || saved.State != workflow.ReadyToMerge || saved.LastErrorCode != "" || checks.readyCalls != 1 || len(saved.Publications) != 1 || saved.Publications[0].WarningCode != "github.unavailable" || !saved.CI.Deadline.Equal(run.CI.Deadline) {
+		t.Fatalf("publication blocked readiness: %+v %v", saved, err)
+	}
+	server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	for _, want := range []string{"Waiting for your merge", "CI and readiness", "Wait deadline", "Publication warning", "github.unavailable"} {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("missing %q from combined detail", want)
+		}
+	}
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/static/app.js", nil))
+	for _, event := range []string{"publication.pending", "publication.warning", "publication.published", "ci.updated", "pr.readiness_started"} {
+		if !strings.Contains(response.Body.String(), event) {
+			t.Fatalf("missing live update %q", event)
+		}
 	}
 }

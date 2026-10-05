@@ -222,6 +222,48 @@ fix/commit/push, preserves implementer edits, and prevents subsequent review.
 The ordinary suite covers the loop with fake harnesses and GitHub responses,
 real managed Git/tmux, and subprocess kills at the fix/publication boundaries.
 
+## CI and readiness
+
+An accepted review starts `WAITING_FOR_CI` for its approved commit. Every reported
+check (including optional checks), legacy status, and required check must pass.
+Requirements are read from classic branch protection and active inherited rulesets;
+permission, transport, malformed response, and unsupported required-workflow rules
+remain unknown and block readiness. Native skipped/neutral conclusions remain visible
+and are accepted under GitHub's documented status-check policy. Missing required
+checks, stale evidence, and pending/unknown outcomes block the gate.
+
+CI observes both the approved head and GitHub's current test merge commit. The
+adapter verifies the merge parents against the current base and head before
+accepting its checks/statuses. All reported outcomes participate; when the merge
+commit has reported CI, required contexts must be satisfied on that commit. With
+no merge reports, required contexts use the head. Approval always remains pinned
+to the reviewed head. Missing merge metadata, query failures, stale merge parents,
+and base/merge changes during observation block readiness without renewing the wait.
+
+Legacy context identity is case-insensitive: the latest `CI` status replaces an
+older `ci` status while preserving the latest display name and diagnostics.
+For app-bound legacy statuses, the adapter verifies GitHub's registered app ID
+and associated bot user ID against the status creator. Wrong apps cannot satisfy
+the requirement, and missing/unverifiable identity remains unknown. A same-named
+check run cannot supply source authorization for a legacy status.
+
+Only successful queries establishing no checks and no requirements allow readiness
+after two minutes from the saved wait start. `ci_timeout` defaults to 60 minutes.
+Expiry requires attention with diagnostics and never launches a code fix.
+Failed/timed-out outcomes are saved for the dependent CI repair ticket; until that
+slice lands, `ci.repair_unavailable` requires attention without starting a fix.
+Canceled/action-required outcomes also require attention.
+
+The review target, approved commit and fresh PR head must agree before readiness.
+An external push before readiness invalidates approval and preserves the run for
+explicit retry. Mark-ready intent is saved before converting a draft; an uncertain
+response is reconciled through fresh PR reads, never blindly replayed. An already
+normal PR needs no write. `READY_TO_MERGE` displays “Waiting for your merge” and
+releases capacity. A later push produces a warning; closure without merge requires
+attention. Mergeyard never merges a PR. CI/readiness reconciliation continues while
+new claims are paused. Manual merge completion and explicit retry remain dependent
+M2 slices.
+
 ## Review and fix report comments
 
 With `pr_comments: true` (the default), every locally saved review/fix report is

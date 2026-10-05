@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/doctor"
 	"github.com/rcpassos/mergeyard/internal/events"
@@ -351,6 +352,10 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		return nil, err
 	}
 	for i := range runs {
+		runs[i].CI, err = ci.Load(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
 		runs[i].Implementer, err = workflow.LoadImplementSnapshot(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err

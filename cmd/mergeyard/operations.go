@@ -18,6 +18,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/web"
+	"github.com/rcpassos/mergeyard/internal/workflow"
 	"github.com/rcpassos/mergeyard/internal/workspace"
 )
 
@@ -100,6 +101,27 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			fmt.Fprintf(stdout, "%s  %s#%d  %s/%s\n", terminalText(run.ID), terminalText(run.Repository), run.IssueNumber, terminalText(string(run.State)), terminalText(string(run.Phase)))
 			if run.LastErrorCode != "" {
 				fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
+			}
+			if run.State == workflow.ReadyToMerge {
+				fmt.Fprintln(stdout, "  Waiting for your merge")
+			}
+			if v := run.CI; v != nil {
+				fmt.Fprintf(stdout, "  CI wait %s → %s · approved %s · current head %s\n", v.StartedAt.Format(time.RFC3339), v.Deadline.Format(time.RFC3339), terminalText(v.SHA), terminalText(v.CurrentHead))
+				if v.Evidence.MergeSHA != "" {
+					fmt.Fprintf(stdout, "  verified test merge commit %s\n", terminalText(v.Evidence.MergeSHA))
+				}
+				if v.QueryError != "" {
+					fmt.Fprintf(stdout, "  CI evidence unknown: %s\n", terminalText(v.QueryError))
+				}
+				if v.Warning != "" {
+					fmt.Fprintf(stdout, "  %s\n", terminalText(v.Warning))
+				}
+				for _, c := range v.Evidence.Checks {
+					fmt.Fprintf(stdout, "    %s: %s (%s/%s) app %d · commit %s %s\n", terminalText(c.Name), terminalText(c.State), terminalText(c.Status), terminalText(c.Conclusion), c.AppID, terminalText(c.SHA), terminalText(c.URL))
+				}
+				for _, r := range v.Evidence.Required {
+					fmt.Fprintf(stdout, "    required %s (app %d)\n", terminalText(r.Name), r.AppID)
+				}
 			}
 			if v := run.Implementer; v != nil {
 				fmt.Fprintf(stdout, "  implementer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", terminalText(v.Agent), terminalText(v.Model), terminalText(v.Effort), terminalText(strings.Join(v.Skills, ",")), terminalText(v.Permissions), terminalText(v.SessionID))

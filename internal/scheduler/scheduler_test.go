@@ -96,6 +96,7 @@ func (f *fakeGitHub) CreateDraftPullRequest(_ context.Context, repo, branch, bas
 		f.prs = map[string]*github.PullRequest{}
 	}
 	pr := &github.PullRequest{Number: 100 + f.creations, URL: "https://github.com/" + repo + "/pull/101", Draft: true, State: github.Open}
+	pr.Base.Ref = base
 	pr.Head.Ref = branch
 	if f.head != nil {
 		pr.Head.SHA = f.head(branch)

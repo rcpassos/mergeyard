@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/review"
@@ -86,6 +87,7 @@ type MetadataPatch struct {
 	ReviewRound          *int
 	ApprovedSHA          *string
 	IncrementReviewRound bool
+	CI                   *ci.Snapshot
 	Fix                  *FixCompletion
 	Review               *ReviewCompletion
 	ReviewRejection      *ReviewRejection
@@ -96,6 +98,7 @@ type MetadataPatch struct {
 type Run struct {
 	Implementer *ImplementSnapshot `json:"implementer,omitempty"`
 	RunMetadata
+	CI               *ci.Snapshot         `json:"ci,omitempty"`
 	Publications     []review.Publication `json:"publications,omitempty"`
 	ReviewHistory    []review.Snapshot    `json:"review_history,omitempty"`
 	FixHistory       []review.FixSnapshot `json:"fix_history,omitempty"`
@@ -262,6 +265,11 @@ func (w *Workflow) acquireOperation(ctx context.Context, id string) (func(), err
 }
 
 func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string, failure *fault.Error) error {
+	if patch.CI != nil {
+		if err := ci.Save(ctx, tx, id, *patch.CI); err != nil {
+			return err
+		}
+	}
 	if patch.Fix != nil {
 		if err := patch.Fix.apply(ctx, tx, id, patch); err != nil {
 			return err
@@ -453,6 +461,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, &fault.Error{Code: "internal.run_not_found", Message: "Run does not exist", Path: id, Err: err}
 	}
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.CI, err = ci.Load(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
 	}
