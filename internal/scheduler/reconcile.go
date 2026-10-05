@@ -71,6 +71,9 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 			reconcilable[issueKey(run.Repository, run.IssueNumber)] = true
 		}
 	}
+	if err := s.publishReports(ctx); err != nil {
+		failures = append(failures, err)
+	}
 	// Scan all configured repositories, even when paused, disabled, or full.
 	for _, repo := range s.cfg.Repositories {
 		issues, err := s.deps.GitHub.ListOpenIssues(ctx, repo.Repo)
