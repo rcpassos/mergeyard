@@ -99,6 +99,8 @@ type Run struct {
 	Implementer *ImplementSnapshot `json:"implementer,omitempty"`
 	RunMetadata
 	CI               *ci.Snapshot         `json:"ci,omitempty"`
+	Publications     []review.Publication `json:"publications,omitempty"`
+	ReviewHistory    []review.Snapshot    `json:"review_history,omitempty"`
 	FixHistory       []review.FixSnapshot `json:"fix_history,omitempty"`
 	Fix              *review.FixSnapshot  `json:"fix,omitempty"`
 	Review           *review.Snapshot     `json:"review,omitempty"`
@@ -476,6 +478,14 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	}
 	if len(run.FixHistory) > 0 {
 		run.Fix = &run.FixHistory[len(run.FixHistory)-1]
+	}
+	run.Publications, err = review.LoadPublications(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.ReviewHistory, err = review.LoadHistory(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
 	}
 	run.Review, err = review.LoadSnapshot(ctx, db, id)
 	if err != nil {

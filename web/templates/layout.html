@@ -71,7 +71,7 @@
 <div><dt>Attempt</dt><dd>{{.Attempt}} · {{.Status}}</dd></div>
 <div><dt>Process session</dt><dd><code>{{.ProcessSession}}</code></dd></div></dl>
 {{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}</section>{{end}}
-{{with .Review}}<section class="queue-section"><h2>Independent review</h2>
+{{range .ReviewHistory}}<section class="queue-section"><h2>Independent review · round {{.Round}}, attempt {{.Attempt}}</h2>
 <dl class="run-facts"><div><dt>Reviewer</dt><dd>{{.Agent}} · model {{.Model}} · effort {{.Effort}}</dd></div>
 <div><dt>Reviewer session</dt><dd><code>{{.SessionID}}</code></dd></div><div><dt>Skills</dt><dd>{{range .Skills}}{{.}} {{else}}None{{end}}</dd></div>
 <div><dt>Permissions</dt><dd>{{.PermissionMode}} · edit tools disabled · allowed tools {{range .AllowedTools}}{{.}} {{else}}harness default{{end}}</dd></div>
@@ -93,6 +93,10 @@
 {{if .ReadyStarted}}<p>Mark-ready intent recorded. GitHub draft state is reconciled before progression.</p>{{end}}
 {{range .Evidence.Checks}}<article class="notice"><h3>{{.Name}} · {{if .State}}{{.State}}{{else}}unknown{{end}}</h3><p>{{.Source}} · {{.Status}} · {{.Conclusion}}</p>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer">Check details</a>{{end}}</article>{{else}}<p>No reported checks in the latest observation.</p>{{end}}
 <p>Required checks: {{range .Evidence.Required}}{{.Name}}{{if .AppID}} (app {{.AppID}}){{end}}; {{else}}None in the latest observation.{{end}}</p></section>{{end}}
+
+{{range .Publications}}<section class="notice"><h3>{{.Phase}} report publication · round {{.Round}}, attempt {{.Attempt}}</h3>
+{{if .WarningCode}}<p role="status">Publication warning: <code>{{.WarningCode}}</code> · {{.Warning}}</p>{{else}}<p>{{.State}}</p>{{end}}
+{{if .CommentURL}}<p><a href="{{.CommentURL}}" target="_blank" rel="noopener noreferrer">Published comment</a></p>{{end}}</section>{{end}}
 {{if .ApprovedSHA}}<p>Approved commit: <code>{{.ApprovedSHA}}</code></p>{{end}}
 {{if .LastErrorCode}}<section class="notice failure"><h2>Last error</h2><p><code>{{.LastErrorCode}}</code>: {{.LastErrorMessage}}</p></section>{{end}}
 {{end}}<div class="run-history">

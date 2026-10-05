@@ -364,6 +364,14 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		if err != nil {
 			return nil, err
 		}
+		runs[i].Publications, err = review.LoadPublications(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		runs[i].ReviewHistory, err = review.LoadHistory(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
 		runs[i].Review, err = review.LoadSnapshot(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err

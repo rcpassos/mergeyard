@@ -18,7 +18,7 @@ func TestCIUpgradePreservesPublishedM2History(t *testing.T) {
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 	published := fstest.MapFS{}
-	names := []string{"001_initial.sql", "002_scheduler.sql", "003_stop_requested.sql", "004_attempt_skills.sql", "005_reviews.sql", "006_fixes.sql", "007_implement_settings.sql", "008_effective_codex_permissions.sql"}
+	names := []string{"001_initial.sql", "002_scheduler.sql", "003_stop_requested.sql", "004_attempt_skills.sql", "005_reviews.sql", "006_fixes.sql", "007_implement_settings.sql", "008_effective_codex_permissions.sql", "009_report_publications.sql"}
 	for _, name := range names {
 		data, err := fs.ReadFile(migrations.Files, name)
 		if err != nil {
@@ -34,7 +34,8 @@ func TestCIUpgradePreservesPublishedM2History(t *testing.T) {
  INSERT INTO phase_attempts(id,run_id,phase,role,round,attempt,agent,status,permissions) VALUES('implement','m2','implement','implementer',0,1,'codex','succeeded','workspace-write · network true · approvals never');
  INSERT INTO phase_attempts(id,run_id,phase,role,round,attempt,agent,status) VALUES('fix','m2','fix','implementer',1,1,'claude','succeeded');
  INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,commit_sha,pushed) VALUES('fix','session','old','[]','auto','[]','approved',1);
- INSERT INTO events(run_id,type,payload_json) VALUES('m2','fix.pushed','{"commit_sha":"approved"}');`); err != nil {
+ INSERT INTO events(run_id,type,payload_json) VALUES('m2','fix.pushed','{"commit_sha":"approved"}');
+ INSERT INTO report_publications(attempt_id,run_id,repository,pr_number,phase,round,attempt,body,state,comment_id,comment_url) VALUES('fix','m2','owner/repo',101,'fix',1,1,'frozen body','published',42,'https://github.com/owner/repo/pull/101#issuecomment-42');`); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -59,8 +60,13 @@ func TestCIUpgradePreservesPublishedM2History(t *testing.T) {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
+	var publicationBody, publicationState string
+	var commentID int
+	if err := db.QueryRow("SELECT body,state,comment_id FROM report_publications WHERE attempt_id='fix'").Scan(&publicationBody, &publicationState, &commentID); err != nil {
+		t.Fatal(err)
+	}
 	wait, err := ci.Load(ctx, db, "m2")
-	if err != nil || wait != nil || state != "WAITING_FOR_CI" || sha != "approved" || round != 2 || commit != "approved" || event != `{"commit_sha":"approved"}` || permissions != "workspace-write · network true · approvals never" || version != 9 {
+	if err != nil || wait != nil || state != "WAITING_FOR_CI" || sha != "approved" || round != 2 || commit != "approved" || event != `{"commit_sha":"approved"}` || permissions != "workspace-write · network true · approvals never" || version != 10 || publicationBody != "frozen body" || publicationState != "published" || commentID != 42 {
 		t.Fatal("CI upgrade changed existing M2 history")
 	}
 }

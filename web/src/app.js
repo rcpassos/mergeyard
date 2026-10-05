@@ -14,6 +14,7 @@ for (const type of [
   'scheduler.paused', 'scheduler.resumed',
   'run.claimed', 'run.preparing', 'run.needs_attention', 'run.stop_requested', 'run.stopped', 'run.failed',
   'run.completed', 'run.manual', 'run.handed_back', 'run.waiting_for_harness',
+  'publication.pending', 'publication.warning', 'publication.published',
   'ci.updated', 'pr.readiness_started', 'review.completed', 'review.restored', 'fix.completed', 'fix.committed', 'fix.pushed', 'phase.started', 'phase.attempt_started', 'harness.session_discovered', 'phase.completed', 'phase.failed', 'pr.created', 'pr.ready_for_review',
 ]) {
   events.addEventListener(type, refresh);
