@@ -35,7 +35,22 @@ func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target st
 	if _, err := command(ctx, run.Path, "git.fix_diverged", "merge-base", "--is-ancestor", target, "HEAD"); err != nil {
 		return CommitResult{}, failure("git.fix_diverged", run.Path, err)
 	}
-	return commit(ctx, run, phase)
+	result, err := commit(ctx, run, phase)
+	if err != nil {
+		return result, err
+	}
+	// Commit identity can change without code changes (empty commits or a
+	// change followed by a revert). Compare the exact trees, including on replay.
+	trees, err := command(ctx, run.Path, "git.fix_tree", "rev-parse", target+"^{tree}", result.SHA+"^{tree}")
+	if err != nil {
+		return result, err
+	}
+	ids := strings.Fields(trees)
+	if len(ids) != 2 {
+		return result, failure("git.fix_tree", run.Path, errors.New("could not resolve both fix trees"))
+	}
+	result.TreeChanged = ids[0] != ids[1]
+	return result, nil
 }
 
 // PushFix accepts either the original target or the journaled new commit on the

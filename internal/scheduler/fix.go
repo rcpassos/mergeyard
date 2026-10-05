@@ -162,7 +162,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 		if err != nil {
 			return fail(err)
 		}
-		if result.SHA == a.target {
+		if !result.TreeChanged {
 			for _, response := range a.report.Responses {
 				if response.Resolution == "fixed" {
 					return s.finishFixAttempt(ctx, repo, run, a, nil, a.report, &fault.Error{Code: "phase.result_invalid", Message: "Fix claims a fixed finding but made no code changes"})

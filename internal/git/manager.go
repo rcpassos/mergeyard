@@ -60,6 +60,8 @@ type Phase struct {
 type CommitResult struct {
 	SHA       string
 	Committed bool
+	// TreeChanged is set by CommitFix relative to its original review target.
+	TreeChanged bool
 }
 
 var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)

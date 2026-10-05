@@ -530,3 +530,45 @@ func TestUnpublishedEditsAfterFixPushRequireAttention(t *testing.T) {
 		})
 	}
 }
+
+func TestUnchangedTreeCannotClaimFindingFixed(t *testing.T) {
+	for _, tc := range []struct{ name, script, localCommits string }{
+		{"empty commit", `git -c user.name=Implementer -c user.email=implementer@example.invalid commit --allow-empty -m 'empty fix' >&2`, "2"},
+		{"commit then revert", `printf temporary > feature.txt
+ git -c user.name=Implementer -c user.email=implementer@example.invalid commit -am 'temporary fix' >&2
+ git -c user.name=Implementer -c user.email=implementer@example.invalid revert --no-edit HEAD >&2`, "3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fix := tc.script + "\n" + fixedReport
+			_, runtime, api, remote, cfg, r := localFlow(t, loopScript(fix))
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r, Env: map[string]string{"PATH": os.Getenv("PATH"), "GIT_CONFIG_GLOBAL": os.Getenv("GIT_CONFIG_GLOBAL"), "GIT_CONFIG_NOSYSTEM": "1"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := finish(t, s, workflow.NeedsAttention, workflow.Fix)
+			if run.LastErrorCode != "phase.result_invalid" || run.ReviewRound != 1 || run.Fix.Attempt != 1 || run.Fix.Pushed || run.Fix.CommitSHA != "" {
+				t.Fatalf("empty fix accepted: %+v fix=%+v", run, run.Fix)
+			}
+			if run.Fix.Report == nil || run.Fix.Report.Responses[0].Resolution != "fixed" {
+				t.Fatal("fix report not preserved")
+			}
+			if gitCommand(t, remote, "rev-list", "--count", "main..mergeyard/issue-7") != "1" {
+				t.Fatal("empty fix published")
+			}
+			var path string
+			if err := runtime.DB.QueryRow("SELECT worktree_path FROM runs WHERE id=?", run.ID).Scan(&path); err != nil {
+				t.Fatal(err)
+			}
+			if gitCommand(t, path, "rev-list", "--count", "main..HEAD") != tc.localCommits {
+				t.Fatal("implementer commit not preserved locally")
+			}
+			var reviews int
+			if err := runtime.DB.QueryRow("SELECT count(*) FROM review_attempts").Scan(&reviews); err != nil {
+				t.Fatal(err)
+			}
+			if reviews != 1 {
+				t.Fatal("invalid fix consumed another review")
+			}
+		})
+	}
+}
