@@ -28,6 +28,16 @@ func (s *Scheduler) advance(ctx context.Context, repo config.Repository, run wor
 	})
 }
 func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run workflow.Run) error {
+	if run.State.Terminal() {
+		return nil
+	}
+	var stopRequested bool
+	if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopRequested); err != nil {
+		return err
+	}
+	if stopRequested {
+		return s.stopRun(ctx, run)
+	}
 	if run.State == workflow.NeedsAttention {
 		return s.attentionLabels(ctx, repo, run)
 	}

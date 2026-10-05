@@ -34,16 +34,22 @@ var errorCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$
 
 // Server serves the local dashboard and the runtime's shared event bus.
 type Server struct {
-	bus       *events.Bus
-	scheduler Scheduler
-	templates *template.Template
-	token     string
-	handler   http.Handler
+	bus        *events.Bus
+	scheduler  Scheduler
+	templates  *template.Template
+	token      string
+	handler    http.Handler
+	operations Operations
+	workspace  string
 }
 
 // New constructs an HTTP handler without opening a socket. The caller owns the
 // bus and scheduler and must keep them alive until the server stops.
 func New(bus *events.Bus, scheduler Scheduler) (*Server, error) {
+	return newServer(bus, scheduler, nil, "")
+}
+
+func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, workspace string) (*Server, error) {
 	if bus == nil || scheduler == nil {
 		return nil, &fault.Error{Code: "internal.web_dependencies", Message: "Web server requires an event bus and scheduler"}
 	}
@@ -55,7 +61,7 @@ func New(bus *events.Bus, scheduler Scheduler) (*Server, error) {
 	if _, err := rand.Read(secret[:]); err != nil {
 		return nil, &fault.Error{Code: "internal.web_csrf", Message: "Could not generate CSRF token", Err: err}
 	}
-	s := &Server{bus: bus, scheduler: scheduler, templates: templates, token: hex.EncodeToString(secret[:])}
+	s := &Server{bus: bus, scheduler: scheduler, operations: operations, workspace: workspace, templates: templates, token: hex.EncodeToString(secret[:])}
 	static, err := fs.Sub(webassets.Files, "static")
 	if err != nil {
 		return nil, &fault.Error{Code: "internal.web_assets", Message: "Could not open embedded assets", Err: err}
@@ -67,6 +73,11 @@ func New(bus *events.Bus, scheduler Scheduler) (*Server, error) {
 	mux.HandleFunc("GET /events", s.stream)
 	mux.HandleFunc("POST /scheduler/pause", s.control)
 	mux.HandleFunc("POST /scheduler/resume", s.control)
+	if operations != nil {
+		mux.HandleFunc("GET /api/status", s.status)
+		mux.HandleFunc("GET /api/runs/{id}/watch", s.watchRun)
+		mux.HandleFunc("POST /api/runs/{id}/stop", s.stopRun)
+	}
 	s.handler = mux
 	return s, nil
 }
@@ -190,6 +201,12 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(r.Context(), "Scheduler action failed", "error_code", code, "action", r.URL.Path, "error", err)
 		w.Header().Set("X-Mergeyard-Error-Code", code)
 		http.Error(w, code+": Could not change scheduler state. Check the application log for details.", http.StatusInternalServerError)
+		return
+	}
+	if r.Header.Get("Accept") == "application/json" {
+		s.json(w, struct {
+			Paused bool `json:"paused"`
+		}{s.scheduler.Paused()})
 		return
 	}
 	if r.Header.Get("HX-Request") == "true" {

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,10 +24,30 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 		t.Fatalf("build CLI: %v\n%s", err, output)
 	}
 	home := t.TempDir()
-	env := append(os.Environ(), "HOME="+home)
+	tools := t.TempDir()
+	for name, script := range map[string]string{
+		"git": "#!/bin/sh\nexit 0\n", "tmux": "#!/bin/sh\nexit 0\n", "gh": "#!/bin/sh\nexit 0\n",
+		"claude": "#!/bin/sh\ncase \"$1\" in --version) echo '2.1.277 (Claude Code)';; auth) exit 0;; *) exit 1;; esac\n",
+	} {
+		if err := os.WriteFile(filepath.Join(tools, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+	path := filepath.Join(home, "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("port: %d\nopen_browser: false\nagents: {claude: {permission_mode: acceptEdits}}\n", port)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "HOME="+home, "PATH="+tools)
+
 	start := func(args ...string) *exec.Cmd {
 		t.Helper()
-		cmd := exec.CommandContext(ctx, binary, args...)
+		cmd := exec.CommandContext(ctx, binary, append(args, "--config", path)...)
 		cmd.Env = env
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -62,11 +84,22 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 			t.Fatalf("startup did not create %s: %v", name, err)
 		}
 	}
-	second := exec.CommandContext(ctx, binary, "start")
+	second := exec.CommandContext(ctx, binary, "start", "--config", path)
 	second.Env = env
 	output, err := second.CombinedOutput()
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() == 0 || !strings.Contains(string(output), "workspace.locked") {
 		t.Fatalf("second process must fail with a lock error: %v, %s", err, output)
+	}
+	for _, action := range []string{"status", "pause", "status", "resume"} {
+		cmd := exec.CommandContext(ctx, binary, action, "--config", path)
+		cmd.Env = env
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v %s", action, err, output)
+		}
+		if action == "pause" && !strings.Contains(string(output), "paused") {
+			t.Fatalf("pause: %s", output)
+		}
 	}
 	if err := first.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)

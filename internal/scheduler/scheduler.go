@@ -73,7 +73,7 @@ type Scheduler struct {
 	running   atomic.Bool
 }
 
-// New requires an exclusively owned runtime workspace. Startup wiring lives in #14.
+// New requires an exclusively owned runtime workspace.
 func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler, error) {
 	if resources.DB == nil || resources.Events == nil || resources.Workflow == nil || resources.Workspace == nil {
 		return nil, &fault.Error{Code: "internal.scheduler_runtime", Message: "Scheduler requires a database, event bus, shared workflow, and workspace"}
@@ -181,19 +181,9 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	runs, err := s.Runs(ctx)
-	if err != nil {
-		return err
-	}
 	var failures []error
-	for _, run := range runs {
-		repo, ok := s.repository(run.Repository)
-		if !ok {
-			continue
-		}
-		if err := s.advance(ctx, repo, run); err != nil {
-			failures = append(failures, err)
-		}
+	if err := s.reconcile(ctx); err != nil {
+		failures = append(failures, err)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -201,7 +191,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if s.control.Paused() {
 		return errors.Join(failures...)
 	}
-	runs, err = s.Runs(ctx)
+	runs, err := s.Runs(ctx)
 	if err != nil {
 		return errors.Join(append(failures, err)...)
 	}

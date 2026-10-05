@@ -13,8 +13,19 @@ interval. Cancelling the scheduler leaves agent sessions running.
 
 `Pause(ctx, true)` prevents new claims; existing implementations continue.
 `Pause(ctx, false)` resumes dispatch. These operations publish scheduler events.
-`Runs(ctx)` returns durable workflow snapshots. Startup and CLI/dashboard wiring
-remain the responsibility of issue #14.
+`Runs(ctx)` returns durable workflow snapshots. `Reconcile(ctx)` advances persisted
+M1 work before startup enables new claims, observing existing attempts rather
+than launching duplicates. Full GitHub/PR/orphan reconciliation belongs to #13.
+The CLI starts this scheduler and shares its controls with the dashboard.
+
+`Stop(ctx, runID)` serializes with phase advancement and first persists stop
+intent. It interrupts running attempts through the runner, preserves the
+worktree/branch/PR, removes the running label, adds attention if work was created,
+and transitions to `STOPPED`. Failed interruptions or label writes leave intent
+pending; subsequent ticks and startup reconciliation finish the stop before
+advancing work. Successful stops are idempotent. `Watch(ctx, runID)` returns the
+live attempt of the current automated phase, rejecting missing or finished
+sessions.
 
 Repositories are visited in configuration order. Issues are ordered by creation
 time and then issue number. Only open ready issues without running/attention
