@@ -202,3 +202,32 @@ publication progress across rounds. Stop uses the shared operation gate during
 fix/commit/push, preserves implementer edits, and prevents subsequent review.
 The ordinary suite covers the loop with fake harnesses and GitHub responses,
 real managed Git/tmux, and subprocess kills at the fix/publication boundaries.
+
+## Review and fix report comments
+
+With `pr_comments: true` (the default), every locally saved review/fix report is
+published as a separate PR conversation comment. Comments show the round and
+attempt, review verdict/findings or fix summary/responses, and whether a review
+was accepted. Report text is literal JSON in a fenced block, with HTML and
+backticks escaped. Every review attempt and fix remains visible in run detail
+and status, including when comments are disabled.
+
+A durable publication queue freezes the comment body, run/phase/report identity
+and PR destination before calling GitHub. Each attempt records its timestamp and
+count; a successful publication records GitHub's comment ID and URL. The adapter
+reads all comment pages for the identity marker before a single POST, including
+on retries after transport failures or malformed responses. It never edits
+matching comments, preserving later human additions. Successfully acknowledged
+comments are never replayed, even if subsequently edited or removed by a human.
+
+Posting failures emit a safe `publication.warning` code and persist a separate
+warning in run detail/status. They do not set workflow errors or stop phases,
+CI, readiness or completion. Optional network publication has a five-second
+budget per reconciliation and retries on later scheduler ticks. Reconciliation
+includes pending reports for completed/failed/stopped runs and does not need an
+agent or worktree to render or retry them. Disabling `pr_comments` suspends all
+external comment calls while retaining pending bodies and warnings; enabling it
+on a later restart publishes the backlog. Existing saved reports without queue
+entries are also recovered, including reports saved while the control plane was
+offline. Publication emits `publication.pending` and `publication.published`
+events alongside warnings.
