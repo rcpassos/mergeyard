@@ -20,7 +20,7 @@ The CLI starts this scheduler and shares its controls with the dashboard.
 
 `Stop(ctx, runID)` serializes with phase advancement and first persists stop
 intent. It interrupts running attempts through the runner, preserves the
-worktree/branch/PR, removes the running label, adds attention if work was created,
+worktree/branch/PR, removes ready and running labels, adds attention if work was created,
 and transitions to `STOPPED`. Failed interruptions or label writes leave intent
 pending; subsequent ticks and startup reconciliation finish the stop before
 advancing work. Successful stops are idempotent. `Watch(ctx, runID)` returns the

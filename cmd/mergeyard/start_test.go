@@ -6,9 +6,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -33,6 +35,26 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Keep the browser launcher blocked throughout startup and control requests.
+	// SIGINT/SIGTERM must also terminate and reap it during runtime shutdown.
+	browserStarted := filepath.Join(home, "browser-started")
+	browserScript := "#!/bin/sh\nprintf '%s\\n' \"$$\" >> '" + browserStarted + "'\nexec /bin/sleep 60\n"
+	for _, name := range []string{"open", "xdg-open"} {
+		if err := os.WriteFile(filepath.Join(tools, name), []byte(browserScript), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		data, _ := os.ReadFile(browserStarted)
+		for _, line := range strings.Fields(string(data)) {
+			if pid, err := strconv.Atoi(line); err == nil {
+				process, _ := os.FindProcess(pid)
+				if process != nil {
+					process.Kill()
+				}
+			}
+		}
+	})
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +62,7 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	listener.Close()
 	path := filepath.Join(home, "config.yaml")
-	if err := os.WriteFile(path, []byte(fmt.Sprintf("port: %d\nopen_browser: false\nagents: {claude: {permission_mode: acceptEdits}}\n", port)), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("port: %d\nopen_browser: true\nagents: {claude: {permission_mode: acceptEdits}}\n", port)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	env := append(os.Environ(), "HOME="+home, "PATH="+tools)
@@ -90,10 +112,32 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() == 0 || !strings.Contains(string(output), "workspace.locked") {
 		t.Fatalf("second process must fail with a lock error: %v, %s", err, output)
 	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(browserStarted); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("browser launcher did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	browserClient := &http.Client{Timeout: 2 * time.Second}
+	response, err := browserClient.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	if err != nil {
+		t.Fatalf("dashboard blocked by browser launch: %v", err)
+	}
+	response.Body.Close()
+	browserClient.CloseIdleConnections()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("dashboard status: %d", response.StatusCode)
+	}
 	for _, action := range []string{"status", "pause", "status", "resume"} {
-		cmd := exec.CommandContext(ctx, binary, action, "--config", path)
+		controlCtx, stopControl := context.WithTimeout(ctx, 2*time.Second)
+		cmd := exec.CommandContext(controlCtx, binary, action, "--config", path)
 		cmd.Env = env
 		output, err := cmd.CombinedOutput()
+		stopControl()
 		if err != nil {
 			t.Fatalf("%s: %v %s", action, err, output)
 		}

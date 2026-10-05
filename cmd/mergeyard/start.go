@@ -75,14 +75,23 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 	go func() { schedulerDone <- engine.Run(liveCtx) }()
 	address := "http://" + listener.Addr().String()
 	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s; dashboard at %s\n", owner.Workspace.Root, address)
+	// Browser launch is optional and must not delay HTTP controls. Keep it
+	// owned by the runtime so shutdown cancels and reaps a blocked launcher.
+	browserDone := make(chan struct{})
 	if cfg.OpenBrowser {
-		if err := openBrowser(liveCtx, address); err != nil {
-			fmt.Fprintf(stderr, "mergeyard: could not open browser: %v\n", err)
-		}
+		go func() {
+			defer close(browserDone)
+			if err := openBrowser(liveCtx, address); err != nil && liveCtx.Err() == nil {
+				fmt.Fprintf(stderr, "mergeyard: could not open browser: %v\n", err)
+			}
+		}()
+	} else {
+		close(browserDone)
 	}
 	serveErr := dashboard.Serve(liveCtx, listener)
 	cancel()
 	schedulerErr := <-schedulerDone
+	<-browserDone
 	if errors.Is(schedulerErr, context.Canceled) {
 		schedulerErr = nil
 	}
