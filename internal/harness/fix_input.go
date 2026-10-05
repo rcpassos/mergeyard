@@ -44,6 +44,9 @@ func WriteFixInput(ctx context.Context, writer FileWriter, phase PhaseContext, i
 		}
 		text.WriteString("\n\n## CI repair\n\nRepair cause: " + input.CI.RepairCause + "\n\n" + string(diagnostics) + "\n\nFix the code causing the supplied failed or terminal timed-out checks. A terminal check timeout differs from Mergeyard's wait deadline. Do not rerun checks or speculate about canceled/action-required checks. For CI-only fixes return responses: []; do not invent findings. Summarize the changes and local validation. Another independent review is required before new CI can authorize readiness.\n")
 	}
+	if err := writer.WriteFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"), []byte(review.FixSchema), 0600); err != nil {
+		return "", err
+	}
 	path := filepath.Join(phase.PhaseDir, "input.md")
 	return path, writer.WriteFile(ctx, path, []byte(text.String()), 0600)
 }

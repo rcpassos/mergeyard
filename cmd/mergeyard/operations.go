@@ -134,6 +134,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 				fmt.Fprintf(stdout, "  implement attempt %d: %s · process %s\n", v.Attempt, terminalText(v.Status), terminalText(v.ProcessSession))
 			}
 			for _, v := range run.FixHistory {
+				fmt.Fprintf(stdout, "  fixer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", terminalText(v.Agent), terminalText(v.Model), terminalText(v.Effort), terminalText(strings.Join(v.Skills, ",")), terminalText(v.PermissionMode), terminalText(v.SessionID))
 				fmt.Fprintf(stdout, "  fix round %d attempt %d: %s · session %s · target %s · commit %s · pushed=%t\n", v.Round, v.Attempt, terminalText(v.Status), terminalText(v.SessionID), terminalText(v.TargetSHA), terminalText(v.CommitSHA), v.Pushed)
 				if v.CI != nil {
 					fmt.Fprintf(stdout, "    CI repair cause: %s · next independent review round %d\n", terminalText(v.CI.RepairCause), v.Round+1)

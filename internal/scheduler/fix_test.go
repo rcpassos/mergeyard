@@ -125,39 +125,53 @@ func TestFixFailuresAndAttemptsStayWithinRound(t *testing.T) {
 }
 
 func TestFixAttemptRetryDoesNotSpendReviewRound(t *testing.T) {
-	fix := `case "$*" in *fix-1-1*) exit 1;; esac
+	for _, implementer := range []string{"claude", "codex"} {
+		for _, reviewer := range []string{"claude", "codex"} {
+			t.Run(implementer+"/"+reviewer, func(t *testing.T) {
+				fix := `case "$*" in *fix-1-1*) exit 1;; esac
  printf fixed > feature.txt
  ` + fixedReport
-	_, runtime, api, _, cfg, r := localFlow(t, loopScript(fix))
-	cfg.Repositories[0].Implementer.MaxAttempts = 2
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	if run.ReviewRound != 2 || run.Fix.Attempt != 2 || run.Review.Attempt != 1 {
-		t.Fatalf("round or attempt=%+v", run)
+				_, runtime, api, _, cfg, r := pairingFlow(t, implementer, reviewer, fix)
+				cfg.Repositories[0].Implementer.MaxAttempts = 2
+				s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+				if err != nil {
+					t.Fatal(err)
+				}
+				run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+				if run.ReviewRound != 2 || run.Fix.Attempt != 2 || run.Review.Attempt != 1 {
+					t.Fatalf("round or attempt=%+v", run)
+				}
+			})
+		}
 	}
 }
 
 func TestBoundedReviewLoopDoesNotLaunchUnreviewableFix(t *testing.T) {
-	for _, max := range []int{1, 2} {
-		t.Run(string(rune('0'+max)), func(t *testing.T) {
-			script := strings.ReplaceAll(loopScript(disputedReport), "*review-1-*", "*review-*")
-			_, runtime, api, _, cfg, r := localFlow(t, script)
-			cfg.MaxRounds = max
-			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
-			if err != nil {
-				t.Fatal(err)
+	for _, implementer := range []string{"claude", "codex"} {
+		for _, reviewer := range []string{"claude", "codex"} {
+			for _, max := range []int{1, 2} {
+				t.Run(implementer+"/"+reviewer+"/"+string(rune('0'+max)), func(t *testing.T) {
+					script := strings.ReplaceAll(loopScript(disputedReport), "*review-1-*", "*review-*")
+					_, runtime, api, _, cfg, r := pairingFlow(t, implementer, reviewer, disputedReport)
+					replacePhaseScript(t, cfg, workflow.Review, script)
+					if implementer != reviewer {
+						replacePhaseScript(t, cfg, workflow.Fix, script)
+					}
+					cfg.MaxRounds = max
+					s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+					if err != nil {
+						t.Fatal(err)
+					}
+					run := finish(t, s, workflow.NeedsAttention, workflow.Review)
+					if run.ReviewRound != max || run.LastErrorCode != "review.max_rounds_exceeded" || !run.Review.Accepted || run.Review.Report.Status != "changes_required" {
+						t.Fatalf("exhaustion=%+v", run)
+					}
+					if len(run.FixHistory) != max-1 {
+						t.Fatalf("fixes=%d max=%d", len(run.FixHistory), max)
+					}
+				})
 			}
-			run := finish(t, s, workflow.NeedsAttention, workflow.Review)
-			if run.ReviewRound != max || run.LastErrorCode != "review.max_rounds_exceeded" || !run.Review.Accepted || run.Review.Report.Status != "changes_required" {
-				t.Fatalf("exhaustion=%+v", run)
-			}
-			if len(run.FixHistory) != max-1 {
-				t.Fatalf("fixes=%d max=%d", len(run.FixHistory), max)
-			}
-		})
+		}
 	}
 }
 

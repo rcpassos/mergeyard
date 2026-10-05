@@ -47,6 +47,9 @@ func WriteReviewInput(ctx context.Context, writer FileWriter, phase PhaseContext
 		diagnostics, _ := json.MarshalIndent(input.CI, "", "  ")
 		text.WriteString("\n\n## Previous CI repair context\n\n" + string(diagnostics) + "\n\nIndependently review the repair and the complete pinned diff. A successful fix report is not approval; new CI is accepted only after your review.\n")
 	}
+	if err := writer.WriteFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"), []byte(review.Schema), 0600); err != nil {
+		return "", err
+	}
 	path := filepath.Join(phase.PhaseDir, "input.md")
 	if err := writer.WriteFile(ctx, path, []byte(text.String()), 0600); err != nil {
 		return "", err

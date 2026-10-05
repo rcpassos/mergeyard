@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/ci"
+	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/web"
@@ -26,6 +27,19 @@ func ciFixScript(fix string) string {
  *fix-*) ` + fix + `;;
  *) ` + successfulScript + `;;
  esac`
+}
+
+func useCIRepairScript(t *testing.T, cfg config.Config, fix string) {
+	t.Helper()
+	script := ciFixScript(fix)
+	for _, executable := range []struct{ path, script string }{
+		{cfg.Agents.Claude.Executable, script},
+		{cfg.Agents.Codex.Executable, nativeCodexScript(script)},
+	} {
+		if err := os.WriteFile(executable.path, []byte("#!/bin/sh\n"+executable.script+"\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestCIFixRequiresAvailableReviewRound(t *testing.T) {
