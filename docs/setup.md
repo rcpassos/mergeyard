@@ -43,9 +43,9 @@ saving. Label creation can partially succeed before a later label or config writ
 fails; re-running is safe because existing labels are skipped. External GitHub
 commands have a 30-second timeout per command.
 
-## Current startup limit
+## Start the scheduler
 
-The setup commands generate configuration without hand-editing YAML. Starting a
-running dashboard and scheduler remains deferred to issue #14 by the current
-`start` implementation; the complete PRD §39 setup acceptance flow cannot yet be
-verified end to end.
+After setup checks pass, run `mergeyard start` to launch the scheduler and local
+dashboard. The current M1 scheduler supports Claude as implementer and stops at
+a draft PR without launching review. Choose Claude for the implementer during
+init. See [CLI operations](cli.md) for runtime controls.

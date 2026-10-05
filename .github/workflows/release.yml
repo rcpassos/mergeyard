@@ -1,18 +1,25 @@
-name: CI
+name: Release
 
 on:
   push:
-    branches: [main]
-  pull_request:
+    tags: ['v[0-9]*']
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  test:
+  release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -23,23 +30,19 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install tmux for session integration tests
         run: sudo apt-get update && sudo apt-get install -y tmux
-      - name: Lint
-        run: make lint
-      - name: Test
-        run: make test
-      - name: Build
-        run: make build
-      - name: Check committed dashboard assets
-        run: git diff --exit-code -- web/static
-      - name: Validate release configuration
+      - name: Lint and test
+        run: |
+          make lint
+          make test
+      - name: Build dashboard assets
+        run: |
+          make assets
+          git diff --exit-code -- web/static
+      - name: Publish release
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: check
-      - name: Build release snapshot
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: '~> v2'
-          args: release --snapshot --clean
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

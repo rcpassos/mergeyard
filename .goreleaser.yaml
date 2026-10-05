@@ -1,0 +1,40 @@
+version: 2
+project_name: mergeyard
+
+builds:
+  - main: ./cmd/mergeyard
+    binary: mergeyard
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    # Stable names support both latest/download and download/<tag> URLs.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - mergeyard.example.yaml
+      - docs/*.md
+      - web/static/licenses/*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+  extra_files:
+    - glob: scripts/install.sh
+
+release:
+  github:
+    owner: rcpassos
+    name: mergeyard
+  prerelease: auto
+  extra_files:
+    - glob: scripts/install.sh
+
+changelog:
+  sort: asc
