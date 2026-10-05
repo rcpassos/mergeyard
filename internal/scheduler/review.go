@@ -374,6 +374,10 @@ func (s *Scheduler) abortReview(ctx context.Context, repo config.Repository, run
 	if err := s.restoreReview(ctx, gitRun, a); err != nil {
 		return s.recordAttention(ctx, repo, run, err)
 	}
+	// Early discovery failures obey the same attempt budget as completed reports.
+	if invalidSessionDiscovery(cause) && reviewCanRetry(cause, a.number, repo.Reviewer.MaxAttempts) {
+		return s.failReview(ctx, run, *a, nil, nil, cause)
+	}
 	return s.rejectReview(ctx, repo, run, *a, nil, nil, cause)
 }
 func reviewCanRetry(err error, number, max int) bool {

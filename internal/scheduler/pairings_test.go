@@ -477,3 +477,110 @@ func TestCodexFreshFixLaunchFailureCanUseRemainingAttempt(t *testing.T) {
 		t.Fatalf("lost recovery: %+v", run)
 	}
 }
+
+func TestMalformedEarlyReviewerOutputRetriesAfterStopAndRestore(t *testing.T) {
+	_, runtime, api, remote, cfg, r := pairingFlow(t, "codex", "codex", disputedReport)
+	cfg.Repositories[0].Reviewer.MaxAttempts = 2
+	script := nativeCodexScript(reviewScript(approvedReview))
+	prefix := `case "$phase_dir" in *review-1-1*)
+ printf tampered > feature.txt
+ printf reviewer > reviewer.txt
+ printf '%s\n' 'malformed reviewer output'
+ while :; do /bin/sleep 0.02; done;;
+ esac
+ `
+	script = strings.Replace(script, ` printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$identity\"}"`, prefix+` printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$identity\"}"`, 1)
+	if err := os.WriteFile(cfg.Agents.Codex.Executable, []byte("#!/bin/sh\n"+script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.Active, workflow.Review)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	firstProcess, err := s.Watch(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		current, err := runtime.Workflow.Get(context.Background(), run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.State == workflow.NeedsAttention {
+			t.Fatalf("early malformed output skipped remaining review attempt: %+v", current.Review)
+		}
+		if current.Review == nil || current.Review.Status != "failed" {
+			return false
+		}
+		if current.Review.Attempt != 1 || current.ReviewRound != 1 || !current.Review.Restored || !current.Review.Contaminated || current.Review.Accepted || current.Review.Report != nil || current.Review.SessionID != "" || !strings.HasPrefix(current.Review.Error, "phase.result_invalid:") {
+			t.Fatalf("invalid first attempt: %+v", current.Review)
+		}
+		return true
+	})
+	status, err := r.SessionStatus(context.Background(), firstProcess)
+	if err != nil || status.State == runner.SessionRunning {
+		t.Fatalf("retry left malformed reviewer running: %+v %v", status, err)
+	}
+	var path string
+	if err := runtime.DB.QueryRow("SELECT worktree_path FROM runs WHERE id=?", run.ID).Scan(&path); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(path, "feature.txt")); err != nil || string(data) != "implemented\n" {
+		t.Fatalf("review source was not restored: %s %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "reviewer.txt")); !os.IsNotExist(err) {
+		t.Fatal("reviewer's untracked file survived restoration")
+	}
+	run = finish(t, s, workflow.WaitingForCI, workflow.Review)
+	if run.Review.Attempt != 2 || run.ReviewRound != 1 || !run.Review.Accepted || run.Review.SessionID != reviewerCodexID || run.Review.SessionID == run.Implementer.SessionID || run.ApprovedSHA != gitCommand(t, remote, "rev-parse", "mergeyard/issue-7") || api.creations != 1 {
+		t.Fatalf("retry did not approve original pinned head: %+v", run)
+	}
+}
+
+func TestEarlyReviewerDiscoveryFailuresRespectRetryPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, output, code string
+		max, attempt       int
+	}{
+		{"malformed exhausted", "malformed reviewer output", "phase.result_invalid", 2, 2},
+		{"malformed single attempt", "malformed reviewer output", "phase.result_invalid", 1, 1},
+		{"invalid identity", `{"type":"thread.started","thread_id":"invalid"}`, "harness.session_identity_invalid", 2, 1},
+		{"implementer identity", `{"type":"thread.started","thread_id":"` + codexID + `"}`, "harness.session_identity_invalid", 2, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, runtime, api, _, cfg, r := pairingFlow(t, "codex", "codex", disputedReport)
+			cfg.Repositories[0].Reviewer.MaxAttempts = tc.max
+			script := nativeCodexScript(reviewScript(approvedReview))
+			prefix := `case "$phase_dir" in *review-*) printf '%s\n' '` + tc.output + `'; exit 0;; esac
+ `
+			script = strings.Replace(script, ` printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$identity\"}"`, prefix+` printf '%s\n' "{\"type\":\"thread.started\",\"thread_id\":\"$identity\"}"`, 1)
+			if err := os.WriteFile(cfg.Agents.Codex.Executable, []byte("#!/bin/sh\n"+script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := finish(t, s, workflow.NeedsAttention, workflow.Review)
+			if run.LastErrorCode != tc.code || run.Review.Attempt != tc.attempt || run.ReviewRound != 1 || !run.Review.Restored || run.Review.Accepted || run.ApprovedSHA != "" || run.Review.SessionID != "" || api.creations != 1 {
+				t.Fatalf("discovery failure bypassed role retry policy: %+v", run)
+			}
+			for range 2 {
+				if err := s.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+			if err != nil || saved.Review.Attempt != tc.attempt {
+				t.Fatalf("attention launched extra attempts: %+v %v", saved, err)
+			}
+		})
+	}
+}
