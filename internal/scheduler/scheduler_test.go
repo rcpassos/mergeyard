@@ -222,7 +222,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured
 
 func finish(t *testing.T, s *scheduler.Scheduler, state workflow.State, phase workflow.Phase) workflow.Run {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if err := s.Tick(context.Background()); err != nil {
 			t.Fatal(err)

@@ -41,6 +41,9 @@ func WriteReviewInput(ctx context.Context, writer FileWriter, phase PhaseContext
 		fix, _ := json.MarshalIndent(input.FixReport, "", "  ")
 		text.WriteString("\n\n## Previous findings\n\n" + string(prior) + "\n\n## Implementer fix report\n\n" + string(fix) + "\n\nAdjudicate every dispute independently. Return the complete remaining blocking list for this target, including unresolved earlier findings. Warnings and notes do not prevent approval.\n")
 	}
+	if err := writer.WriteFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"), []byte(review.Schema), 0600); err != nil {
+		return "", err
+	}
 	path := filepath.Join(phase.PhaseDir, "input.md")
 	if err := writer.WriteFile(ctx, path, []byte(text.String()), 0600); err != nil {
 		return "", err

@@ -58,9 +58,7 @@ func (c *Codex) BuildInvocation(ctx PhaseContext, role RoleConfig) (Invocation, 
 	if err := validatePhaseContext(ctx); err != nil {
 		return Invocation{}, err
 	}
-	if ctx.Phase != workflow.Implement {
-		return Invocation{}, phaseError("phase.unsupported", "Codex supports implementation only", nil)
-	}
+
 	if ctx.Resume && !sessionUUID.MatchString(ctx.SessionID) {
 		return Invocation{}, phaseError("phase.invalid_request", "Codex resume requires an exact session UUID", nil)
 	}
@@ -121,8 +119,8 @@ type codexEvent struct {
 }
 
 func (*Codex) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseResult, error) {
-	if ctx.Phase != workflow.Implement {
-		return PhaseResult{}, phaseError("phase.unsupported", "Codex supports implementation only", nil)
+	if ctx.Phase != workflow.Implement && ctx.Phase != workflow.Review && ctx.Phase != workflow.Fix {
+		return PhaseResult{}, phaseError("phase.unsupported", "Only implement, review, and fix phases are supported", nil)
 	}
 	diagnostic := strings.TrimSpace(string(artifacts.Stderr))
 	if ctx.Resume && artifacts.ExitCode != 0 && strings.Contains(diagnostic, "thread/resume failed: no rollout found for thread id "+ctx.SessionID+" (code ") {
@@ -172,12 +170,12 @@ func (*Codex) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseResu
 		return PhaseResult{}, phaseError("harness.session_identity_missing", "Codex did not emit a thread identity", nil)
 	}
 	if ctx.SessionID != "" && identity != ctx.SessionID {
-		return PhaseResult{}, phaseError("harness.session_resume_failed", "Codex returned a different thread than the requested session", nil)
+		return PhaseResult{}, phaseError("harness.session_identity_invalid", "Codex returned a different thread than the requested session", nil)
 	}
 	if !completed || len(bytes.TrimSpace(artifacts.LastMessage)) == 0 {
 		return PhaseResult{}, phaseError("phase.result_missing", "Codex did not emit native completion and a final structured message", nil)
 	}
-	return parseImplementResult(artifacts.LastMessage)
+	return parsePhaseResult(ctx.Phase, artifacts.LastMessage)
 }
 
 var _ HarnessAdapter = (*Codex)(nil)

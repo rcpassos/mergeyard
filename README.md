@@ -4,10 +4,10 @@ Mergeyard turns ready GitHub issues into draft pull requests using a local codin
 agent. It manages isolated Git worktrees and tmux sessions, tracks work in SQLite,
 and gives you a local dashboard to monitor the queue and stop runs.
 
-**Current stage: bounded Claude fix/review loop and Codex implementation.** The scheduler runs Claude Code or Codex as the
-implementer, followed by an independent Claude reviewer. Claude implementations
-continue through bounded fixes and re-review. CI monitoring, merge detection, and
-Codex fix/review execution are planned.
+**Current stage: bounded review/fix loop with either harness.** The scheduler runs
+Claude Code or Codex independently as implementer and reviewer. All four role
+pairings continue through bounded fixes and re-review. CI monitoring and merge
+detection are planned.
 
 ## Install
 
@@ -75,7 +75,7 @@ gh auth login
 mergeyard init
 ```
 
-Choose Claude or Codex as the implementer and Claude as the reviewer, enter an `owner/repo`, and let setup create
+Choose Claude or Codex independently for the implementer and reviewer, enter an `owner/repo`, and let setup create
 the queue labels when prompted. Init writes the configuration and runs dependency,
 authentication, and repository checks. Resolve any reported errors, then start:
 
@@ -86,9 +86,8 @@ mergeyard start
 
 Open [the local dashboard](http://127.0.0.1:7331). Add the `ready-for-agent` label
 to an issue you want implemented. Mergeyard claims eligible issues, runs the configured implementer in
-an isolated worktree, and creates a draft PR. An independent Claude reviewer then
-reviews the pinned PR head. Approval waits for CI; blocking findings start the Claude fix/review loop
-or require attention for Codex implementations. Both retain the draft PR and consume a concurrency slot. Stop preserves
+an isolated worktree, and creates a draft PR. An independent reviewer then
+reviews the pinned PR head. Approval waits for CI; blocking findings start the bounded fix/review loop. Both retain the draft PR and consume a concurrency slot. Stop preserves
 the implemented branch, worktree, and draft PR.
 
 Mergeyard runs agents with your local permissions. The default Claude configuration

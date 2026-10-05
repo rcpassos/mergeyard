@@ -174,21 +174,7 @@ func (*Claude) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseRes
 	if len(event.Output) == 0 || bytes.Equal(event.Output, []byte("null")) {
 		return PhaseResult{}, phaseError("phase.result_missing", "Harness did not provide structured output", nil)
 	}
-	if ctx.Phase == workflow.Review {
-		report, err := review.Parse(event.Output)
-		if err != nil {
-			return PhaseResult{}, phaseError("phase.result_invalid", "Invalid structured review report", err)
-		}
-		return PhaseResult{SchemaVersion: report.SchemaVersion, Status: report.Status, Summary: report.Summary, Findings: report.Findings}, nil
-	}
-	if ctx.Phase == workflow.Fix {
-		report, err := review.ParseFix(event.Output)
-		if err != nil {
-			return PhaseResult{}, phaseError("phase.result_invalid", "Invalid structured fix report", err)
-		}
-		return PhaseResult{SchemaVersion: report.SchemaVersion, Status: report.Status, Summary: report.Summary, Responses: report.Responses}, nil
-	}
-	return parseImplementResult(event.Output)
+	return parsePhaseResult(ctx.Phase, event.Output)
 }
 
 func phaseError(code, message string, cause error) *fault.Error {

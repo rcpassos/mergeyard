@@ -16,6 +16,10 @@ import (
 // Observe the existing capture, including after an offline finish. No new
 // process or session is created to recover identity after a control-plane restart.
 func (s *Scheduler) discoverImplementSession(ctx context.Context, id string, a *attempt) error {
+	return s.discoverSession(ctx, id, workflow.Implement, a)
+}
+
+func (s *Scheduler) discoverSession(ctx context.Context, id string, phase workflow.Phase, a *attempt) error {
 	observer, ok := s.harnesses[a.agent].(harness.SessionDiscoverer)
 	if !ok {
 		return nil
@@ -34,15 +38,40 @@ func (s *Scheduler) discoverImplementSession(ctx context.Context, id string, a *
 	if identity == "" {
 		return nil
 	}
+
+	var otherIdentity string
+	otherRole := "reviewer"
+	if phase == workflow.Review {
+		otherRole = "implementer"
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE("+otherRole+"_session_id,'') FROM runs WHERE id=?", id).Scan(&otherIdentity); err != nil {
+		return err
+	}
+	if identity == otherIdentity {
+		return &fault.Error{Code: "harness.session_identity_invalid", Message: "Harness reused the other role's conversation identity"}
+	}
 	if a.sessionID != "" {
 		if identity != a.sessionID {
-			return &fault.Error{Code: "harness.session_resume_failed", Message: "Codex emitted a different identity than the persisted implementer session"}
+			return &fault.Error{Code: "harness.session_identity_invalid", Message: "Codex emitted a different identity than the persisted role session"}
 		}
 		return nil
 	}
+
+	role := "implementer"
+	table := ""
+	if phase == workflow.Review {
+		role, table = "reviewer", "review_attempts"
+	}
+	if phase == workflow.Fix {
+		table = "fix_attempts"
+	}
 	_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-		_, err := tx.ExecContext(ctx, "UPDATE runs SET implementer_session_id=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?", identity, id)
-		return events.Draft{RunID: id, Type: "harness.session_discovered", Payload: map[string]any{"agent": a.agent, "session_id": identity, "phase": "implement", "attempt": a.number}}, err
+		_, err := tx.ExecContext(ctx, "UPDATE runs SET "+role+"_session_id=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?", identity, id)
+
+		if err == nil && table != "" {
+			_, err = tx.ExecContext(ctx, "UPDATE "+table+" SET session_id=? WHERE attempt_id=?", identity, a.id)
+		}
+		return events.Draft{RunID: id, Type: "harness.session_discovered", Payload: map[string]any{"agent": a.agent, "session_id": identity, "phase": phase, "attempt": a.number}}, err
 	})
 	if err == nil {
 		a.sessionID = identity
@@ -52,7 +81,7 @@ func (s *Scheduler) discoverImplementSession(ctx context.Context, id string, a *
 
 // Identity observation is local and does not wait for the GitHub polling interval.
 // It shares the tick and per-run gates with reconciliation and lifecycle controls.
-func (s *Scheduler) observeImplementIdentities(ctx context.Context) error {
+func (s *Scheduler) observeIdentities(ctx context.Context) error {
 	s.tick.Lock()
 	defer s.tick.Unlock()
 	runs, err := s.Runs(ctx)
@@ -60,24 +89,39 @@ func (s *Scheduler) observeImplementIdentities(ctx context.Context) error {
 		return err
 	}
 	for _, run := range runs {
-		if run.State != workflow.Active || run.Phase != workflow.Implement || run.Implementer == nil || run.Implementer.Status != "running" || run.Implementer.SessionID != "" {
-			continue
-		}
-		if _, ok := s.harnesses[run.Implementer.Agent].(harness.SessionDiscoverer); !ok {
+		if run.State != workflow.Active {
 			continue
 		}
 		err := s.workflow.WithRunOperation(ctx, run.ID, func(ctx context.Context, current workflow.Run) error {
-			if current.State != workflow.Active || current.Phase != workflow.Implement {
+			if current.State != workflow.Active {
 				return nil
 			}
-			a, err := s.lastAttempt(ctx, current.ID)
+			var a attempt
+			var err error
+			switch current.Phase {
+			case workflow.Implement:
+				a, err = s.lastAttempt(ctx, current.ID)
+			case workflow.Review:
+				var review reviewAttempt
+				review, err = s.lastReview(ctx, current)
+				a = review.attempt
+			case workflow.Fix:
+				var fix fixAttempt
+				fix, err = s.lastFix(ctx, current)
+				a = fix.attempt
+			default:
+				return nil
+			}
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}
-			if a.status != "running" {
+			if a.status != "running" || a.sessionID != "" {
 				return nil
 			}
-			return s.discoverImplementSession(ctx, current.ID, &a)
+			return s.discoverSession(ctx, current.ID, current.Phase, &a)
 		})
 		if err != nil {
 			return err
