@@ -118,11 +118,13 @@ func TestStopIntentSurvivesLabelFailureAndRestart(t *testing.T) {
 	}
 	defer restarted.Close()
 	api.mutate = nil
+	// Reconciliation must finish the stop even if the issue closed while offline.
+	api.issues["owner/repo"][0].State = github.Closed
 	next, err := scheduler.New(cfg, schedulerResources(restarted), scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := next.Reconcile(ctx); err != nil {
+	if _, err := next.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
 	run, _ := restarted.Workflow.Get(ctx, id)
@@ -164,7 +166,7 @@ func TestShutdownKeepsLiveImplementAndReconcileReusesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := next.Reconcile(ctx); err != nil {
+	if _, err := next.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
 	watched, err := next.Watch(ctx, id)

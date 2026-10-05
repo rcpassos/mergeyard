@@ -57,8 +57,14 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := engine.Reconcile(ctx); err != nil {
-		return fmt.Errorf("reconcile existing runs: %w", err)
+	reconcileReport, reconcileErr := engine.Reconcile(ctx)
+	for _, finding := range reconcileReport.Findings {
+		if _, err := fmt.Fprintln(stderr, finding); err != nil {
+			return errors.Join(reconcileErr, err)
+		}
+	}
+	if reconcileErr != nil {
+		return fmt.Errorf("reconcile existing runs: %w", reconcileErr)
 	}
 	dashboard, err := web.NewWithOperations(owner.Events, owner.Scheduler, engine, owner.Workspace.Root)
 	if err != nil {

@@ -113,29 +113,3 @@ func (s *Scheduler) Watch(ctx context.Context, id string) (runner.SessionRef, er
 	})
 	return ref, err
 }
-
-// Reconcile observes persisted M1 work before startup enables new claims.
-// Full GitHub/PR/orphan reconciliation is supplied by issue #13.
-func (s *Scheduler) Reconcile(ctx context.Context) error {
-	s.tick.Lock()
-	defer s.tick.Unlock()
-	return s.reconcile(ctx)
-}
-
-func (s *Scheduler) reconcile(ctx context.Context) error {
-	runs, err := s.Runs(ctx)
-	if err != nil {
-		return err
-	}
-	var failures []error
-	for _, run := range runs {
-		repo, ok := s.repository(run.Repository)
-		if !ok {
-			continue
-		}
-		if err := s.advance(ctx, repo, run); err != nil {
-			failures = append(failures, err)
-		}
-	}
-	return errors.Join(failures...)
-}

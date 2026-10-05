@@ -70,6 +70,27 @@ func (m *Manager) exists(ctx context.Context, name string) (bool, error) {
 	return false, err
 }
 
+// List reports only Mergeyard sessions; it never starts or stops a server.
+func (m *Manager) List(ctx context.Context) ([]string, error) {
+	out, err := m.tmux(ctx, "list-sessions", "-F", "#{session_name}")
+	if err != nil && strings.Contains(string(out), "server exited unexpectedly") && ctx.Err() == nil {
+		out, err = m.tmux(ctx, "list-sessions", "-F", "#{session_name}")
+	}
+	if err != nil {
+		if ctx.Err() == nil && (strings.Contains(string(out), "no server running") || strings.Contains(string(out), "No such file or directory") || strings.Contains(string(out), "no sessions")) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var names []string
+	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasPrefix(name, "mergeyard-") {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 // Name is bounded and collision-resistant even when run IDs share a prefix or
 // contain characters tmux treats as target syntax.
 func Name(req Request) string {

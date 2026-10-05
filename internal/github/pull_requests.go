@@ -28,6 +28,22 @@ type PullRequest struct {
 	} `json:"head"`
 }
 
+// GetPullRequest reads a persisted PR even after it has closed or merged.
+func (c *Client) GetPullRequest(ctx context.Context, repo string, number int) (*PullRequest, error) {
+	if number <= 0 {
+		return nil, codedError("github.invalid_input", "PR number must be positive", nil)
+	}
+	path, err := pullRequestPath(repo, number)
+	if err != nil {
+		return nil, err
+	}
+	data, err := c.request(ctx, nil, "GET", path, false)
+	if err != nil {
+		return nil, err
+	}
+	return decodePullRequest(data)
+}
+
 func pullRequestPath(repo string, number int) (string, error) {
 	if !repository.ValidName(repo) || number < 0 {
 		return "", codedError("github.invalid_input", "expected owner/repo and a positive PR number", nil)

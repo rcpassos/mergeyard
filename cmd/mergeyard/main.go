@@ -91,6 +91,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		defer stop()
 		return checkSetup(ctx, opts.configPath, stdout, stderr)
 	}
+	if cmd.name == "reconcile" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := reconcile(ctx, opts.configPath, stdout); err != nil {
+			fmt.Fprintf(stderr, "mergeyard reconcile: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 	if cmd.name == "init" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()

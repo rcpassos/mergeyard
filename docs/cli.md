@@ -12,8 +12,10 @@ launcher. `--config <path>` works with every command.
 SIGINT and SIGTERM cancel scheduler polling and HTTP/SSE requests, wait for
 scheduler operations to return, and close SQLite before releasing the workspace
 lock. Running tmux phases stay alive. The next startup observes those persisted
-attempts and picks up completed results. Full reconciliation of GitHub labels,
-PRs, and orphaned resources remains in issue #13.
+attempts and picks up completed results. Reconciliation verifies GitHub labels,
+PRs, Git ownership, and sessions; orphaned claims and artifacts are reported
+without deletion or automatic redispatch. Pending stops finish before normal
+reconciliation can restore labels or advance work.
 
 The operational commands use the running process's local HTTP API. Start
 Mergeyard with the same configuration first. They do not open a second writable
@@ -35,5 +37,9 @@ runtime database or acquire the owner's lock.
   label, preventing redispatch after the run becomes terminal.
 
 M1 supports the Claude implementer and ends at a draft PR without launching
-review. The existing `takeover`, `handback`, `retry`, `reconcile`, and `open`
+review. The existing `takeover`, `handback`, `retry`, and `open`
 command entries remain reserved for their respective later work.
+
+`mergeyard reconcile` runs the same reconciliation without claiming new work.
+It acquires the configured workspace lock, so stop the control plane first if
+it is running. The command prints findings and preserves orphaned artifacts.
