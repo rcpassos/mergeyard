@@ -24,7 +24,7 @@ func TestCLIControlsUseOwningRuntimeAndWatchReadOnly(t *testing.T) {
 	mux := http.NewServeMux()
 	paused := false
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(web.Status{Workspace: root, Paused: paused, Token: token, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Implement}, {ID: "old-run", State: workflow.Completed}}})
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Paused: paused, Token: token, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Implement, Implementer: &workflow.ImplementSnapshot{Agent: "codex", SessionID: "codex-session", Model: "chosen-model", Effort: "medium", Skills: []string{"implement"}, Permissions: "workspace-write · network true · approvals never", Attempt: 2, Status: "running", ProcessSession: "live-phase"}}, {ID: "old-run", State: workflow.Completed}}})
 	})
 	mux.HandleFunc("POST /scheduler/{action}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {
@@ -69,6 +69,13 @@ func TestCLIControlsUseOwningRuntimeAndWatchReadOnly(t *testing.T) {
 		}
 		if action == "status" && (!strings.Contains(out, "owner/repo#7  ACTIVE/implement") || strings.Contains(out, "old-run")) {
 			t.Fatalf("status = %s", out)
+		}
+		if action == "status" {
+			for _, text := range []string{"implementer codex", "chosen-model", "medium", "implement", "workspace-write", "codex-session", "attempt 2: running", "live-phase"} {
+				if !strings.Contains(out, text) {
+					t.Fatalf("missing implementer status %q: %s", text, out)
+				}
+			}
 		}
 		if action == "watch" && out != "-L\nmergeyard\nattach-session\n-r\n-t\n=live-phase\n" {
 			t.Fatalf("watch did not attach read-only: %q", out)

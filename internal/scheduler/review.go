@@ -107,7 +107,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			cause = err
 		}
 		if cause == nil {
-			result, err := s.claude.ParseResult(harness.PhaseContext{Phase: workflow.Review, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+			result, err := s.harnesses[repo.Reviewer.Agent].ParseResult(harness.PhaseContext{Phase: workflow.Review, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 			cause = err
 			if err == nil {
 				report = &review.Report{SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Findings: result.Findings}
@@ -217,7 +217,7 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if err != nil {
 		return fail(err)
 	}
-	command, err := s.claude.BuildInvocation(phase, repo.Reviewer)
+	command, err := s.harnesses[repo.Reviewer.Agent].BuildInvocation(phase, repo.Reviewer)
 	if err != nil {
 		return fail(err)
 	}

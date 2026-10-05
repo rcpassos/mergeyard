@@ -62,6 +62,14 @@
 <div><dt>Skills</dt><dd>{{if .Skills}}{{.Skills}}{{else}}None{{end}}</dd></div>
 <div><dt>Agent session ID</dt><dd>{{if .SessionID}}<code>{{.SessionID}}</code>{{else}}Not started{{end}}</dd></div>
 <div><dt>Updated</dt><dd><time>{{.UpdatedAt}}</time></dd></div></dl>
+{{with .Implementer}}<section class="queue-section"><h2>Implementation</h2>
+<dl class="run-facts"><div><dt>Implementer</dt><dd>{{.Agent}} · model {{if .Model}}{{.Model}}{{else}}harness default{{end}} · effort {{if .Effort}}{{.Effort}}{{else}}harness default{{end}}</dd></div>
+<div><dt>Session</dt><dd>{{if .SessionID}}<code>{{.SessionID}}</code>{{else}}Waiting for session identity{{end}}</dd></div>
+<div><dt>Skills</dt><dd>{{range .Skills}}{{.}} {{else}}None{{end}}</dd></div>
+<div><dt>Permissions</dt><dd>{{.Permissions}}</dd></div>
+<div><dt>Attempt</dt><dd>{{.Attempt}} · {{.Status}}</dd></div>
+<div><dt>Process session</dt><dd><code>{{.ProcessSession}}</code></dd></div></dl>
+{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}</section>{{end}}
 {{with .Review}}<section class="queue-section"><h2>Independent review</h2>
 <dl class="run-facts"><div><dt>Reviewer</dt><dd>{{.Agent}} · model {{.Model}} · effort {{.Effort}}</dd></div>
 <div><dt>Reviewer session</dt><dd><code>{{.SessionID}}</code></dd></div><div><dt>Skills</dt><dd>{{range .Skills}}{{.}} {{else}}None{{end}}</dd></div>

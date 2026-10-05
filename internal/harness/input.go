@@ -48,6 +48,9 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 	text.WriteString(implementSchema)
 	text.WriteString("\n```\n\n## Issue\n\n")
 	text.WriteString(input.IssueTitle + "\n\n" + input.IssueBody + "\n")
+	if err := writer.WriteFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"), ImplementSchema(), 0600); err != nil {
+		return "", err
+	}
 	path := filepath.Join(phase.PhaseDir, "input.md")
 	if err := writer.WriteFile(ctx, path, []byte(text.String()), 0600); err != nil {
 		return "", err

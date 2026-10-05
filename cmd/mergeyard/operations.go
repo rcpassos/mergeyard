@@ -101,6 +101,10 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			if run.LastErrorCode != "" {
 				fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 			}
+			if v := run.Implementer; v != nil {
+				fmt.Fprintf(stdout, "  implementer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", terminalText(v.Agent), terminalText(v.Model), terminalText(v.Effort), terminalText(strings.Join(v.Skills, ",")), terminalText(v.Permissions), terminalText(v.SessionID))
+				fmt.Fprintf(stdout, "  implement attempt %d: %s · process %s\n", v.Attempt, terminalText(v.Status), terminalText(v.ProcessSession))
+			}
 			if v := run.Review; v != nil {
 				fmt.Fprintf(stdout, "  reviewer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", terminalText(v.Agent), terminalText(v.Model), terminalText(v.Effort), terminalText(strings.Join(v.Skills, ",")), terminalText(v.PermissionMode), terminalText(v.SessionID))
 				fmt.Fprintf(stdout, "  review round %d attempt %d: %s · target %s\n", v.Round, v.Attempt, terminalText(v.Status), terminalText(v.TargetSHA))

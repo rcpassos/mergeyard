@@ -93,6 +93,7 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
+	Implementer *ImplementSnapshot `json:"implementer,omitempty"`
 	RunMetadata
 	Review           *review.Snapshot `json:"review,omitempty"`
 	ID               string           `json:"id"`
@@ -438,6 +439,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, &fault.Error{Code: "internal.run_not_found", Message: "Run does not exist", Path: id, Err: err}
 	}
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.Implementer, err = LoadImplementSnapshot(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
 	}

@@ -46,6 +46,6 @@ commands have a 30-second timeout per command.
 ## Start the scheduler
 
 After setup checks pass, run `mergeyard start` to launch the scheduler and local
-dashboard. The current M1 scheduler supports Claude as implementer and stops at
-a draft PR without launching review. Choose Claude for the implementer during
-init. See [CLI operations](cli.md) for runtime controls.
+dashboard. Choose Claude or Codex for the implementer and Claude for the reviewer.
+The scheduler creates a draft PR and continues into first independent review;
+fix execution and CI monitoring remain later slices. See [CLI operations](cli.md) for runtime controls.
