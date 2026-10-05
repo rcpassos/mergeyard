@@ -119,3 +119,24 @@ fake Claude executable that edits a file. It verifies one run, worktree, commit,
 and PR through repeated ticks. Cleanup closes the test PR, deletes its test
 branch and restores the issue's ready label. Interrupted cleanup can require
 manual removal of these test artifacts.
+
+## Dashboard discovery and Stop
+
+`Queue(ctx)` reads ready/blocked/attention issues from enabled repositories in
+configuration and issue creation order. It does not mutate labels or claim runs,
+and works independently of pause and concurrency. Dependency lookup failures
+return an error rather than reporting an issue as unblocked.
+
+`Stop(ctx, runID)` shares the workflow operation lock with dispatch. It preserves
+Git artifacts, terminates running attempts, removes ready and running labels,
+and adds attention when work exists before marking the run STOPPED. Stop intent
+is committed with `run.stop_requested`; failures remain available for browser
+retry and are retried before normal advancement. An already-stopped run is a
+no-op, including remote labels, so replaying Stop cannot affect a newer run.
+Completed and failed runs reject Stop. Browser and CLI callers share this
+operation.
+
+Each implement attempt is persisted with its model, effort, and skills snapshot
+and a `phase.attempt_started` event in one transaction before launch. The event
+includes phase, round, and attempt, and notifies pages on every retry without
+requiring a workflow state transition.

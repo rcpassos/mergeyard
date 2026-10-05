@@ -41,6 +41,7 @@ type Server struct {
 	handler    http.Handler
 	operations Operations
 	workspace  string
+	dashboard  *dashboard
 }
 
 // New constructs an HTTP handler without opening a socket. The caller owns the
@@ -67,7 +68,12 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 		return nil, &fault.Error{Code: "internal.web_assets", Message: "Could not open embedded assets", Err: err}
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { s.render(w, "layout") })
+	mux.HandleFunc("GET /{$}", s.page)
+	mux.HandleFunc("GET /queue", s.page)
+	mux.HandleFunc("GET /runs/{id}", s.page)
+	mux.HandleFunc("GET /runs/{id}/output", s.output)
+	mux.HandleFunc("GET /settings", s.page)
+	mux.HandleFunc("POST /runs/{id}/stop", s.stopRunPage)
 	mux.HandleFunc("GET /scheduler", func(w http.ResponseWriter, r *http.Request) { s.render(w, "scheduler") })
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /events", s.stream)
@@ -175,6 +181,10 @@ func (s *Server) render(w http.ResponseWriter, name string) {
 		Paused bool
 		Token  string
 	}{s.scheduler.Paused(), s.token}
+	s.renderData(w, name, data)
+}
+
+func (s *Server) renderData(w http.ResponseWriter, name string, data any) {
 	var body bytes.Buffer
 	if err := s.templates.ExecuteTemplate(&body, name, data); err != nil {
 		http.Error(w, "Could not render dashboard", http.StatusInternalServerError)
@@ -193,14 +203,7 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		err = s.scheduler.Resume(r.Context())
 	}
 	if err != nil {
-		code := "internal.scheduler_control"
-		var failure *fault.Error
-		if errors.As(err, &failure) && errorCodePattern.MatchString(failure.Code) {
-			code = failure.Code
-		}
-		slog.ErrorContext(r.Context(), "Scheduler action failed", "error_code", code, "action", r.URL.Path, "error", err)
-		w.Header().Set("X-Mergeyard-Error-Code", code)
-		http.Error(w, code+": Could not change scheduler state. Check the application log for details.", http.StatusInternalServerError)
+		s.actionError(w, r, err)
 		return
 	}
 	if r.Header.Get("Accept") == "application/json" {
@@ -214,4 +217,33 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func errorCode(err error, fallback string) string {
+	var failure *fault.Error
+	if errors.As(err, &failure) && errorCodePattern.MatchString(failure.Code) {
+		return failure.Code
+	}
+	return fallback
+}
+
+func logDashboardError(ctx context.Context, action string, err error) {
+	slog.ErrorContext(ctx, "Dashboard action failed", "action", action, "error_code", errorCode(err, "internal.dashboard"), "error", err)
+}
+
+func (s *Server) actionError(w http.ResponseWriter, r *http.Request, err error) {
+	s.respondError(w, r, err, "internal.scheduler_control", http.StatusInternalServerError, "Could not complete the action. Check the application log for details.")
+}
+
+func (s *Server) respondError(w http.ResponseWriter, r *http.Request, err error, fallback string, status int, message string) {
+	code := errorCode(err, fallback)
+	slog.ErrorContext(r.Context(), "Dashboard action failed", "error_code", code, "action", r.URL.Path, "error", err)
+	w.Header().Set("X-Mergeyard-Error-Code", code)
+	if code == "internal.run_not_found" {
+		status = http.StatusNotFound
+	}
+	if code == "internal.transition_invalid" || code == "run.terminal" || code == "phase.not_running" {
+		status = http.StatusConflict
+	}
+	http.Error(w, code+": "+message, status)
 }

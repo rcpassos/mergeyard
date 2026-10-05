@@ -340,8 +340,17 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	req := runner.SessionRequest{RunID: run.ID, Phase: "implement", Round: 0, Attempt: number, PhaseDir: phaseDir, Command: command}
 	// Persist the deterministic process identity before launch; an ambiguous start
 	// must be observed on the next tick, never replayed as a new process.
-	_, err = s.db.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path)
- VALUES (?,?,'implement','implementer',0,?,'claude',?,?,'running',?,?,?,?,?)`, uuid.NewString(), run.ID, number, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"))
+	skills, err := json.Marshal(repo.Implementer.Skills)
+	if err != nil {
+		return err
+	}
+	_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json)
+ VALUES (?,?,'implement','implementer',0,?,'claude',?,?,'running',?,?,?,?,?,?)`, uuid.NewString(), run.ID, number, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills))
+		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{
+			"phase": workflow.Implement, "round": 0, "attempt": number,
+		}}, err
+	})
 	if err != nil {
 		return err
 	}

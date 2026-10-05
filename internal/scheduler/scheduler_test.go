@@ -525,6 +525,25 @@ func TestPhaseRetryIsBoundedAndKeepsOneRun(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			history, err := runtime.Events.History(context.Background(), 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var attempts []int
+			for _, event := range history {
+				if event.RunID == run.ID && event.Type == "phase.attempt_started" {
+					var payload struct {
+						Attempt int `json:"attempt"`
+					}
+					if err := json.Unmarshal(event.Payload, &payload); err != nil {
+						t.Fatal(err)
+					}
+					attempts = append(attempts, payload.Attempt)
+				}
+			}
+			if len(attempts) != 2 || attempts[0] != 1 || attempts[1] != 2 {
+				t.Fatalf("attempt-start notifications = %v; want [1 2]", attempts)
+			}
 			phases, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "*"))
 			if len(phases) != 2 {
 				t.Fatalf("phase attempts = %v", phases)

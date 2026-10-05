@@ -66,7 +66,10 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 	if reconcileErr != nil {
 		return fmt.Errorf("reconcile existing runs: %w", reconcileErr)
 	}
-	dashboard, err := web.NewWithOperations(owner.Events, owner.Scheduler, engine, owner.Workspace.Root)
+	dashboard, err := web.NewDashboard(owner.Events, owner.Scheduler, web.DashboardOptions{
+		DB: owner.DB, Workspace: owner.Workspace, Scheduler: engine, Config: cfg, ConfigPath: doc.Path,
+		Diagnostics: func(context.Context) doctor.Report { return report },
+	})
 	if err != nil {
 		return err
 	}
@@ -79,6 +82,8 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 	defer cancel()
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- engine.Run(liveCtx) }()
+	updatesDone := make(chan struct{})
+	go func() { defer close(updatesDone); dashboard.RunUpdates(liveCtx) }()
 	address := "http://" + listener.Addr().String()
 	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s; dashboard at %s\n", owner.Workspace.Root, address)
 	// Browser launch is optional and must not delay HTTP controls. Keep it
@@ -97,6 +102,7 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 	serveErr := dashboard.Serve(liveCtx, listener)
 	cancel()
 	schedulerErr := <-schedulerDone
+	<-updatesDone
 	<-browserDone
 	if errors.Is(schedulerErr, context.Canceled) {
 		schedulerErr = nil

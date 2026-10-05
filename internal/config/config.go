@@ -19,17 +19,17 @@ import (
 type Config struct {
 	Version      int
 	Port         int
-	OpenBrowser  bool
+	OpenBrowser  bool `yaml:"open_browser"`
 	Workspace    string
-	PollInterval time.Duration
+	PollInterval time.Duration `yaml:"poll_interval"`
 	Concurrency  int
 	Labels       Labels
 	Agents       Agents
 	Implementer  Role
 	Reviewer     Role
-	MaxRounds    int
-	PRComments   bool
-	UsageLimits  UsageLimits
+	MaxRounds    int         `yaml:"max_rounds"`
+	PRComments   bool        `yaml:"pr_comments"`
+	UsageLimits  UsageLimits `yaml:"usage_limits"`
 	Repositories []Repository
 }
 
@@ -38,13 +38,13 @@ type Role struct {
 	Model       string // empty means the harness default
 	Effort      string // empty means the harness default
 	Skills      []string
-	MaxAttempts int
+	MaxAttempts int `yaml:"max_attempts"`
 }
 
 type Labels struct {
 	Ready          string
 	Running        string
-	NeedsAttention string
+	NeedsAttention string `yaml:"needs_attention"`
 }
 
 type Agents struct {
@@ -54,24 +54,24 @@ type Agents struct {
 
 type Claude struct {
 	Executable     string
-	PermissionMode string
-	AllowedTools   []string
+	PermissionMode string   `yaml:"permission_mode"`
+	AllowedTools   []string `yaml:"allowed_tools"`
 }
 
 type Codex struct {
 	Executable    string
 	Sandbox       string
-	NetworkAccess bool
+	NetworkAccess bool `yaml:"network_access"`
 }
 
 type UsageLimits struct {
 	Cooldown time.Duration
-	MaxWaits int
+	MaxWaits int `yaml:"max_waits"`
 }
 
 type Repository struct {
 	Repo        string
-	BaseBranch  string
+	BaseBranch  string `yaml:"base_branch"`
 	Concurrency int
 	Enabled     bool
 	Implementer Role

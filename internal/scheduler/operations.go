@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 
+	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -24,7 +25,10 @@ func (s *Scheduler) Stop(ctx context.Context, id string) error {
 		if _, ok := s.repository(run.Repository); !ok {
 			return &fault.Error{Code: "config.repository_missing", Message: "Run repository is no longer configured"}
 		}
-		if _, err := s.db.ExecContext(ctx, "UPDATE runs SET stop_requested=1 WHERE id=?", id); err != nil {
+		if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+			_, err := tx.ExecContext(ctx, "UPDATE runs SET stop_requested=1 WHERE id=?", id)
+			return events.Draft{RunID: id, Type: "run.stop_requested", Payload: map[string]bool{"stop_requested": true}}, err
+		}); err != nil {
 			return err
 		}
 		return s.stopRun(ctx, run)

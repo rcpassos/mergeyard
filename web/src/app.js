@@ -1,18 +1,49 @@
 const status = document.querySelector('#connection');
 const events = new EventSource('/events');
+let refreshTimer;
+function refresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => htmx.trigger(document.body, 'dashboard-update'), 100);
+}
 events.onopen = () => {
   status.textContent = 'Live updates connected';
-  htmx.ajax('GET', '/scheduler', { target: '#scheduler', swap: 'outerHTML' });
+  refresh();
 };
 events.onerror = () => { status.textContent = 'Reconnecting to live updates…'; };
-for (const type of ['scheduler.paused', 'scheduler.resumed']) {
-  events.addEventListener(type, () => {
-    htmx.ajax('GET', '/scheduler', { target: '#scheduler', swap: 'outerHTML' });
-  });
+for (const type of [
+  'scheduler.paused', 'scheduler.resumed',
+  'run.claimed', 'run.preparing', 'run.needs_attention', 'run.stop_requested', 'run.stopped', 'run.failed',
+  'run.completed', 'run.manual', 'run.handed_back', 'run.waiting_for_harness',
+  'phase.started', 'phase.attempt_started', 'phase.completed', 'phase.failed', 'pr.created', 'pr.ready_for_review',
+]) {
+  events.addEventListener(type, refresh);
 }
+events.addEventListener('queue.updated', () => {
+  if (location.pathname === '/' || location.pathname === '/queue') refresh();
+});
+events.addEventListener('diagnostics.updated', () => {
+  if (location.pathname === '/settings') refresh();
+});
 document.body.addEventListener('htmx:responseError', (event) => {
   const code = event.detail.xhr.getResponseHeader('X-Mergeyard-Error-Code');
   document.querySelector('#action-error').textContent = code
-    ? `${code}: The scheduler action failed. Check the application log for details.`
-    : 'The scheduler action failed. Refresh the page and try again.';
+    ? `${code}: The action failed. Check the application log for details.`
+    : 'The request failed. Refresh the page and try again.';
+});
+document.body.addEventListener('htmx:afterRequest', (event) => {
+  if (event.detail.successful && event.detail.requestConfig.verb === 'post') {
+    document.querySelector('#action-error').textContent = '';
+    refresh();
+  }
+});
+document.body.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-copy]');
+  if (!button) return;
+  const message = document.querySelector('#copy-status');
+  try {
+    await navigator.clipboard.writeText(button.dataset.copy);
+    message.textContent = 'Copied to clipboard.';
+  } catch {
+    message.textContent = `Copy this text: ${button.dataset.copy}`;
+  }
 });
