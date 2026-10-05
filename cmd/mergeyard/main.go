@@ -1,4 +1,4 @@
-// Command mergeyard turns ready GitHub issues into reviewed pull requests.
+// Command mergeyard turns ready GitHub issues into draft pull requests.
 package main
 
 import (
@@ -34,6 +34,7 @@ func (c command) arity() int {
 }
 
 var commands = []command{
+	{name: "version", summary: "show the installed version"},
 	{name: "start", summary: "start the scheduler and dashboard (default)"},
 	{name: "init", summary: "interactive setup: writes config, checks tools"},
 	{name: "repo add", args: "<owner/repo>", summary: "add a repository to the config"},
@@ -54,7 +55,11 @@ var commands = []command{
 type globalOptions struct {
 	configPath string // empty means use the PRD §26 search order
 	help       bool
+	version    bool
 }
+
+// Set by GoReleaser for release builds.
+var version = "dev"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -70,6 +75,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stdout)
 		return 0
 	}
+	if opts.version {
+		fmt.Fprintf(stdout, "mergeyard %s\n", version)
+		return 0
+	}
 	if len(args) == 0 {
 		args = []string{"start"}
 	}
@@ -82,6 +91,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(rest) != cmd.arity() {
 		fmt.Fprintf(stderr, "usage: mergeyard %s\n", cmd.usage())
 		return 2
+	}
+	if cmd.name == "version" {
+		fmt.Fprintf(stdout, "mergeyard %s\n", version)
+		return 0
 	}
 	if cmd.name == "start" {
 		return start(opts.configPath, stdout, stderr)
@@ -165,6 +178,11 @@ func parseGlobalFlags(args []string) (globalOptions, []string, error) {
 		}
 		name, value, hasValue := strings.Cut(strings.TrimPrefix(arg[1:], "-"), "=")
 		switch name {
+		case "version":
+			if hasValue {
+				return opts, nil, fmt.Errorf("flag does not take a value: %s", arg)
+			}
+			opts.version = true
 		case "h", "help":
 			if hasValue {
 				return opts, nil, fmt.Errorf("flag does not take a value: %s", arg)
@@ -212,5 +230,6 @@ func printUsage(w io.Writer) {
 	}
 	fmt.Fprint(w, "\nGlobal flags:\n"+
 		"  --config <path>   config file (default: ./mergeyard.yaml, then ~/.config/mergeyard/config.yaml)\n"+
+		"  --version        show the installed version\n"+
 		"  -h, --help        show this help\n")
 }

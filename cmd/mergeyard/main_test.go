@@ -14,6 +14,15 @@ func runCLI(args ...string) (code int, stdout, stderr string) {
 	return code, out.String(), errOut.String()
 }
 
+func TestVersionWithoutConfiguration(t *testing.T) {
+	for _, args := range [][]string{{"version"}, {"--version"}, {"--config", "/nonexistent/config.yaml", "version"}} {
+		code, stdout, stderr := runCLI(args...)
+		if code != 0 || stdout != "mergeyard "+version+"\n" || stderr != "" {
+			t.Fatalf("version: code %d stdout %q stderr %q", code, stdout, stderr)
+		}
+	}
+}
+
 func TestStartRequiresConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	for _, args := range [][]string{{"start", "--config", path}, {"--config", path}} {
@@ -99,6 +108,7 @@ func TestUsageErrors(t *testing.T) {
 		{[]string{"watch"}, "usage: mergeyard watch <run-id>"},
 		{[]string{"stop", "run-1", "run-2"}, "usage: mergeyard stop <run-id>"},
 		{[]string{"status", "extra"}, "usage: mergeyard status"},
+		{[]string{"version", "extra"}, "usage: mergeyard version"},
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
@@ -144,6 +154,7 @@ func TestConfigFlag(t *testing.T) {
 		{[]string{"status", "--config", "--", "x"}, "flag needs an argument: --config"},
 		{[]string{"---config=x", "status"}, "unknown flag: ---config=x"},
 		{[]string{"--help=false", "status"}, "flag does not take a value: --help=false"},
+		{[]string{"--version=false"}, "flag does not take a value: --version=false"},
 		{[]string{"--verbose", "status"}, "unknown flag: --verbose"},
 		{[]string{"status", "-x"}, "unknown flag: -x"},
 	}
