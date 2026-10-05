@@ -44,3 +44,7 @@ command entries remain reserved for their respective later work.
 `mergeyard reconcile` runs the same reconciliation without claiming new work.
 It acquires the configured workspace lock, so stop the control plane first if
 it is running. The command prints findings and preserves orphaned artifacts.
+
+Status output escapes terminal controls and Unicode formatting controls in review
+text, locations, settings and attention diagnostics. Stored reports keep their
+original text; control sequences appear as visible escapes in the terminal.

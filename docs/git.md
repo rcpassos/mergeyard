@@ -70,6 +70,9 @@ SnapshotReview captures HEAD, index tree, branch/worktree HEAD reflogs and exact
 non-ignored files, including symlinks and modes. ReviewChanged also detects
 commits followed by resets. RestoreReview checks persisted ownership, restores
 HEAD/index/files, removes newly created non-ignored files and leaves ignored
-output alone. The scheduler must persist contamination before calling restore.
+output alone. Snapshots inventory pre-existing ignored paths so force-adding an
+artifact or changing ignore rules cannot make cleanup delete it. Older review
+snapshots without that inventory require attention when restoration is needed.
+The scheduler must persist contamination before calling restore.
 Restoration is replayable after interruption; unsafe paths, switched branches,
 submodules and unsupported file shapes require attention rather than cleanup.

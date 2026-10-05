@@ -39,6 +39,7 @@ func TestReviewRestoresGitStateAndPreservesExistingWork(t *testing.T) {
 	}
 	after, err := f.manager.SnapshotReview(ctx, run)
 	after.Reflog = before.Reflog
+	after.IgnoredPaths = before.IgnoredPaths
 	if err != nil || !reflect.DeepEqual(before, after) {
 		t.Fatalf("restore differs: before=%+v after=%+v err=%v", before, after, err)
 	}
@@ -144,5 +145,60 @@ func TestReviewDetectsDetachedCommitAfterReturningToOwnedBranch(t *testing.T) {
 	changed, err := f.manager.ReviewChanged(ctx, run, before)
 	if err != nil || !changed {
 		t.Fatalf("detached reviewer commit was not detected: %v %v", changed, err)
+	}
+}
+
+func TestReviewRestorationPreservesPreexistingIgnoredFiles(t *testing.T) {
+	for _, scenario := range []string{"force added", "ignore rule changed"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newFixture(t)
+			run := prepare(t, f)
+			ctx := context.Background()
+			write(t, run.Path, "keep.ignored", "preexisting ignored artifact\n")
+			before, err := f.manager.SnapshotReview(ctx, run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "force added" {
+				git(t, run.Path, "add", "-f", "keep.ignored")
+			} else {
+				write(t, run.Path, ".gitignore", "")
+			}
+			write(t, run.Path, "reviewer.txt", "reviewer addition\n")
+			changed, err := f.manager.ReviewChanged(ctx, run, before)
+			if err != nil || !changed {
+				t.Fatalf("mutation not detected: %v %v", changed, err)
+			}
+			for range 2 {
+				if err := f.manager.RestoreReview(ctx, run, before); err != nil {
+					t.Fatal(err)
+				}
+			}
+			data, err := os.ReadFile(filepath.Join(run.Path, "keep.ignored"))
+			if err != nil || string(data) != "preexisting ignored artifact\n" {
+				t.Fatalf("preexisting ignored file lost: %q %v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(run.Path, "reviewer.txt")); !os.IsNotExist(err) {
+				t.Fatal("reviewer addition survived restoration")
+			}
+		})
+	}
+}
+
+func TestLegacyReviewSnapshotDoesNotGuessIgnoredFileOwnership(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	ctx := context.Background()
+	write(t, run.Path, "keep.ignored", "preexisting")
+	before, err := f.manager.SnapshotReview(ctx, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before.IgnoredPaths = nil // persisted snapshots from before ignored inventory
+	git(t, run.Path, "add", "-f", "keep.ignored")
+	requireCode(t, f.manager.RestoreReview(ctx, run, before), "git.review_ambiguous")
+	data, err := os.ReadFile(filepath.Join(run.Path, "keep.ignored"))
+	if err != nil || string(data) != "preexisting" {
+		t.Fatal("legacy restoration lost ignored work")
 	}
 }

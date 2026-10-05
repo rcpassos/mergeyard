@@ -352,3 +352,36 @@ func TestBlockedReviewAndAttentionRollBackTogether(t *testing.T) {
 		t.Fatalf("blocked review not durable: %+v", saved.Review)
 	}
 }
+
+func TestReviewRetryPreservesExistingIgnoredArtifacts(t *testing.T) {
+	for _, mutation := range []string{`git add -f keep.ignored`, `printf '' > .gitignore`} {
+		t.Run(mutation, func(t *testing.T) {
+			script := `case "$*" in *review-1-1*) ` + mutation + `;; esac
+` + approvedReview
+			s, runtime, api, _, cfg, r := localFlow(t, reviewScript(script))
+			run := finish(t, s, workflow.Active, workflow.Review)
+			var path string
+			if err := runtime.DB.QueryRow("SELECT worktree_path FROM runs WHERE id=?", run.ID).Scan(&path); err != nil {
+				t.Fatal(err)
+			}
+			for name, data := range map[string]string{".gitignore": "*.ignored\n", "keep.ignored": "preexisting ignored artifact\n"} {
+				if err := os.WriteFile(filepath.Join(path, name), []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg.Repositories[0].Reviewer.MaxAttempts = 2
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r, Env: map[string]string{"PATH": os.Getenv("PATH"), "GIT_CONFIG_GLOBAL": os.Getenv("GIT_CONFIG_GLOBAL"), "GIT_CONFIG_NOSYSTEM": "1"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run = finish(t, s, workflow.WaitingForCI, workflow.Review)
+			if run.Review.Attempt != 2 || run.ReviewRound != 1 {
+				t.Fatalf("mutating reviewer verdict was accepted: %+v", run.Review)
+			}
+			data, err := os.ReadFile(filepath.Join(path, "keep.ignored"))
+			if err != nil || string(data) != "preexisting ignored artifact\n" {
+				t.Fatalf("ignored work lost across retry: %q %v", data, err)
+			}
+		})
+	}
+}

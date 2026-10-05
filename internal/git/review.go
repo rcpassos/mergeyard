@@ -17,11 +17,12 @@ import (
 // working files outside the repository. Missing tracked files stay missing.
 // Reflog detects commits even if the reviewer subsequently resets HEAD.
 type ReviewSnapshot struct {
-	RunID  string                `json:"run_id"`
-	Head   string                `json:"head"`
-	Index  string                `json:"index"`
-	Reflog string                `json:"reflog"`
-	Files  map[string]ReviewFile `json:"files"`
+	RunID        string                `json:"run_id"`
+	Head         string                `json:"head"`
+	Index        string                `json:"index"`
+	Reflog       string                `json:"reflog"`
+	Files        map[string]ReviewFile `json:"files"`
+	IgnoredPaths []string              `json:"ignored_paths"`
 }
 type ReviewFile struct {
 	Data []byte      `json:"data"`
@@ -59,6 +60,10 @@ func (m *Manager) snapshotReview(ctx context.Context, run Run) (ReviewSnapshot, 
 	hash := sha256.Sum256([]byte(log + "\nHEAD\n" + headLog))
 	snapshot.Reflog = hex.EncodeToString(hash[:])
 	names, err := reviewFiles(ctx, run.Path)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.IgnoredPaths, err = ignoredReviewFiles(ctx, run.Path)
 	if err != nil {
 		return snapshot, err
 	}
@@ -120,6 +125,8 @@ func (m *Manager) ReviewChanged(ctx context.Context, run Run, before ReviewSnaps
 		return false, failure("git.review_ambiguous", run.Path, errors.New("snapshot belongs to another run"))
 	}
 	after, err := m.snapshotReview(ctx, run)
+	// Ignored test/build output may change without contaminating repository code.
+	after.IgnoredPaths = before.IgnoredPaths
 	return !reflect.DeepEqual(before, after), err
 }
 
@@ -134,6 +141,9 @@ func (m *Manager) RestoreReview(ctx context.Context, run Run, before ReviewSnaps
 	}
 	if before.RunID != run.ID || !shaPattern.MatchString(before.Head) || !shaPattern.MatchString(before.Index) {
 		return failure("git.review_ambiguous", run.Path, errors.New("invalid snapshot ownership"))
+	}
+	if before.IgnoredPaths == nil {
+		return failure("git.review_ambiguous", run.Path, errors.New("review snapshot has no ignored-file inventory; preserve workspace for inspection"))
 	}
 	names, err := reviewFiles(ctx, run.Path)
 	if err != nil {
@@ -198,9 +208,13 @@ func (m *Manager) RestoreReview(ctx context.Context, run Run, before ReviewSnaps
 	if err != nil {
 		return err
 	}
+	ignoredBefore := map[string]bool{}
+	for _, name := range before.IgnoredPaths {
+		ignoredBefore[name] = true
+	}
 	current = append(current, names...)
 	for _, name := range current {
-		if _, keep := before.Files[name]; keep {
+		if _, keep := before.Files[name]; keep || ignoredBefore[name] {
 			continue
 		}
 		path, err := reviewPath(run.Path, name)
@@ -217,6 +231,7 @@ func (m *Manager) RestoreReview(ctx context.Context, run Run, before ReviewSnaps
 	}
 	// Restoring the branch adds a reflog entry; preserve that audit history.
 	after.Reflog = before.Reflog
+	after.IgnoredPaths = before.IgnoredPaths
 	if !reflect.DeepEqual(before, after) {
 		return failure("git.review_restore", run.Path, errors.New("restored Git state differs from snapshot"))
 	}
@@ -230,6 +245,22 @@ func reviewFiles(ctx context.Context, root string) ([]string, error) {
 	names := strings.Split(strings.TrimSuffix(out, "\x00"), "\x00")
 	if out == "" {
 		names = nil
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// Inventory ignored paths before launch so exposing or force-adding an existing
+// artifact cannot make cleanup mistake it for a reviewer addition. Contents are
+// left alone because test/build output is allowed to change during a review.
+func ignoredReviewFiles(ctx context.Context, root string) ([]string, error) {
+	out, err := command(ctx, root, "git.review_snapshot", "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+	if err != nil {
+		return nil, err
+	}
+	names := []string{}
+	if out != "" {
+		names = strings.Split(strings.TrimSuffix(out, "\x00"), "\x00")
 	}
 	sort.Strings(names)
 	return names, nil
