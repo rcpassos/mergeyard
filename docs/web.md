@@ -48,3 +48,66 @@ Templates and generated assets are embedded in Go. `go build ./cmd/mergeyard`
 works directly from a checkout without Node, using the committed assets. The
 distributed binary needs no Node, asset directory, CDN, or external fonts.
 Third-party asset licenses are included under `web/static/licenses/`.
+
+## M1 pages
+
+`GET /`, `/queue`, `/runs/{id}`, and `/settings` are server-rendered pages.
+HTMX requests to the same URLs return the `#content` fragment; responses vary
+by `HX-Request` and are never cached. Navigation and ordinary forms also work
+without JavaScript. Missing run IDs return 404.
+
+`web.NewDashboard` takes the event bus, shared scheduler control, and
+`DashboardOptions`: runtime database, workspace, scheduler engine, effective
+config and its source path, and an optional doctor callback. The engine must
+use the runtime's workflow and scheduler control. `New` remains available for
+the foundation without runtime data.
+
+Run `Server.RunUpdates(ctx)` in a goroutine. It discovers GitHub queue issues
+immediately and at `poll_interval`, including while paused or at capacity.
+Discovery performs no claims. It preserves the last successful snapshot on
+failure and shows a stale-data notice. Discovery errors fail closed: an issue
+with unknown dependency status is never displayed as ready. Run lifecycle data
+always comes from SQLite, so claims and phase/PR transitions immediately
+supersede stale issue snapshots. The doctor callback runs once with a bounded
+context outside HTTP requests. Cancel and join RunUpdates before closing the
+runtime.
+
+SSE notifications refresh the current page for run, phase, PR, scheduler,
+queue and diagnostic changes. Reconnecting refreshes the snapshot, including
+when a run completes while the browser is disconnected. Run output has its own
+`GET /runs/{id}/output` fragment, polled every two seconds until the run ends.
+It reads at most the last 128 KiB and 200 events from the latest attempt's
+`events.jsonl`, renders text/tool names/result summaries, and limits rendered
+text to 32 KiB. Malformed or incomplete events are skipped. Paths and symlinks
+cannot escape the runtime workspace. Templates escape all issue, event, and
+log content. The timeline shows the latest 100 durable run events, newest first.
+
+Queue sections in M1 are Running, Ready, Blocked, Needs attention, and Draft
+PRs (M1 end). `ACTIVE/review` with a persisted draft PR is explicitly marked as
+M1 end; a reviewer has not started and the run still consumes a slot. Attention
+and manual runs also consume slots. Waiting-for-harness and waiting-for-merge
+flows belong to later milestones. Recent runs are limited to the latest 20
+ended runs. The settings page displays resolved values, configuration/workspace
+paths, and doctor results; it has no configuration write endpoint.
+
+`POST /runs/{id}/stop` uses `Scheduler.Stop`, the lifecycle boundary for browser
+and CLI wiring. It coordinates with in-flight scheduler operations, stops the
+phase session, marks its attempt stopped, removes the running label, and adds attention if
+work exists before marking the run STOPPED. It never
+removes the worktree or branch or restores ready. Retrying the operation retries
+label cleanup. All existing Host, Origin, CSRF, and safe error-code checks apply.
+
+Stop intent is persisted and emitted as `run.stop_requested`. If a process or
+GitHub operation fails, the run remains nonterminal with a Retry Stop action;
+later scheduler ticks retry the pending Stop before any phase advancement.
+Attempts retain their original model, effort, and skills. Empty persisted
+model/effort mean harness defaults; migrated attempts without a skills snapshot
+show that the skills were not recorded rather than using today's config.
+
+The current `start` command connects these pages to the default runtime and
+loads any discovered configuration for read-only settings/queue discovery.
+Until #14 wires full startup orchestration, it continues to use the default
+workspace and port, and does not run dispatch. Settings report the actual
+workspace and port. Explicit `start --config` and CLI watch/stop wiring remain
+tracked by startup/control work; copied watch commands use the intended CLI
+contract.

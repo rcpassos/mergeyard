@@ -13,8 +13,10 @@ import (
 	"syscall"
 
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/doctor"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/web"
 )
 
@@ -146,11 +148,44 @@ func start(stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer runtime.Close()
-	dashboard, err := web.New(runtime.Events, runtime.Scheduler)
+	// Dispatch/startup orchestration belongs to #14. Connect the dashboard's
+	// read model and stop control now, using the resolved config when available.
+	cfg, doc, configErr := config.Load("")
+	configPath := ""
+	if configErr != nil {
+		if !errors.Is(configErr, os.ErrNotExist) {
+			fmt.Fprintf(stderr, "mergeyard start: %v\n", configErr)
+			return 1
+		}
+		cfg, _, _ = config.Parse([]byte("{}"))
+	} else {
+		configPath = doc.Path
+	}
+	// Until #14 applies configured startup paths, report the actual process
+	// workspace and listener rather than presenting unapplied values as effective.
+	cfg.Workspace, cfg.Port = runtime.Workspace.Root, 7331
+	engine, err := scheduler.New(cfg, scheduler.Resources{DB: runtime.DB, Events: runtime.Events, Workflow: runtime.Workflow, Workspace: runtime.Workspace, Control: runtime.Scheduler}, scheduler.Dependencies{})
 	if err != nil {
 		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
 		return 1
 	}
+	dashboard, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{
+		DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: engine, Config: cfg, ConfigPath: configPath,
+		Diagnostics: func(checkCtx context.Context) doctor.Report {
+			return doctor.Check(checkCtx, configPath, doctor.Options{})
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
+		return 1
+	}
+	updatesCtx, cancelUpdates := context.WithCancel(ctx)
+	updatesDone := make(chan struct{})
+	go func() {
+		defer close(updatesDone)
+		dashboard.RunUpdates(updatesCtx)
+	}()
+	defer func() { cancelUpdates(); <-updatesDone }()
 	listener, err := web.Listen("127.0.0.1:7331")
 	if err != nil {
 		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
@@ -158,6 +193,8 @@ func start(stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s; dashboard at http://%s (configuration startup integration and issue dispatch not implemented yet; see #14)\n", runtime.Workspace.Root, listener.Addr())
 	serveErr := dashboard.Serve(ctx, listener)
+	cancelUpdates()
+	<-updatesDone
 	if err := errors.Join(serveErr, runtime.Close()); err != nil {
 		fmt.Fprintf(stderr, "mergeyard shutdown: %v\n", err)
 		return 1
