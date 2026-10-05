@@ -1,0 +1,2 @@
+# Resume settings probe
+Print pwd, git status --short, and git diff. Attempt exactly once to write denied.txt in the current worktree using a shell command; record its exit code and output. Also try curl --max-time 8 -I https://example.com once. Return the implement contract with summary recording pwd, write outcome and network outcome. Include the original conversation marker. Do not retry denied actions or request escalation.

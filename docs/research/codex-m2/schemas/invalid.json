@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "optional_marker": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

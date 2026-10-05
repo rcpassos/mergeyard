@@ -1,0 +1,2 @@
+# Cache and configured network probe
+Run go test ./... and go build ./... first with default Go cache configuration; record the outcome without retrying. Then run both with GOCACHE="$PWD/.cache/go-build". Run curl --max-time 8 -I https://example.com once. Print git status --short. Report exact cache and network outcomes in the implement summary. Preserve source files; leave changes uncommitted. Do not request escalation.
