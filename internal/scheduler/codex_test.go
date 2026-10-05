@@ -386,3 +386,27 @@ func TestCodexPermissionDisplayUsesEffectiveNetworkAccess(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexFixRequestsPreserveHarnessOwnership(t *testing.T) {
+	for _, tc := range []struct{ name, agent, code string }{
+		{"unsupported Codex fix", "codex", "phase.unsupported"},
+		{"changed harness before fix", "claude", "harness.session_agent_changed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, runtime, api, _, cfg, r := codexFlow(t, codexImplementation)
+			if err := os.WriteFile(cfg.Agents.Claude.Executable, []byte("#!/bin/sh\n"+loopScript(`printf fixed > feature.txt; `+fixedReport)+"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			run := finish(t, s, workflow.Active, workflow.Fix)
+			cfg.Repositories[0].Implementer.Agent = tc.agent
+			restarted, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run = finish(t, restarted, workflow.NeedsAttention, workflow.Fix)
+			if run.LastErrorCode != tc.code || run.Fix != nil || run.Implementer.SessionID != codexID || run.Implementer.Agent != "codex" || api.creations != 1 {
+				t.Fatalf("fix changed harness or launched an unsupported attempt: %+v PRs=%d", run, api.creations)
+			}
+		})
+	}
+}

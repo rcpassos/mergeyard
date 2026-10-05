@@ -1,4 +1,4 @@
-// Package scheduler dispatches eligible issues and advances implementation and first review.
+// Package scheduler dispatches eligible issues and advances the bounded implementation, review, and fix loop.
 package scheduler
 
 import (

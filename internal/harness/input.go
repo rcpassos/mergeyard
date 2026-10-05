@@ -59,8 +59,8 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 }
 
 func validatePhaseContext(ctx PhaseContext) error {
-	if ctx.Phase != workflow.Implement && ctx.Phase != workflow.Review {
-		return phaseError("phase.unsupported", "Only implement and review phases are supported", nil)
+	if ctx.Phase != workflow.Implement && ctx.Phase != workflow.Review && ctx.Phase != workflow.Fix {
+		return phaseError("phase.unsupported", "Only implement, review, and fix phases are supported", nil)
 	}
 	if !filepath.IsAbs(ctx.WorktreePath) || !filepath.IsAbs(ctx.PhaseDir) ||
 		strings.ContainsRune(ctx.WorktreePath+ctx.PhaseDir, 0) {

@@ -42,6 +42,9 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	if run.State == workflow.NeedsAttention {
 		return s.attentionLabels(ctx, repo, run)
 	}
+	if run.State == workflow.Active && run.Phase == workflow.Fix {
+		return s.fix(ctx, repo, run)
+	}
 	if run.State == workflow.Active && run.Phase == workflow.Review {
 		return s.review(ctx, repo, run)
 	}
@@ -350,8 +353,8 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(implementer_session_id,''),COALESCE(implementer_agent,'') FROM runs WHERE id=?", run.ID).Scan(&sessionID, &sessionAgent); err != nil {
 		return err
 	}
-	if sessionAgent != "" && sessionAgent != repo.Implementer.Agent {
-		return &fault.Error{Code: "harness.session_agent_changed", Message: "Persisted implementer belongs to " + sessionAgent + "; restore that implementer harness before resuming"}
+	if err := validateImplementerHarness(sessionAgent, repo.Implementer.Agent); err != nil {
+		return err
 	}
 	adapter := s.harnesses[repo.Implementer.Agent]
 	if adapter.Capabilities().SessionIDSource == harness.Preassigned && sessionID == "" {
@@ -447,4 +450,11 @@ func (s *Scheduler) implementPermissions(agent string) string {
 		return s.cfg.Agents.Codex.Sandbox + " · network " + strconv.FormatBool(networkAccess) + " · approvals never"
 	}
 	return s.cfg.Agents.Claude.PermissionMode + " · allowed tools " + strings.Join(s.cfg.Agents.Claude.AllowedTools, ", ")
+}
+
+func validateImplementerHarness(persistedAgent, configuredAgent string) error {
+	if persistedAgent != "" && persistedAgent != configuredAgent {
+		return &fault.Error{Code: "harness.session_agent_changed", Message: "Persisted implementer belongs to " + persistedAgent + "; restore that implementer harness before resuming"}
+	}
+	return nil
 }

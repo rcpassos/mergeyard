@@ -79,6 +79,11 @@
 {{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}
 {{with .Report}}<h3>Verdict: {{.Status}}</h3><p>{{.Summary}}</p>
 {{range .Findings}}<article class="notice"><h4>{{.ID}} · {{.Severity}} · {{.Title}}</h4><p>{{.Details}}</p>{{if .File}}<p><code>{{.File}}{{if .Line}}:{{.Line}}{{end}}</code></p>{{end}}</article>{{else}}<p>No findings.</p>{{end}}{{end}}</section>{{end}}
+{{range .FixHistory}}<section class="queue-section"><h2>Implementer fix · round {{.Round}}, attempt {{.Attempt}}</h2>
+<dl class="run-facts"><div><dt>Implementer</dt><dd>{{.Agent}} · model {{.Model}} · effort {{.Effort}}</dd></div><div><dt>Session</dt><dd><code>{{.SessionID}}</code></dd></div><div><dt>Skills / permissions</dt><dd>{{range .Skills}}{{.}} {{else}}None{{end}} · {{.PermissionMode}} · allowed tools {{range .AllowedTools}}{{.}} {{else}}harness default{{end}}</dd></div><div><dt>Status</dt><dd>{{.Status}}{{if .Pushed}} · pushed{{end}}</dd></div><div><dt>Fix target / commit</dt><dd><code>{{.TargetSHA}}</code> / <code>{{.CommitSHA}}</code></dd></div></dl>
+{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}
+{{range .Findings}}<article class="notice"><h4>{{.ID}} · {{.Title}}</h4><p>{{.Details}}</p></article>{{end}}
+{{with .Report}}<h3>Fix status: {{.Status}}</h3><p>{{.Summary}}</p>{{range .Responses}}<article class="notice"><h4>{{.FindingID}} · {{.Resolution}}</h4><p>{{.Note}}</p></article>{{else}}<p>No responses reported.</p>{{end}}{{end}}</section>{{end}}
 {{if .ApprovedSHA}}<p>Approved commit: <code>{{.ApprovedSHA}}</code></p>{{end}}
 {{if .LastErrorCode}}<section class="notice failure"><h2>Last error</h2><p><code>{{.LastErrorCode}}</code>: {{.LastErrorMessage}}</p></section>{{end}}
 {{end}}<div class="run-history">

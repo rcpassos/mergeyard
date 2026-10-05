@@ -86,6 +86,7 @@ type MetadataPatch struct {
 	ReviewRound          *int
 	ApprovedSHA          *string
 	IncrementReviewRound bool
+	Fix                  *FixCompletion
 	Review               *ReviewCompletion
 	ReviewRejection      *ReviewRejection
 }
@@ -95,17 +96,19 @@ type MetadataPatch struct {
 type Run struct {
 	Implementer *ImplementSnapshot `json:"implementer,omitempty"`
 	RunMetadata
-	Review           *review.Snapshot `json:"review,omitempty"`
-	ID               string           `json:"id"`
-	Repository       string           `json:"repository"`
-	IssueNumber      int              `json:"issue_number"`
-	State            State            `json:"state"`
-	Phase            Phase            `json:"phase,omitempty"`
-	CreatedAt        string           `json:"created_at"`
-	UpdatedAt        string           `json:"updated_at"`
-	CompletedAt      string           `json:"completed_at,omitempty"`
-	LastErrorCode    string           `json:"last_error_code,omitempty"`
-	LastErrorMessage string           `json:"last_error_message,omitempty"`
+	FixHistory       []review.FixSnapshot `json:"fix_history,omitempty"`
+	Fix              *review.FixSnapshot  `json:"fix,omitempty"`
+	Review           *review.Snapshot     `json:"review,omitempty"`
+	ID               string               `json:"id"`
+	Repository       string               `json:"repository"`
+	IssueNumber      int                  `json:"issue_number"`
+	State            State                `json:"state"`
+	Phase            Phase                `json:"phase,omitempty"`
+	CreatedAt        string               `json:"created_at"`
+	UpdatedAt        string               `json:"updated_at"`
+	CompletedAt      string               `json:"completed_at,omitempty"`
+	LastErrorCode    string               `json:"last_error_code,omitempty"`
+	LastErrorMessage string               `json:"last_error_message,omitempty"`
 }
 
 // Request supplies trigger-specific information, not an arbitrary new state.
@@ -153,6 +156,9 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		next, eventType, err := destination(current, request)
 		if err != nil {
 			return events.Draft{}, err
+		}
+		if request.Metadata.Fix != nil && (current.Phase != Fix || request.Trigger != FixSucceeded) {
+			return events.Draft{}, invalid("Fix completion requires fix success transition")
 		}
 		if request.Metadata.ReviewRejection != nil {
 			if current.Phase != Review || request.Trigger != OperationFailed || request.Metadata.Review != nil {
@@ -254,6 +260,11 @@ func (w *Workflow) acquireOperation(ctx context.Context, id string) (func(), err
 }
 
 func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string, failure *fault.Error) error {
+	if patch.Fix != nil {
+		if err := patch.Fix.apply(ctx, tx, id, patch); err != nil {
+			return err
+		}
+	}
 	if patch.ReviewRejection != nil {
 		if err := patch.ReviewRejection.apply(ctx, tx, id, failure); err != nil {
 			return err
@@ -426,6 +437,7 @@ func (w *Workflow) Get(ctx context.Context, id string) (Run, error) {
 
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 func readRun(ctx context.Context, db queryer, id string) (Run, error) {
@@ -445,6 +457,13 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	run.Implementer, err = LoadImplementSnapshot(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
+	}
+	run.FixHistory, err = review.LoadFixHistory(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	if len(run.FixHistory) > 0 {
+		run.Fix = &run.FixHistory[len(run.FixHistory)-1]
 	}
 	run.Review, err = review.LoadSnapshot(ctx, db, id)
 	if err != nil {

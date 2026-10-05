@@ -9,6 +9,7 @@ import (
 
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 // LoadSnapshot reads the latest durable reviewer attempt for display.

@@ -170,6 +170,15 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if !ok {
 		return fail(&fault.Error{Code: "git.review_unsupported", Message: "Git adapter cannot protect reviewer changes"})
 	}
+	if run.ReviewRound > 1 {
+		fixer, ok := s.deps.Git.(FixGit)
+		if !ok || run.Fix == nil {
+			return fail(&fault.Error{Code: "git.fix_unsupported", Message: "Cannot verify the pinned fix before re-review"})
+		}
+		if err := fixer.InspectFixTarget(ctx, gitRun, run.Fix.CommitSHA); err != nil {
+			return fail(err)
+		}
+	}
 	snapshot, err := g.SnapshotReview(ctx, gitRun)
 	if err != nil {
 		return fail(err)
@@ -194,10 +203,10 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if err != nil {
 		return err
 	}
-	resume := number > 1
+	resume := number > 1 || run.ReviewRound > 1
 	warning := ""
 	previousSession := sessionID
-	if resume {
+	if number > 1 {
 		previous, err := s.lastReview(ctx, run)
 		if err != nil {
 			return err
@@ -213,7 +222,19 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		resume = false
 	}
 	phase := harness.PhaseContext{Phase: workflow.Review, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
-	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound})
+	issue, err = s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
+	if err != nil {
+		return err
+	}
+	var previousFindings []review.Finding
+	var fixReport *review.FixReport
+	if run.ReviewRound > 1 {
+		if run.Fix == nil || !run.Fix.Pushed || run.Fix.CommitSHA != snapshot.Head || run.Fix.Round != run.ReviewRound-1 {
+			return fail(&fault.Error{Code: "review.head_changed", Message: "Next review target differs from the pinned fix commit"})
+		}
+		previousFindings, fixReport = run.Fix.Findings, run.Fix.Report
+	}
+	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport})
 	if err != nil {
 		return fail(err)
 	}

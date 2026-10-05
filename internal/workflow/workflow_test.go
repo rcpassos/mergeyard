@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -41,7 +42,7 @@ func TestClaimPersistsRunAndOneEvent(t *testing.T) {
 		t.Fatalf("claim = %+v", run)
 	}
 	saved, err := w.Get(ctx, run.ID)
-	if err != nil || saved != run {
+	if err != nil || !reflect.DeepEqual(saved, run) {
 		t.Fatalf("saved = %+v, error = %v; want %+v", saved, err, run)
 	}
 	history, err := bus.History(ctx, 0, 100)
@@ -158,7 +159,7 @@ func TestFixedTransitionRows(t *testing.T) {
 				t.Fatalf("transition = %+v, %v; want %s/%s", run, err, row.to, row.next)
 			}
 			saved, err := w.Get(context.Background(), "run")
-			if err != nil || saved != run {
+			if err != nil || !reflect.DeepEqual(saved, run) {
 				t.Fatalf("transition was not persisted: %+v, %v", saved, err)
 			}
 			after, err := bus.History(context.Background(), before[len(before)-1].ID, 100)
@@ -189,7 +190,7 @@ func assertInvalid(t *testing.T, w *workflow.Workflow, bus *events.Bus, request 
 		t.Fatalf("expected coded invalid transition, got %v", err)
 	}
 	after, err := w.Get(ctx, "run")
-	if err != nil || after != before {
+	if err != nil || !reflect.DeepEqual(after, before) {
 		t.Fatalf("rejected transition changed the run: %+v, %v", after, err)
 	}
 	added, err := bus.History(ctx, history[len(history)-1].ID, 100)
@@ -434,7 +435,7 @@ func TestEventFailureRollsBackTransition(t *testing.T) {
 		t.Fatalf("event failure lost its human message or storage cause: %v", err)
 	}
 	after, err := w.Get(ctx, "run")
-	if err != nil || after != before {
+	if err != nil || !reflect.DeepEqual(after, before) {
 		t.Fatalf("rolled-back run = %+v, %v; want %+v", after, err, before)
 	}
 	added, err := bus.History(ctx, history[len(history)-1].ID, 100)
@@ -497,7 +498,7 @@ func TestDuplicateClaimAndConflictingRetryAreAtomic(t *testing.T) {
 	_, err = w.Transition(ctx, "run", workflow.Request{Trigger: workflow.Retry, NextState: workflow.Active, NextPhase: workflow.Implement})
 	assertConflict(t, err)
 	got, err := w.Get(ctx, "run")
-	if err != nil || got != failed {
+	if err != nil || !reflect.DeepEqual(got, failed) {
 		t.Fatalf("conflicting retry changed failed history: %+v, %v", got, err)
 	}
 	added, err := bus.History(ctx, history[len(history)-1].ID, 100)
@@ -602,7 +603,7 @@ func TestTransitionCommitsRelatedMetadata(t *testing.T) {
 				t.Fatalf("transition metadata = %+v, %v", run, err)
 			}
 			saved, err := w.Get(ctx, "run")
-			if err != nil || saved != run {
+			if err != nil || !reflect.DeepEqual(saved, run) {
 				t.Fatalf("saved metadata = %+v, %v; want %+v", saved, err, run)
 			}
 			assertOneEvent(t, bus, before[len(before)-1].ID)
@@ -610,7 +611,7 @@ func TestTransitionCommitsRelatedMetadata(t *testing.T) {
 			var payload struct {
 				Run workflow.Run `json:"run"`
 			}
-			if err := json.Unmarshal(history[0].Payload, &payload); err != nil || payload.Run != run {
+			if err := json.Unmarshal(history[0].Payload, &payload); err != nil || !reflect.DeepEqual(payload.Run, run) {
 				t.Fatalf("event does not contain committed metadata: %+v, %v", payload, err)
 			}
 		})
@@ -645,7 +646,7 @@ func TestMetadataAndTransitionRollBackTogether(t *testing.T) {
 				t.Fatalf("metadata error lost cause: %v", err)
 			}
 			after, err := w.Get(ctx, "run")
-			if err != nil || after != before {
+			if err != nil || !reflect.DeepEqual(after, before) {
 				t.Fatalf("rollback changed run or metadata: %+v, %v", after, err)
 			}
 			added, err := bus.History(ctx, history[len(history)-1].ID, 100)
@@ -679,7 +680,7 @@ func TestMetadataPatchOnlyChangesTransitionedRun(t *testing.T) {
 		t.Fatalf("metadata patch was not applied to the transitioned run: %+v", run)
 	}
 	got, err := w.Get(ctx, "other-run")
-	if err != nil || got != other {
+	if err != nil || !reflect.DeepEqual(got, other) {
 		t.Fatalf("metadata operation changed another run without a transition: %+v, %v; want %+v", got, err, other)
 	}
 	assertOneEvent(t, bus, before[len(before)-1].ID)
@@ -716,7 +717,7 @@ func TestMetadataPatchPreservesOmittedFieldsAndSupportsClearing(t *testing.T) {
 			t.Fatalf("metadata after %s = %+v, %v; want %+v", step.request.Trigger, run.RunMetadata, err, step.want)
 		}
 		saved, err := w.Get(ctx, "run")
-		if err != nil || saved != run {
+		if err != nil || !reflect.DeepEqual(saved, run) {
 			t.Fatalf("metadata patch was not persisted: %+v, %v", saved, err)
 		}
 	}

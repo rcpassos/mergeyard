@@ -67,15 +67,10 @@ func TestFirstReviewApprovesPinnedHeadWithIndependentSettings(t *testing.T) {
 	}
 }
 
-func TestReviewChangesRequiredPreparesFixWithoutLaunchingIt(t *testing.T) {
+func TestReviewChangesRequiredPreparesFix(t *testing.T) {
 	report := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"changes_required","summary":"Fix bug","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Broken","file":"feature.txt","line":1}]}}'`
 	s, runtime, api, _, _, _ := localFlow(t, reviewScript(report))
 	run := finish(t, s, workflow.Active, workflow.Fix)
-	for range 3 {
-		if err := s.Tick(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
 	var attempts int
 	runtime.DB.QueryRow("SELECT count(*) FROM phase_attempts").Scan(&attempts)
 	if attempts != 2 || run.ApprovedSHA != "" || run.Review.Report.Status != "changes_required" || !api.prs["mergeyard/issue-7"].Draft {

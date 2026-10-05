@@ -19,7 +19,7 @@ func TestUpgradeCorrectsCodexFullAccessPermissionSnapshots(t *testing.T) {
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 	previous := fstest.MapFS{}
-	for _, name := range []string{"001_initial.sql", "002_scheduler.sql", "003_stop_requested.sql", "004_attempt_skills.sql", "005_reviews.sql", "006_implement_settings.sql"} {
+	for _, name := range []string{"001_initial.sql", "002_scheduler.sql", "003_stop_requested.sql", "004_attempt_skills.sql", "005_reviews.sql", "006_fixes.sql", "007_implement_settings.sql"} {
 		data, err := fs.ReadFile(migrations.Files, name)
 		if err != nil {
 			t.Fatal(err)
