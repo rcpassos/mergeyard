@@ -234,13 +234,15 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	}
 	var previousFindings []review.Finding
 	var fixReport *review.FixReport
+	var repair *ci.Snapshot
 	if run.ReviewRound > 1 {
 		if run.Fix == nil || !run.Fix.Pushed || run.Fix.CommitSHA != snapshot.Head || run.Fix.Round != run.ReviewRound-1 {
 			return fail(&fault.Error{Code: "review.head_changed", Message: "Next review target differs from the pinned fix commit"})
 		}
 		previousFindings, fixReport = run.Fix.Findings, run.Fix.Report
+		repair = run.Fix.CI
 	}
-	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport})
+	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair})
 	if err != nil {
 		return fail(err)
 	}

@@ -250,9 +250,27 @@ check run cannot supply source authorization for a legacy status.
 Only successful queries establishing no checks and no requirements allow readiness
 after two minutes from the saved wait start. `ci_timeout` defaults to 60 minutes.
 Expiry requires attention with diagnostics and never launches a code fix.
-Failed/timed-out outcomes are saved for the dependent CI repair ticket; until that
-slice lands, `ci.repair_unavailable` requires attention without starting a fix.
-Canceled/action-required outcomes also require attention.
+Failed checks (`ci.check_failed`) and terminal check timeouts
+(`ci.check_timed_out`) enter the implementer fix phase only when another review
+round remains. Canceled/action-required outcomes take priority and require
+attention without a fix. Unreadable evidence keeps the original bounded wait.
+Mergeyard never automatically reruns checks.
+
+CI repairs retain the approved target, check names, native outcomes, available
+check output/status descriptions, URLs, and wait timestamps. The implementer
+receives this context alongside the current issue and PR. A CI-only success
+report uses `responses: []`; invented finding responses and success without
+code changes are invalid. Fix attempts use `implementer.max_attempts`, and the
+next independent review uses `reviewer.max_attempts`. Neither retry spends an
+extra review round. Exhausted rounds require `review.max_rounds_exceeded` before
+any repair starts.
+
+Entering repair clears approval. The existing pinned commit/push journal handles
+restart recovery, then advances exactly one review round. The reviewer receives
+the repair evidence and summary with the new complete diff. New CI is considered
+only after that independent review approves the new commit and starts a fresh
+wait. Previous repair diagnostics remain in fix history after the new CI wait
+replaces the failed observation, including in run detail, status, and events.
 
 The review target, approved commit and fresh PR head must agree before readiness.
 An external push before readiness invalidates approval and preserves the run for

@@ -43,7 +43,7 @@ func TestDashboardUpgradesPublishedStopSchema(t *testing.T) {
 		}
 	}
 	var version int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 10 {
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 11 {
 		t.Fatalf("dashboard schema version = %d, err %v; want 10", version, err)
 	}
 }
