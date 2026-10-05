@@ -10,6 +10,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/review"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -85,22 +86,25 @@ type MetadataPatch struct {
 	ReviewRound          *int
 	ApprovedSHA          *string
 	IncrementReviewRound bool
+	Review               *ReviewCompletion
+	ReviewRejection      *ReviewRejection
 }
 
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
 	RunMetadata
-	ID               string `json:"id"`
-	Repository       string `json:"repository"`
-	IssueNumber      int    `json:"issue_number"`
-	State            State  `json:"state"`
-	Phase            Phase  `json:"phase,omitempty"`
-	CreatedAt        string `json:"created_at"`
-	UpdatedAt        string `json:"updated_at"`
-	CompletedAt      string `json:"completed_at,omitempty"`
-	LastErrorCode    string `json:"last_error_code,omitempty"`
-	LastErrorMessage string `json:"last_error_message,omitempty"`
+	Review           *review.Snapshot `json:"review,omitempty"`
+	ID               string           `json:"id"`
+	Repository       string           `json:"repository"`
+	IssueNumber      int              `json:"issue_number"`
+	State            State            `json:"state"`
+	Phase            Phase            `json:"phase,omitempty"`
+	CreatedAt        string           `json:"created_at"`
+	UpdatedAt        string           `json:"updated_at"`
+	CompletedAt      string           `json:"completed_at,omitempty"`
+	LastErrorCode    string           `json:"last_error_code,omitempty"`
+	LastErrorMessage string           `json:"last_error_message,omitempty"`
 }
 
 // Request supplies trigger-specific information, not an arbitrary new state.
@@ -149,6 +153,17 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		if err != nil {
 			return events.Draft{}, err
 		}
+		if request.Metadata.ReviewRejection != nil {
+			if current.Phase != Review || request.Trigger != OperationFailed || request.Metadata.Review != nil {
+				return events.Draft{}, invalid("Review rejection requires a review attention transition")
+			}
+		}
+		if request.Metadata.Review != nil {
+			status := request.Metadata.Review.Report.Status
+			if current.Phase != Review || (status == "approved" && request.Trigger != ReviewApproved) || (status == "changes_required" && request.Trigger != ReviewChangesRequired && request.Trigger != ReviewRoundsExhausted) || (status != "approved" && status != "changes_required") {
+				return events.Draft{}, invalid("Review completion and transition disagree")
+			}
+		}
 		if err := request.Metadata.validate(); err != nil {
 			return events.Draft{}, err
 		}
@@ -179,7 +194,7 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		if err != nil {
 			return events.Draft{}, storageError(err)
 		}
-		if err := request.Metadata.apply(ctx, tx, id); err != nil {
+		if err := request.Metadata.apply(ctx, tx, id, request.Failure); err != nil {
 			return events.Draft{}, &fault.Error{Code: "internal.run_metadata", Message: "Could not update run metadata", Err: err}
 		}
 		run, err = readRun(ctx, tx, id)
@@ -237,7 +252,17 @@ func (w *Workflow) acquireOperation(ctx context.Context, id string) (func(), err
 	}
 }
 
-func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string) error {
+func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string, failure *fault.Error) error {
+	if patch.ReviewRejection != nil {
+		if err := patch.ReviewRejection.apply(ctx, tx, id, failure); err != nil {
+			return err
+		}
+	}
+	if patch.Review != nil {
+		if err := patch.Review.apply(ctx, tx, id, patch); err != nil {
+			return err
+		}
+	}
 	if patch.PRNumber == nil && patch.ReviewRound == nil && patch.ApprovedSHA == nil && !patch.IncrementReviewRound {
 		return nil
 	}
@@ -413,6 +438,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, &fault.Error{Code: "internal.run_not_found", Message: "Run does not exist", Path: id, Err: err}
 	}
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.Review, err = review.LoadSnapshot(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
 	}

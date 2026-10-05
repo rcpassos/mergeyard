@@ -9,8 +9,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
@@ -95,7 +97,28 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 				continue
 			}
 			count++
-			fmt.Fprintf(stdout, "%s  %s#%d  %s/%s\n", run.ID, run.Repository, run.IssueNumber, run.State, run.Phase)
+			fmt.Fprintf(stdout, "%s  %s#%d  %s/%s\n", terminalText(run.ID), terminalText(run.Repository), run.IssueNumber, terminalText(string(run.State)), terminalText(string(run.Phase)))
+			if run.LastErrorCode != "" {
+				fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
+			}
+			if v := run.Review; v != nil {
+				fmt.Fprintf(stdout, "  reviewer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", terminalText(v.Agent), terminalText(v.Model), terminalText(v.Effort), terminalText(strings.Join(v.Skills, ",")), terminalText(v.PermissionMode), terminalText(v.SessionID))
+				fmt.Fprintf(stdout, "  review round %d attempt %d: %s · target %s\n", v.Round, v.Attempt, terminalText(v.Status), terminalText(v.TargetSHA))
+				if v.Report != nil {
+					fmt.Fprintf(stdout, "  verdict %s (accepted=%t): %s\n", terminalText(v.Report.Status), v.Accepted, terminalText(v.Report.Summary))
+					for _, f := range v.Report.Findings {
+						fmt.Fprintf(stdout, "    %s %s: %s — %s", terminalText(f.ID), terminalText(f.Severity), terminalText(f.Title), terminalText(f.Details))
+						if f.File != nil {
+							fmt.Fprintf(stdout, " (%s", terminalText(*f.File))
+							if f.Line != nil {
+								fmt.Fprintf(stdout, ":%d", *f.Line)
+							}
+							fmt.Fprint(stdout, ")")
+						}
+						fmt.Fprintln(stdout)
+					}
+				}
+			}
 		}
 		if count == 0 {
 			fmt.Fprintln(stdout, "No active runs.")
@@ -127,4 +150,19 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		return nil
 	}
 	return nil
+}
+
+// Escape terminal controls at the presentation boundary. Keep report text intact
+// in persistence and leave printable Unicode readable in command output.
+func terminalText(value string) string {
+	var text strings.Builder
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			quoted := strconv.QuoteRuneToASCII(r)
+			text.WriteString(quoted[1 : len(quoted)-1])
+		} else {
+			text.WriteRune(r)
+		}
+	}
+	return text.String()
 }

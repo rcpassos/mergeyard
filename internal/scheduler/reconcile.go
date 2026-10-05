@@ -163,6 +163,9 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 		return err
 	}
 	for _, ref := range refs {
+		if run.Phase == workflow.Review {
+			continue
+		} // Review owns process recovery and restoration.
 		status, err := s.deps.Runner.SessionStatus(ctx, ref)
 		if err != nil {
 			var coded *fault.Error
@@ -181,6 +184,9 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 		return nil
 	}
 	if run.State == workflow.NeedsAttention {
+		if err := s.restorePendingReview(ctx, run); err != nil {
+			return err
+		}
 		return s.attentionLabels(ctx, repo, run)
 	}
 	if pr != nil && pr.State != github.Open {
@@ -190,6 +196,15 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 		inconsistency = &fault.Error{Code: "github.issue_closed", Message: "Issue is no longer open; inspect before continuing"}
 	}
 	if inconsistency != nil {
+		if run.State == workflow.Active && run.Phase == workflow.Review {
+			a, err := s.lastReview(ctx, run)
+			if err == nil && a.status == "running" {
+				return s.abortReview(ctx, repo, run, gitRun, &a, inconsistency)
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
 		return s.recordAttention(ctx, repo, run, inconsistency)
 	}
 	if run.State != workflow.Claiming {

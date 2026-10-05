@@ -26,6 +26,9 @@ func command(ctx context.Context, dir, code string, args ...string) (string, err
 	if err != nil {
 		return stdout.String(), failure(code, dir, fmt.Errorf("%s: %w", strings.TrimSpace(stderr.String()), err))
 	}
+	if strings.ContainsRune(stdout.String(), 0) {
+		return stdout.String(), nil
+	}
 	return strings.TrimSpace(stdout.String()), nil
 }
 

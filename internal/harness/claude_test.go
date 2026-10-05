@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -97,7 +98,7 @@ func TestClaudeImplementContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := adapter.ParseResult(ctx, harness.PhaseArtifacts{Stdout: artifacts.Stdout, Stderr: artifacts.Stderr, ExitCode: artifacts.ExitCode})
-	if err != nil || result != (harness.PhaseResult{SchemaVersion: 1, Status: "success", Summary: "Implemented the issue"}) {
+	if err != nil || !reflect.DeepEqual(result, harness.PhaseResult{SchemaVersion: 1, Status: "success", Summary: "Implemented the issue"}) {
 		t.Fatalf("result = %+v; error = %v", result, err)
 	}
 }
@@ -227,7 +228,7 @@ func TestClaudeRejectsInvalidPhaseContext(t *testing.T) {
 		change func(*harness.PhaseContext)
 		code   string
 	}{
-		{"unsupported phase", func(ctx *harness.PhaseContext) { ctx.Phase = workflow.Review }, "phase.unsupported"},
+		{"unsupported phase", func(ctx *harness.PhaseContext) { ctx.Phase = workflow.Fix }, "phase.unsupported"},
 		{"missing session", func(ctx *harness.PhaseContext) { ctx.SessionID = "" }, "phase.invalid_request"},
 		{"invalid session", func(ctx *harness.PhaseContext) { ctx.SessionID = "--continue" }, "phase.invalid_request"},
 		{"relative worktree", func(ctx *harness.PhaseContext) { ctx.WorktreePath = "worktree" }, "phase.invalid_request"},
@@ -246,7 +247,7 @@ func TestClaudeRejectsInvalidPhaseContext(t *testing.T) {
 
 func TestClaudeDoesNotParseOtherPhaseContracts(t *testing.T) {
 	ctx := phase(t)
-	ctx.Phase = workflow.Review
+	ctx.Phase = workflow.Fix
 	_, err := harness.NewClaude(config.Claude{}).ParseResult(ctx, harness.PhaseArtifacts{Stdout: []byte(successEvent)})
 	assertCode(t, err, "phase.unsupported")
 }

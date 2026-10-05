@@ -31,7 +31,10 @@ type FileWriter interface {
 // WriteImplementInput writes full context even for resumed sessions, outside
 // the worktree. Only its generated path goes into the harness prompt.
 func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseContext, input ImplementInput) (string, error) {
-	if err := validateImplementContext(phase); err != nil {
+	if phase.Phase != workflow.Implement {
+		return "", phaseError("phase.unsupported", "Implement input requires an implement phase", nil)
+	}
+	if err := validatePhaseContext(phase); err != nil {
 		return "", err
 	}
 	var text strings.Builder
@@ -52,9 +55,9 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 	return path, nil
 }
 
-func validateImplementContext(ctx PhaseContext) error {
-	if ctx.Phase != workflow.Implement {
-		return phaseError("phase.unsupported", "Only the implement phase is supported", nil)
+func validatePhaseContext(ctx PhaseContext) error {
+	if ctx.Phase != workflow.Implement && ctx.Phase != workflow.Review {
+		return phaseError("phase.unsupported", "Only implement and review phases are supported", nil)
 	}
 	if !filepath.IsAbs(ctx.WorktreePath) || !filepath.IsAbs(ctx.PhaseDir) ||
 		strings.ContainsRune(ctx.WorktreePath+ctx.PhaseDir, 0) {

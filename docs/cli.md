@@ -2,7 +2,7 @@
 
 `mergeyard` and `mergeyard start` load configuration using the standard search
 order, acquire the configured workspace lock, open/migrate SQLite, run dependency
-checks, reconcile persisted M1 attempts, and start the scheduler and HTTP/SSE
+checks, reconcile persisted implement and review attempts, and start the scheduler and HTTP/SSE
 server. The dashboard uses `127.0.0.1:<port>` (default 7331). `open_browser: true`
 launches it independently of HTTP serving with the platform browser launcher;
 a delayed launcher does not block the dashboard or CLI controls. Launch failures
@@ -36,10 +36,15 @@ runtime database or acquire the owner's lock.
   intent before further work advances. Stop removes ready even if it arrives before claim processing has cleared that
   label, preventing redispatch after the run becomes terminal.
 
-M1 supports the Claude implementer and ends at a draft PR without launching
-review. The existing `takeover`, `handback`, `retry`, and `open`
+The runtime supports Claude implementation and first independent review. Approval
+waits for CI; changes required prepares fix without executing it. Status includes
+reviewer identity/settings, target SHA, round, attempt, verdict and findings. The existing `takeover`, `handback`, `retry`, and `open`
 command entries remain reserved for their respective later work.
 
 `mergeyard reconcile` runs the same reconciliation without claiming new work.
 It acquires the configured workspace lock, so stop the control plane first if
 it is running. The command prints findings and preserves orphaned artifacts.
+
+Status output escapes terminal controls and Unicode formatting controls in review
+text, locations, settings and attention diagnostics. Stored reports keep their
+original text; control sequences appear as visible escapes in the terminal.

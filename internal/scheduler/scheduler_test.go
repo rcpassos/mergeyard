@@ -27,6 +27,7 @@ type fakeGitHub struct {
 	blockers  map[int][]github.Issue
 	prs       map[string]*github.PullRequest
 	creations int
+	head      func(string) string
 	mutate    func(action, repo string, n int, label string) error
 }
 
@@ -96,6 +97,9 @@ func (f *fakeGitHub) CreateDraftPullRequest(_ context.Context, repo, branch, bas
 	}
 	pr := &github.PullRequest{Number: 100 + f.creations, URL: "https://github.com/" + repo + "/pull/101", Draft: true, State: github.Open}
 	pr.Head.Ref = branch
+	if f.head != nil {
+		pr.Head.SHA = f.head(branch)
+	}
 	pr.Head.Repo.FullName = repo
 	body, err := github.GeneratePullRequestBody(content)
 	if err != nil {
@@ -180,6 +184,13 @@ func localFlow(t *testing.T, script string) (*scheduler.Scheduler, *app.Runtime,
 	gitCommand(t, seed, "commit", "-m", "initial")
 	gitCommand(t, seed, "remote", "add", "origin", remote)
 	gitCommand(t, seed, "push", "origin", "main")
+	if !strings.Contains(script, "review-") {
+		script = `case "$*" in *review-*)
+` + approvedReview + `
+;; *)
+` + script + `
+;; esac`
+	}
 	executable := filepath.Join(root, "fake-claude")
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -197,7 +208,7 @@ func localFlow(t *testing.T, script string) (*scheduler.Scheduler, *app.Runtime,
 	socket := fmt.Sprintf("mergeyard-scheduler-test-%d", time.Now().UnixNano())
 	t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
 	r := runner.NewLocal(runner.Options{SocketName: socket})
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}, head: func(branch string) string { return gitCommand(t, remote, "rev-parse", "refs/heads/"+branch) }}
 	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
@@ -280,8 +291,8 @@ func TestIssueToDraftPRAndRepeatedTicksAfterRestart(t *testing.T) {
 		t.Fatalf("worktrees = %v", treePaths)
 	}
 	phasePaths, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "*"))
-	if len(phasePaths) != 1 {
-		t.Fatalf("M1 started a reviewer or duplicate implement attempt: %v", phasePaths)
+	if len(phasePaths) != 2 {
+		t.Fatalf("expected implement and first review attempts: %v", phasePaths)
 	}
 	input, err := os.ReadFile(filepath.Join(phasePaths[0], "input.md"))
 	if err != nil || !strings.Contains(string(input), "Implement this") {
@@ -531,7 +542,7 @@ func TestPhaseRetryIsBoundedAndKeepsOneRun(t *testing.T) {
 			}
 			var attempts []int
 			for _, event := range history {
-				if event.RunID == run.ID && event.Type == "phase.attempt_started" {
+				if event.RunID == run.ID && event.Type == "phase.attempt_started" && strings.Contains(string(event.Payload), `"phase":"implement"`) {
 					var payload struct {
 						Attempt int `json:"attempt"`
 					}
@@ -545,7 +556,11 @@ func TestPhaseRetryIsBoundedAndKeepsOneRun(t *testing.T) {
 				t.Fatalf("attempt-start notifications = %v; want [1 2]", attempts)
 			}
 			phases, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "*"))
-			if len(phases) != 2 {
+			want := 2
+			if success {
+				want = 3
+			}
+			if len(phases) != want {
 				t.Fatalf("phase attempts = %v", phases)
 			}
 			runs, _ := s.Runs(context.Background())
@@ -751,10 +766,10 @@ func TestConcurrentTicksProduceOneRunAndAttempt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	run := finish(t, s, workflow.Active, workflow.Review)
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
 	runs, _ := s.Runs(context.Background())
 	phases, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "*"))
-	if len(runs) != 1 || len(phases) != 1 || api.creations != 1 {
+	if len(runs) != 1 || len(phases) != 2 || api.creations != 1 {
 		t.Fatalf("concurrent ticks duplicated work: runs=%d, attempts=%d, PRs=%d", len(runs), len(phases), api.creations)
 	}
 }

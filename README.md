@@ -4,8 +4,8 @@ Mergeyard turns ready GitHub issues into draft pull requests using a local codin
 agent. It manages isolated Git worktrees and tmux sessions, tracks work in SQLite,
 and gives you a local dashboard to monitor the queue and stop runs.
 
-**Current stage: M1, issue to draft PR.** The scheduler runs Claude Code as the
-implementer. Automated review, revision rounds, merge, and Codex execution are
+**Current stage: first independent review.** The scheduler runs Claude Code as the
+implementer and reviewer. Fix execution, CI monitoring, merge, and Codex execution are
 planned; configuration and setup expose some options for those later stages.
 
 ## Install
@@ -85,9 +85,10 @@ mergeyard start
 
 Open [the local dashboard](http://127.0.0.1:7331). Add the `ready-for-agent` label
 to an issue you want implemented. Mergeyard claims eligible issues, runs Claude in
-an isolated worktree, and creates a draft PR. At the current M1 endpoint, review
-has not started and the run still occupies a concurrency slot; stop the run to
-release that slot while preserving its branch, worktree, and draft PR.
+an isolated worktree, and creates a draft PR. An independent Claude reviewer then
+reviews the pinned PR head. Approval waits for CI; blocking findings prepare the
+fix phase. Both retain the draft PR and consume a concurrency slot. Stop preserves
+the implemented branch, worktree, and draft PR.
 
 Mergeyard runs agents with your local permissions. The default Claude configuration
 uses `bypassPermissions` for unattended execution. Use it with repositories and

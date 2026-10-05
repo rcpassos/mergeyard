@@ -11,6 +11,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -69,7 +70,7 @@ func (c *Claude) BuildInvocation(ctx PhaseContext, role RoleConfig) (Invocation,
 	if err := c.ValidateConfig(role); err != nil {
 		return Invocation{}, err
 	}
-	if err := validateImplementContext(ctx); err != nil {
+	if err := validatePhaseContext(ctx); err != nil {
 		return Invocation{}, err
 	}
 	if !sessionUUID.MatchString(ctx.SessionID) {
@@ -80,6 +81,10 @@ func (c *Claude) BuildInvocation(ctx PhaseContext, role RoleConfig) (Invocation,
 		sessionFlag = "--resume"
 	}
 	args := []string{"-p", sessionFlag, ctx.SessionID, "--output-format", "stream-json", "--verbose", "--json-schema", implementSchema}
+	if ctx.Phase == workflow.Review {
+		args[len(args)-1] = review.Schema
+		args = append(args, "--disallowedTools", "Edit", "Write", "NotebookEdit")
+	}
 	if len(c.config.AllowedTools) > 0 {
 		args = append(args, "--allowedTools")
 		args = append(args, c.config.AllowedTools...)
@@ -102,8 +107,8 @@ func (c *Claude) BuildInvocation(ctx PhaseContext, role RoleConfig) (Invocation,
 }
 
 func (*Claude) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseResult, error) {
-	if ctx.Phase != workflow.Implement {
-		return PhaseResult{}, phaseError("phase.unsupported", "Only the implement phase is supported", nil)
+	if ctx.Phase != workflow.Implement && ctx.Phase != workflow.Review {
+		return PhaseResult{}, phaseError("phase.unsupported", "Only implement and review phases are supported", nil)
 	}
 	const resumeFailure = "No conversation found with session ID"
 	if ctx.Resume && artifacts.ExitCode != 0 &&
@@ -165,6 +170,13 @@ func (*Claude) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseRes
 	}
 	if len(event.Output) == 0 || bytes.Equal(event.Output, []byte("null")) {
 		return PhaseResult{}, phaseError("phase.result_missing", "Harness did not provide structured output", nil)
+	}
+	if ctx.Phase == workflow.Review {
+		report, err := review.Parse(event.Output)
+		if err != nil {
+			return PhaseResult{}, phaseError("phase.result_invalid", "Invalid structured review report", err)
+		}
+		return PhaseResult{SchemaVersion: report.SchemaVersion, Status: report.Status, Summary: report.Summary, Findings: report.Findings}, nil
 	}
 	return parseImplementResult(event.Output)
 }
