@@ -41,7 +41,7 @@ func (s *Scheduler) lastFix(ctx context.Context, run workflow.Run) (fixAttempt, 
 	var a fixAttempt
 	var input, findings string
 	var report sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),a.input_path,a.resumed_session,COALESCE(a.error,''),f.session_id,f.target_sha,COALESCE(f.commit_sha,''),f.pushed,f.findings_json,f.report_json FROM phase_attempts a JOIN fix_attempts f ON f.attempt_id=a.id WHERE a.run_id=? AND a.phase='fix' AND a.round=? ORDER BY a.attempt DESC LIMIT 1`, run.ID, run.ReviewRound).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure, &a.sessionID, &a.target, &a.commit, &a.pushed, &findings, &report)
+	err := s.db.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),a.input_path,a.resumed_session,COALESCE(a.error,''),f.session_id,f.target_sha,COALESCE(f.commit_sha,''),f.pushed,f.findings_json,f.report_json,a.agent FROM phase_attempts a JOIN fix_attempts f ON f.attempt_id=a.id WHERE a.run_id=? AND a.phase='fix' AND a.round=? ORDER BY a.attempt DESC LIMIT 1`, run.ID, run.ReviewRound).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure, &a.sessionID, &a.target, &a.commit, &a.pushed, &findings, &report, &a.agent)
 	if err != nil {
 		return a, err
 	}
@@ -110,7 +110,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 				cause = err
 			}
 			if cause == nil {
-				result, err := s.harnesses[repo.Implementer.Agent].ParseResult(harness.PhaseContext{Phase: workflow.Fix, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+				result, err := s.harnesses[a.agent].ParseResult(harness.PhaseContext{Phase: workflow.Fix, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 				cause = err
 				if err == nil {
 					report = &review.FixReport{SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses}

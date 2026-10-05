@@ -40,13 +40,14 @@ func (g interruptedFixGit) PushFix(ctx context.Context, run managedgit.Run, prev
 }
 
 func TestFixRecoversAfterControlPlaneKill(t *testing.T) {
-	for _, mode := range []string{"running", "finished offline", "commit", "push", "next review"} {
+	for _, mode := range []string{"running", "finished offline", "finished offline with harness change", "commit", "push", "next review"} {
 		t.Run(mode, func(t *testing.T) {
+			finishedOffline := mode == "finished offline" || mode == "finished offline with harness change"
 			gate := filepath.Join(t.TempDir(), "release-fix")
 			fix := `while [ ! -f '` + gate + `' ]; do /bin/sleep 0.02; done
  printf fixed > feature.txt
  ` + fixedReport
-			if mode != "running" && mode != "finished offline" {
+			if mode != "running" && !finishedOffline {
 				if err := os.WriteFile(gate, nil, 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -93,7 +94,7 @@ func TestFixRecoversAfterControlPlaneKill(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd.Wait()
-			if mode == "finished offline" {
+			if finishedOffline {
 				if err := os.WriteFile(gate, nil, 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -101,6 +102,9 @@ func TestFixRecoversAfterControlPlaneKill(t *testing.T) {
 					_, err := os.Stat(filepath.Join(root, "runs", run.ID, "phases", "fix-1-1", "exit.json"))
 					return err == nil
 				})
+			}
+			if mode == "finished offline with harness change" {
+				cfg.Repositories[0].Implementer.Agent = "codex"
 			}
 			runtime, err := app.Open(context.Background(), root)
 			if err != nil {
@@ -126,7 +130,7 @@ func TestFixRecoversAfterControlPlaneKill(t *testing.T) {
 				}
 			}
 			recovered := finish(t, restarted, workflow.WaitingForCI, workflow.Review)
-			if recovered.ReviewRound != 2 || recovered.Fix.Attempt != 1 || !recovered.Fix.Pushed {
+			if recovered.ReviewRound != 2 || recovered.Fix.Attempt != 1 || !recovered.Fix.Pushed || recovered.Fix.Agent != "claude" || recovered.Fix.Status != "succeeded" {
 				t.Fatalf("recovery=%+v", recovered)
 			}
 			if count := gitCommand(t, remote, "rev-list", "--count", "main..mergeyard/issue-7"); count != "2" {
