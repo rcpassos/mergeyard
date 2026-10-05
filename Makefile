@@ -10,6 +10,7 @@ assets:
 
 test:
 	go test ./...
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s docs/research/codex-m2 -p '*_test.py'
 
 lint:
 	@unformatted="$$(gofmt -l .)"; \

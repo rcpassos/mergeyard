@@ -1,7 +1,8 @@
 # Manual Codex M2 probes
 
 These fixtures support [issue #37](https://github.com/rcpassos/mergeyard/issues/37).
-They are research tools, excluded from `go test`, CI, and application execution.
+Live probes are research tools, excluded from `go test`, CI, and application execution.
+The offline supervisor regression check runs through `make test` and CI.
 `run --live` makes authenticated model requests and can consume subscription
 quota. Select one case at a time; inspect its evidence before proceeding.
 
@@ -22,7 +23,14 @@ and model metadata into the fixture's private `CODEX_HOME`. It removes that auth
 copy on exit, preserving sessions for explicit resume. User configuration, rules,
 plugins, and web search are disabled; personal skill discovery may still occur,
 but only the named fixture skills are requested. Inspect raw evidence before
-sharing; never publish credentials or an entire home directory. An external
+sharing; never publish credentials or an entire home directory. Sending SIGTERM
+to the Python supervisor enters cleanup: it stops the owned CLI process group,
+removes staged authentication, saves `run.json` with
+`signal_sent: "supervisor_SIGTERM"` and the child's exit code, and exits 143.
+The handler latches the signal so process creation finishes before cleanup.
+After child shutdown and authentication removal, final metadata publication
+ignores further SIGTERM requests so the saved cancellation state stays consistent.
+An external
 SIGKILL of the Python supervisor can prevent credential cleanup: remove only
 `$PROBE_ROOT/codex-home/auth.json` before sharing or deleting the fixture.
 
@@ -71,6 +79,17 @@ Offline artifact checking makes no model call:
 ```sh
 python3 docs/research/codex-m2/probe.py check "$PROBE_ROOT/evidence/fix" --schema fix
 ```
+
+Run the supervisor regression check without a Codex login or model calls:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s docs/research/codex-m2 -p '*_test.py' -v
+```
+
+It starts a local fake CLI with dummy credentials, sends SIGTERM only to the
+supervisor, and checks process cleanup, credential removal, and saved failure
+metadata. The fake supplies valid result JSON and a completion event while
+remaining alive; the checker must still reject that interrupted run as success.
 
 The checker validates the exact fixture schema subset and requires exit 0,
 `turn.completed`, no `error`/`turn.failed`, no supervisor interruption, and valid

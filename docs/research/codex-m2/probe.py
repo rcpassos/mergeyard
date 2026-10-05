@@ -133,6 +133,19 @@ def run(args):
     process = None
     selector = None
     group_kill_sent = False
+    termination_requested = False
+
+    def supervisor_sigterm(signum, frame):
+        nonlocal termination_requested
+        # Latch cancellation so Popen can return its child handle before cleanup.
+        termination_requested = True
+        record["signal_sent"] = "supervisor_SIGTERM"
+
+    def abort_if_terminated():
+        if termination_requested:
+            raise SystemExit(128 + signal.SIGTERM)
+
+    previous_sigterm = signal.signal(signal.SIGTERM, supervisor_sigterm)
     try:
         if not args.no_auth:
             source = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
@@ -140,6 +153,7 @@ def run(args):
             auth.chmod(0o600)
             if (source / "models_cache.json").exists():
                 shutil.copyfile(source / "models_cache.json", home / "models_cache.json")
+        abort_if_terminated()
         with (directory / "events.jsonl").open("w") as stdout, (directory / "stderr.log").open("w") as stderr:
             process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=stderr, start_new_session=True)
@@ -147,6 +161,7 @@ def run(args):
             selector.register(process.stdout, selectors.EVENT_READ)
             pending = b""
             while selector.get_map():
+                abort_if_terminated()
                 elapsed = time.monotonic() - start
                 if elapsed > args.timeout and not record["signal_sent"]:
                     record["signal_sent"] = "watchdog_SIGTERM"
@@ -181,6 +196,7 @@ def run(args):
                     break
             if pending:
                 stdout.write(pending.decode())
+            abort_if_terminated()
             record["exit_code"] = process.wait(timeout=5)
     finally:
         try:
@@ -190,13 +206,20 @@ def run(args):
             if process is not None:
                 if not group_kill_sent and (capture_open or process.poll() is None):
                     signal_group(process, signal.SIGKILL)
-                process.wait(timeout=5)
+                record["exit_code"] = process.wait(timeout=5)
                 process.stdout.close()
         finally:
             # Preserve evidence and remove staged auth even if shutdown is denied.
-            auth.unlink(missing_ok=True)
-            record["elapsed_seconds"] = round(time.monotonic() - start, 2)
-            write_json(directory / "run.json", record)
+            try:
+                auth.unlink(missing_ok=True)
+                # Work and credential cleanup are done; freeze cancellation state
+                # while publishing its snapshot so late SIGTERM cannot be lost.
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                record["elapsed_seconds"] = round(time.monotonic() - start, 2)
+                write_json(directory / "run.json", record)
+            finally:
+                signal.signal(signal.SIGTERM, previous_sigterm)
+    abort_if_terminated()
     # Keep the seed accessible only in history on subsequent turns.
     if args.input in ("implement", "interrupt"):
         (root / "inputs" / (args.input + ".md")).unlink()

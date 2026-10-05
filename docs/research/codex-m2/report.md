@@ -221,7 +221,9 @@ initial targeted test attempt inside the outer sandbox could not launch its
 tmux-backed fixture wrapper; the targeted suite and final full suite passed
 outside that sandbox. Python syntax, schema JSON parsing, and offline positive/
 negative completion controls passed. No paid model was invoked by these checks.
-No new automated test seam or production behavior was introduced.
+The initial evidence change introduced no automated test seam or production
+behavior. The R1 follow-up adds a regression check at the supervisor CLI boundary
+using only a local fake CLI and dummy credentials; `make test` includes it.
 
 The required Standards and Spec reviews both identified the same watchdog gap:
 a descendant holding stdout open could outlive the CLI leader and prevent
@@ -233,6 +235,20 @@ with a 10-second timeout and five-second grace, the latter stopped at 15.07
 seconds, saved metadata, rejected completion, and left no surviving descendant.
 No model or network call was made by those controls. Both review axes have no
 remaining actionable findings against the user-confirmed baseline `422a798`.
+
+R1 subsequently identified a distinct termination gap: SIGTERM sent only to the
+Python supervisor bypassed its `finally` blocks and left the separate CLI session
+alive, staged auth present, and `run.json` missing. The new offline regression
+reproduced all three symptoms before the fix. The supervisor now latches SIGTERM
+and exits through its cleanup path, preserving the child exit code and early
+identity, removing staged auth, and returning 143. The regression passes and
+also verifies that valid JSON plus a completion event cannot make a cancelled
+run successful. After child shutdown and auth removal, cancellation handling is
+frozen during metadata publication so a late SIGTERM cannot change only the
+in-memory record. A local metadata-write-boundary control verified consistent
+normal completion and restoration of the previous handler after that cutoff;
+both review axes have no remaining R1 findings. The full `make test`, build,
+and lint checks passed. These are supervisor observations, not new paid Codex evidence.
 
 Documentation cross-check: installed help plus Context7 `/openai/codex` source
 references for exec flags, thread events, and skill injection, and the official
