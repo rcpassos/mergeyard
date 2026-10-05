@@ -92,6 +92,9 @@ func (l *Local) StartSession(ctx context.Context, req SessionRequest) (SessionRe
 func (l *Local) SessionStatus(ctx context.Context, ref SessionRef) (SessionStatus, error) {
 	return l.sessions.Status(ctx, ref)
 }
+func (l *Local) ListSessions(ctx context.Context) ([]string, error) {
+	return l.sessions.List(ctx)
+}
 func (l *Local) StopSession(ctx context.Context, ref SessionRef) error {
 	return l.sessions.Stop(ctx, ref)
 }

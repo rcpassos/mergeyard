@@ -78,7 +78,6 @@ func TestUnimplementedCommandsFail(t *testing.T) {
 		{"handback", "run-1"},
 		{"stop", "run-1"},
 		{"retry", "run-1"},
-		{"reconcile"},
 	}
 	for _, args := range invocations {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {

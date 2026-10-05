@@ -5,8 +5,9 @@ from a locked runtime: its database, shared workflow, event bus, workspace, and
 scheduler control. These explicit resources keep the scheduler independent of
 application startup. Pass `Runtime.Scheduler` as the control to share the
 dashboard's pause/resume gate. `Run(ctx)` polls immediately and then every
-`poll_interval` (default 30 seconds). `Tick(ctx)` is also available for explicit
-reconciliation. Ticks serialize, and run operations coordinate with lifecycle controls so takeover
+`poll_interval` (default 30 seconds). `Reconcile(ctx)` advances existing runs and
+returns orphan findings without dispatching new work. Every `Tick(ctx)` reconciles
+before dispatch, including the first tick after startup. Ticks serialize, and run operations coordinate with lifecycle controls so takeover
 or stop waits for an in-flight operation before changing state. Running tmux agents are observed without waiting
 for them to finish. Tick errors are logged by `Run` and tried again at the next
 interval. Cancelling the scheduler leaves agent sessions running.
@@ -44,8 +45,8 @@ and local tmux adapters.
 After implementation, Mergeyard commits changes, pushes without force, discovers
 an existing PR or creates a draft, and persists its number and URL. **M1 ends at
 `ACTIVE/review`, review round 1, without launching a reviewer.** This endpoint
-continues to consume a concurrency slot. Review/CI, merge detection, user retry,
-and full startup reconciliation belong to later milestones. Repeated ticks and
+continues to consume a concurrency slot. Review/CI, merge detection, and user retry
+belong to later milestones. Repeated ticks and
 scheduler restarts observe persisted attempts and do not launch duplicates.
 
 Blocked/invalid results, exhausted attempts, empty implementations, branch
@@ -54,12 +55,40 @@ removes running, adds attention, and preserves code and diagnostics. Failed
 attention-label writes are retried on later ticks; ready is never re-added.
 A missing/ambiguous process is left for human inspection rather than relaunched.
 
+## Restart reconciliation
+
+Reconciliation reads current issue state and labels, verifies persisted Git
+ownership and the worktree's branch without fetching or recreating it, reads the
+PR (including closed PRs), and observes persisted running tmux attempts. An agent
+still running stays under observation. An agent that exited while the control
+plane was offline is recovered through `exit.json` and native result output; the
+usual implement flow archives `result.json`, pushes, and reuses an existing PR.
+Reconciliation failures prevent new dispatch. Closed issues/PRs, missing worktrees,
+and missing sessions require attention. Manual and attention runs are never
+automatically resumed. Review/CI/merge progression remains outside M1.
+
+`mergeyard reconcile [--config <path>]` loads the selected configuration and takes
+exclusive ownership of its workspace. It uses the same reconciliation boundary,
+without claiming new work. Stop the control plane first if it holds the lock.
+The command prints `reconcile.orphaned_claim`, `reconcile.orphaned_worktree`, and
+`reconcile.orphaned_session` findings, also published to the durable event stream.
+It scans every configured repository even when dispatch is paused, disabled, or
+at capacity. Running labels are never silently reset on orphaned issues. Worktree
+directories, registered worktree metadata, and managed tmux sessions without
+persisted ownership are reported and preserved. Terminal runs' retained artifacts
+remain owned. Startup CLI wiring uses this boundary in issue #14.
+
 ## Tests
 
 The normal scheduler tests use real SQLite, Git and tmux with a fake Claude
 executable, plus fake GitHub responses. They cover claim order and failure,
 blocking, ordering, concurrency, retries, pause, attention, and duplicate
 prevention after restart. They require `git` and `tmux` but no Claude credentials.
+Reconciliation tests kill a real control-plane subprocess during implement,
+recover agents still running or finished offline, and verify one attempt, commit,
+and PR. They also cover orphan reporting and preservation, unrecoverable claims,
+and missing owned worktrees. CLI tests use fake GitHub/tmux commands to verify
+configuration selection, reporting, and workspace lock release.
 
 The live test is opt-in and uses only the issue explicitly provided. Prepare a
 dedicated `owner/mergeyard-integration-test` repository with an initial commit,

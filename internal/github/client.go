@@ -118,28 +118,34 @@ type apiIssue struct {
 
 // IssueState reads the current issue state from GitHub.
 func (c *Client) IssueState(ctx context.Context, repo string, number int) (State, error) {
+	issue, err := c.GetIssue(ctx, repo, number)
+	return issue.State, err
+}
+
+// GetIssue reads fresh issue state and labels, including closed issues.
+func (c *Client) GetIssue(ctx context.Context, repo string, number int) (Issue, error) {
 	if number <= 0 {
-		return "", codedError("github.invalid_input", "issue number must be positive", nil)
+		return Issue{}, codedError("github.invalid_input", "issue number must be positive", nil)
 	}
 	path, err := issuePath(repo, number)
 	if err != nil {
-		return "", err
+		return Issue{}, err
 	}
 	data, err := c.request(ctx, nil, "GET", path, false)
 	if err != nil {
-		return "", err
+		return Issue{}, err
 	}
 	var issue apiIssue
 	if err := json.Unmarshal(data, &issue); err != nil {
-		return "", codedError("github.invalid_response", "expected an issue", err)
+		return Issue{}, codedError("github.invalid_response", "expected an issue", err)
 	}
 	if err := validateIssue(issue.Issue); err != nil {
-		return "", err
+		return Issue{}, err
 	}
 	if len(issue.PullRequest) != 0 && string(issue.PullRequest) != "null" {
-		return "", codedError("github.invalid_response", "expected an issue, received a pull request", nil)
+		return Issue{}, codedError("github.invalid_response", "expected an issue, received a pull request", nil)
 	}
-	return issue.State, nil
+	return issue.Issue, nil
 }
 
 // AddLabel adds one literal label name without replacing existing labels.
