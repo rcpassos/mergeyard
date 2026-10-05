@@ -25,7 +25,7 @@ func TestCLIControlsUseOwningRuntimeAndWatchReadOnly(t *testing.T) {
 	mux := http.NewServeMux()
 	paused := false
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(web.Status{Workspace: root, Paused: paused, Token: token, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Implement}, {ID: "old-run", State: workflow.Completed}}})
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Paused: paused, Token: token, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Implement, Implementer: &workflow.ImplementSnapshot{Agent: "codex", SessionID: "codex-session", Model: "chosen-model", Effort: "medium", Skills: []string{"implement"}, Permissions: "workspace-write · network true · approvals never", Attempt: 2, Status: "running", ProcessSession: "live-phase"}}, {ID: "old-run", State: workflow.Completed}}})
 	})
 	mux.HandleFunc("POST /scheduler/{action}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {
@@ -70,6 +70,13 @@ func TestCLIControlsUseOwningRuntimeAndWatchReadOnly(t *testing.T) {
 		}
 		if action == "status" && (!strings.Contains(out, "owner/repo#7  ACTIVE/implement") || strings.Contains(out, "old-run")) {
 			t.Fatalf("status = %s", out)
+		}
+		if action == "status" {
+			for _, text := range []string{"implementer codex", "chosen-model", "medium", "implement", "workspace-write", "codex-session", "attempt 2: running", "live-phase"} {
+				if !strings.Contains(out, text) {
+					t.Fatalf("missing implementer status %q: %s", text, out)
+				}
+			}
 		}
 		if action == "watch" && out != "-L\nmergeyard\nattach-session\n-r\n-t\n=live-phase\n" {
 			t.Fatalf("watch did not attach read-only: %q", out)
@@ -126,7 +133,7 @@ func TestCLIStatusEscapesUntrustedReviewText(t *testing.T) {
 		t.Fatalf("review report should retain original text: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(web.Status{Workspace: root, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Review, LastErrorCode: "review.failed", LastErrorMessage: attack, CI: &ci.Snapshot{SHA: "approved" + attack, CurrentHead: "current" + attack, QueryError: "query" + attack, Warning: "warning" + attack, Evidence: ci.Evidence{Checks: []ci.Check{{Name: "check" + attack, State: "unknown", Status: "completed", Conclusion: "neutral", URL: "https://check.example/" + attack}}, Required: []ci.Requirement{{Name: "required" + attack}}}}, Review: &review.Snapshot{Agent: "claude", Model: "model" + attack, Effort: "high", Skills: []string{"review" + attack}, PermissionMode: "auto", SessionID: "session-1", Round: 1, Attempt: 1, TargetSHA: "pinned", Status: "succeeded", Accepted: true, Report: &report}}}})
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Review, LastErrorCode: "review.failed", LastErrorMessage: attack, CI: &ci.Snapshot{SHA: "approved" + attack, CurrentHead: "current" + attack, QueryError: "query" + attack, Warning: "warning" + attack, Evidence: ci.Evidence{Checks: []ci.Check{{Name: "check" + attack, State: "unknown", Status: "completed", Conclusion: "neutral", URL: "https://check.example/" + attack}}, Required: []ci.Requirement{{Name: "required" + attack}}}}, FixHistory: []review.FixSnapshot{{Round: 1, Attempt: 1, Status: "succeeded", SessionID: "implementer" + attack, Report: &review.FixReport{SchemaVersion: 1, Status: "success", Summary: "Fix summary" + attack, Responses: []review.Response{{FindingID: "F1" + attack, Resolution: "disputed", Note: "Safe" + attack}}}}}, Review: &review.Snapshot{Agent: "claude", Model: "model" + attack, Effort: "high", Skills: []string{"review" + attack}, PermissionMode: "auto", SessionID: "session-1", Round: 1, Attempt: 1, TargetSHA: "pinned", Status: "succeeded", Accepted: true, Report: &report}}}})
 	}))
 	defer server.Close()
 	configPath := filepath.Join(root, "config.yaml")
@@ -143,7 +150,7 @@ func TestCLIStatusEscapesUntrustedReviewText(t *testing.T) {
 			t.Fatalf("unsafe terminal control %U survived status rendering: %q", r, out)
 		}
 	}
-	for _, text := range []string{`\x1b[2J\x1b[H\r\nScheduler: paused\b\t\a\u009b2J\u202e`, "Reviewed café", "owner/repo#7  ACTIVE/review", "verdict approved", "CI wait", "neutral", "required required", "query"} {
+	for _, text := range []string{`\x1b[2J\x1b[H\r\nScheduler: paused\b\t\a\u009b2J\u202e`, "Reviewed café", "owner/repo#7  ACTIVE/review", "verdict approved", "CI wait", "neutral", "required required", "query", "fix round 1 attempt 1", "Fix summary", "disputed: Safe"} {
 		if !strings.Contains(out, text) {
 			t.Fatalf("missing escaped/readable status %q: %q", text, out)
 		}

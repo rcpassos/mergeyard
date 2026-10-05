@@ -19,6 +19,11 @@ type HarnessAdapter interface {
 	ParseResult(PhaseContext, PhaseArtifacts) (PhaseResult, error)
 }
 
+// SessionDiscoverer reads early identity from complete records in a live stream.
+type SessionDiscoverer interface {
+	DiscoverSession([]byte) (string, error)
+}
+
 type SessionIDSource string
 
 const (
@@ -54,18 +59,21 @@ type PhaseContext struct {
 // PhaseArtifacts is a completed attempt's captured stream and process exit.
 // Live or incomplete logs must not be passed as a completed attempt.
 type PhaseArtifacts struct {
-	Stdout   []byte
-	Stderr   []byte
-	ExitCode int
+	// LastMessage is the native Codex -o artifact from this unique attempt.
+	LastMessage []byte
+	Stdout      []byte
+	Stderr      []byte
+	ExitCode    int
 }
 
 // PhaseResult is the schema-validated report. Blocked and failed reports are
 // valid results; the workflow decides their lifecycle consequences.
 type PhaseResult struct {
-	SchemaVersion int              `json:"schema_version"`
-	Status        string           `json:"status"`
-	Summary       string           `json:"summary"`
-	Findings      []review.Finding `json:"findings,omitempty"`
+	SchemaVersion int               `json:"schema_version"`
+	Status        string            `json:"status"`
+	Summary       string            `json:"summary"`
+	Responses     []review.Response `json:"responses,omitempty"`
+	Findings      []review.Finding  `json:"findings,omitempty"`
 }
 
 // ImplementSchema returns a fresh copy of the common OpenAI strict schema.

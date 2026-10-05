@@ -67,15 +67,10 @@ func TestFirstReviewApprovesPinnedHeadWithIndependentSettings(t *testing.T) {
 	}
 }
 
-func TestReviewChangesRequiredPreparesFixWithoutLaunchingIt(t *testing.T) {
+func TestReviewChangesRequiredPreparesFix(t *testing.T) {
 	report := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"changes_required","summary":"Fix bug","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Broken","file":"feature.txt","line":1}]}}'`
 	s, runtime, api, _, _, _ := localFlow(t, reviewScript(report))
 	run := finish(t, s, workflow.Active, workflow.Fix)
-	for range 3 {
-		if err := s.Tick(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
 	var attempts int
 	runtime.DB.QueryRow("SELECT count(*) FROM phase_attempts").Scan(&attempts)
 	if attempts != 2 || run.ApprovedSHA != "" || run.Review.Report.Status != "changes_required" || !api.prs["mergeyard/issue-7"].Draft {
@@ -87,7 +82,7 @@ func TestReviewerMutationsRestoreAndRetryWithinSameRound(t *testing.T) {
 	for _, mutation := range []struct{ name, script string }{
 		{"working files", `printf 'tampered' > feature.txt; printf 'new' > reviewer.txt`},
 		{"commit", `printf 'tampered' > feature.txt; git add .; git commit -m 'reviewer commit'`},
-		{"detached commit", `git checkout --detach; printf tampered > feature.txt; git add .; git commit -m detached; git checkout mergeyard/issue-7`},
+		{"detached commit", `git checkout --detach; sleep 0.3; printf tampered > feature.txt; git add .; git commit -m detached; git checkout mergeyard/issue-7`},
 		{"reset commit", `old=$(git rev-parse HEAD); git -c user.name=Reviewer -c user.email=reviewer@example.invalid commit --allow-empty -m 'reviewer commit'; git reset --soft "$old"`},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
@@ -383,5 +378,33 @@ func TestReviewRetryPreservesExistingIgnoredArtifacts(t *testing.T) {
 				t.Fatalf("ignored work lost across retry: %q %v", data, err)
 			}
 		})
+	}
+}
+
+func TestReviewerLeftOnDetachedHeadRequiresAttention(t *testing.T) {
+	_, runtime, api, _, cfg, r := localFlow(t, reviewScript(`git checkout --detach; printf tampered > feature.txt
+`+approvedReview))
+	cfg.Repositories[0].Reviewer.MaxAttempts = 2
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r, Env: map[string]string{"PATH": os.Getenv("PATH"), "GIT_CONFIG_GLOBAL": os.Getenv("GIT_CONFIG_GLOBAL"), "GIT_CONFIG_NOSYSTEM": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.NeedsAttention, workflow.Review)
+	if run.LastErrorCode != "git.worktree_mismatch" || run.ApprovedSHA != "" || run.Review.Attempt != 1 || run.Review.Accepted || run.Review.Restored {
+		t.Fatalf("ambiguous review was accepted or restored: %+v", run)
+	}
+	paths, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", "*"))
+	if len(paths) != 1 {
+		t.Fatalf("preserved worktrees: %v", paths)
+	}
+	if gitCommand(t, paths[0], "rev-parse", "--abbrev-ref", "HEAD") != "HEAD" {
+		t.Fatal("ambiguous branch was reattached")
+	}
+	data, err := os.ReadFile(filepath.Join(paths[0], "feature.txt"))
+	if err != nil || string(data) != "tampered" {
+		t.Fatalf("ambiguous work was changed: %q %v", data, err)
+	}
+	if api.creations != 1 || !api.prs["mergeyard/issue-7"].Draft {
+		t.Fatal("draft PR was changed")
 	}
 }

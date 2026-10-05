@@ -23,6 +23,31 @@ func (m *Manager) CommitAndPush(ctx context.Context, run Run, phase Phase) (Comm
 	if err != nil {
 		return CommitResult{}, err
 	}
+	result, err := commit(ctx, run, phase)
+	if err != nil {
+		return result, err
+	}
+	if err := push(ctx, run, origin, "HEAD"); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// An explicit verified fetch URL and refspec prevent unrelated configured
+// push URLs, mirror/tag updates, and forced publication.
+func push(ctx context.Context, run Run, origin, source string) error {
+	output, err := command(ctx, run.Path, "git.push", "-c", "remote.origin.mirror=false", "push", "--porcelain", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", origin, source+":refs/heads/"+run.Branch)
+	if err != nil {
+		for _, line := range strings.Split(output, "\n") {
+			if strings.HasPrefix(line, "!\t") {
+				return failure("git.push_rejected", run.Path, err)
+			}
+		}
+	}
+	return err
+}
+
+func commit(ctx context.Context, run Run, phase Phase) (CommitResult, error) {
 	if _, err := command(ctx, run.Path, "git.stage", "add", "--all", "--", "."); err != nil {
 		return CommitResult{}, err
 	}
@@ -49,17 +74,6 @@ func (m *Manager) CommitAndPush(ctx context.Context, run Run, phase Phase) (Comm
 		if !different {
 			return result, failure("git.no_changes", run.Path, errors.New("run has no diff from its original base"))
 		}
-	}
-	// An explicit verified fetch URL avoids an unrelated configured pushurl.
-	// Explicit refspecs and options prevent mirror, tag, or forced updates.
-	output, err := command(ctx, run.Path, "git.push", "-c", "remote.origin.mirror=false", "push", "--porcelain", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", origin, "HEAD:refs/heads/"+run.Branch)
-	if err != nil {
-		for _, line := range strings.Split(output, "\n") {
-			if strings.HasPrefix(line, "!\t") {
-				return result, failure("git.push_rejected", run.Path, err)
-			}
-		}
-		return result, err
 	}
 	return result, nil
 }

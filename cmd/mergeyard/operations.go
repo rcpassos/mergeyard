@@ -120,6 +120,25 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 					fmt.Fprintf(stdout, "    required %s (app %d)\n", terminalText(r.Name), r.AppID)
 				}
 			}
+			if v := run.Implementer; v != nil {
+				fmt.Fprintf(stdout, "  implementer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", terminalText(v.Agent), terminalText(v.Model), terminalText(v.Effort), terminalText(strings.Join(v.Skills, ",")), terminalText(v.Permissions), terminalText(v.SessionID))
+				fmt.Fprintf(stdout, "  implement attempt %d: %s · process %s\n", v.Attempt, terminalText(v.Status), terminalText(v.ProcessSession))
+			}
+			for _, v := range run.FixHistory {
+				fmt.Fprintf(stdout, "  fix round %d attempt %d: %s · session %s · target %s · commit %s · pushed=%t\n", v.Round, v.Attempt, terminalText(v.Status), terminalText(v.SessionID), terminalText(v.TargetSHA), terminalText(v.CommitSHA), v.Pushed)
+				for _, f := range v.Findings {
+					fmt.Fprintf(stdout, "    finding %s: %s — %s\n", terminalText(f.ID), terminalText(f.Title), terminalText(f.Details))
+				}
+				if v.Report != nil {
+					fmt.Fprintf(stdout, "  fix %s: %s\n", terminalText(v.Report.Status), terminalText(v.Report.Summary))
+					for _, r := range v.Report.Responses {
+						fmt.Fprintf(stdout, "    %s %s: %s\n", terminalText(r.FindingID), terminalText(r.Resolution), terminalText(r.Note))
+					}
+				}
+				if v.Error != "" {
+					fmt.Fprintf(stdout, "  fix error: %s\n", terminalText(v.Error))
+				}
+			}
 			if v := run.Review; v != nil {
 				fmt.Fprintf(stdout, "  reviewer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", terminalText(v.Agent), terminalText(v.Model), terminalText(v.Effort), terminalText(strings.Join(v.Skills, ",")), terminalText(v.PermissionMode), terminalText(v.SessionID))
 				fmt.Fprintf(stdout, "  review round %d attempt %d: %s · target %s\n", v.Round, v.Attempt, terminalText(v.Status), terminalText(v.TargetSHA))

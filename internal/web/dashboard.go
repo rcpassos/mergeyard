@@ -337,6 +337,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 				}
 			}
 		}
+
 		run.ReviewPending = run.State == workflow.Active && run.Phase == workflow.Review && run.Attempt == 0 && run.PRURL != ""
 		if run.Phase == workflow.Review || run.Phase == workflow.Fix {
 			run.Round = run.ReviewRound
@@ -352,6 +353,14 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 	}
 	for i := range runs {
 		runs[i].CI, err = ci.Load(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		runs[i].Implementer, err = workflow.LoadImplementSnapshot(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		runs[i].FixHistory, err = review.LoadFixHistory(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
 		}

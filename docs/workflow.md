@@ -104,3 +104,11 @@ one transaction. MetadataPatch.ReviewRejection similarly commits a nonretryable
 report/failed attempt with its attention transition; event failure rolls back both.
 Run snapshots include the latest durable reviewer settings/report/diagnostics for
 status output and transition events. M1 histories without a review remain readable.
+
+## Fix completion
+
+MetadataPatch.Fix carries the completed fix attempt identity. Workflow verifies
+run/round ownership, a successful report and the durable pinned push journal in
+the same transaction that advances one review round, clears approval and emits
+fix.completed. Run snapshots include the latest fix and its full attempt history,
+so earlier findings and responses remain visible after another review.

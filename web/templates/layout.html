@@ -63,6 +63,14 @@
 <div><dt>Skills</dt><dd>{{if .Skills}}{{.Skills}}{{else}}None{{end}}</dd></div>
 <div><dt>Agent session ID</dt><dd>{{if .SessionID}}<code>{{.SessionID}}</code>{{else}}Not started{{end}}</dd></div>
 <div><dt>Updated</dt><dd><time>{{.UpdatedAt}}</time></dd></div></dl>
+{{with .Implementer}}<section class="queue-section"><h2>Implementation</h2>
+<dl class="run-facts"><div><dt>Implementer</dt><dd>{{.Agent}} · model {{if .Model}}{{.Model}}{{else}}harness default{{end}} · effort {{if .Effort}}{{.Effort}}{{else}}harness default{{end}}</dd></div>
+<div><dt>Session</dt><dd>{{if .SessionID}}<code>{{.SessionID}}</code>{{else}}Waiting for session identity{{end}}</dd></div>
+<div><dt>Skills</dt><dd>{{range .Skills}}{{.}} {{else}}None{{end}}</dd></div>
+<div><dt>Permissions</dt><dd>{{.Permissions}}</dd></div>
+<div><dt>Attempt</dt><dd>{{.Attempt}} · {{.Status}}</dd></div>
+<div><dt>Process session</dt><dd><code>{{.ProcessSession}}</code></dd></div></dl>
+{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}</section>{{end}}
 {{with .Review}}<section class="queue-section"><h2>Independent review</h2>
 <dl class="run-facts"><div><dt>Reviewer</dt><dd>{{.Agent}} · model {{.Model}} · effort {{.Effort}}</dd></div>
 <div><dt>Reviewer session</dt><dd><code>{{.SessionID}}</code></dd></div><div><dt>Skills</dt><dd>{{range .Skills}}{{.}} {{else}}None{{end}}</dd></div>
@@ -72,6 +80,12 @@
 {{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}
 {{with .Report}}<h3>Verdict: {{.Status}}</h3><p>{{.Summary}}</p>
 {{range .Findings}}<article class="notice"><h4>{{.ID}} · {{.Severity}} · {{.Title}}</h4><p>{{.Details}}</p>{{if .File}}<p><code>{{.File}}{{if .Line}}:{{.Line}}{{end}}</code></p>{{end}}</article>{{else}}<p>No findings.</p>{{end}}{{end}}</section>{{end}}
+{{range .FixHistory}}<section class="queue-section"><h2>Implementer fix · round {{.Round}}, attempt {{.Attempt}}</h2>
+<dl class="run-facts"><div><dt>Implementer</dt><dd>{{.Agent}} · model {{.Model}} · effort {{.Effort}}</dd></div><div><dt>Session</dt><dd><code>{{.SessionID}}</code></dd></div><div><dt>Skills / permissions</dt><dd>{{range .Skills}}{{.}} {{else}}None{{end}} · {{.PermissionMode}} · allowed tools {{range .AllowedTools}}{{.}} {{else}}harness default{{end}}</dd></div><div><dt>Status</dt><dd>{{.Status}}{{if .Pushed}} · pushed{{end}}</dd></div><div><dt>Fix target / commit</dt><dd><code>{{.TargetSHA}}</code> / <code>{{.CommitSHA}}</code></dd></div></dl>
+{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}
+{{range .Findings}}<article class="notice"><h4>{{.ID}} · {{.Title}}</h4><p>{{.Details}}</p></article>{{end}}
+{{with .Report}}<h3>Fix status: {{.Status}}</h3><p>{{.Summary}}</p>{{range .Responses}}<article class="notice"><h4>{{.FindingID}} · {{.Resolution}}</h4><p>{{.Note}}</p></article>{{else}}<p>No responses reported.</p>{{end}}{{end}}</section>{{end}}
+
 {{with .CI}}<section class="queue-section"><h2>CI and readiness</h2>
 <dl class="run-facts"><div><dt>Wait started</dt><dd><time>{{.StartedAt}}</time></dd></div><div><dt>Wait deadline</dt><dd><time>{{.Deadline}}</time></dd></div>
 <div><dt>Approved wait commit</dt><dd><code>{{.SHA}}</code></dd></div><div><dt>Current PR head</dt><dd>{{if .CurrentHead}}<code>{{.CurrentHead}}</code>{{if eq .SHA .CurrentHead}} · matches approved commit{{else}} · differs from approved commit{{end}}{{else}}Unknown{{end}}</dd></div></dl>

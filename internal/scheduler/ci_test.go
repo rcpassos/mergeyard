@@ -352,3 +352,52 @@ func TestReadyWarningsClosureCapacityAndHTTP(t *testing.T) {
 		t.Fatalf("closure: %+v", saved)
 	}
 }
+
+// Resolve the PR head from the managed branch as implementation/fixes publish.
+type ciBranchGitHub struct{ *ciGitHub }
+
+func (f ciBranchGitHub) GetPullRequest(ctx context.Context, repo string, n int) (*github.PullRequest, error) {
+	pr, err := f.fakeGitHub.GetPullRequest(ctx, repo, n)
+	if err == nil && pr != nil {
+		pr.Head.SHA = f.head(pr.Head.Ref)
+	}
+	return pr, err
+}
+
+func TestCIReadinessAfterMergedImplementerFlows(t *testing.T) {
+	for _, mode := range []string{"Claude fix and re-review", "Codex implementation"} {
+		t.Run(mode, func(t *testing.T) {
+			setup := localFlow
+			script := loopScript(`printf fixed > feature.txt; ` + fixedReport)
+			if mode == "Codex implementation" {
+				setup = codexFlow
+				script = codexImplementation
+			}
+			_, runtime, base, _, cfg, r := setup(t, script)
+			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+			api := &ciGitHub{fakeGitHub: base, applyReady: true, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: ciBranchGitHub{api}, Runner: r, Now: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+			if run.CI == nil || run.CI.SHA != run.ApprovedSHA || !run.CI.StartedAt.Equal(now) {
+				t.Fatal("approval did not start a pinned CI wait")
+			}
+			if mode == "Claude fix and re-review" {
+				if run.ReviewRound != 2 || run.Fix == nil || !run.Fix.Pushed {
+					t.Fatal("fix history lost")
+				}
+			} else if run.Implementer == nil || run.Implementer.Agent != "codex" || run.Implementer.SessionID != codexID {
+				t.Fatal("Codex session lost")
+			}
+			if _, err := s.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+			if err != nil || saved.State != workflow.ReadyToMerge || api.readyCalls != 1 || saved.CI.CurrentHead != saved.ApprovedSHA {
+				t.Fatalf("merged flow readiness: %+v %v", saved, err)
+			}
+		})
+	}
+}

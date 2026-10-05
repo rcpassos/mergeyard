@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -40,6 +41,9 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	}
 	if run.State == workflow.NeedsAttention {
 		return s.attentionLabels(ctx, repo, run)
+	}
+	if run.State == workflow.Active && run.Phase == workflow.Fix {
+		return s.fix(ctx, repo, run)
 	}
 	if run.State == workflow.Active && run.Phase == workflow.Review {
 		return s.review(ctx, repo, run)
@@ -87,7 +91,7 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 		if err != nil {
 			return s.attention(ctx, repo, run, err)
 		}
-		if err := s.saveGit(ctx, run.ID, gitRun); err != nil {
+		if err := s.saveGit(ctx, run.ID, gitRun, repo.Implementer.Agent); err != nil {
 			return s.attention(ctx, repo, run, err)
 		}
 		run, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.WorktreeReady})
@@ -168,7 +172,7 @@ func (s *Scheduler) saveIssue(ctx context.Context, id string, issue github.Issue
 	_, err = s.db.ExecContext(ctx, "INSERT INTO scheduler_runs (run_id,issue_json) VALUES (?,?)", id, string(data))
 	return err
 }
-func (s *Scheduler) saveGit(ctx context.Context, id string, run managedgit.Run) error {
+func (s *Scheduler) saveGit(ctx context.Context, id string, run managedgit.Run, agent string) error {
 	data, err := json.Marshal(run)
 	if err != nil {
 		return err
@@ -181,7 +185,7 @@ func (s *Scheduler) saveGit(ctx context.Context, id string, run managedgit.Run) 
 	if _, err = tx.ExecContext(ctx, "UPDATE scheduler_runs SET git_json=? WHERE run_id=?", string(data), id); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE runs SET branch=?, worktree_path=?, implementer_agent='claude' WHERE id=?", run.Branch, run.Path, id); err != nil {
+	if _, err = tx.ExecContext(ctx, "UPDATE runs SET branch=?, worktree_path=?, implementer_agent=? WHERE id=?", run.Branch, run.Path, agent, id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -207,6 +211,7 @@ func (s *Scheduler) context(ctx context.Context, run workflow.Run) (github.Issue
 
 type attempt struct {
 	id        string
+	agent     string
 	number    int
 	status    string
 	ref       runner.SessionRef
@@ -218,13 +223,13 @@ type attempt struct {
 func (s *Scheduler) lastAttempt(ctx context.Context, id string) (attempt, error) {
 	var a attempt
 	var input string
-	err := s.db.QueryRowContext(ctx, `SELECT id,attempt,status,COALESCE(process_session,''),COALESCE(input_path,''),resumed_session,COALESCE(error,'')
- FROM phase_attempts WHERE run_id=? AND phase='implement' ORDER BY attempt DESC LIMIT 1`, id).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure)
+	err := s.db.QueryRowContext(ctx, `SELECT id,attempt,status,COALESCE(process_session,''),COALESCE(input_path,''),resumed_session,COALESCE(error,''),agent
+ FROM phase_attempts WHERE run_id=? AND phase='implement' ORDER BY attempt DESC LIMIT 1`, id).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure, &a.agent)
 	if err != nil {
 		return a, err
 	}
 	a.ref.PhaseDir = filepath.Dir(input)
-	err = s.db.QueryRowContext(ctx, "SELECT implementer_session_id FROM runs WHERE id=?", id).Scan(&a.sessionID)
+	err = s.db.QueryRowContext(ctx, "SELECT COALESCE(implementer_session_id,'') FROM runs WHERE id=?", id).Scan(&a.sessionID)
 	return a, err
 }
 
@@ -252,7 +257,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		}
 		code, message, _ := strings.Cut(a.failure, ": ")
 		cause := &fault.Error{Code: code, Message: message}
-		if !canRetryAttempt(cause, a.number, max) {
+		if !canRetryImplementAttempt(cause, a.number, max) {
 			return harness.PhaseResult{}, false, attemptFailure(cause, a.number, max)
 		}
 		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, a.number+1)
@@ -261,22 +266,46 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	if err != nil {
 		return harness.PhaseResult{}, false, err
 	}
+	discoveryErr := s.discoverImplementSession(ctx, run.ID, &a)
+	if discoveryErr != nil {
+		if !invalidSessionDiscovery(discoveryErr) {
+			return harness.PhaseResult{}, false, discoveryErr
+		}
+		if status.State == runner.SessionRunning {
+			// An invalid identity cannot safely be resumed. Stop this owned attempt
+			// and persist its failure through the same completion path as an exit.
+			if err := s.deps.Runner.StopSession(ctx, a.ref); err != nil {
+				return harness.PhaseResult{}, false, err
+			}
+			status, err = s.deps.Runner.SessionStatus(ctx, a.ref)
+			if err != nil {
+				return harness.PhaseResult{}, false, err
+			}
+		}
+	}
 	if status.State == runner.SessionRunning {
 		return harness.PhaseResult{}, false, nil
 	}
 	var artifacts harness.PhaseArtifacts
-	if status.State != runner.SessionExited || status.ExitCode == nil {
+	err = discoveryErr
+	if err == nil && (status.State != runner.SessionExited || status.ExitCode == nil) {
 		err = &fault.Error{Code: "phase.session_missing", Message: "Implement session has no exit metadata; inspect before retrying"}
-	} else {
+	} else if err == nil {
 		artifacts.ExitCode = *status.ExitCode
 		artifacts.Stdout, err = s.deps.Runner.ReadFile(ctx, filepath.Join(a.ref.PhaseDir, "events.jsonl"))
 		if err == nil {
 			artifacts.Stderr, err = s.deps.Runner.ReadFile(ctx, filepath.Join(a.ref.PhaseDir, "stderr.log"))
 		}
 	}
+	if err == nil && a.agent == "codex" {
+		artifacts.LastMessage, err = s.deps.Runner.ReadFile(ctx, filepath.Join(a.ref.PhaseDir, "last-message.json"))
+		if errors.Is(err, os.ErrNotExist) {
+			err = nil
+		} // ParseResult reports the native missing-result diagnostic.
+	}
 	var result harness.PhaseResult
 	if err == nil {
-		result, err = s.claude.ParseResult(harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, artifacts)
+		result, err = s.harnesses[a.agent].ParseResult(harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, artifacts)
 	}
 	if err == nil {
 		data, marshalErr := json.Marshal(result)
@@ -311,7 +340,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		return result, false, saveErr
 	}
 	if err != nil {
-		if canRetryAttempt(err, a.number, repo.Implementer.MaxAttempts) {
+		if canRetryImplementAttempt(err, a.number, repo.Implementer.MaxAttempts) {
 			return result, false, nil
 		}
 		return result, false, attemptFailure(err, a.number, repo.Implementer.MaxAttempts)
@@ -320,23 +349,30 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 }
 
 func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, run workflow.Run, issue github.Issue, gitRun managedgit.Run, number int) error {
+	var sessionID, sessionAgent string
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(implementer_session_id,''),COALESCE(implementer_agent,'') FROM runs WHERE id=?", run.ID).Scan(&sessionID, &sessionAgent); err != nil {
+		return err
+	}
+	if err := validateImplementerHarness(sessionAgent, repo.Implementer.Agent); err != nil {
+		return err
+	}
+	adapter := s.harnesses[repo.Implementer.Agent]
+	if adapter.Capabilities().SessionIDSource == harness.Preassigned && sessionID == "" {
+		sessionID = uuid.NewString()
+		if _, err := s.db.ExecContext(ctx, "UPDATE runs SET implementer_session_id=? WHERE id=?", sessionID, run.ID); err != nil {
+			return err
+		}
+	}
 	phaseDir := filepath.Join(s.workspace.Root, "runs", run.ID, "phases", fmt.Sprintf("implement-0-%d", number))
 	if err := os.MkdirAll(phaseDir, 0700); err != nil {
 		return err
 	}
-	var sessionID string
-	if _, err := s.db.ExecContext(ctx, "UPDATE runs SET implementer_session_id=COALESCE(implementer_session_id,?) WHERE id=?", uuid.NewString(), run.ID); err != nil {
-		return err
-	}
-	if err := s.db.QueryRowContext(ctx, "SELECT implementer_session_id FROM runs WHERE id=?", run.ID).Scan(&sessionID); err != nil {
-		return err
-	}
-	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: number > 1, Env: s.deps.Env}
+	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: number > 1 && sessionID != "", Env: s.deps.Env}
 	input, err := harness.WriteImplementInput(ctx, s.deps.Runner, phase, harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch})
 	if err != nil {
 		return err
 	}
-	command, err := s.claude.BuildInvocation(phase, repo.Implementer)
+	command, err := s.harnesses[repo.Implementer.Agent].BuildInvocation(phase, repo.Implementer)
 	if err != nil {
 		return err
 	}
@@ -348,8 +384,8 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		return err
 	}
 	_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json)
- VALUES (?,?,'implement','implementer',0,?,'claude',?,?,'running',?,?,?,?,?,?)`, uuid.NewString(), run.ID, number, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills))
+		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions)
+ VALUES (?,?,'implement','implementer',0,?,?,?,?,'running',?,?,?,?,?,?,?)`, uuid.NewString(), run.ID, number, repo.Implementer.Agent, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills), s.implementPermissions(repo.Implementer.Agent))
 		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{
 			"phase": workflow.Implement, "round": 0, "attempt": number,
 		}}, err
@@ -366,13 +402,17 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		if _, saveErr := s.db.ExecContext(ctx, `UPDATE phase_attempts SET status='failed',ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),error=? WHERE run_id=? AND phase='implement' AND attempt=?`, err.Error(), run.ID, number); saveErr != nil {
 			return saveErr
 		}
+		if canRetryImplementAttempt(err, number, repo.Implementer.MaxAttempts) {
+			return nil
+		}
+		return attemptFailure(err, number, repo.Implementer.MaxAttempts)
 	}
 	return err
 }
 
 func attemptFailure(err error, number, max int) error {
 	var coded *fault.Error
-	if errors.As(err, &coded) && (coded.Code == "phase.blocked" || coded.Code == "phase.result_invalid" || coded.Code == "phase.result_missing" || coded.Code == "phase.session_missing") {
+	if errors.As(err, &coded) && (coded.Code == "phase.blocked" || coded.Code == "phase.result_invalid" || coded.Code == "phase.result_missing" || coded.Code == "phase.session_missing" || coded.Code == "harness.session_resume_failed" || coded.Code == "harness.session_identity_invalid") {
 		return err
 	}
 	if number >= max {
@@ -390,4 +430,31 @@ func canRetryAttempt(err error, number, max int) bool {
 		return false
 	}
 	return number < max
+}
+
+func canRetryImplementAttempt(err error, number, max int) bool {
+	var coded *fault.Error
+	if errors.As(err, &coded) && (coded.Code == "harness.session_resume_failed" || coded.Code == "harness.session_identity_invalid") {
+		return false
+	}
+	return canRetryAttempt(err, number, max)
+}
+
+func (s *Scheduler) implementPermissions(agent string) string {
+	if agent == "codex" {
+		networkAccess := s.cfg.Agents.Codex.NetworkAccess
+		if s.cfg.Agents.Codex.Sandbox == "danger-full-access" {
+			// The workspace-write network toggle does not restrict full access.
+			networkAccess = true
+		}
+		return s.cfg.Agents.Codex.Sandbox + " · network " + strconv.FormatBool(networkAccess) + " · approvals never"
+	}
+	return s.cfg.Agents.Claude.PermissionMode + " · allowed tools " + strings.Join(s.cfg.Agents.Claude.AllowedTools, ", ")
+}
+
+func validateImplementerHarness(persistedAgent, configuredAgent string) error {
+	if persistedAgent != "" && persistedAgent != configuredAgent {
+		return &fault.Error{Code: "harness.session_agent_changed", Message: "Persisted implementer belongs to " + persistedAgent + "; restore that implementer harness before resuming"}
+	}
+	return nil
 }
