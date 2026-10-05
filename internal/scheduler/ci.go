@@ -15,7 +15,7 @@ import (
 
 // CIGitHub is the commit evidence and journaled readiness boundary.
 type CIGitHub interface {
-	CheckEvidence(context.Context, string, string, string) (ci.Evidence, error)
+	PullRequestEvidence(context.Context, string, github.PullRequest) (ci.Evidence, error)
 	MarkReady(context.Context, string, int) error
 }
 
@@ -96,10 +96,15 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 		return unknown(&fault.Error{Code: "github.ci_unsupported", Message: "GitHub adapter cannot establish check requirements"})
 	}
 	base := pr.Base.Ref
+	target := *pr
+	if pr.Mergeable != nil {
+		mergeable := *pr.Mergeable
+		target.Mergeable = &mergeable
+	}
 	if base == "" {
 		return unknown(&fault.Error{Code: "github.invalid_response", Message: "PR base branch is missing; requirements remain unknown"})
 	}
-	evidence, err := api.CheckEvidence(ctx, repo.Repo, run.ApprovedSHA, base)
+	evidence, err := api.PullRequestEvidence(ctx, repo.Repo, target)
 	v.Evidence = evidence
 	v.Evidence.Gate()
 	if err != nil {
@@ -108,9 +113,9 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 	v.QueryError = ""
 	now = s.deps.Now().UTC()
 	passed, attention := v.Evidence.Gate()
-	if v.Evidence.SHA != run.ApprovedSHA {
+	if v.Evidence.SHA != run.ApprovedSHA || (v.Evidence.MergeSHA != "" && v.Evidence.MergeSHA != target.MergeCommitSHA) {
 		passed = false
-		return unknown(&fault.Error{Code: "ci.evidence_stale", Message: "Checks were queried for another commit"})
+		return unknown(&fault.Error{Code: "ci.evidence_stale", Message: "Checks were queried for another head or test merge commit"})
 	}
 	if attention != "" {
 		message := "CI failed or timed out. Check diagnostics are saved; automatic CI repair is unavailable until the dependent repair slice lands"
@@ -141,8 +146,8 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 	if !reviewHeadMatches(fresh, repo, run, gitRun, run.ApprovedSHA) {
 		return fail("ci.head_changed", "PR changed while checking CI; approval invalidated before readiness")
 	}
-	if fresh.Base.Ref != base {
-		return unknown(&fault.Error{Code: "ci.base_changed", Message: "PR base changed while querying requirements"})
+	if !sameCITarget(target, *fresh) {
+		return unknown(&fault.Error{Code: "ci.base_changed", Message: "PR base or test merge commit changed while querying CI"})
 	}
 	if !s.deps.Now().UTC().Before(v.Deadline) {
 		return fail("ci.wait_timeout", "CI wait deadline expired before readiness; no code fix was launched")
@@ -168,8 +173,8 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 		if !reviewHeadMatches(observed, repo, run, gitRun, run.ApprovedSHA) {
 			return fail("ci.head_changed", "PR changed during mark-ready; approval invalidated")
 		}
-		if observed.Base.Ref != base {
-			return fail("ci.readiness_ambiguous", "PR base changed during readiness; requirements must be inspected before explicit retry")
+		if !sameCITarget(target, *observed) {
+			return fail("ci.readiness_ambiguous", "PR base or test merge commit changed during readiness; CI must be inspected before explicit retry")
 		}
 		if observed.Draft {
 			message := "Mark-ready did not establish a normal PR; inspect before explicit retry"
@@ -205,4 +210,10 @@ func (s *Scheduler) observeReady(ctx context.Context, repo config.Repository, ru
 		v.Warning = "changed-after-approval: PR head changed after readiness; inspect it before merging"
 	}
 	return s.saveCI(ctx, run, v, "ci.updated")
+}
+
+// The reviewed head stays approved when the base advances, but CI on the
+// previous synthetic merge cannot authorize the new base/head combination.
+func sameCITarget(before, after github.PullRequest) bool {
+	return before.Base == after.Base && before.MergeCommitSHA == after.MergeCommitSHA && (before.Mergeable == nil || (after.Mergeable != nil && *before.Mergeable == *after.Mergeable))
 }

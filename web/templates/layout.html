@@ -88,10 +88,11 @@
 
 {{with .CI}}<section class="queue-section"><h2>CI and readiness</h2>
 <dl class="run-facts"><div><dt>Wait started</dt><dd><time>{{.StartedAt}}</time></dd></div><div><dt>Wait deadline</dt><dd><time>{{.Deadline}}</time></dd></div>
+{{if .Evidence.MergeSHA}}<div><dt>Verified test merge commit</dt><dd><code>{{.Evidence.MergeSHA}}</code></dd></div>{{end}}
 <div><dt>Approved wait commit</dt><dd><code>{{.SHA}}</code></dd></div><div><dt>Current PR head</dt><dd>{{if .CurrentHead}}<code>{{.CurrentHead}}</code>{{if eq .SHA .CurrentHead}} · matches approved commit{{else}} · differs from approved commit{{end}}{{else}}Unknown{{end}}</dd></div></dl>
 {{if .QueryError}}<p class="notice">CI evidence unknown: {{.QueryError}}</p>{{end}}{{if .Warning}}<p class="notice">{{.Warning}}</p>{{end}}
 {{if .ReadyStarted}}<p>Mark-ready intent recorded. GitHub draft state is reconciled before progression.</p>{{end}}
-{{range .Evidence.Checks}}<article class="notice"><h3>{{.Name}} · {{if .State}}{{.State}}{{else}}unknown{{end}}</h3><p>{{.Source}} · {{.Status}} · {{.Conclusion}}</p>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer">Check details</a>{{end}}</article>{{else}}<p>No reported checks in the latest observation.</p>{{end}}
+{{range .Evidence.Checks}}<article class="notice"><h3>{{.Name}} · {{if .State}}{{.State}}{{else}}unknown{{end}}</h3><p>{{.Source}} · {{.Status}} · {{.Conclusion}}{{if .AppID}} · app {{.AppID}}{{end}} · commit <code>{{.SHA}}</code></p>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer">Check details</a>{{end}}</article>{{else}}<p>No reported checks in the latest observation.</p>{{end}}
 <p>Required checks: {{range .Evidence.Required}}{{.Name}}{{if .AppID}} (app {{.AppID}}){{end}}; {{else}}None in the latest observation.{{end}}</p></section>{{end}}
 
 {{range .Publications}}<section class="notice"><h3>{{.Phase}} report publication · round {{.Round}}, attempt {{.Attempt}}</h3>

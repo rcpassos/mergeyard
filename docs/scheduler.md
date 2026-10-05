@@ -232,6 +232,21 @@ remain unknown and block readiness. Native skipped/neutral conclusions remain vi
 and are accepted under GitHub's documented status-check policy. Missing required
 checks, stale evidence, and pending/unknown outcomes block the gate.
 
+CI observes both the approved head and GitHub's current test merge commit. The
+adapter verifies the merge parents against the current base and head before
+accepting its checks/statuses. All reported outcomes participate; when the merge
+commit has reported CI, required contexts must be satisfied on that commit. With
+no merge reports, required contexts use the head. Approval always remains pinned
+to the reviewed head. Missing merge metadata, query failures, stale merge parents,
+and base/merge changes during observation block readiness without renewing the wait.
+
+Legacy context identity is case-insensitive: the latest `CI` status replaces an
+older `ci` status while preserving the latest display name and diagnostics.
+For app-bound legacy statuses, the adapter verifies GitHub's registered app ID
+and associated bot user ID against the status creator. Wrong apps cannot satisfy
+the requirement, and missing/unverifiable identity remains unknown. A same-named
+check run cannot supply source authorization for a legacy status.
+
 Only successful queries establishing no checks and no requirements allow readiness
 after two minutes from the saved wait start. `ci_timeout` defaults to 60 minutes.
 Expiry requires attention with diagnostics and never launches a code fix.

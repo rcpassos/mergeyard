@@ -253,8 +253,8 @@ type publishingCIGitHub struct {
 	checks *ciGitHub
 }
 
-func (f publishingCIGitHub) CheckEvidence(ctx context.Context, repo, sha, base string) (ci.Evidence, error) {
-	return f.checks.CheckEvidence(ctx, repo, sha, base)
+func (f publishingCIGitHub) PullRequestEvidence(ctx context.Context, repo string, pr github.PullRequest) (ci.Evidence, error) {
+	return f.checks.PullRequestEvidence(ctx, repo, pr)
 }
 func (f publishingCIGitHub) MarkReady(ctx context.Context, repo string, n int) error {
 	return f.checks.MarkReady(ctx, repo, n)

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,7 @@ type Requirement struct {
 }
 type Evidence struct {
 	SHA                 string        `json:"sha"`
+	MergeSHA            string        `json:"merge_sha,omitempty"`
 	Checks              []Check       `json:"checks"`
 	Required            []Requirement `json:"required"`
 	AllowSkippedNeutral bool          `json:"allow_skipped_neutral"`
@@ -78,16 +80,27 @@ func Normalize(c Check, allowSkippedNeutral bool) string {
 // Terminal diagnostics are kept for the dependent repair slice.
 func (e *Evidence) Gate() (passed bool, attention string) {
 	passed = true
+	requiredSHA := e.SHA
+	if e.MergeSHA != "" {
+		for _, c := range e.Checks {
+			if c.SHA == e.MergeSHA {
+				requiredSHA = e.MergeSHA
+				break
+			}
+		}
+	}
+
 	for i := range e.Checks {
 		c := &e.Checks[i]
 		c.State = Normalize(*c, e.AllowSkippedNeutral)
-		if c.SHA != e.SHA {
+		validSHA := c.SHA == e.SHA || (e.MergeSHA != "" && c.SHA == e.MergeSHA)
+		if !validSHA {
 			c.State = "unknown"
 		}
 		if c.State != "passed" {
 			passed = false
 		}
-		if c.SHA == e.SHA && c.State == "failed" {
+		if validSHA && c.State == "failed" {
 			switch c.Conclusion {
 			case "cancelled", "action_required":
 				attention = "ci.action_required"
@@ -99,14 +112,27 @@ func (e *Evidence) Gate() (passed bool, attention string) {
 		}
 	}
 	for _, r := range e.Required {
-		found := false
+		// GitHub requires both a check run and a legacy status when they share
+		// a required context. One source kind must not authorize the other.
+		kinds := map[string]bool{}
 		for _, c := range e.Checks {
-			if c.Name == r.Name && (r.AppID <= 0 || c.AppID == r.AppID) && c.State == "passed" {
-				found = true
+			if c.SHA != requiredSHA || !strings.EqualFold(c.Name, r.Name) {
+				continue
+			}
+			if _, exists := kinds[c.Source]; !exists {
+				kinds[c.Source] = false
+			}
+			if (r.AppID <= 0 || c.AppID == r.AppID) && c.State == "passed" {
+				kinds[c.Source] = true
 			}
 		}
-		if !found {
+		if len(kinds) == 0 {
 			passed = false
+		}
+		for _, satisfied := range kinds {
+			if !satisfied {
+				passed = false
+			}
 		}
 	}
 	return

@@ -107,6 +107,9 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			}
 			if v := run.CI; v != nil {
 				fmt.Fprintf(stdout, "  CI wait %s → %s · approved %s · current head %s\n", v.StartedAt.Format(time.RFC3339), v.Deadline.Format(time.RFC3339), terminalText(v.SHA), terminalText(v.CurrentHead))
+				if v.Evidence.MergeSHA != "" {
+					fmt.Fprintf(stdout, "  verified test merge commit %s\n", terminalText(v.Evidence.MergeSHA))
+				}
 				if v.QueryError != "" {
 					fmt.Fprintf(stdout, "  CI evidence unknown: %s\n", terminalText(v.QueryError))
 				}
@@ -114,7 +117,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 					fmt.Fprintf(stdout, "  %s\n", terminalText(v.Warning))
 				}
 				for _, c := range v.Evidence.Checks {
-					fmt.Fprintf(stdout, "    %s: %s (%s/%s) %s\n", terminalText(c.Name), terminalText(c.State), terminalText(c.Status), terminalText(c.Conclusion), terminalText(c.URL))
+					fmt.Fprintf(stdout, "    %s: %s (%s/%s) app %d · commit %s %s\n", terminalText(c.Name), terminalText(c.State), terminalText(c.Status), terminalText(c.Conclusion), c.AppID, terminalText(c.SHA), terminalText(c.URL))
 				}
 				for _, r := range v.Evidence.Required {
 					fmt.Fprintf(stdout, "    required %s (app %d)\n", terminalText(r.Name), r.AppID)

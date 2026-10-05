@@ -27,7 +27,8 @@ type ciGitHub struct {
 	afterEvidence func()
 }
 
-func (f *ciGitHub) CheckEvidence(_ context.Context, _, sha, _ string) (ci.Evidence, error) {
+func (f *ciGitHub) PullRequestEvidence(_ context.Context, _ string, pr github.PullRequest) (ci.Evidence, error) {
+	sha := pr.Head.SHA
 	e := f.evidence
 	e.SHA = sha
 	for i := range e.Checks {
@@ -397,6 +398,55 @@ func TestCIReadinessAfterMergedImplementerFlows(t *testing.T) {
 			saved, err := runtime.Workflow.Get(context.Background(), run.ID)
 			if err != nil || saved.State != workflow.ReadyToMerge || api.readyCalls != 1 || saved.CI.CurrentHead != saved.ApprovedSHA {
 				t.Fatalf("merged flow readiness: %+v %v", saved, err)
+			}
+		})
+	}
+}
+
+func TestTestMergeEvidenceRacesPreserveApprovalAndDeadline(t *testing.T) {
+	for _, mode := range []string{"test merge changed during query", "base changed during query", "merge generation pending", "stale merge evidence", "test merge changed during readiness"} {
+		t.Run(mode, func(t *testing.T) {
+			_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+			api := &ciGitHub{fakeGitHub: base, applyReady: true, evidence: ci.Evidence{MergeSHA: "merge-1", Checks: []ci.Check{{Name: "head", Source: "check", Status: "completed", Conclusion: "success"}, {Name: "merge", SHA: "merge-1", Source: "check", Status: "completed", Conclusion: "success"}}}}
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r, Now: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+			pr := api.prs["mergeyard/issue-7"]
+			yes := true
+			pr.Mergeable = &yes
+			pr.MergeCommitSHA = "merge-1"
+			pr.Base.SHA = "base-1"
+			switch mode {
+			case "test merge changed during query":
+				api.afterEvidence = func() { pr.MergeCommitSHA = "merge-2" }
+			case "base changed during query":
+				api.afterEvidence = func() { pr.Base.SHA = "base-2" }
+			case "merge generation pending":
+				api.afterEvidence = func() { pr.Mergeable = nil }
+			case "stale merge evidence":
+				api.evidence.MergeSHA = "old-merge"
+				api.evidence.Checks[1].SHA = "old-merge"
+			case "test merge changed during readiness":
+				api.afterReady = func() { pr.MergeCommitSHA = "merge-2" }
+			}
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := workflow.WaitingForCI
+			calls := 0
+			if mode == "test merge changed during readiness" {
+				expected = workflow.NeedsAttention
+				calls = 1
+			}
+			if saved.State != expected || saved.ApprovedSHA != run.ApprovedSHA || !saved.CI.Deadline.Equal(run.CI.Deadline) || api.readyCalls != calls || (expected == workflow.WaitingForCI && saved.CI.QueryError == "") {
+				t.Fatalf("stale merge readiness: %+v CI=%+v calls=%d", saved, saved.CI, api.readyCalls)
 			}
 		})
 	}
