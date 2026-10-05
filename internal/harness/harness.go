@@ -6,6 +6,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/execution"
+	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -61,9 +62,10 @@ type PhaseArtifacts struct {
 // PhaseResult is the schema-validated report. Blocked and failed reports are
 // valid results; the workflow decides their lifecycle consequences.
 type PhaseResult struct {
-	SchemaVersion int    `json:"schema_version"`
-	Status        string `json:"status"`
-	Summary       string `json:"summary"`
+	SchemaVersion int              `json:"schema_version"`
+	Status        string           `json:"status"`
+	Summary       string           `json:"summary"`
+	Findings      []review.Finding `json:"findings,omitempty"`
 }
 
 // ImplementSchema returns a fresh copy of the common OpenAI strict schema.

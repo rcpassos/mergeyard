@@ -1,4 +1,4 @@
-# M1 scheduler
+# Scheduler
 
 `internal/scheduler.New` takes the effective config and `scheduler.Resources`
 from a locked runtime: its database, shared workflow, event bus, workspace, and
@@ -53,10 +53,11 @@ control-plane environment. Dependencies default to the real GitHub, managed Git,
 and local tmux adapters.
 
 After implementation, Mergeyard commits changes, pushes without force, discovers
-an existing PR or creates a draft, and persists its number and URL. **M1 ends at
-`ACTIVE/review`, review round 1, without launching a reviewer.** This endpoint
-continues to consume a concurrency slot. Review/CI, merge detection, and user retry
-belong to later milestones. Repeated ticks and
+an existing PR or creates a draft, and persists its number and URL. The persisted
+`ACTIVE/review`, round 1 endpoint continues on the next tick into an independent
+Claude review. Approval waits for CI; changes required prepares `ACTIVE/fix`
+without launching a fix. CI monitoring, fix execution, merge detection and user
+retry belong to later slices. These states continue consuming a concurrency slot. Repeated ticks and
 scheduler restarts observe persisted attempts and do not launch duplicates.
 
 Blocked/invalid results, exhausted attempts, empty implementations, branch
@@ -75,7 +76,8 @@ plane was offline is recovered through `exit.json` and native result output; the
 usual implement flow archives `result.json`, pushes, and reuses an existing PR.
 Reconciliation failures prevent new dispatch. Closed issues/PRs, missing worktrees,
 and missing sessions require attention. Manual and attention runs are never
-automatically resumed. Review/CI/merge progression remains outside M1.
+automatically resumed. First review progresses through the same reconciliation boundary. CI/merge
+progression remains outside this slice.
 
 `mergeyard reconcile [--config <path>]` loads the selected configuration and takes
 exclusive ownership of its workspace. It uses the same reconciliation boundary,
@@ -140,3 +142,26 @@ Each implement attempt is persisted with its model, effort, and skills snapshot
 and a `phase.attempt_started` event in one transaction before launch. The event
 includes phase, round, and attempt, and notifies pages on every retry without
 requiring a workflow state transition.
+
+## Independent review
+
+Each attempt stores a distinct reviewer session, configured model/effort/skills,
+permissions, PR head SHA, pinned base-to-head diff and exact pre-review Git
+snapshot before tmux launch. Claude edit tools are disabled; Bash remains available
+for tests. Native reports require approved/changes_required/blocked/failed and
+unique finding IDs, severities and nullable locations. Only blocking findings
+prevent approval; contradictory reports are invalid.
+
+After the reviewer exits, contamination is journaled before restoring tracked
+and non-ignored files, the staged index and branch HEAD. Ignored test/build output
+is retained. Changes or commits invalidate the report even after restoration;
+review retries stay in the same round and obey reviewer.max_attempts. Changed
+branches, unsafe filesystem shapes, missing sessions, closed PRs/issues or a
+changed external PR head require attention and preserve ambiguous work.
+
+SQLite atomically accepts the restored report, finishes its attempt, persists
+approved_sha and advances workflow with review.completed. The status API and CLI
+include the latest reviewer settings, report and diagnostics. Stop interrupts
+review and restores its owned changes before stopping; Watch observes its live
+tmux process. Restart replays pending restoration before any verdict acceptance,
+including when Git was restored but the journal commit did not finish.

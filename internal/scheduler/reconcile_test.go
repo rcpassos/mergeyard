@@ -326,7 +326,7 @@ func TestRestartAfterControlPlaneKillPreservesImplementAttempt(t *testing.T) {
 			}
 			runs, err := s.Runs(context.Background())
 			phases, _ := filepath.Glob(filepath.Join(root, "runs", run.ID, "phases", "*"))
-			if err != nil || len(runs) != 1 || len(phases) != 1 || api.creations != 1 {
+			if err != nil || len(runs) != 1 || len(phases) != 2 || api.creations != 1 {
 				t.Fatalf("duplicate recovery work: runs=%v, phases=%v, PRs=%d, err=%v", runs, phases, api.creations, err)
 			}
 			if got := gitCommand(t, remote, "rev-list", "--count", "main..mergeyard/issue-7"); got != "1" {

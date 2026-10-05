@@ -96,6 +96,27 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			}
 			count++
 			fmt.Fprintf(stdout, "%s  %s#%d  %s/%s\n", run.ID, run.Repository, run.IssueNumber, run.State, run.Phase)
+			if run.LastErrorCode != "" {
+				fmt.Fprintf(stdout, "  %s: %s\n", run.LastErrorCode, run.LastErrorMessage)
+			}
+			if v := run.Review; v != nil {
+				fmt.Fprintf(stdout, "  reviewer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", v.Agent, v.Model, v.Effort, strings.Join(v.Skills, ","), v.PermissionMode, v.SessionID)
+				fmt.Fprintf(stdout, "  review round %d attempt %d: %s · target %s\n", v.Round, v.Attempt, v.Status, v.TargetSHA)
+				if v.Report != nil {
+					fmt.Fprintf(stdout, "  verdict %s (accepted=%t): %s\n", v.Report.Status, v.Accepted, v.Report.Summary)
+					for _, f := range v.Report.Findings {
+						fmt.Fprintf(stdout, "    %s %s: %s — %s", f.ID, f.Severity, f.Title, f.Details)
+						if f.File != nil {
+							fmt.Fprintf(stdout, " (%s", *f.File)
+							if f.Line != nil {
+								fmt.Fprintf(stdout, ":%d", *f.Line)
+							}
+							fmt.Fprint(stdout, ")")
+						}
+						fmt.Fprintln(stdout)
+					}
+				}
+			}
 		}
 		if count == 0 {
 			fmt.Fprintln(stdout, "No active runs.")

@@ -65,6 +65,24 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 			return err
 		}
 	}
+	if run.Phase == workflow.Review {
+		a, err := s.lastReview(ctx, run)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil && !a.restored {
+			_, gitRun, err := s.context(ctx, run)
+			if err != nil {
+				return err
+			}
+			if err := s.restoreReview(ctx, gitRun, &a); err != nil {
+				if attentionErr := s.recordAttention(ctx, repo, run, err); attentionErr != nil {
+					return attentionErr
+				}
+				return err
+			}
+		}
+	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE phase_attempts SET status='stopped',ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE run_id=? AND status='running'`, run.ID); err != nil {
 		return err
 	}

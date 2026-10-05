@@ -1,7 +1,7 @@
 # Local dashboard foundation
 
 `mergeyard start` serves the dashboard on the configured loopback port (default
-`http://127.0.0.1:7331`) and runs the M1 scheduler. The runtime exposes the global
+`http://127.0.0.1:7331`) and runs the scheduler. The runtime exposes the global
 claim gate; pausing it leaves existing runs alone.
 
 ## Server boundary
@@ -63,7 +63,7 @@ works directly from a checkout without Node, using the committed assets. The
 distributed binary needs no Node, asset directory, CDN, or external fonts.
 Third-party asset licenses are included under `web/static/licenses/`.
 
-## M1 pages
+## Runtime pages
 
 `GET /`, `/queue`, `/runs/{id}`, and `/settings` are server-rendered pages.
 HTMX requests to the same URLs return the `#content` fragment; responses vary
@@ -98,9 +98,10 @@ text to 32 KiB. Malformed or incomplete events are skipped. Paths and symlinks
 cannot escape the runtime workspace. Templates escape all issue, event, and
 log content. The timeline shows the latest 100 durable run events, newest first.
 
-Queue sections in M1 are Running, Ready, Blocked, Needs attention, and Draft
-PRs (M1 end). `ACTIVE/review` with a persisted draft PR is explicitly marked as
-M1 end; a reviewer has not started and the run still consumes a slot. Attention
+Queue sections are Running, Ready, Blocked, Needs attention, and Draft
+PRs (review pending). Pending M1 runs automatically continue into an independent
+review. Run detail shows the reviewer settings/session, pinned SHA, verdict,
+findings and restoration diagnostics. Review events refresh the page over SSE. Attention
 and manual runs also consume slots. Waiting-for-harness and waiting-for-merge
 flows belong to later milestones. Recent runs are limited to the latest 20
 ended runs. The settings page displays resolved values, configuration/workspace

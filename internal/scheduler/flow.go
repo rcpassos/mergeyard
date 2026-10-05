@@ -41,6 +41,9 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	if run.State == workflow.NeedsAttention {
 		return s.attentionLabels(ctx, repo, run)
 	}
+	if run.State == workflow.Active && run.Phase == workflow.Review {
+		return s.review(ctx, repo, run)
+	}
 	if run.State != workflow.Claiming && run.State != workflow.Preparing && !(run.State == workflow.Active && run.Phase == workflow.Implement) {
 		return nil
 	}
@@ -120,7 +123,7 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	}
 	round := 1
 	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.ImplementSucceeded, Metadata: workflow.MetadataPatch{PRNumber: &pr.Number, ReviewRound: &round}})
-	// M1 ends at ACTIVE/review. No reviewer is launched by this scheduler.
+	// The next reconciliation tick continues this durable endpoint into review.
 	return err
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 	"github.com/rcpassos/mergeyard/internal/workspace"
@@ -121,7 +122,7 @@ type runView struct {
 	Title, Summary, IssueURL, PRURL, Branch, Worktree, SessionID string
 	Agent, Model, Effort, Skills, ProcessSession, LogPath        string
 	Attempt, Round                                               int
-	M1End, CanStop, Stopping                                     bool
+	ReviewPending, CanStop, Stopping                             bool
 }
 
 type issueView struct {
@@ -241,7 +242,7 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 			continue
 		case run.State == workflow.NeedsAttention || run.State == workflow.Manual:
 			section = attentionSection
-		case run.M1End:
+		case run.ReviewPending:
 			section = draftPRSection
 		}
 		data.Sections[section].Runs = append(data.Sections[section].Runs, run)
@@ -262,16 +263,16 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 }
 
 func emptySections() []queueSection {
-	return []queueSection{{Name: "Running"}, {Name: "Ready"}, {Name: "Blocked"}, {Name: "Needs attention"}, {Name: "Draft PRs · M1 end"}}
+	return []queueSection{{Name: "Running"}, {Name: "Ready"}, {Name: "Blocked"}, {Name: "Needs attention"}, {Name: "Draft PRs · review pending"}}
 }
 
 func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 	query := `SELECT r.id,r.repository,r.issue_number,r.state,COALESCE(r.current_phase,''),r.review_round,r.created_at,r.updated_at,
  COALESCE(r.last_error_code,''),COALESCE(r.last_error_message,''),COALESCE(r.branch,''),COALESCE(r.worktree_path,''),
- COALESCE(r.implementer_agent,''),COALESCE(r.implementer_session_id,''),COALESCE(s.issue_json,'{}'),COALESCE(s.pr_url,''),COALESCE(r.pr_number,0),
+ CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_agent,'') ELSE COALESCE(r.implementer_agent,'') END,CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_session_id,'') ELSE COALESCE(r.implementer_session_id,'') END,COALESCE(s.issue_json,'{}'),COALESCE(s.pr_url,''),COALESCE(r.pr_number,0),
  COALESCE(a.attempt,0),COALESCE(a.round,0),COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.process_session,''),COALESCE(a.log_path,''),COALESCE(a.skills_json,''),r.stop_requested
  FROM runs r LEFT JOIN scheduler_runs s ON s.run_id=r.id
- LEFT JOIN phase_attempts a ON a.id=(SELECT id FROM phase_attempts WHERE run_id=r.id AND phase='implement' ORDER BY started_at DESC,attempt DESC LIMIT 1)`
+ LEFT JOIN phase_attempts a ON a.id=(SELECT id FROM phase_attempts WHERE run_id=r.id AND phase=r.current_phase ORDER BY round DESC,attempt DESC LIMIT 1)`
 	var args []any
 	if id != "" {
 		query += " WHERE r.id=?"
@@ -318,6 +319,9 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 			for _, repo := range d.Config.Repositories {
 				if strings.EqualFold(repo.Repo, run.Repository) {
 					role := repo.Implementer
+					if run.Phase == workflow.Review {
+						role = repo.Reviewer
+					}
 					if run.Agent == "" {
 						run.Agent = role.Agent
 					}
@@ -332,7 +336,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 				}
 			}
 		}
-		run.M1End = run.State == workflow.Active && run.Phase == workflow.Review && run.PRURL != ""
+		run.ReviewPending = run.State == workflow.Active && run.Phase == workflow.Review && run.Attempt == 0 && run.PRURL != ""
 		if run.Phase == workflow.Review || run.Phase == workflow.Fix {
 			run.Round = run.ReviewRound
 		}
@@ -340,7 +344,18 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		run.Stopping = run.Stopping && run.CanStop
 		runs = append(runs, run)
 	}
-	return runs, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	for i := range runs {
+		runs[i].Review, err = review.LoadSnapshot(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return runs, nil
 }
 
 func summary(body string) string {

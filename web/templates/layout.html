@@ -5,7 +5,7 @@
 <title>{{.Title}} · Mergeyard</title><link rel="stylesheet" href="/static/app.css">
 <script src="/static/htmx.min.js" defer></script><script src="/static/app.js" defer></script>
 </head><body><div class="shell">
-<header class="masthead"><a class="brand" href="/">Mergeyard<span class="brand-caption">Issue to draft PR</span></a><span id="connection" class="connection" role="status">Connecting to live updates…</span></header>
+<header class="masthead"><a class="brand" href="/">Mergeyard<span class="brand-caption">Issue to reviewed PR</span></a><span id="connection" class="connection" role="status">Connecting to live updates…</span></header>
 <nav class="navigation" aria-label="Main navigation">
 <a href="/" {{if eq .Page "dashboard"}}aria-current="page"{{end}}>Dashboard</a>
 <a href="/queue" {{if eq .Page "queue"}}aria-current="page"{{end}}>Queue</a>
@@ -16,7 +16,7 @@
 {{define "content"}}<main id="content" class="workbench" hx-get="{{.Path}}" hx-trigger="dashboard-update from:body" hx-target="this" hx-swap="outerHTML" hx-sync="this:queue last">
 <h1>{{.Title}}</h1>
 {{if or (eq .Page "dashboard") (eq .Page "queue")}}
-<div class="status-bar">{{template "scheduler" .}}<div class="capacity"><span class="capacity-value">{{.Used}} / {{.Limit}}</span><span>Concurrency slots in use</span><small>Includes attention and M1 end runs.</small></div></div>
+<div class="status-bar">{{template "scheduler" .}}<div class="capacity"><span class="capacity-value">{{.Used}} / {{.Limit}}</span><span>Concurrency slots in use</span><small>Includes attention and CI waiting runs.</small></div></div>
 {{if not .QueueReady}}<p class="notice">Discovering ready and blocked issues on GitHub…</p>{{end}}
 {{if .QueueError}}<p class="notice" role="status">{{.QueueError}}</p>{{end}}
 {{if .QueueTime}}<p class="connection">GitHub queue last synced <time>{{.QueueTime}}</time></p>{{end}}
@@ -39,13 +39,13 @@
 
 {{define "run-row"}}<article class="issue-row"><div>
 <a class="issue-title" href="/runs/{{.ID}}">{{.Repository}} #{{.IssueNumber}} · {{if .Title}}{{.Title}}{{else}}View run{{end}}</a>
-<p class="row-meta">{{if .M1End}}Draft PR created. M1 end; reviewer has not started.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
+<p class="row-meta">{{if .ReviewPending}}Draft PR created. Review pending.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
 {{if .LastErrorCode}}<p class="error-code">{{.LastErrorCode}}: {{.LastErrorMessage}}</p>{{end}}</div>
 {{if .PRURL}}<a class="row-note" href="{{.PRURL}}" target="_blank" rel="noreferrer">Open PR</a>{{else}}<time class="row-note">{{.UpdatedAt}}</time>{{end}}</article>{{end}}
 
 {{define "run-detail"}}{{with .Run}}
 <div class="run-heading"><h2>{{.Repository}} #{{.IssueNumber}} · {{.Title}}</h2><span class="badge badge-info">{{.State}}</span></div>
-{{if .M1End}}<p class="notice">Draft PR created. M1 end: the reviewer has not started. This run still occupies a concurrency slot.</p>{{end}}
+{{if .ReviewPending}}<p class="notice">Draft PR created. Independent review will start on the next scheduler tick.</p>{{end}}
 {{if .Stopping}}<p class="notice">Stop requested. The phase is stopping or GitHub label cleanup is pending. Retry Stop to finish cleanup.</p>{{end}}
 <p class="issue-summary">{{.Summary}}</p><div class="run-actions">
 <a class="btn btn-outline" href="{{.IssueURL}}" target="_blank" rel="noreferrer">Open issue</a>
@@ -58,10 +58,20 @@
 <div><dt>Phase / round / attempt</dt><dd>{{if .Phase}}{{.Phase}}{{else}}Not started{{end}} / {{.Round}} / {{.Attempt}}</dd></div>
 <div><dt>Worktree</dt><dd>{{if .Worktree}}<code>{{.Worktree}}</code>{{else}}Not created{{end}}</dd></div>
 <div><dt>Branch</dt><dd>{{if .Branch}}<code>{{.Branch}}</code>{{else}}Not created{{end}}</dd></div>
-<div><dt>Implementer</dt><dd>{{.Agent}} · model {{if .Model}}{{.Model}}{{else}}harness default{{end}} · effort {{if .Effort}}{{.Effort}}{{else}}harness default{{end}}</dd></div>
+<div><dt>Current agent</dt><dd>{{.Agent}} · model {{if .Model}}{{.Model}}{{else}}harness default{{end}} · effort {{if .Effort}}{{.Effort}}{{else}}harness default{{end}}</dd></div>
 <div><dt>Skills</dt><dd>{{if .Skills}}{{.Skills}}{{else}}None{{end}}</dd></div>
 <div><dt>Agent session ID</dt><dd>{{if .SessionID}}<code>{{.SessionID}}</code>{{else}}Not started{{end}}</dd></div>
 <div><dt>Updated</dt><dd><time>{{.UpdatedAt}}</time></dd></div></dl>
+{{with .Review}}<section class="queue-section"><h2>Independent review</h2>
+<dl class="run-facts"><div><dt>Reviewer</dt><dd>{{.Agent}} · model {{.Model}} · effort {{.Effort}}</dd></div>
+<div><dt>Reviewer session</dt><dd><code>{{.SessionID}}</code></dd></div><div><dt>Skills</dt><dd>{{range .Skills}}{{.}} {{else}}None{{end}}</dd></div>
+<div><dt>Permissions</dt><dd>{{.PermissionMode}} · edit tools disabled · allowed tools {{range .AllowedTools}}{{.}} {{else}}harness default{{end}}</dd></div>
+<div><dt>Round / attempt</dt><dd>{{.Round}} / {{.Attempt}} · {{.Status}}</dd></div><div><dt>Review target</dt><dd><code>{{.TargetSHA}}</code></dd></div></dl>
+{{if .Contaminated}}<p class="notice">Reviewer changed repository code or commits. Its verdict was discarded.{{if .Restored}} Pre-review work was restored.{{else}} Restoration requires attention.{{end}}</p>{{end}}
+{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}
+{{with .Report}}<h3>Verdict: {{.Status}}</h3><p>{{.Summary}}</p>
+{{range .Findings}}<article class="notice"><h4>{{.ID}} · {{.Severity}} · {{.Title}}</h4><p>{{.Details}}</p>{{if .File}}<p><code>{{.File}}{{if .Line}}:{{.Line}}{{end}}</code></p>{{end}}</article>{{else}}<p>No findings.</p>{{end}}{{end}}</section>{{end}}
+{{if .ApprovedSHA}}<p>Approved commit: <code>{{.ApprovedSHA}}</code></p>{{end}}
 {{if .LastErrorCode}}<section class="notice failure"><h2>Last error</h2><p><code>{{.LastErrorCode}}</code>: {{.LastErrorMessage}}</p></section>{{end}}
 {{end}}<div class="run-history">
 {{template "phase-output" .}}

@@ -1,4 +1,4 @@
-// Package scheduler dispatches eligible issues and advances the M1 implement flow.
+// Package scheduler dispatches eligible issues and advances implementation and first review.
 package scheduler
 
 import (
@@ -96,6 +96,9 @@ func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler,
 	claude := harness.NewClaude(cfg.Agents.Claude)
 	for _, repo := range cfg.Repositories {
 		if repo.Enabled {
+			if err := claude.ValidateConfig(repo.Reviewer); err != nil {
+				return nil, err
+			}
 			if err := claude.ValidateConfig(repo.Implementer); err != nil {
 				return nil, err
 			}
@@ -118,7 +121,7 @@ func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler,
 	return &Scheduler{cfg: cfg, db: resources.DB, bus: resources.Events, workflow: resources.Workflow, workspace: resources.Workspace, deps: deps, claude: claude, control: control}, nil
 }
 
-// Pause only stops new claims. Existing implement attempts continue on ticks.
+// Pause only stops new claims. Existing agent attempts continue on ticks.
 func (s *Scheduler) Pause(ctx context.Context, paused bool) error {
 	if paused {
 		return s.control.Pause(ctx)
@@ -147,7 +150,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// Runs returns the persisted lifecycle snapshots, including the M1 endpoint.
+// Runs returns the persisted lifecycle snapshots, including durable review verdicts.
 func (s *Scheduler) Runs(ctx context.Context) ([]workflow.Run, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT id FROM runs ORDER BY created_at, id")
 	if err != nil {

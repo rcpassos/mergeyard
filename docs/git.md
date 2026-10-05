@@ -63,3 +63,13 @@ Operation failures retain codes such as `git.clone`, `git.fetch`, `git.worktree`
 `go test ./internal/git` runs integration tests against temporary local bare
 repositories. Tests isolate user Git configuration and use a test identity;
 they do not access GitHub or mutate a developer checkout.
+
+## Review protection
+
+SnapshotReview captures HEAD, index tree, branch reflog and exact tracked and
+non-ignored files, including symlinks and modes. ReviewChanged also detects
+commits followed by resets. RestoreReview checks persisted ownership, restores
+HEAD/index/files, removes newly created non-ignored files and leaves ignored
+output alone. The scheduler must persist contamination before calling restore.
+Restoration is replayable after interruption; unsafe paths, switched branches,
+submodules and unsupported file shapes require attention rather than cleanup.
