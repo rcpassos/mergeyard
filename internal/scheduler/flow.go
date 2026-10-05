@@ -385,7 +385,7 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	}
 	_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
 		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions)
- VALUES (?,?,'implement','implementer',0,?,?,?,?,'running',?,?,?,?,?,?,?)`, uuid.NewString(), run.ID, number, repo.Implementer.Agent, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills), s.implementPermissions(repo.Implementer.Agent))
+ VALUES (?,?,'implement','implementer',0,?,?,?,?,'running',?,?,?,?,?,?,?)`, uuid.NewString(), run.ID, number, repo.Implementer.Agent, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills), s.rolePermissions(repo.Implementer.Agent))
 		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{
 			"phase": workflow.Implement, "round": 0, "attempt": number,
 		}}, err
@@ -426,7 +426,7 @@ func canRetryAttempt(err error, number, max int) bool {
 		max = 1
 	}
 	var coded *fault.Error
-	if errors.As(err, &coded) && (coded.Code == "phase.blocked" || coded.Code == "phase.session_missing") {
+	if errors.As(err, &coded) && (coded.Code == "phase.blocked" || coded.Code == "phase.session_missing" || coded.Code == "harness.session_identity_invalid") {
 		return false
 	}
 	return number < max
@@ -440,7 +440,7 @@ func canRetryImplementAttempt(err error, number, max int) bool {
 	return canRetryAttempt(err, number, max)
 }
 
-func (s *Scheduler) implementPermissions(agent string) string {
+func (s *Scheduler) rolePermissions(agent string) string {
 	if agent == "codex" {
 		networkAccess := s.cfg.Agents.Codex.NetworkAccess
 		if s.cfg.Agents.Codex.Sandbox == "danger-full-access" {
@@ -453,8 +453,31 @@ func (s *Scheduler) implementPermissions(agent string) string {
 }
 
 func validateImplementerHarness(persistedAgent, configuredAgent string) error {
+	return validateRoleHarness("implementer", persistedAgent, configuredAgent)
+}
+
+func validateRoleHarness(role, persistedAgent, configuredAgent string) error {
 	if persistedAgent != "" && persistedAgent != configuredAgent {
-		return &fault.Error{Code: "harness.session_agent_changed", Message: "Persisted implementer belongs to " + persistedAgent + "; restore that implementer harness before resuming"}
+		return &fault.Error{Code: "harness.session_agent_changed", Message: "Persisted " + role + " belongs to " + persistedAgent + "; restore that role harness before resuming"}
 	}
 	return nil
+}
+
+func (s *Scheduler) roleSettings(agent string) (string, []string) {
+	if agent == "codex" {
+		return s.rolePermissions(agent), []string{}
+	}
+	permission := s.cfg.Agents.Claude.PermissionMode
+	if permission == "" {
+		permission = "bypassPermissions"
+	}
+	return permission, s.cfg.Agents.Claude.AllowedTools
+}
+
+func (s *Scheduler) readLastMessage(ctx context.Context, phaseDir string) ([]byte, error) {
+	data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(phaseDir, "last-message.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return data, err
 }

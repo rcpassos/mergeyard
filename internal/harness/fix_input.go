@@ -35,6 +35,9 @@ func WriteFixInput(ctx context.Context, writer FileWriter, phase PhaseContext, i
 		return "", err
 	}
 	text.Write(findings)
+	if err := writer.WriteFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"), []byte(review.FixSchema), 0600); err != nil {
+		return "", err
+	}
 	path := filepath.Join(phase.PhaseDir, "input.md")
 	return path, writer.WriteFile(ctx, path, []byte(text.String()), 0600)
 }

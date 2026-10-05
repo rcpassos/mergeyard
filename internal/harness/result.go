@@ -2,6 +2,8 @@ package harness
 
 import (
 	"encoding/json"
+	"github.com/rcpassos/mergeyard/internal/review"
+	"github.com/rcpassos/mergeyard/internal/workflow"
 	"math/big"
 )
 
@@ -28,4 +30,24 @@ func parseImplementResult(data []byte) (PhaseResult, error) {
 		return PhaseResult{}, phaseError("phase.result_invalid", "Implement result summary must be a string", err)
 	}
 	return PhaseResult{SchemaVersion: 1, Status: *status, Summary: *summary}, nil
+}
+
+// The same semantic contracts apply regardless of the native harness envelope.
+func parsePhaseResult(phase workflow.Phase, data []byte) (PhaseResult, error) {
+	switch phase {
+	case workflow.Review:
+		report, err := review.Parse(data)
+		if err != nil {
+			return PhaseResult{}, phaseError("phase.result_invalid", "Invalid structured review report", err)
+		}
+		return PhaseResult{SchemaVersion: report.SchemaVersion, Status: report.Status, Summary: report.Summary, Findings: report.Findings}, nil
+	case workflow.Fix:
+		report, err := review.ParseFix(data)
+		if err != nil {
+			return PhaseResult{}, phaseError("phase.result_invalid", "Invalid structured fix report", err)
+		}
+		return PhaseResult{SchemaVersion: report.SchemaVersion, Status: report.Status, Summary: report.Summary, Responses: report.Responses}, nil
+	default:
+		return parseImplementResult(data)
+	}
 }

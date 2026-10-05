@@ -389,7 +389,6 @@ func TestCodexPermissionDisplayUsesEffectiveNetworkAccess(t *testing.T) {
 
 func TestCodexFixRequestsPreserveHarnessOwnership(t *testing.T) {
 	for _, tc := range []struct{ name, agent, code string }{
-		{"unsupported Codex fix", "codex", "phase.unsupported"},
 		{"changed harness before fix", "claude", "harness.session_agent_changed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

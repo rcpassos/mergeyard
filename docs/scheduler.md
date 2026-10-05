@@ -45,10 +45,10 @@ the control plane. This file is an archival report, not an agent-written
 fallback result contract. Agent failures and invalid results can retry within
 `implementer.max_attempts`; blocked results require attention immediately.
 
-Claude and Codex implementers are supported; review currently requires Claude.
+Claude and Codex are supported independently for implementation, review and fixes.
 Codex emits its identity through `thread.started`. Local observation every 250 ms
-persists that UUID and publishes `harness.session_discovered` without waiting for
-the GitHub polling interval. Reconciliation also recovers identity from captured
+persists each role's UUID during implementation, review or fixes and publishes
+`harness.session_discovered` without waiting for the GitHub polling interval. Reconciliation also recovers identity from captured
 output after a restart. Attempt and tmux identities are persisted before launch.
 
 Codex uses native `exec --json --output-schema … -o …`, with cwd and sandbox flags
@@ -59,9 +59,11 @@ remains enforced. The network toggle applies to `workspace-write`;
 show its effective network permission as `true`. Full issue context and schema live outside the worktree. Only
 exit 0, `turn.completed`, and a valid native `last-message.json` from the unique
 attempt can succeed. A verified missing rollout requires attention and keeps its
-UUID; fresh-session recovery belongs to a later slice. Changing the implementer
-harness on restart requires attention before another attempt can launch, so a
-retained UUID cannot be sent to the other harness.
+UUID during implementation. Review/fix retries can start a fresh conversation
+within the configured role attempt limit after a verified missing-session
+diagnostic. Changing either role's harness on restart requires attention before
+that role can launch another attempt, so a retained UUID cannot be sent to the
+other harness.
 
 Implementer snapshots retain the harness, UUID, model, effort, skills, permissions,
 attempt and process identity in dashboard and status output, including during review. Supply `Dependencies.Env` explicitly with
@@ -73,10 +75,10 @@ and local tmux adapters.
 After implementation, Mergeyard commits changes, pushes without force, discovers
 an existing PR or creates a draft, and persists its number and URL. The persisted
 `ACTIVE/review`, round 1 endpoint continues on the next tick into an independent
-Claude review. Approval waits for CI; changes required enters `ACTIVE/fix` and continues the
-bounded fix/re-review loop for Claude implementers. Codex fix execution requires
-attention until its separate implementation slice. CI monitoring, merge detection and user retry belong
-to later slices. These states continue consuming a concurrency slot. Repeated ticks and
+review by the configured reviewer. Approval waits for CI; changes required enters
+`ACTIVE/fix` and continues the bounded fix/re-review loop with the configured
+implementer. CI monitoring, merge detection and user retry belong to later
+slices. These states continue consuming a concurrency slot. Repeated ticks and
 scheduler restarts observe persisted attempts and do not launch duplicates.
 
 Blocked/invalid results, exhausted attempts, empty implementations, branch
@@ -167,7 +169,10 @@ requiring a workflow state transition.
 Each attempt stores a distinct reviewer session, configured model/effort/skills,
 permissions, PR head SHA, pinned base-to-head diff and exact pre-review Git
 snapshot before tmux launch. Claude edit tools are disabled; Bash remains available
-for tests. Native reports require approved/changes_required/blocked/failed and
+for tests. Codex retains its configured sandbox and network settings so tests and
+builds can produce ignored output. Use writable, ignored in-worktree cache paths
+when the sandbox denies access to host caches. Both harnesses use the same
+restoration and contaminated-verdict policy. Native reports require approved/changes_required/blocked/failed and
 unique finding IDs, severities and nullable locations. Only blocking findings
 prevent approval; contradictory reports are invalid.
 
@@ -185,8 +190,10 @@ review and restores its owned changes before stopping; Watch observes its live
 tmux process. Restart replays pending restoration before any verdict acceptance,
 including when Git was restored but the journal commit did not finish.
 
-A missing Claude transcript during a review retry replaces the reviewer UUID and
-uses a fresh session within reviewer.max_attempts. The attempt-start event retains
+A verified missing Claude transcript or Codex rollout during a review retry
+starts a fresh reviewer conversation within reviewer.max_attempts. Codex discovers
+and persists the new identity from its stream. Authentication, model and
+configuration errors do not trigger fresh-session recovery. The attempt-start event retains
 the previous session ID and a harness.session_resume_failed warning code.
 
 ## Fix and re-review
