@@ -14,19 +14,16 @@ func runCLI(args ...string) (code int, stdout, stderr string) {
 	return code, out.String(), errOut.String()
 }
 
-func TestStartConfigIntegrationIsDeferredToIssue14(t *testing.T) {
+func TestStartRequiresConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	for _, args := range [][]string{{"start", "--config", path}, {"--config", path}} {
 		code, stdout, stderr := runCLI(args...)
-		if code != 1 || stdout != "" || !strings.Contains(stderr, "config.start_not_implemented") || !strings.Contains(stderr, "#14") {
-			t.Fatalf("startup deferral: code %d, stdout %q, stderr %q", code, stdout, stderr)
-		}
-		if strings.Contains(stderr, "configuration loading is not implemented") {
-			t.Fatalf("stale configuration message: %q", stderr)
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "config.not_found") {
+			t.Fatalf("startup: code %d stdout %q stderr %q", code, stdout, stderr)
 		}
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("deferred startup changed config path: %v", err)
+		t.Fatalf("missing config was changed: %v", err)
 	}
 }
 
@@ -69,16 +66,10 @@ func TestHelpListsEveryCommand(t *testing.T) {
 
 func TestUnimplementedCommandsFail(t *testing.T) {
 	invocations := [][]string{
-		{"status"},
 		{"open"},
-		{"pause"},
-		{"resume"},
-		{"watch", "run-1"},
 		{"takeover", "run-1"},
 		{"handback", "run-1"},
-		{"stop", "run-1"},
 		{"retry", "run-1"},
-		{"reconcile"},
 	}
 	for _, args := range invocations {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -137,7 +128,7 @@ func TestConfigFlag(t *testing.T) {
 	for _, args := range accepted {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			code, _, stderr := runCLI(args...)
-			if code != 1 || !strings.Contains(stderr, "not implemented") {
+			if code != 1 || !strings.Contains(stderr, "config.not_found") {
 				t.Errorf("got exit %d, stderr %q; want dispatch to reach the command", code, stderr)
 			}
 		})

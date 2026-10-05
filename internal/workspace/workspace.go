@@ -20,13 +20,28 @@ type Workspace struct {
 // Open creates the workspace directories without changing existing artifacts.
 // An empty path uses ~/.mergeyard; a leading ~/ is expanded for configured paths.
 func Open(path string) (*Workspace, error) {
+	root, err := ResolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, dir := range []string{root, filepath.Join(root, "repos"), filepath.Join(root, "worktrees"), filepath.Join(root, "runs")} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return nil, &fault.Error{Code: "workspace.create", Path: dir, Err: fmt.Errorf("create workspace directory: %w", err)}
+		}
+	}
+	return &Workspace{Root: root}, nil
+}
+
+// ResolvePath returns the absolute workspace identity without creating files.
+// Clients and the owning runtime must resolve defaults and home paths alike.
+func ResolvePath(path string) (string, error) {
 	if path == "" {
 		path = DefaultPath
 	}
 	if path == "~" || strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, &fault.Error{Code: "workspace.home", Path: path, Err: fmt.Errorf("resolve workspace home: %w", err)}
+			return "", &fault.Error{Code: "workspace.home", Path: path, Err: fmt.Errorf("resolve workspace home: %w", err)}
 		}
 		if path == "~" {
 			path = home
@@ -36,14 +51,9 @@ func Open(path string) (*Workspace, error) {
 	}
 	root, err := filepath.Abs(path)
 	if err != nil {
-		return nil, &fault.Error{Code: "workspace.path", Path: path, Err: fmt.Errorf("resolve workspace path: %w", err)}
+		return "", &fault.Error{Code: "workspace.path", Path: path, Err: fmt.Errorf("resolve workspace path: %w", err)}
 	}
-	for _, dir := range []string{root, filepath.Join(root, "repos"), filepath.Join(root, "worktrees"), filepath.Join(root, "runs")} {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			return nil, &fault.Error{Code: "workspace.create", Path: dir, Err: fmt.Errorf("create workspace directory: %w", err)}
-		}
-	}
-	return &Workspace{Root: root}, nil
+	return root, nil
 }
 
 func (w *Workspace) DatabasePath() string { return filepath.Join(w.Root, "state.db") }

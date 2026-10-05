@@ -47,7 +47,7 @@ func NewDashboard(bus *events.Bus, control Scheduler, options DashboardOptions) 
 	if options.DB == nil || options.Workspace == nil || options.Scheduler == nil {
 		return nil, &fault.Error{Code: "internal.web_dependencies", Message: "Dashboard requires runtime storage, workspace, and scheduler"}
 	}
-	s, err := New(bus, control)
+	s, err := NewWithOperations(bus, control, options.Scheduler, options.Workspace.Root)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +368,7 @@ func (d *dashboard) timeline(ctx context.Context, id string) ([]timelineEntry, e
 	return timeline, rows.Err()
 }
 
-func (s *Server) stopRun(w http.ResponseWriter, r *http.Request) {
+func (s *Server) stopRunPage(w http.ResponseWriter, r *http.Request) {
 	if s.dashboard == nil {
 		s.respondError(w, r, &fault.Error{Code: "internal.run_not_found"}, "internal.run_not_found", http.StatusNotFound, "Run not found")
 		return

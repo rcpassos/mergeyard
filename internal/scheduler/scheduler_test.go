@@ -33,6 +33,22 @@ type fakeGitHub struct {
 func (f *fakeGitHub) ListOpenIssues(_ context.Context, repo string) ([]github.Issue, error) {
 	return f.issues[repo], nil
 }
+func (f *fakeGitHub) GetIssue(_ context.Context, repo string, n int) (github.Issue, error) {
+	for _, issue := range f.issues[repo] {
+		if issue.Number == n {
+			return issue, nil
+		}
+	}
+	return github.Issue{}, &fault.Error{Code: "github.not_found", Message: "Issue not found"}
+}
+func (f *fakeGitHub) GetPullRequest(_ context.Context, _ string, n int) (*github.PullRequest, error) {
+	for _, pr := range f.prs {
+		if pr.Number == n {
+			return pr, nil
+		}
+	}
+	return nil, &fault.Error{Code: "github.not_found", Message: "PR not found"}
+}
 func (f *fakeGitHub) UnresolvedBlockers(_ context.Context, _ string, n int) ([]github.Issue, error) {
 	return f.blockers[n], nil
 }
@@ -375,6 +391,9 @@ type rejectingGit struct {
 	prepare func(managedgit.PrepareRequest)
 }
 
+func (rejectingGit) Inspect(context.Context, managedgit.Run) error   { return nil }
+func (rejectingGit) ListWorktrees(context.Context) ([]string, error) { return nil, nil }
+
 func (g rejectingGit) Prepare(_ context.Context, req managedgit.PrepareRequest) (managedgit.Run, error) {
 	if g.prepare != nil {
 		g.prepare(req)
@@ -505,6 +524,25 @@ func TestPhaseRetryIsBoundedAndKeepsOneRun(t *testing.T) {
 				if err := s.Tick(context.Background()); err != nil {
 					t.Fatal(err)
 				}
+			}
+			history, err := runtime.Events.History(context.Background(), 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var attempts []int
+			for _, event := range history {
+				if event.RunID == run.ID && event.Type == "phase.attempt_started" {
+					var payload struct {
+						Attempt int `json:"attempt"`
+					}
+					if err := json.Unmarshal(event.Payload, &payload); err != nil {
+						t.Fatal(err)
+					}
+					attempts = append(attempts, payload.Attempt)
+				}
+			}
+			if len(attempts) != 2 || attempts[0] != 1 || attempts[1] != 2 {
+				t.Fatalf("attempt-start notifications = %v; want [1 2]", attempts)
 			}
 			phases, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "*"))
 			if len(phases) != 2 {

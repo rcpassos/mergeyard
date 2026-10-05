@@ -1,8 +1,8 @@
 # Local dashboard foundation
 
-`mergeyard start` serves the dashboard at `http://127.0.0.1:7331`. Configuration
-startup integration and issue dispatch remain tracked in #14. The current
-runtime exposes the global claim gate; pausing it leaves existing runs alone.
+`mergeyard start` serves the dashboard on the configured loopback port (default
+`http://127.0.0.1:7331`) and runs the M1 scheduler. The runtime exposes the global
+claim gate; pausing it leaves existing runs alone.
 
 ## Server boundary
 
@@ -17,6 +17,20 @@ shutdown. The caller closes the runtime and event bus after Serve returns.
 The dashboard serves `GET /`, the scheduler fragment at `GET /scheduler`,
 embedded files at `GET /static/`, and SSE at `GET /events`. Scheduler actions
 are `POST /scheduler/pause` and `POST /scheduler/resume`.
+
+`web.NewWithOperations` additionally exposes the CLI API, sharing the scheduler,
+workflow, and workspace with the dashboard:
+
+- `GET /api/status`: workspace identity, scheduler pause state, run snapshots,
+  and the current CSRF token;
+- `GET /api/runs/<run-id>/watch`: the current live tmux session reference;
+- `POST /api/runs/<run-id>/stop`: interrupt the phase, update labels, and stop
+  the run while preserving its code.
+
+CLI pause/resume use the existing scheduler endpoints with
+`Accept: application/json`, which returns JSON instead of a browser redirect.
+The CLI checks workspace identity before operating, disables HTTP proxies and
+redirect following, and uses a 30-second request timeout.
 
 Every POST requires an exact `Origin: http://127.0.0.1:<port>` and a random
 per-process token, supplied as the `csrf_token` form field or `X-CSRF-Token`
@@ -59,8 +73,8 @@ without JavaScript. Missing run IDs return 404.
 `web.NewDashboard` takes the event bus, shared scheduler control, and
 `DashboardOptions`: runtime database, workspace, scheduler engine, effective
 config and its source path, and an optional doctor callback. The engine must
-use the runtime's workflow and scheduler control. `New` remains available for
-the foundation without runtime data.
+use the runtime's workflow and scheduler control. The constructor also enables
+the shared CLI API. `New` remains available for the foundation without runtime data.
 
 Run `Server.RunUpdates(ctx)` in a goroutine. It discovers GitHub queue issues
 immediately and at `poll_interval`, including while paused or at capacity.
@@ -73,7 +87,9 @@ context outside HTTP requests. Cancel and join RunUpdates before closing the
 runtime.
 
 SSE notifications refresh the current page for run, phase, PR, scheduler,
-queue and diagnostic changes. Reconnecting refreshes the snapshot, including
+queue and diagnostic changes. Each persisted implement attempt emits
+`phase.attempt_started`, including retries, so attempt details and logs refresh
+together. Reconnecting refreshes the snapshot, including
 when a run completes while the browser is disconnected. Run output has its own
 `GET /runs/{id}/output` fragment, polled every two seconds until the run ends.
 It reads at most the last 128 KiB and 200 events from the latest attempt's
@@ -90,12 +106,13 @@ flows belong to later milestones. Recent runs are limited to the latest 20
 ended runs. The settings page displays resolved values, configuration/workspace
 paths, and doctor results; it has no configuration write endpoint.
 
-`POST /runs/{id}/stop` uses `Scheduler.Stop`, the lifecycle boundary for browser
-and CLI wiring. It coordinates with in-flight scheduler operations, stops the
-phase session, marks its attempt stopped, removes the running label, and adds attention if
-work exists before marking the run STOPPED. It never
-removes the worktree or branch or restores ready. Retrying the operation retries
-label cleanup. All existing Host, Origin, CSRF, and safe error-code checks apply.
+`POST /runs/{id}/stop` uses the same `Scheduler.Stop` as the CLI. It coordinates
+with in-flight operations, stops running phase sessions, removes ready and
+running labels, and adds attention when work exists before marking the run
+STOPPED. It preserves worktrees, branches, and PRs. Repeating Stop on an
+already-stopped run returns without changing labels or emitting another event,
+so it cannot interfere with a newer run for the same issue. Existing Host,
+Origin, CSRF, and safe error-code checks apply.
 
 Stop intent is persisted and emitted as `run.stop_requested`. If a process or
 GitHub operation fails, the run remains nonterminal with a Retry Stop action;
@@ -104,10 +121,8 @@ Attempts retain their original model, effort, and skills. Empty persisted
 model/effort mean harness defaults; migrated attempts without a skills snapshot
 show that the skills were not recorded rather than using today's config.
 
-The current `start` command connects these pages to the default runtime and
-loads any discovered configuration for read-only settings/queue discovery.
-Until #14 wires full startup orchestration, it continues to use the default
-workspace and port, and does not run dispatch. Settings report the actual
-workspace and port. Explicit `start --config` and CLI watch/stop wiring remain
-tracked by startup/control work; copied watch commands use the intended CLI
-contract.
+`mergeyard start` uses the configured workspace and port, runs doctor and
+reconciliation, and serves both dashboard pages and the CLI API alongside the
+scheduler. It starts queue discovery and exposes the startup doctor report on
+Settings. Shutdown cancels and joins scheduler, discovery, diagnostics, and
+browser workers before closing runtime storage.

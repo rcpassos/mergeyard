@@ -28,11 +28,14 @@ func (s *Scheduler) advance(ctx context.Context, repo config.Repository, run wor
 	})
 }
 func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run workflow.Run) error {
-	var stopping bool
-	if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopping); err != nil {
+	if run.State.Terminal() {
+		return nil
+	}
+	var stopRequested bool
+	if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopRequested); err != nil {
 		return err
 	}
-	if stopping && !run.State.Terminal() {
+	if stopRequested {
 		return s.stopRun(ctx, run)
 	}
 	if run.State == workflow.NeedsAttention {
@@ -341,8 +344,13 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json)
+	_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json)
  VALUES (?,?,'implement','implementer',0,?,'claude',?,?,'running',?,?,?,?,?,?)`, uuid.NewString(), run.ID, number, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills))
+		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{
+			"phase": workflow.Implement, "round": 0, "attempt": number,
+		}}, err
+	})
 	if err != nil {
 		return err
 	}

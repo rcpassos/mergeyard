@@ -28,6 +28,8 @@ import (
 // GitHub is the external issue, label, and PR boundary.
 type GitHub interface {
 	ListOpenIssues(context.Context, string) ([]github.Issue, error)
+	GetIssue(context.Context, string, int) (github.Issue, error)
+	GetPullRequest(context.Context, string, int) (*github.PullRequest, error)
 	UnresolvedBlockers(context.Context, string, int) ([]github.Issue, error)
 	AddLabel(context.Context, string, int, string) error
 	RemoveLabel(context.Context, string, int, string) error
@@ -39,6 +41,8 @@ type GitHub interface {
 type Git interface {
 	Prepare(context.Context, managedgit.PrepareRequest) (managedgit.Run, error)
 	CommitAndPush(context.Context, managedgit.Run, managedgit.Phase) (managedgit.CommitResult, error)
+	Inspect(context.Context, managedgit.Run) error
+	ListWorktrees(context.Context) ([]string, error)
 }
 
 // Resources are the shared components of an exclusively owned runtime.
@@ -61,19 +65,20 @@ type Dependencies struct {
 }
 
 type Scheduler struct {
-	cfg       config.Config
-	db        *sql.DB
-	bus       *events.Bus
-	workflow  *workflow.Workflow
-	workspace *workspace.Workspace
-	deps      Dependencies
-	claude    *harness.Claude
-	tick      sync.Mutex
-	control   *Control
-	running   atomic.Bool
+	cfg              config.Config
+	db               *sql.DB
+	bus              *events.Bus
+	workflow         *workflow.Workflow
+	workspace        *workspace.Workspace
+	deps             Dependencies
+	claude           *harness.Claude
+	tick             sync.Mutex
+	control          *Control
+	running          atomic.Bool
+	reportedFindings map[string]bool // protected by tick; unchanged findings emit once per scheduler lifetime
 }
 
-// New requires an exclusively owned runtime workspace. Startup wiring lives in #14.
+// New requires an exclusively owned runtime workspace.
 func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler, error) {
 	if resources.DB == nil || resources.Events == nil || resources.Workflow == nil || resources.Workspace == nil {
 		return nil, &fault.Error{Code: "internal.scheduler_runtime", Message: "Scheduler requires a database, event bus, shared workflow, and workspace"}
@@ -181,27 +186,18 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	runs, err := s.Runs(ctx)
+	_, err := s.reconcile(ctx)
 	if err != nil {
 		return err
 	}
 	var failures []error
-	for _, run := range runs {
-		repo, ok := s.repository(run.Repository)
-		if !ok {
-			continue
-		}
-		if err := s.advance(ctx, repo, run); err != nil {
-			failures = append(failures, err)
-		}
-	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if s.control.Paused() {
 		return errors.Join(failures...)
 	}
-	runs, err = s.Runs(ctx)
+	runs, err := s.Runs(ctx)
 	if err != nil {
 		return errors.Join(append(failures, err)...)
 	}
