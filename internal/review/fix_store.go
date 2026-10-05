@@ -5,34 +5,36 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/rcpassos/mergeyard/internal/ci"
 )
 
 type FixSnapshot struct {
-	Agent          string     `json:"agent"`
-	SessionID      string     `json:"session_id"`
-	Model          string     `json:"model"`
-	Effort         string     `json:"effort"`
-	Skills         []string   `json:"skills"`
-	PermissionMode string     `json:"permission_mode"`
-	AllowedTools   []string   `json:"allowed_tools"`
-	Round          int        `json:"round"`
-	Attempt        int        `json:"attempt"`
-	TargetSHA      string     `json:"target_sha"`
-	CommitSHA      string     `json:"commit_sha,omitempty"`
-	Pushed         bool       `json:"pushed"`
-	Status         string     `json:"attempt_status"`
-	Findings       []Finding  `json:"findings"`
-	Report         *FixReport `json:"report,omitempty"`
-	Error          string     `json:"error,omitempty"`
+	Agent          string       `json:"agent"`
+	SessionID      string       `json:"session_id"`
+	Model          string       `json:"model"`
+	Effort         string       `json:"effort"`
+	Skills         []string     `json:"skills"`
+	PermissionMode string       `json:"permission_mode"`
+	AllowedTools   []string     `json:"allowed_tools"`
+	Round          int          `json:"round"`
+	Attempt        int          `json:"attempt"`
+	TargetSHA      string       `json:"target_sha"`
+	CommitSHA      string       `json:"commit_sha,omitempty"`
+	Pushed         bool         `json:"pushed"`
+	Status         string       `json:"attempt_status"`
+	Findings       []Finding    `json:"findings"`
+	CI             *ci.Snapshot `json:"ci,omitempty"`
+	Report         *FixReport   `json:"report,omitempty"`
+	Error          string       `json:"error,omitempty"`
 }
 
-const fixSnapshotQuery = `SELECT a.agent,f.session_id,COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.skills_json,'[]'),f.permission_mode,f.allowed_tools_json,a.round,a.attempt,f.target_sha,COALESCE(f.commit_sha,''),f.pushed,a.status,f.findings_json,f.report_json,COALESCE(a.error,'') FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=?`
+const fixSnapshotQuery = `SELECT a.agent,f.session_id,COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.skills_json,'[]'),f.permission_mode,f.allowed_tools_json,a.round,a.attempt,f.target_sha,COALESCE(f.commit_sha,''),f.pushed,a.status,f.findings_json,f.report_json,COALESCE(a.error,''),f.ci_json FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=?`
 
 func scanFix(row interface{ Scan(...any) error }) (*FixSnapshot, error) {
 	var v FixSnapshot
 	var skills, tools, findings string
-	var report sql.NullString
-	err := row.Scan(&v.Agent, &v.SessionID, &v.Model, &v.Effort, &skills, &v.PermissionMode, &tools, &v.Round, &v.Attempt, &v.TargetSHA, &v.CommitSHA, &v.Pushed, &v.Status, &findings, &report, &v.Error)
+	var report, diagnostics sql.NullString
+	err := row.Scan(&v.Agent, &v.SessionID, &v.Model, &v.Effort, &skills, &v.PermissionMode, &tools, &v.Round, &v.Attempt, &v.TargetSHA, &v.CommitSHA, &v.Pushed, &v.Status, &findings, &report, &v.Error, &diagnostics)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -50,6 +52,12 @@ func scanFix(row interface{ Scan(...any) error }) (*FixSnapshot, error) {
 	if report.Valid {
 		v.Report = &FixReport{}
 		if err := json.Unmarshal([]byte(report.String), v.Report); err != nil {
+			return nil, err
+		}
+	}
+	if diagnostics.Valid {
+		v.CI = &ci.Snapshot{}
+		if err := json.Unmarshal([]byte(diagnostics.String), v.CI); err != nil {
 			return nil, err
 		}
 	}

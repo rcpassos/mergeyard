@@ -46,8 +46,6 @@ commands have a 30-second timeout per command.
 ## Start the scheduler
 
 After setup checks pass, run `mergeyard start` to launch the scheduler and local
-dashboard. Choose Claude or Codex for the implementer and Claude for the reviewer.
-Claude implementations continue draft PRs through bounded fixes and re-review.
-Codex implementations reach the draft PR and independent review; Codex fix
-execution remains unsupported. Approval waits for CI monitoring in a later slice.
+dashboard. Choose Claude or Codex independently for each role. All four pairings continue
+draft PRs through bounded fixes and independent re-review. Approval waits for CI.
 See [CLI operations](cli.md) for runtime controls.

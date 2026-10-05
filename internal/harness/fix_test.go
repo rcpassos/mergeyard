@@ -30,6 +30,7 @@ func TestNativeFixContractAndResumedInvocation(t *testing.T) {
 		{`{"schema_version":1,"status":"success","summary":"Fixed","responses":[{"finding_id":"F1","resolution":"fixed","note":"Added test"}]}`, true},
 		{`{"schema_version":1,"status":"success","summary":"Disagree","responses":[{"finding_id":"F1","resolution":"disputed","note":"Already correct"}]}`, true},
 		{`{"schema_version":1,"status":"blocked","summary":"Need input","responses":[]}`, true},
+		{`{"schema_version":1,"status":"success","summary":"Repaired failed CI","responses":[]}`, true},
 		{`{"schema_version":1,"status":"success","summary":"Done"}`, false},
 		{`{"schema_version":1,"status":"success","summary":"Done","responses":null}`, false},
 		{`{"schema_version":1,"status":"success","summary":"Done","responses":[{"finding_id":"F1","resolution":"approved","note":"Fine"}]}`, false},

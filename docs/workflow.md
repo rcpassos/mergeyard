@@ -113,6 +113,15 @@ the same transaction that advances one review round, clears approval and emits
 fix.completed. Run snapshots include the latest fix and its full attempt history,
 so earlier findings and responses remain visible after another review.
 
+Repairable CI failures use `CIFailed` to enter the same fix phase and atomically
+save check evidence and clear approval. Each CI fix attempt retains that input
+independently of `ci_waits`; a later reviewer approval replaces the wait without
+erasing repair history. CI-only reports have no finding responses. The scheduler
+checks the review-round bound before this transition and rejects a successful CI
+repair without changed code before publication. Fix completion still requires
+the pinned push journal and advances to an independent review, never directly
+to CI or readiness.
+
 ## Manual merge and maintenance
 
 `PRMerged` can complete any nonterminal run with a persisted PR, including an

@@ -19,6 +19,7 @@ type Check struct {
 	Conclusion string `json:"conclusion"`
 	State      string `json:"state"`
 	URL        string `json:"url,omitempty"`
+	Excerpt    string `json:"excerpt,omitempty"`
 }
 type Requirement struct {
 	Name  string `json:"name"`
@@ -40,6 +41,7 @@ type Snapshot struct {
 	QueryError   string    `json:"query_error,omitempty"`
 	ReadyStarted bool      `json:"ready_started"`
 	Warning      string    `json:"warning,omitempty"`
+	RepairCause  string    `json:"repair_cause,omitempty"`
 }
 
 // Normalize retains native outcomes; unrecognized or stale evidence never passes.
@@ -77,7 +79,7 @@ func Normalize(c Check, allowSkippedNeutral bool) string {
 }
 
 // Gate requires every reported outcome and every required source to pass.
-// Terminal diagnostics are kept for the dependent repair slice.
+// Terminal failures are repairable; cancellations and action requests take priority.
 func (e *Evidence) Gate() (passed bool, attention string) {
 	passed = true
 	requiredSHA := e.SHA
@@ -104,9 +106,13 @@ func (e *Evidence) Gate() (passed bool, attention string) {
 			switch c.Conclusion {
 			case "cancelled", "action_required":
 				attention = "ci.action_required"
+			case "timed_out":
+				if attention == "" {
+					attention = "ci.check_timed_out"
+				}
 			default:
 				if attention != "ci.action_required" {
-					attention = "ci.repair_unavailable"
+					attention = "ci.check_failed"
 				}
 			}
 		}

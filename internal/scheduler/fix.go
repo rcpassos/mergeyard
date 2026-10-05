@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
@@ -35,13 +36,14 @@ type fixAttempt struct {
 	pushed         bool
 	findings       []review.Finding
 	report         *review.FixReport
+	ci             *ci.Snapshot
 }
 
 func (s *Scheduler) lastFix(ctx context.Context, run workflow.Run) (fixAttempt, error) {
 	var a fixAttempt
 	var input, findings string
-	var report sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),a.input_path,a.resumed_session,COALESCE(a.error,''),f.session_id,f.target_sha,COALESCE(f.commit_sha,''),f.pushed,f.findings_json,f.report_json,a.agent FROM phase_attempts a JOIN fix_attempts f ON f.attempt_id=a.id WHERE a.run_id=? AND a.phase='fix' AND a.round=? ORDER BY a.attempt DESC LIMIT 1`, run.ID, run.ReviewRound).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure, &a.sessionID, &a.target, &a.commit, &a.pushed, &findings, &report, &a.agent)
+	var report, diagnostics sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),a.input_path,a.resumed_session,COALESCE(a.error,''),f.session_id,f.target_sha,COALESCE(f.commit_sha,''),f.pushed,f.findings_json,f.report_json,a.agent,f.ci_json FROM phase_attempts a JOIN fix_attempts f ON f.attempt_id=a.id WHERE a.run_id=? AND a.phase='fix' AND a.round=? ORDER BY a.attempt DESC LIMIT 1`, run.ID, run.ReviewRound).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure, &a.sessionID, &a.target, &a.commit, &a.pushed, &findings, &report, &a.agent, &diagnostics)
 	if err != nil {
 		return a, err
 	}
@@ -51,7 +53,13 @@ func (s *Scheduler) lastFix(ctx context.Context, run workflow.Run) (fixAttempt, 
 	}
 	if report.Valid {
 		a.report = &review.FixReport{}
-		err = json.Unmarshal([]byte(report.String), a.report)
+		if err := json.Unmarshal([]byte(report.String), a.report); err != nil {
+			return a, err
+		}
+	}
+	if diagnostics.Valid {
+		a.ci = &ci.Snapshot{}
+		err = json.Unmarshal([]byte(diagnostics.String), a.ci)
 	}
 	return a, err
 }
@@ -98,9 +106,20 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 		if err != nil {
 			return fail(err)
 		}
+
+		if err := s.discoverSession(ctx, run.ID, workflow.Fix, &a.attempt); err != nil {
+			if !invalidSessionDiscovery(err) {
+				return err
+			}
+			if err := s.deps.Runner.StopSession(ctx, a.ref); err != nil {
+				return err
+			}
+			return s.finishFixAttempt(ctx, repo, run, a, nil, nil, err)
+		}
 		if status.State == runner.SessionRunning {
 			return nil
 		}
+
 		var cause error
 		var report *review.FixReport
 		if status.State != runner.SessionExited || status.ExitCode == nil {
@@ -112,8 +131,13 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 			if cause == nil {
 				cause = err
 			}
+
+			var lastMessage []byte
+			if cause == nil && a.agent == "codex" {
+				lastMessage, cause = s.readLastMessage(ctx, a.ref.PhaseDir)
+			}
 			if cause == nil {
-				result, err := s.harnesses[a.agent].ParseResult(harness.PhaseContext{Phase: workflow.Fix, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+				result, err := s.harnesses[a.agent].ParseResult(harness.PhaseContext{Phase: workflow.Fix, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 				cause = err
 				if err == nil {
 					report = &review.FixReport{SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses}
@@ -172,6 +196,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 			return fail(err)
 		}
 		if !result.TreeChanged {
+			if a.ci != nil {
+				return s.finishFixAttempt(ctx, repo, run, a, nil, a.report, &fault.Error{Code: "phase.result_invalid", Message: "CI repair reports success but made no code changes"})
+			}
 			for _, response := range a.report.Responses {
 				if response.Resolution == "fixed" {
 					return s.finishFixAttempt(ctx, repo, run, a, nil, a.report, &fault.Error{Code: "phase.result_invalid", Message: "Fix claims a fixed finding but made no code changes"})
@@ -243,7 +270,7 @@ func (s *Scheduler) finishFixAttempt(ctx context.Context, repo config.Repository
 			return events.Draft{}, err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE phase_attempts SET status=?,exit_code=?,error=?,ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, status, exit, failure, a.id)
-		return events.Draft{RunID: run.ID, Type: event, Payload: map[string]any{"phase": workflow.Fix, "round": run.ReviewRound, "attempt": a.number, "result": report, "error": failure}}, err
+		return events.Draft{RunID: run.ID, Type: event, Payload: map[string]any{"agent": a.agent, "phase": workflow.Fix, "round": run.ReviewRound, "attempt": a.number, "result": report, "error": failure}}, err
 	})
 	if err != nil {
 		return err
@@ -269,8 +296,18 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 			return fail(err)
 		}
 	}
-	if run.Review == nil || !run.Review.Accepted || run.Review.Report == nil || run.Review.Report.Status != "changes_required" || run.Review.Round != run.ReviewRound {
-		return fail(&fault.Error{Code: "phase.result_invalid", Message: "Fix requires accepted current blocking findings"})
+	if run.Review == nil || !run.Review.Accepted || run.Review.Report == nil || run.Review.Round != run.ReviewRound {
+		return fail(&fault.Error{Code: "phase.result_invalid", Message: "Fix requires an accepted current review"})
+	}
+	var repair *ci.Snapshot
+	if run.Review.Report.Status == "approved" && run.CI != nil && run.CI.SHA == run.Review.TargetSHA && run.CI.QueryError == "" {
+		_, cause := run.CI.Evidence.Gate()
+		if (cause == "ci.check_failed" || cause == "ci.check_timed_out") && run.CI.RepairCause == cause {
+			repair = run.CI
+		}
+	}
+	if run.Review.Report.Status != "changes_required" && repair == nil {
+		return fail(&fault.Error{Code: "phase.result_invalid", Message: "Fix requires blocking findings or pinned repairable CI evidence"})
 	}
 	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
@@ -297,18 +334,29 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(implementer_session_id,'') FROM runs WHERE id=?", run.ID).Scan(&sessionID); err != nil {
 		return err
 	}
-	if sessionID == "" {
+	if sessionID == "" && number == 1 {
 		return fail(&fault.Error{Code: "harness.session_missing", Message: "Original implementer session is unavailable; inspect before fixing"})
 	}
-	resume := true
+	adapter := s.harnesses[repo.Implementer.Agent]
+	resume := sessionID != ""
 	warning, previousSession := "", sessionID
 	if number > 1 {
 		previous, err := s.lastFix(ctx, run)
 		if err != nil {
 			return err
 		}
+
+		// A discovered-identity fresh attempt can fail before starting a thread.
+		// Continue that authorized execution within its remaining attempt budget;
+		// missing identity in an established conversation still requires inspection.
+		if sessionID == "" && (previous.resumed || previous.sessionID != "" || adapter.Capabilities().SessionIDSource != harness.Discovered) {
+			return fail(&fault.Error{Code: "harness.session_missing", Message: "Persisted fix conversation is unavailable; inspect before retrying"})
+		}
 		if strings.HasPrefix(previous.failure, "harness.session_resume_failed: ") {
-			sessionID = uuid.NewString()
+			sessionID = ""
+			if adapter.Capabilities().SessionIDSource == harness.Preassigned {
+				sessionID = uuid.NewString()
+			}
 			resume = false
 			warning = "harness.session_resume_failed"
 		}
@@ -321,7 +369,7 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		return fail(err)
 	}
 	phase := harness.PhaseContext{Phase: workflow.Fix, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
-	input, err := harness.WriteFixInput(ctx, s.deps.Runner, phase, harness.FixInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, PRBody: pr.Body, TargetSHA: target, Round: run.ReviewRound, Findings: findings})
+	input, err := harness.WriteFixInput(ctx, s.deps.Runner, phase, harness.FixInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, PRBody: pr.Body, TargetSHA: target, Round: run.ReviewRound, Findings: findings, CI: repair})
 	if err != nil {
 		return fail(err)
 	}
@@ -332,21 +380,26 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	req := runner.SessionRequest{RunID: run.ID, Phase: "fix", Round: run.ReviewRound, Attempt: number, PhaseDir: phaseDir, Command: command}
 	id := uuid.NewString()
 	skills, _ := json.Marshal(repo.Implementer.Skills)
-	tools, _ := json.Marshal(s.cfg.Agents.Claude.AllowedTools)
+	permission, allowedTools := s.roleSettings(repo.Implementer.Agent)
+	tools, _ := json.Marshal(allowedTools)
 	encoded, _ := json.Marshal(findings)
-	permission := s.cfg.Agents.Claude.PermissionMode
-	if permission == "" {
-		permission = "bypassPermissions"
+	var diagnostics any
+	if repair != nil {
+		data, err := json.Marshal(repair)
+		if err != nil {
+			return err
+		}
+		diagnostics = string(data)
 	}
 	_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
 		if _, err := tx.ExecContext(ctx, "UPDATE runs SET implementer_session_id=? WHERE id=?", sessionID, run.ID); err != nil {
 			return events.Draft{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts(id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json) VALUES (?,?,'fix','implementer',?,?,'claude',?,?,'running',?,?,?,?,?,?)`, id, run.ID, run.ReviewRound, number, repo.Implementer.Model, repo.Implementer.Effort, resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts(id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions) VALUES (?,?,'fix','implementer',?,?,?,?,?,'running',?,?,?,?,?,?,?)`, id, run.ID, run.ReviewRound, number, repo.Implementer.Agent, repo.Implementer.Model, repo.Implementer.Effort, resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills), s.rolePermissions(repo.Implementer.Agent)); err != nil {
 			return events.Draft{}, err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json) VALUES (?,?,?,?,?,?)`, id, sessionID, target, string(encoded), permission, string(tools))
-		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{"phase": workflow.Fix, "round": run.ReviewRound, "attempt": number, "session_id": sessionID, "resumed_session": resume, "model": repo.Implementer.Model, "effort": repo.Implementer.Effort, "skills": repo.Implementer.Skills, "permission_mode": permission, "allowed_tools": s.cfg.Agents.Claude.AllowedTools, "warning_code": warning, "previous_session_id": previousSession}}, err
+		_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,ci_json) VALUES (?,?,?,?,?,?,?)`, id, sessionID, target, string(encoded), permission, string(tools), diagnostics)
+		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{"agent": repo.Implementer.Agent, "permissions": s.rolePermissions(repo.Implementer.Agent), "phase": workflow.Fix, "round": run.ReviewRound, "attempt": number, "session_id": sessionID, "resumed_session": resume, "model": repo.Implementer.Model, "effort": repo.Implementer.Effort, "skills": repo.Implementer.Skills, "permission_mode": permission, "allowed_tools": allowedTools, "warning_code": warning, "previous_session_id": previousSession, "ci": repair}}, err
 	})
 	if err != nil {
 		return err
@@ -356,7 +409,7 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		return nil
 	}
 	if err != nil && ctx.Err() == nil {
-		return s.finishFixAttempt(ctx, repo, run, fixAttempt{attempt: attempt{id: id, number: number}}, nil, nil, err)
+		return s.finishFixAttempt(ctx, repo, run, fixAttempt{attempt: attempt{id: id, agent: repo.Implementer.Agent, number: number}}, nil, nil, err)
 	}
 	return err
 }

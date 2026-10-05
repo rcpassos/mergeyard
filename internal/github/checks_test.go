@@ -22,6 +22,22 @@ func TestCheckEvidenceIncludesLatestStatusesAndRequirements(t *testing.T) {
 	}
 }
 
+func TestCheckEvidencePreservesFailureExcerpts(t *testing.T) {
+	r := &recordedGH{responses: []response{
+		{stdout: []byte(`{"total_count":1,"check_runs":[{"name":"build","head_sha":"abc","status":"completed","conclusion":"failure","html_url":"https://example.com/build","output":{"title":"Build failed","summary":"compiler error","text":"feature.go:12: undefined name"}}]}`)},
+		{stdout: []byte(`[{"context":"legacy","state":"failure","description":"deployment rejected","target_url":"https://example.com/deploy"}]`)},
+		{stdout: []byte(`{"protected":false}`)},
+		{stdout: []byte(`[]`)},
+	}}
+	e, err := github.New(r).CheckEvidence(context.Background(), "owner/repo", "abc", "main")
+	if err != nil || len(e.Checks) != 2 {
+		t.Fatalf("evidence: %+v %v", e, err)
+	}
+	if e.Checks[0].Excerpt != "Build failed\ncompiler error\nfeature.go:12: undefined name" || e.Checks[1].Excerpt != "deployment rejected" {
+		t.Fatalf("failure excerpts missing: %+v", e.Checks)
+	}
+}
+
 func TestCheckQueriesNeverTreatErrorsOrIncompleteResponsesAsAbsence(t *testing.T) {
 	valid := []response{
 		{stdout: []byte(`{"total_count":0,"check_runs":[]}`)},
@@ -269,7 +285,7 @@ func TestPullRequestEvidenceRequiresCurrentMergeOutcomes(t *testing.T) {
 		{name: "passing merge", mergeChecks: `{"total_count":0,"check_runs":[]}`, mergeStatuses: `[{"context":"CI","state":"success"}]`, passed: true},
 		{name: "pending merge", mergeChecks: `{"total_count":0,"check_runs":[]}`, mergeStatuses: `[{"context":"ci","state":"pending"}]`},
 		{name: "missing merge requirement", mergeChecks: `{"total_count":0,"check_runs":[]}`, mergeStatuses: `[{"context":"optional","state":"success"}]`},
-		{name: "failing merge check run", mergeChecks: `{"total_count":1,"check_runs":[{"name":"ci","head_sha":"test-merge","status":"completed","conclusion":"failure","app":{"id":42}}]}`, mergeStatuses: `[]`, attention: "ci.repair_unavailable"},
+		{name: "failing merge check run", mergeChecks: `{"total_count":1,"check_runs":[{"name":"ci","head_sha":"test-merge","status":"completed","conclusion":"failure","app":{"id":42}}]}`, mergeStatuses: `[]`, attention: "ci.check_failed"},
 		{name: "stale merge check run", mergeChecks: `{"total_count":1,"check_runs":[{"name":"ci","head_sha":"previous-merge","status":"completed","conclusion":"success","app":{"id":42}}]}`, mergeStatuses: `[]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

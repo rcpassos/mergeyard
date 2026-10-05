@@ -561,3 +561,27 @@ func TestMergeRecoversRunningAttemptThatNeverLaunched(t *testing.T) {
 		t.Fatalf("unstarted attempt blocked merge: %+v", saved.Merge)
 	}
 }
+
+func TestMergeObservedDuringCIRepairEvidenceCompletesWithoutFix(t *testing.T) {
+	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "failure"}}}}, applyClose: true}
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	api.afterEvidence = func() {
+		base.prs["mergeyard/issue-7"].State, base.prs["mergeyard/issue-7"].Merged = github.Closed, true
+		base.issues["owner/repo"][0].State = github.Closed
+	}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+	if err != nil || saved.State != workflow.Completed || saved.Merge == nil || !saved.Merge.Early {
+		t.Fatalf("merge lost during repair check: %+v %v", saved, err)
+	}
+	if len(saved.FixHistory) != 0 {
+		t.Fatal("merge launched a CI repair")
+	}
+}
