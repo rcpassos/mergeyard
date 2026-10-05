@@ -149,9 +149,15 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 		_, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.OperationFailed, Failure: &fault.Error{Code: "reconcile.context_missing", Message: "Run context cannot be reconciled; inspect persisted artifacts", Err: contextErr}})
 		return err
 	}
+	// A persisted review snapshot owns Git validation until restoration. Checking
+	// branch attachment while its process is editing Git can observe a transient
+	// detached HEAD, stop the reviewer there, and make safe restoration impossible.
+	reviewOwnsGit := run.State == workflow.Active && run.Phase == workflow.Review && run.Review != nil && run.Review.Status == "running" && !run.Review.Restored
 	if gitRun.ID != "" {
-		if err := s.deps.Git.Inspect(ctx, gitRun); err != nil {
-			inconsistency = err
+		if !reviewOwnsGit {
+			if err := s.deps.Git.Inspect(ctx, gitRun); err != nil {
+				inconsistency = err
+			}
 		}
 	} else if run.State != workflow.Claiming && run.State != workflow.Preparing && run.State != workflow.NeedsAttention {
 		inconsistency = &fault.Error{Code: "git.ownership_missing", Message: "Run has no persisted Git ownership"}
