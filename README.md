@@ -6,8 +6,8 @@ and gives you a local dashboard to monitor the queue and stop runs.
 
 **Current stage: bounded Claude fix/review loop and Codex implementation.** The scheduler runs Claude Code or Codex as the
 implementer, followed by an independent Claude reviewer. Claude implementations
-continue through bounded fixes and re-review. CI monitoring, merge detection, and
-Codex fix/review execution are planned.
+continue through bounded fixes and re-review. CI monitoring and manual merge completion are supported;
+Codex fix execution is planned.
 
 ## Install
 

@@ -81,6 +81,9 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if err != nil {
 		return err
 	}
+	if pr != nil && pr.Merged {
+		return s.merged(ctx, repo, run, pr)
+	}
 	if !reviewHeadMatches(pr, repo, run, gitRun, a.target) {
 		return s.abortReview(ctx, repo, run, gitRun, &a, &fault.Error{Code: "review.head_changed", Message: "PR head changed during review; stale verdict discarded. Inspect preserved work before continuing"})
 	}
@@ -132,6 +135,9 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	pr, err = s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
 	if err != nil {
 		return err
+	}
+	if pr != nil && pr.Merged {
+		return s.merged(ctx, repo, run, pr)
 	}
 	if !reviewHeadMatches(pr, repo, run, gitRun, a.target) {
 		cause = &fault.Error{Code: "review.head_changed", Message: "PR head changed during review; stale verdict discarded"}
@@ -193,6 +199,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if err != nil {
 		return err
 	}
+	if pr != nil && pr.Merged {
+		return s.merged(ctx, repo, run, pr)
+	}
 	if !reviewHeadMatches(pr, repo, run, gitRun, snapshot.Head) {
 		return fail(&fault.Error{Code: "review.head_changed", Message: "Local review target differs from the PR head; inspect preserved work"})
 	}
@@ -202,6 +211,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	}
 	phaseDir := filepath.Join(s.workspace.Root, "runs", run.ID, "phases", fmt.Sprintf("review-%d-%d", run.ReviewRound, number))
 	if err := os.MkdirAll(phaseDir, 0700); err != nil {
+		return fail(err)
+	}
+	if err := sessions.RequireProcessJournal(phaseDir); err != nil {
 		return fail(err)
 	}
 	var sessionID string

@@ -78,6 +78,9 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 		v.CurrentHead = ""
 		return unknown(err)
 	}
+	if pr != nil && pr.Merged {
+		return s.merged(ctx, repo, run, pr)
+	}
 	if pr == nil {
 		return unknown(&fault.Error{Code: "github.invalid_response", Message: "Missing PR"})
 	}
@@ -139,6 +142,9 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 		v.CurrentHead = ""
 		return unknown(err)
 	}
+	if fresh != nil && fresh.Merged {
+		return s.merged(ctx, repo, run, fresh)
+	}
 	if fresh == nil {
 		return unknown(&fault.Error{Code: "github.invalid_response", Message: "Missing PR before readiness"})
 	}
@@ -165,6 +171,9 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 		observed, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
 		if err != nil {
 			return unknown(err)
+		}
+		if observed != nil && observed.Merged {
+			return s.merged(ctx, repo, run, observed)
 		}
 		if observed == nil {
 			return unknown(&fault.Error{Code: "github.invalid_response", Message: "Missing PR after readiness mutation"})
@@ -194,6 +203,9 @@ func (s *Scheduler) observeReady(ctx context.Context, repo config.Repository, ru
 	pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
 	if err != nil {
 		return err
+	}
+	if pr != nil && pr.Merged {
+		return s.merged(ctx, repo, run, pr)
 	}
 	if pr == nil {
 		return &fault.Error{Code: "github.invalid_response", Message: "Missing ready PR"}

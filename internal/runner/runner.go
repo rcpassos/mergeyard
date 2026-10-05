@@ -36,6 +36,8 @@ type Runner interface {
 	SessionStatus(context.Context, SessionRef) (SessionStatus, error)
 	// ListSessions inventories managed sessions on this runner's tmux socket.
 	ListSessions(context.Context) ([]string, error)
+	// StopSession verifies the owned process group has exited, including
+	// children whose wrapper or tmux session disappeared.
 	StopSession(context.Context, SessionRef) error
 	ReadFile(context.Context, string) ([]byte, error)
 	WriteFile(context.Context, string, []byte, fs.FileMode) error

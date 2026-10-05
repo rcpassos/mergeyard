@@ -112,3 +112,13 @@ run/round ownership, a successful report and the durable pinned push journal in
 the same transaction that advances one review round, clears approval and emits
 fix.completed. Run snapshots include the latest fix and its full attempt history,
 so earlier findings and responses remain visible after another review.
+
+## Manual merge and maintenance
+
+`PRMerged` can complete any nonterminal run with a persisted PR, including an
+early merge. The scheduler first durably records the merge and stop intent and
+verifies that owned processes have exited. Terminal stopped runs reject merge
+completion. The separate `merge_cleanup` journal persists maintenance progress
+outside the coding lifecycle. Run snapshots include that journal for status,
+events, and UI. `pr.merge_observed` records merge intent; `merge.cleanup_updated`
+records individual maintenance boundaries and pending errors.

@@ -85,6 +85,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 		if err != nil {
 			return err
 		}
+		if pr != nil && pr.Merged {
+			return s.merged(ctx, repo, run, pr)
+		}
 		if !reviewHeadMatches(pr, repo, run, gitRun, a.target) {
 			if err := s.deps.Runner.StopSession(ctx, a.ref); err != nil {
 				return err
@@ -134,6 +137,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 		if err != nil {
 			return err
 		}
+		if pr != nil && pr.Merged {
+			return s.merged(ctx, repo, run, pr)
+		}
 		if !reviewHeadMatches(pr, repo, run, gitRun, a.target) {
 			cause = &fault.Error{Code: "review.head_changed", Message: "PR head changed during fix; preserved work needs inspection"}
 		}
@@ -154,6 +160,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 		pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
 		if err != nil {
 			return err
+		}
+		if pr != nil && pr.Merged {
+			return s.merged(ctx, repo, run, pr)
 		}
 		if !reviewHeadMatches(pr, repo, run, gitRun, a.target) {
 			return fail(&fault.Error{Code: "review.head_changed", Message: "PR head changed before fix publication"})
@@ -180,6 +189,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 		if err != nil {
 			return err
 		}
+		if pr != nil && pr.Merged {
+			return s.merged(ctx, repo, run, pr)
+		}
 		if !reviewHeadMatches(pr, repo, run, gitRun, a.target) && !reviewHeadMatches(pr, repo, run, gitRun, a.commit) {
 			return fail(&fault.Error{Code: "review.head_changed", Message: "PR head changed during fix publication"})
 		}
@@ -195,6 +207,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 	pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
 	if err != nil {
 		return err
+	}
+	if pr != nil && pr.Merged {
+		return s.merged(ctx, repo, run, pr)
 	}
 	if !reviewHeadMatches(pr, repo, run, gitRun, a.commit) {
 		return fail(&fault.Error{Code: "review.head_changed", Message: "PR head changed before the next review"})
@@ -265,6 +280,9 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	if err != nil {
 		return err
 	}
+	if pr != nil && pr.Merged {
+		return s.merged(ctx, repo, run, pr)
+	}
 	target := run.Review.TargetSHA
 	if !reviewHeadMatches(pr, repo, run, gitRun, target) {
 		return fail(&fault.Error{Code: "review.head_changed", Message: "PR head changed before fix launch"})
@@ -297,6 +315,9 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	}
 	phaseDir := filepath.Join(s.workspace.Root, "runs", run.ID, "phases", fmt.Sprintf("fix-%d-%d", run.ReviewRound, number))
 	if err := os.MkdirAll(phaseDir, 0700); err != nil {
+		return fail(err)
+	}
+	if err := sessions.RequireProcessJournal(phaseDir); err != nil {
 		return fail(err)
 	}
 	phase := harness.PhaseContext{Phase: workflow.Fix, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}

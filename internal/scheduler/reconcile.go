@@ -50,10 +50,14 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 	var failures []error
 	reconcilable := map[string]bool{}
 	for _, run := range runs {
-		if run.State.Terminal() {
+		if run.State.Terminal() && !(run.State == workflow.Completed && run.Merge != nil && run.Merge.Pending()) {
 			continue
 		}
 		repo, ok := s.repository(run.Repository)
+		if !ok && run.Merge != nil {
+			repo = config.Repository{Repo: run.Repository}
+			ok = true
+		}
 		if !ok {
 			report.Findings = append(report.Findings, Finding{Code: "reconcile.repository_missing", Repository: run.Repository, IssueNumber: run.IssueNumber, RunID: run.ID, Message: "Run repository is absent from configuration"})
 			continue
@@ -114,7 +118,22 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 
 func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, run workflow.Run) error {
 	if run.State.Terminal() {
+		if run.State == workflow.Completed && run.Merge != nil {
+			return s.cleanupMerge(ctx, run)
+		}
 		return nil
+	}
+	if run.Merge != nil {
+		return s.finishMerge(ctx, run)
+	}
+	if run.PRNumber > 0 {
+		pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
+		if err != nil {
+			return err
+		}
+		if pr != nil && pr.Merged {
+			return s.merged(ctx, repo, run, pr)
+		}
 	}
 	// Honor durable stop intent before restoring labels or inspecting work.
 	var stopRequested bool
@@ -147,6 +166,9 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 	}
 	if err != nil {
 		return err
+	}
+	if pr != nil && pr.Merged {
+		return s.merged(ctx, repo, run, pr)
 	}
 	var inconsistency error
 	if contextErr != nil {

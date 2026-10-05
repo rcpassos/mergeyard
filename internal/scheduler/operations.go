@@ -16,6 +16,9 @@ import (
 // prevents a failed label write or restart from relaunching interrupted work.
 func (s *Scheduler) Stop(ctx context.Context, id string) error {
 	return s.workflow.WithRunOperation(ctx, id, func(ctx context.Context, run workflow.Run) error {
+		if run.Merge != nil && !run.State.Terminal() {
+			return s.finishMerge(ctx, run)
+		}
 		if run.State == workflow.Stopped {
 			return nil
 		}
@@ -40,30 +43,8 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 	if !ok {
 		return &fault.Error{Code: "config.repository_missing", Message: "Run repository is no longer configured"}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT process_session,input_path FROM phase_attempts WHERE run_id=? AND status='running'`, run.ID)
-	if err != nil {
+	if err := s.stopOwnedPhases(ctx, run); err != nil {
 		return err
-	}
-	var refs []runner.SessionRef
-	for rows.Next() {
-		var name, input sql.NullString
-		if err := rows.Scan(&name, &input); err != nil {
-			rows.Close()
-			return err
-		}
-		if name.Valid && name.String != "" {
-			refs = append(refs, runner.SessionRef{Name: name.String, PhaseDir: filepath.Dir(input.String)})
-		}
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	for _, ref := range refs {
-		if err := s.deps.Runner.StopSession(ctx, ref); err != nil {
-			return err
-		}
 	}
 	if run.Phase == workflow.Implement {
 		a, err := s.lastAttempt(ctx, run.ID)
@@ -119,7 +100,7 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 			return err
 		}
 	}
-	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Stop})
+	_, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Stop})
 	return err
 }
 
@@ -150,4 +131,41 @@ func (s *Scheduler) Watch(ctx context.Context, id string) (runner.SessionRef, er
 		return nil
 	})
 	return ref, err
+}
+
+func (s *Scheduler) stopOwnedPhases(ctx context.Context, run workflow.Run) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT process_session,input_path FROM phase_attempts WHERE run_id=? AND status='running'`, run.ID)
+	if err != nil {
+		return err
+	}
+	var refs []runner.SessionRef
+	for rows.Next() {
+		var name, input sql.NullString
+		if err := rows.Scan(&name, &input); err != nil {
+			rows.Close()
+			return err
+		}
+		if name.Valid && name.String != "" {
+			refs = append(refs, runner.SessionRef{Name: name.String, PhaseDir: filepath.Dir(input.String)})
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, ref := range refs {
+		if err := s.deps.Runner.StopSession(ctx, ref); err != nil {
+			return err
+		}
+		status, err := s.deps.Runner.SessionStatus(ctx, ref)
+		if err != nil {
+			return err
+		}
+		if status.State == runner.SessionRunning {
+			return &fault.Error{Code: "phase.stop_pending", Message: "Owned process is still running"}
+		}
+	}
+
+	return nil
 }

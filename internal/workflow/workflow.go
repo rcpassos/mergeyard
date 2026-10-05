@@ -11,6 +11,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/maintenance"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -98,22 +99,23 @@ type MetadataPatch struct {
 type Run struct {
 	Implementer *ImplementSnapshot `json:"implementer,omitempty"`
 	RunMetadata
-	CI               *ci.Snapshot         `json:"ci,omitempty"`
-	Publications     []review.Publication `json:"publications,omitempty"`
-	ReviewHistory    []review.Snapshot    `json:"review_history,omitempty"`
-	FixHistory       []review.FixSnapshot `json:"fix_history,omitempty"`
-	Fix              *review.FixSnapshot  `json:"fix,omitempty"`
-	Review           *review.Snapshot     `json:"review,omitempty"`
-	ID               string               `json:"id"`
-	Repository       string               `json:"repository"`
-	IssueNumber      int                  `json:"issue_number"`
-	State            State                `json:"state"`
-	Phase            Phase                `json:"phase,omitempty"`
-	CreatedAt        string               `json:"created_at"`
-	UpdatedAt        string               `json:"updated_at"`
-	CompletedAt      string               `json:"completed_at,omitempty"`
-	LastErrorCode    string               `json:"last_error_code,omitempty"`
-	LastErrorMessage string               `json:"last_error_message,omitempty"`
+	Merge            *maintenance.Snapshot `json:"merge,omitempty"`
+	CI               *ci.Snapshot          `json:"ci,omitempty"`
+	Publications     []review.Publication  `json:"publications,omitempty"`
+	ReviewHistory    []review.Snapshot     `json:"review_history,omitempty"`
+	FixHistory       []review.FixSnapshot  `json:"fix_history,omitempty"`
+	Fix              *review.FixSnapshot   `json:"fix,omitempty"`
+	Review           *review.Snapshot      `json:"review,omitempty"`
+	ID               string                `json:"id"`
+	Repository       string                `json:"repository"`
+	IssueNumber      int                   `json:"issue_number"`
+	State            State                 `json:"state"`
+	Phase            Phase                 `json:"phase,omitempty"`
+	CreatedAt        string                `json:"created_at"`
+	UpdatedAt        string                `json:"updated_at"`
+	CompletedAt      string                `json:"completed_at,omitempty"`
+	LastErrorCode    string                `json:"last_error_code,omitempty"`
+	LastErrorMessage string                `json:"last_error_message,omitempty"`
 }
 
 // Request supplies trigger-specific information, not an arbitrary new state.
@@ -374,6 +376,11 @@ func destination(current Run, request Request) (Run, string, error) {
 				next.State = Manual
 				return next, "run.manual", nil
 			}
+		case PRMerged:
+			if !current.State.Terminal() && current.PRNumber > 0 {
+				next.State = Completed
+				return next, "run.completed", nil
+			}
 		case Stop:
 			if !current.State.Terminal() {
 				next.State = Stopped
@@ -461,6 +468,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, &fault.Error{Code: "internal.run_not_found", Message: "Run does not exist", Path: id, Err: err}
 	}
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.Merge, err = maintenance.Load(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
 	}

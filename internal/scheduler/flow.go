@@ -32,6 +32,18 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	if run.State.Terminal() {
 		return nil
 	}
+	if run.Merge != nil {
+		return s.finishMerge(ctx, run)
+	}
+	if run.PRNumber > 0 {
+		pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
+		if err != nil {
+			return err
+		}
+		if pr != nil && pr.Merged {
+			return s.merged(ctx, repo, run, pr)
+		}
+	}
 	var stopRequested bool
 	if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopRequested); err != nil {
 		return err
@@ -365,6 +377,9 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	}
 	phaseDir := filepath.Join(s.workspace.Root, "runs", run.ID, "phases", fmt.Sprintf("implement-0-%d", number))
 	if err := os.MkdirAll(phaseDir, 0700); err != nil {
+		return err
+	}
+	if err := sessions.RequireProcessJournal(phaseDir); err != nil {
 		return err
 	}
 	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: number > 1 && sessionID != "", Env: s.deps.Env}

@@ -261,8 +261,7 @@ response is reconciled through fresh PR reads, never blindly replayed. An alread
 normal PR needs no write. `READY_TO_MERGE` displays “Waiting for your merge” and
 releases capacity. A later push produces a warning; closure without merge requires
 attention. Mergeyard never merges a PR. CI/readiness reconciliation continues while
-new claims are paused. Manual merge completion and explicit retry remain dependent
-M2 slices.
+new claims are paused. Explicit retry remains a dependent M2 slice.
 
 ## Review and fix report comments
 
@@ -292,3 +291,40 @@ on a later restart publishes the backlog. Existing saved reports without queue
 entries are also recovered, including reports saved while the control plane was
 offline. Publication emits `publication.pending` and `publication.published`
 events alongside warnings.
+
+## Manual merge completion
+
+A GitHub merge observed in any nonterminal run with a PR is authoritative,
+including during review, fixes, CI wait, manual control, or attention. Mergeyard
+records early merges when readiness was not reached. Closed PRs without a merge
+retain their work and require attention. Terminal stopped runs remain stopped.
+
+Merge observation and stop intent commit before any further phase launch or push.
+The shared run-operation gate serializes merge handling with stop and phase work.
+Owned phases journal their process group and boot/leader identity before harness
+launch. New attempts record this journal requirement before their running intent;
+a missing group journal with absent tmux therefore identifies a harness that never
+started. Missing identity on older, unjournaled sessions requires inspection.
+Stop reconciles that group even if its wrapper or tmux session has exited,
+and verifies group exit after signal escalation. Owned phases are stopped and
+checked for exit before coding becomes `COMPLETED`
+and releases its consumed capacity. Merge completion never becomes `STOPPED`.
+
+A durable maintenance record tracks each label removal, closure of an issue that
+is still open, review workspace restoration, worktree removal/pruning, and local
+branch deletion. Maintenance continues for completed runs and while claims are
+paused. Pending cleanup excludes the source issue from redispatch but allows
+unrelated eligible issues to start. Remote branches are retained.
+
+Run detail, the queue, and status show “Merged — cleanup pending”, early-merge
+information, the concrete remaining actions, and the latest maintenance error.
+Transient failures retry on later ticks and after restart. Dirty work
+is preserved for human attention; cleanup never force-removes a worktree. Review
+restoration must succeed before deletion, preserving preexisting human edits.
+
+Worktree removal intent is recorded after ownership inspection and before removal.
+A missing worktree with recorded intent can be reconciled as an interrupted
+cleanup; unexplained disappearance requires inspection and retains the branch.
+Already absent labels, closed issues, removed trees, and deleted local branches
+are tolerated at their recorded boundaries. Independent report publication keeps
+retrying for completed runs after Git cleanup finishes.
