@@ -55,9 +55,9 @@ and local tmux adapters.
 After implementation, Mergeyard commits changes, pushes without force, discovers
 an existing PR or creates a draft, and persists its number and URL. The persisted
 `ACTIVE/review`, round 1 endpoint continues on the next tick into an independent
-Claude review. Approval waits for CI; changes required prepares `ACTIVE/fix`
-without launching a fix. CI monitoring, fix execution, merge detection and user
-retry belong to later slices. These states continue consuming a concurrency slot. Repeated ticks and
+Claude review. Approval waits for CI; changes required enters `ACTIVE/fix` and continues the
+bounded fix/re-review loop. CI monitoring, merge detection and user retry belong
+to later slices. These states continue consuming a concurrency slot. Repeated ticks and
 scheduler restarts observe persisted attempts and do not launch duplicates.
 
 Blocked/invalid results, exhausted attempts, empty implementations, branch
@@ -169,3 +169,36 @@ including when Git was restored but the journal commit did not finish.
 A missing Claude transcript during a review retry replaces the reviewer UUID and
 uses a fresh session within reviewer.max_attempts. The attempt-start event retains
 the previous session ID and a harness.session_resume_failed warning code.
+
+## Fix and re-review
+
+A changes-required verdict resumes the original implementer's conversation with
+fresh issue/PR context and the accepted blocking findings. Invocation settings are
+reapplied. The strict fix report includes success/blocked/failed, a summary, and
+per-finding responses (`finding_id`, fixed/disputed `resolution`, and a `note`).
+Successful reports account for every supplied blocker exactly once. Unknown,
+duplicate or missing responses and claims of fixes without changes are invalid.
+Blocked output requires attention; failures retry within implementer.max_attempts
+(default one). Attempt retries stay in the same review round.
+
+After success, Mergeyard commits tracked and non-ignored new files, retaining any
+legitimate implementer commits. A dispute-only fix can proceed without a commit.
+The commit SHA is journaled before a non-force push. Remote divergence, changed
+PR identity, or edits after that commit is pinned require attention and preserve
+work. Restart can replay commit or push acknowledgement without duplicate commits
+or agent attempts, including a push that succeeded before the process died.
+
+Publication advances the review round exactly once and clears stale approval.
+The reviewer resumes its separate session with complete issue/PR/diff context,
+prior findings and the fix report. It independently adjudicates disputes and
+returns the complete remaining blocking list. Approval enters WAITING_FOR_CI;
+it does not make the draft ready. No fix starts without a subsequent review
+round. Exhausting max_rounds (default five) persists review.max_rounds_exceeded
+and requires attention, retaining code, reports and diagnostics. Explicit extra
+round grants belong to the later retry slice.
+
+Run detail, status and events retain fix settings, findings, responses and
+publication progress across rounds. Stop uses the shared operation gate during
+fix/commit/push, preserves implementer edits, and prevents subsequent review.
+The ordinary suite covers the loop with fake harnesses and GitHub responses,
+real managed Git/tmux, and subprocess kills at the fix/publication boundaries.

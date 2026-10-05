@@ -41,6 +41,9 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	if run.State == workflow.NeedsAttention {
 		return s.attentionLabels(ctx, repo, run)
 	}
+	if run.State == workflow.Active && run.Phase == workflow.Fix {
+		return s.fix(ctx, repo, run)
+	}
 	if run.State == workflow.Active && run.Phase == workflow.Review {
 		return s.review(ctx, repo, run)
 	}

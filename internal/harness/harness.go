@@ -62,10 +62,11 @@ type PhaseArtifacts struct {
 // PhaseResult is the schema-validated report. Blocked and failed reports are
 // valid results; the workflow decides their lifecycle consequences.
 type PhaseResult struct {
-	SchemaVersion int              `json:"schema_version"`
-	Status        string           `json:"status"`
-	Summary       string           `json:"summary"`
-	Findings      []review.Finding `json:"findings,omitempty"`
+	SchemaVersion int               `json:"schema_version"`
+	Status        string            `json:"status"`
+	Summary       string            `json:"summary"`
+	Responses     []review.Response `json:"responses,omitempty"`
+	Findings      []review.Finding  `json:"findings,omitempty"`
 }
 
 // ImplementSchema returns a fresh copy of the common OpenAI strict schema.

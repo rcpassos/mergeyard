@@ -81,6 +81,9 @@ func (c *Claude) BuildInvocation(ctx PhaseContext, role RoleConfig) (Invocation,
 		sessionFlag = "--resume"
 	}
 	args := []string{"-p", sessionFlag, ctx.SessionID, "--output-format", "stream-json", "--verbose", "--json-schema", implementSchema}
+	if ctx.Phase == workflow.Fix {
+		args[len(args)-1] = review.FixSchema
+	}
 	if ctx.Phase == workflow.Review {
 		args[len(args)-1] = review.Schema
 		args = append(args, "--disallowedTools", "Edit", "Write", "NotebookEdit")
@@ -107,8 +110,8 @@ func (c *Claude) BuildInvocation(ctx PhaseContext, role RoleConfig) (Invocation,
 }
 
 func (*Claude) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseResult, error) {
-	if ctx.Phase != workflow.Implement && ctx.Phase != workflow.Review {
-		return PhaseResult{}, phaseError("phase.unsupported", "Only implement and review phases are supported", nil)
+	if ctx.Phase != workflow.Implement && ctx.Phase != workflow.Review && ctx.Phase != workflow.Fix {
+		return PhaseResult{}, phaseError("phase.unsupported", "Only implement, review, and fix phases are supported", nil)
 	}
 	const resumeFailure = "No conversation found with session ID"
 	if ctx.Resume && artifacts.ExitCode != 0 &&
@@ -177,6 +180,13 @@ func (*Claude) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseRes
 			return PhaseResult{}, phaseError("phase.result_invalid", "Invalid structured review report", err)
 		}
 		return PhaseResult{SchemaVersion: report.SchemaVersion, Status: report.Status, Summary: report.Summary, Findings: report.Findings}, nil
+	}
+	if ctx.Phase == workflow.Fix {
+		report, err := review.ParseFix(event.Output)
+		if err != nil {
+			return PhaseResult{}, phaseError("phase.result_invalid", "Invalid structured fix report", err)
+		}
+		return PhaseResult{SchemaVersion: report.SchemaVersion, Status: report.Status, Summary: report.Summary, Responses: report.Responses}, nil
 	}
 	return parseImplementResult(event.Output)
 }

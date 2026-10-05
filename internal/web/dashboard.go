@@ -350,6 +350,10 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		return nil, err
 	}
 	for i := range runs {
+		runs[i].FixHistory, err = review.LoadFixHistory(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
 		runs[i].Review, err = review.LoadSnapshot(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err

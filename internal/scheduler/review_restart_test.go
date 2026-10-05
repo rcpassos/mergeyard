@@ -25,6 +25,8 @@ type reviewProcessInput struct {
 	Workspace, Socket string
 	PR                *github.PullRequest
 	KillDuringRestore bool
+	KillDuringFix     string
+	Remote            string
 }
 type interruptedRestoreGit struct{ *managedgit.Manager }
 
@@ -55,18 +57,26 @@ func TestReviewControlPlaneProcess(t *testing.T) {
 	}
 	defer runtime.Close()
 	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}, prs: map[string]*github.PullRequest{"mergeyard/issue-7": input.PR}}
+	var gh scheduler.GitHub = api
+	if input.Remote != "" {
+		api.head = func(branch string) string { return gitCommand(t, input.Remote, "rev-parse", "refs/heads/"+branch) }
+		gh = branchGitHub{api}
+	}
 	var g scheduler.Git = managedgit.New(runtime.Workspace)
 	if input.KillDuringRestore {
 		g = interruptedRestoreGit{managedgit.New(runtime.Workspace)}
 	}
-	s, err := scheduler.New(input.Config, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Git: g, Runner: runner.NewLocal(runner.Options{SocketName: input.Socket})})
+	if input.KillDuringFix == "commit" || input.KillDuringFix == "push" {
+		g = interruptedFixGit{Manager: managedgit.New(runtime.Workspace), stage: input.KillDuringFix}
+	}
+	s, err := scheduler.New(input.Config, schedulerResources(runtime), scheduler.Dependencies{GitHub: gh, Git: g, Runner: runner.NewLocal(runner.Options{SocketName: input.Socket})})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !input.KillDuringRestore {
+	if !input.KillDuringRestore && input.KillDuringFix == "" {
 		fmt.Println("review-control-plane-ready")
 		time.Sleep(time.Minute)
 		return
@@ -74,6 +84,16 @@ func TestReviewControlPlaneProcess(t *testing.T) {
 	for {
 		if err := s.Tick(context.Background()); err != nil {
 			t.Fatal(err)
+		}
+		if input.KillDuringFix == "next review" {
+			runs, err := s.Runs(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(runs) == 1 && runs[0].ReviewRound == 2 && runs[0].Phase == workflow.Review {
+				fmt.Println("review-control-plane-ready")
+				select {}
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

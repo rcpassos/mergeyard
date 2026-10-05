@@ -228,7 +228,7 @@ func TestClaudeRejectsInvalidPhaseContext(t *testing.T) {
 		change func(*harness.PhaseContext)
 		code   string
 	}{
-		{"unsupported phase", func(ctx *harness.PhaseContext) { ctx.Phase = workflow.Fix }, "phase.unsupported"},
+		{"unsupported phase", func(ctx *harness.PhaseContext) { ctx.Phase = "unknown" }, "phase.unsupported"},
 		{"missing session", func(ctx *harness.PhaseContext) { ctx.SessionID = "" }, "phase.invalid_request"},
 		{"invalid session", func(ctx *harness.PhaseContext) { ctx.SessionID = "--continue" }, "phase.invalid_request"},
 		{"relative worktree", func(ctx *harness.PhaseContext) { ctx.WorktreePath = "worktree" }, "phase.invalid_request"},
@@ -247,7 +247,7 @@ func TestClaudeRejectsInvalidPhaseContext(t *testing.T) {
 
 func TestClaudeDoesNotParseOtherPhaseContracts(t *testing.T) {
 	ctx := phase(t)
-	ctx.Phase = workflow.Fix
+	ctx.Phase = "unknown"
 	_, err := harness.NewClaude(config.Claude{}).ParseResult(ctx, harness.PhaseArtifacts{Stdout: []byte(successEvent)})
 	assertCode(t, err, "phase.unsupported")
 }
