@@ -1,0 +1,74 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "changes_required",
+        "blocked",
+        "failed"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "blocking",
+              "warning",
+              "note"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "details": {
+            "type": "string"
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "title",
+          "details",
+          "file",
+          "line"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "status",
+    "summary",
+    "findings"
+  ],
+  "additionalProperties": false
+}

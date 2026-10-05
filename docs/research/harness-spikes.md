@@ -17,6 +17,15 @@ Legend: **V-help** = local `--help` output · **V-docs** = official docs (URL) �
 
 The initial research made no model calls. The live verification in §6 subsequently used small Haiku calls.
 
+Update (2026-10-05): [issue #37's Codex M2 evidence](codex-m2/report.md)
+records bounded live probes on Codex 0.156.1, reusable fixtures, and selected
+outputs. It supersedes the unverified Codex assumptions below for early identity,
+strict phase contracts, explicit skills, resume settings, unknown IDs, cache
+permissions, and ordinary interruption/restart. Default external Go cache access
+was contradicted; continuation with the rejected alternate model and the skipped
+default-cache build remain blocked. Usage limits and interactive handback remain
+M3 work. Claude M1 checks were not repeated.
+
 ---
 
 ## 1. Summary table
