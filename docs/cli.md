@@ -36,10 +36,13 @@ runtime database or acquire the owner's lock.
   intent before further work advances. Stop removes ready even if it arrives before claim processing has cleared that
   label, preventing redispatch after the run becomes terminal.
 
-The runtime supports the bounded Claude implementation, fix and independent review loop. Approval
-waits for CI; changes required resumes fixes and bounded independent re-review.
-Status includes fix history, per-finding fixed/disputed responses and publication
-progress alongside reviewer identity/settings, target SHA, round, attempt, verdict and findings. The existing `takeover`, `handback`, `retry`, and `open`
+The runtime supports Claude or Codex implementation and independent Claude review.
+Claude implementations continue through bounded fixes and re-review; Codex fix
+execution requires attention. Approval waits for CI monitoring in a later slice.
+Status includes implementer identity/settings, process and attempt, fix history,
+per-finding fixed/disputed responses and publication progress alongside reviewer
+identity/settings, target SHA, round, attempt, verdict and findings. The existing
+`takeover`, `handback`, `retry`, and `open`
 command entries remain reserved for their respective later work.
 
 `mergeyard reconcile` runs the same reconciliation without claiming new work.

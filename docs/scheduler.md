@@ -38,15 +38,33 @@ apply usage-limit scheduling.
 Claims first persist `CLAIMING`, then add running, remove ready, persist
 `PREPARING`, and prepare the managed base/worktree. Label failure aborts the
 flow. Git ownership and issue context are retained in `scheduler_runs`; the
-branch/worktree and Claude session UUID are also retained on the run. Each
+branch/worktree and implementer session UUID are also retained on the run. Each
 attempt gets an input file, a durable tmux identity, logs and exit metadata.
 Completed native structured output is validated and saved as `result.json` by
 the control plane. This file is an archival report, not an agent-written
 fallback result contract. Agent failures and invalid results can retry within
 `implementer.max_attempts`; blocked results require attention immediately.
 
-M1 supports the Claude implementer. The constructor rejects enabled repositories
-configured with another implementer. Supply `Dependencies.Env` explicitly with
+Claude and Codex implementers are supported; review currently requires Claude.
+Codex emits its identity through `thread.started`. Local observation every 250 ms
+persists that UUID and publishes `harness.session_discovered` without waiting for
+the GitHub polling interval. Reconciliation also recovers identity from captured
+output after a restart. Attempt and tmux identities are persisted before launch.
+
+Codex uses native `exec --json --output-schema … -o …`, with cwd and sandbox flags
+before an exact-ID `resume`. Every invocation supplies model, effort, skills,
+sandbox and network settings. Approval policy is `never`; the selected sandbox
+remains enforced. The network toggle applies to `workspace-write`;
+`danger-full-access` permits networking regardless of that toggle, and snapshots
+show its effective network permission as `true`. Full issue context and schema live outside the worktree. Only
+exit 0, `turn.completed`, and a valid native `last-message.json` from the unique
+attempt can succeed. A verified missing rollout requires attention and keeps its
+UUID; fresh-session recovery belongs to a later slice. Changing the implementer
+harness on restart requires attention before another attempt can launch, so a
+retained UUID cannot be sent to the other harness.
+
+Implementer snapshots retain the harness, UUID, model, effort, skills, permissions,
+attempt and process identity in dashboard and status output, including during review. Supply `Dependencies.Env` explicitly with
 the environment the harness needs, for example `PATH`, `HOME`, `LANG`, and
 `TMPDIR`. It is the complete child environment, not an implicit copy of the
 control-plane environment. Dependencies default to the real GitHub, managed Git,
@@ -56,7 +74,8 @@ After implementation, Mergeyard commits changes, pushes without force, discovers
 an existing PR or creates a draft, and persists its number and URL. The persisted
 `ACTIVE/review`, round 1 endpoint continues on the next tick into an independent
 Claude review. Approval waits for CI; changes required enters `ACTIVE/fix` and continues the
-bounded fix/re-review loop. CI monitoring, merge detection and user retry belong
+bounded fix/re-review loop for Claude implementers. Codex fix execution requires
+attention until its separate implementation slice. CI monitoring, merge detection and user retry belong
 to later slices. These states continue consuming a concurrency slot. Repeated ticks and
 scheduler restarts observe persisted attempts and do not launch duplicates.
 
@@ -93,10 +112,10 @@ running the scheduler.
 
 ## Tests
 
-The normal scheduler tests use real SQLite, Git and tmux with a fake Claude
+The normal scheduler tests use real SQLite, Git and tmux with fake Claude and Codex
 executable, plus fake GitHub responses. They cover claim order and failure,
 blocking, ordering, concurrency, retries, pause, attention, and duplicate
-prevention after restart. They require `git` and `tmux` but no Claude credentials.
+prevention after restart. They require `git` and `tmux` but no agent credentials.
 Reconciliation tests kill a real control-plane subprocess during implement,
 recover agents still running or finished offline, and verify one attempt, commit,
 and PR. They also cover orphan reporting and preservation, unrecoverable claims,

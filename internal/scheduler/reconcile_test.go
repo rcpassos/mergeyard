@@ -224,124 +224,135 @@ func TestReconciliationControlPlaneProcess(t *testing.T) {
 }
 
 func TestRestartAfterControlPlaneKillPreservesImplementAttempt(t *testing.T) {
-	for _, finishedOffline := range []bool{false, true} {
-		name := "agent-still-running"
-		if finishedOffline {
-			name = "agent-finished-offline"
-		}
-		t.Run(name, func(t *testing.T) {
-			_, initial, api, remote, cfg, _ := localFlow(t, `while [ ! -f release ]; do /bin/sleep 0.02; done
-`+successfulScript)
-			root := initial.Workspace.Root
-			if err := initial.Close(); err != nil {
-				t.Fatal(err)
-			}
-			socket := fmt.Sprintf("mergeyard-reconciliation-test-%d", time.Now().UnixNano())
-			t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
-			input, err := json.Marshal(controlPlaneInput{Config: cfg, Workspace: root, Socket: socket})
-			if err != nil {
-				t.Fatal(err)
-			}
-			inputPath := filepath.Join(t.TempDir(), "control-plane.json")
-			if err := os.WriteFile(inputPath, input, 0600); err != nil {
-				t.Fatal(err)
-			}
-			executable, err := os.Executable()
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestReconciliationControlPlaneProcess$")
-			cmd.Env = append(os.Environ(), "MERGEYARD_TEST_CONTROL_PLANE_INPUT="+inputPath)
-			cmd.Stderr = os.Stderr
-			stdout, err := cmd.StdoutPipe()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
-			scanner := bufio.NewScanner(stdout)
-			if !scanner.Scan() || scanner.Text() != "control-plane-ready" {
-				t.Fatalf("control plane never became ready: %q, %v", scanner.Text(), scanner.Err())
-			}
-			if err := cmd.Process.Kill(); err != nil {
-				t.Fatal(err)
-			}
-			cmd.Wait()
-			// GitHub claim labels outlive the killed process just as they do in production.
-			api.issues["owner/repo"][0].Labels = []github.Label{{Name: "agent-running"}}
-			trees, _ := filepath.Glob(filepath.Join(root, "worktrees", "owner-repo", "*"))
-			if len(trees) != 1 {
-				t.Fatalf("initial worktree count: %v", trees)
-			}
-			r := runner.NewLocal(runner.Options{SocketName: socket})
-			var runtime *app.Runtime
+	for _, agent := range []string{"claude", "codex"} {
+		for _, finishedOffline := range []bool{false, true} {
+			name := "agent-still-running"
 			if finishedOffline {
-				if err := os.WriteFile(filepath.Join(trees[0], "release"), nil, 0600); err != nil {
+				name = "agent-finished-offline"
+			}
+			t.Run(agent+"/"+name, func(t *testing.T) {
+				_, initial, api, remote, cfg, _ := localFlow(t, `while [ ! -f release ]; do /bin/sleep 0.02; done
+`+successfulScript)
+				if agent == "codex" {
+					executable := filepath.Join(t.TempDir(), "fake-codex")
+					script := "#!/bin/sh\n" + codexIdentity + "\nwhile [ ! -f release ]; do /bin/sleep 0.02; done\n" + codexImplementation + "\n"
+					if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
+						t.Fatal(err)
+					}
+					cfg.Agents.Codex.Executable = executable
+					cfg.Repositories[0].Implementer.Agent = "codex"
+				}
+				root := initial.Workspace.Root
+				if err := initial.Close(); err != nil {
 					t.Fatal(err)
 				}
-				deadline := time.Now().Add(5 * time.Second)
-				for {
-					exits, _ := filepath.Glob(filepath.Join(root, "runs", "*", "phases", "*", "exit.json"))
-					if len(exits) == 1 {
-						break
-					}
-					if time.Now().After(deadline) {
-						t.Fatal("agent did not exit while offline")
-					}
-					time.Sleep(10 * time.Millisecond)
+				socket := fmt.Sprintf("mergeyard-reconciliation-test-%d", time.Now().UnixNano())
+				t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
+				input, err := json.Marshal(controlPlaneInput{Config: cfg, Workspace: root, Socket: socket})
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			runtime, err = app.Open(context.Background(), root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { runtime.Close() })
-			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !finishedOffline {
+				inputPath := filepath.Join(t.TempDir(), "control-plane.json")
+				if err := os.WriteFile(inputPath, input, 0600); err != nil {
+					t.Fatal(err)
+				}
+				executable, err := os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, executable, "-test.run=^TestReconciliationControlPlaneProcess$")
+				cmd.Env = append(os.Environ(), "MERGEYARD_TEST_CONTROL_PLANE_INPUT="+inputPath)
+				cmd.Stderr = os.Stderr
+				stdout, err := cmd.StdoutPipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+				scanner := bufio.NewScanner(stdout)
+				if !scanner.Scan() || scanner.Text() != "control-plane-ready" {
+					t.Fatalf("control plane never became ready: %q, %v", scanner.Text(), scanner.Err())
+				}
+				if err := cmd.Process.Kill(); err != nil {
+					t.Fatal(err)
+				}
+				cmd.Wait()
+				// GitHub claim labels outlive the killed process just as they do in production.
+				api.issues["owner/repo"][0].Labels = []github.Label{{Name: "agent-running"}}
+				trees, _ := filepath.Glob(filepath.Join(root, "worktrees", "owner-repo", "*"))
+				if len(trees) != 1 {
+					t.Fatalf("initial worktree count: %v", trees)
+				}
+				r := runner.NewLocal(runner.Options{SocketName: socket})
+				var runtime *app.Runtime
+				if finishedOffline {
+					if err := os.WriteFile(filepath.Join(trees[0], "release"), nil, 0600); err != nil {
+						t.Fatal(err)
+					}
+					deadline := time.Now().Add(5 * time.Second)
+					for {
+						exits, _ := filepath.Glob(filepath.Join(root, "runs", "*", "phases", "*", "exit.json"))
+						if len(exits) == 1 {
+							break
+						}
+						if time.Now().After(deadline) {
+							t.Fatal("agent did not exit while offline")
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+				}
+				runtime, err = app.Open(context.Background(), root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { runtime.Close() })
+				s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !finishedOffline {
+					for range 2 {
+						if err := s.Tick(context.Background()); err != nil {
+							t.Fatal(err)
+						}
+					}
+					runs, err := s.Runs(context.Background())
+					if err != nil || len(runs) != 1 || runs[0].State != workflow.Active || runs[0].Phase != workflow.Implement {
+						t.Fatalf("live agent was not preserved: %+v, %v", runs, err)
+					}
+					if err := os.WriteFile(filepath.Join(trees[0], "release"), nil, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				run := finish(t, s, workflow.Active, workflow.Review)
 				for range 2 {
 					if err := s.Tick(context.Background()); err != nil {
 						t.Fatal(err)
 					}
 				}
 				runs, err := s.Runs(context.Background())
-				if err != nil || len(runs) != 1 || runs[0].State != workflow.Active || runs[0].Phase != workflow.Implement {
-					t.Fatalf("live agent was not preserved: %+v, %v", runs, err)
+				phases, _ := filepath.Glob(filepath.Join(root, "runs", run.ID, "phases", "*"))
+				if err != nil || len(runs) != 1 || len(phases) != 2 || api.creations != 1 {
+					t.Fatalf("duplicate recovery work: runs=%v, phases=%v, PRs=%d, err=%v", runs, phases, api.creations, err)
 				}
-				if err := os.WriteFile(filepath.Join(trees[0], "release"), nil, 0600); err != nil {
+				if got := gitCommand(t, remote, "rev-list", "--count", "main..mergeyard/issue-7"); got != "1" {
+					t.Fatalf("recovery commits = %s", got)
+				}
+				data, err := os.ReadFile(filepath.Join(phases[0], "result.json"))
+				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			run := finish(t, s, workflow.Active, workflow.Review)
-			for range 2 {
-				if err := s.Tick(context.Background()); err != nil {
-					t.Fatal(err)
+				var result struct {
+					Status string `json:"status"`
 				}
-			}
-			runs, err := s.Runs(context.Background())
-			phases, _ := filepath.Glob(filepath.Join(root, "runs", run.ID, "phases", "*"))
-			if err != nil || len(runs) != 1 || len(phases) != 2 || api.creations != 1 {
-				t.Fatalf("duplicate recovery work: runs=%v, phases=%v, PRs=%d, err=%v", runs, phases, api.creations, err)
-			}
-			if got := gitCommand(t, remote, "rev-list", "--count", "main..mergeyard/issue-7"); got != "1" {
-				t.Fatalf("recovery commits = %s", got)
-			}
-			data, err := os.ReadFile(filepath.Join(phases[0], "result.json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var result struct {
-				Status string `json:"status"`
-			}
-			if err := json.Unmarshal(data, &result); err != nil || result.Status != "success" {
-				t.Fatalf("recovered result: %s, %v", data, err)
-			}
-		})
+				if err := json.Unmarshal(data, &result); err != nil || result.Status != "success" {
+					t.Fatalf("recovered result: %s, %v", data, err)
+				}
+			})
+		}
 	}
 }

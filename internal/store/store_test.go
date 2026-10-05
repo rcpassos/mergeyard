@@ -21,7 +21,7 @@ func TestFreshDatabaseSchemaAndRestart(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	want := map[string][]string{
 		"runs":           {"id", "repository", "issue_number", "state", "current_phase", "review_round", "branch", "worktree_path", "pr_number", "implementer_agent", "implementer_session_id", "reviewer_agent", "reviewer_session_id", "approved_sha", "created_at", "updated_at", "completed_at", "last_error_code", "last_error_message", "stop_requested"},
-		"phase_attempts": {"id", "run_id", "phase", "role", "round", "attempt", "agent", "model", "effort", "status", "resumed_session", "process_session", "input_path", "result_path", "log_path", "exit_code", "started_at", "ended_at", "error", "skills_json"},
+		"phase_attempts": {"id", "run_id", "phase", "role", "round", "attempt", "agent", "model", "effort", "status", "resumed_session", "process_session", "input_path", "result_path", "log_path", "exit_code", "started_at", "ended_at", "error", "skills_json", "permissions"},
 		"harness_limits": {"harness_type", "limited_until", "reset_time_source", "detected_at", "phase_attempt_id"},
 		"events":         {"id", "run_id", "type", "payload_json", "created_at"},
 	}
