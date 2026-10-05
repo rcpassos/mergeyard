@@ -343,3 +343,46 @@ func TestCodexRestartDoesNotSendSessionToAnotherHarness(t *testing.T) {
 		t.Fatalf("cross-harness resume: %+v, PRs=%d", run, api.creations)
 	}
 }
+
+func TestCodexPermissionDisplayUsesEffectiveNetworkAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name, sandbox string
+		network       bool
+		permissions   string
+	}{
+		{"workspace network off", "workspace-write", false, "workspace-write · network false · approvals never"},
+		{"workspace network on", "workspace-write", true, "workspace-write · network true · approvals never"},
+		{"full access network off requested", "danger-full-access", false, "danger-full-access · network true · approvals never"},
+		{"full access network on requested", "danger-full-access", true, "danger-full-access · network true · approvals never"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, runtime, api, _, cfg, r := codexFlow(t, codexImplementation)
+			cfg.Agents.Codex.Sandbox, cfg.Agents.Codex.NetworkAccess = tc.sandbox, tc.network
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := finish(t, s, workflow.Active, workflow.Review)
+			if run.Implementer.Permissions != tc.permissions {
+				t.Fatalf("effective permissions = %q, want %q", run.Implementer.Permissions, tc.permissions)
+			}
+			// The displayed attempt permissions must survive configuration changes.
+			cfg.Agents.Codex.Sandbox, cfg.Agents.Codex.NetworkAccess = "workspace-write", false
+			restarted, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: restarted, Config: cfg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{"/api/status", "/runs/" + run.ID} {
+				response := httptest.NewRecorder()
+				server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+				if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), tc.permissions) {
+					t.Fatalf("%s missing effective permissions %q: %d %s", path, tc.permissions, response.Code, response.Body.String())
+				}
+			}
+		})
+	}
+}

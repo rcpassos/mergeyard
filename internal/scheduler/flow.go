@@ -439,7 +439,12 @@ func canRetryImplementAttempt(err error, number, max int) bool {
 
 func (s *Scheduler) implementPermissions(agent string) string {
 	if agent == "codex" {
-		return s.cfg.Agents.Codex.Sandbox + " · network " + strconv.FormatBool(s.cfg.Agents.Codex.NetworkAccess) + " · approvals never"
+		networkAccess := s.cfg.Agents.Codex.NetworkAccess
+		if s.cfg.Agents.Codex.Sandbox == "danger-full-access" {
+			// The workspace-write network toggle does not restrict full access.
+			networkAccess = true
+		}
+		return s.cfg.Agents.Codex.Sandbox + " · network " + strconv.FormatBool(networkAccess) + " · approvals never"
 	}
 	return s.cfg.Agents.Claude.PermissionMode + " · allowed tools " + strings.Join(s.cfg.Agents.Claude.AllowedTools, ", ")
 }

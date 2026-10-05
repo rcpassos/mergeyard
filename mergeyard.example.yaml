@@ -20,7 +20,7 @@ agents:
   codex:
     executable: codex
     sandbox: workspace-write # workspace-write | danger-full-access
-    network_access: true
+    network_access: true # workspace-write only; full access always permits networking
 
 implementer:
   agent: claude # claude | codex for implementation

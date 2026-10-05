@@ -54,7 +54,9 @@ output after a restart. Attempt and tmux identities are persisted before launch.
 Codex uses native `exec --json --output-schema … -o …`, with cwd and sandbox flags
 before an exact-ID `resume`. Every invocation supplies model, effort, skills,
 sandbox and network settings. Approval policy is `never`; the selected sandbox
-remains enforced. Full issue context and schema live outside the worktree. Only
+remains enforced. The network toggle applies to `workspace-write`;
+`danger-full-access` permits networking regardless of that toggle, and snapshots
+show its effective network permission as `true`. Full issue context and schema live outside the worktree. Only
 exit 0, `turn.completed`, and a valid native `last-message.json` from the unique
 attempt can succeed. A verified missing rollout requires attention and keeps its
 UUID; fresh-session recovery belongs to a later slice. Changing the implementer
