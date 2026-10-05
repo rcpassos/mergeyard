@@ -136,13 +136,10 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 		cause = &fault.Error{Code: "review.head_changed", Message: "PR head changed during review; stale verdict discarded"}
 	}
 	if cause != nil {
-		if err := s.failReview(ctx, run, a, status.ExitCode, report, cause); err != nil {
-			return err
-		}
 		if !reviewCanRetry(cause, a.number, repo.Reviewer.MaxAttempts) {
-			return s.recordAttention(ctx, repo, run, reviewFailure(cause, a.number))
+			return s.rejectReview(ctx, repo, run, a, status.ExitCode, report, reviewFailure(cause, a.number))
 		}
-		return nil
+		return s.failReview(ctx, run, a, status.ExitCode, report, cause)
 	}
 	trigger := workflow.ReviewApproved
 	approved := a.target
@@ -197,10 +194,25 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if err != nil {
 		return err
 	}
+	resume := number > 1
+	warning := ""
+	previousSession := sessionID
+	if resume {
+		previous, err := s.lastReview(ctx, run)
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(previous.failure, "harness.session_resume_failed: ") {
+			sessionID = uuid.NewString()
+			resume = false
+			warning = "harness.session_resume_failed"
+		}
+	}
 	if sessionID == "" {
 		sessionID = uuid.NewString()
+		resume = false
 	}
-	phase := harness.PhaseContext{Phase: workflow.Review, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: number > 1, Env: s.deps.Env}
+	phase := harness.PhaseContext{Phase: workflow.Review, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
 	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound})
 	if err != nil {
 		return fail(err)
@@ -229,7 +241,7 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 			return events.Draft{}, err
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,?,?,?,?,?,?)`, id, snapshot.Head, diff, string(snapshotJSON), sessionID, permission, string(tools))
-		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{"phase": workflow.Review, "round": run.ReviewRound, "attempt": number, "target_sha": snapshot.Head, "session_id": sessionID, "model": repo.Reviewer.Model, "effort": repo.Reviewer.Effort, "skills": repo.Reviewer.Skills, "permission_mode": permission, "allowed_tools": s.cfg.Agents.Claude.AllowedTools}}, err
+		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{"phase": workflow.Review, "round": run.ReviewRound, "attempt": number, "target_sha": snapshot.Head, "session_id": sessionID, "model": repo.Reviewer.Model, "effort": repo.Reviewer.Effort, "skills": repo.Reviewer.Skills, "permission_mode": permission, "allowed_tools": s.cfg.Agents.Claude.AllowedTools, "warning_code": warning, "previous_session_id": previousSession}}, err
 	})
 	if err != nil {
 		return err
@@ -313,10 +325,7 @@ func (s *Scheduler) abortReview(ctx context.Context, repo config.Repository, run
 	if err := s.restoreReview(ctx, gitRun, a); err != nil {
 		return s.recordAttention(ctx, repo, run, err)
 	}
-	if err := s.failReview(ctx, run, *a, nil, nil, cause); err != nil {
-		return err
-	}
-	return s.recordAttention(ctx, repo, run, cause)
+	return s.rejectReview(ctx, repo, run, *a, nil, nil, cause)
 }
 func reviewCanRetry(err error, number, max int) bool {
 	var coded *fault.Error
@@ -361,4 +370,17 @@ func (s *Scheduler) restorePendingReview(ctx context.Context, run workflow.Run) 
 		return err
 	}
 	return s.restoreReview(ctx, gitRun, &a)
+}
+
+func (s *Scheduler) rejectReview(ctx context.Context, repo config.Repository, run workflow.Run, a reviewAttempt, exit *int, report *review.Report, cause error) error {
+	failure := &fault.Error{Code: errorCodeForReview(cause), Message: cause.Error(), Err: cause}
+	var coded *fault.Error
+	if errors.As(cause, &coded) && coded.Message != "" {
+		failure.Message = coded.Message
+	}
+	_, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.OperationFailed, Failure: failure, Metadata: workflow.MetadataPatch{ReviewRejection: &workflow.ReviewRejection{AttemptID: a.id, Report: report, ExitCode: exit}}})
+	if err != nil {
+		return err
+	}
+	return s.attentionLabels(ctx, repo, run)
 }

@@ -87,6 +87,7 @@ func TestReviewerMutationsRestoreAndRetryWithinSameRound(t *testing.T) {
 	for _, mutation := range []struct{ name, script string }{
 		{"working files", `printf 'tampered' > feature.txt; printf 'new' > reviewer.txt`},
 		{"commit", `printf 'tampered' > feature.txt; git add .; git commit -m 'reviewer commit'`},
+		{"detached commit", `git checkout --detach; printf tampered > feature.txt; git add .; git commit -m detached; git checkout mergeyard/issue-7`},
 		{"reset commit", `old=$(git rev-parse HEAD); git -c user.name=Reviewer -c user.email=reviewer@example.invalid commit --allow-empty -m 'reviewer commit'; git reset --soft "$old"`},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
@@ -283,5 +284,71 @@ func TestReviewPreservesPreexistingWorkAndPermitsIgnoredBuildOutput(t *testing.T
 	}
 	if data, err := os.ReadFile(filepath.Join(path, "build-output", "cache")); err != nil || string(data) != "cache" {
 		t.Fatal("test execution/build output was not permitted")
+	}
+}
+
+func TestReviewerResumeFailureStartsFreshIndependentSession(t *testing.T) {
+	script := `case "$*" in
+ *review-1-1*) printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"failed","summary":"Try again","findings":[]}}';;
+ *review-1-2*) printf '%s\n' 'No conversation found with session ID' >&2; exit 1;;
+ *) case "$*" in *--resume*) exit 2;; esac
+` + approvedReview + `
+;; esac`
+	_, runtime, api, _, cfg, r := localFlow(t, reviewScript(script))
+	cfg.Repositories[0].Reviewer.MaxAttempts = 3
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	var first, last string
+	var resumed bool
+	runtime.DB.QueryRow("SELECT session_id FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.phase='review' AND a.attempt=1").Scan(&first)
+	runtime.DB.QueryRow("SELECT v.session_id,a.resumed_session FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.phase='review' AND a.attempt=3").Scan(&last, &resumed)
+	if first == last || resumed || run.Review.Attempt != 3 || run.ReviewRound != 1 {
+		t.Fatalf("missing session fallback: first=%s last=%s resumed=%t run=%+v", first, last, resumed, run)
+	}
+	history, err := runtime.Events.History(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	warning := false
+	for _, event := range history {
+		if event.Type == "phase.attempt_started" && strings.Contains(string(event.Payload), "harness.session_resume_failed") {
+			warning = true
+		}
+	}
+	if !warning {
+		t.Fatal("fresh session fallback did not record a warning")
+	}
+}
+
+func TestBlockedReviewAndAttentionRollBackTogether(t *testing.T) {
+	report := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"blocked","summary":"Need human input","findings":[]}}'`
+	s, runtime, _, _, _, _ := localFlow(t, reviewScript(report))
+	run := finish(t, s, workflow.Active, workflow.Review)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		_, err := os.Stat(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "review-1-1", "exit.json"))
+		return err == nil
+	})
+	if _, err := runtime.DB.Exec(`CREATE TRIGGER reject_attention BEFORE INSERT ON events WHEN NEW.type='run.needs_attention' BEGIN SELECT RAISE(FAIL,'blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Tick(context.Background()); err == nil {
+		t.Fatal("attention event rejection succeeded")
+	}
+	saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+	if err != nil || saved.State != workflow.Active || saved.Review.Status != "running" || saved.Review.Report != nil {
+		t.Fatalf("attention rollback leaked review: %+v %+v %v", saved, saved.Review, err)
+	}
+	if _, err := runtime.DB.Exec("DROP TRIGGER reject_attention"); err != nil {
+		t.Fatal(err)
+	}
+	saved = finish(t, s, workflow.NeedsAttention, workflow.Review)
+	if saved.Review.Report.Status != "blocked" || saved.Review.Status != "failed" || saved.Review.Accepted {
+		t.Fatalf("blocked review not durable: %+v", saved.Review)
 	}
 }

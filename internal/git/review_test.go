@@ -127,3 +127,22 @@ func TestAmbiguousReviewFilesystemIsPreservedBeforeRestoring(t *testing.T) {
 		t.Fatal("ambiguous file lost")
 	}
 }
+
+func TestReviewDetectsDetachedCommitAfterReturningToOwnedBranch(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	ctx := context.Background()
+	before, err := f.manager.SnapshotReview(ctx, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, run.Path, "checkout", "--detach")
+	write(t, run.Path, "README.md", "detached edit")
+	git(t, run.Path, "add", ".")
+	git(t, run.Path, "commit", "-m", "detached reviewer commit")
+	git(t, run.Path, "checkout", run.Branch)
+	changed, err := f.manager.ReviewChanged(ctx, run, before)
+	if err != nil || !changed {
+		t.Fatalf("detached reviewer commit was not detected: %v %v", changed, err)
+	}
+}

@@ -52,7 +52,11 @@ func (m *Manager) snapshotReview(ctx context.Context, run Run) (ReviewSnapshot, 
 	if err != nil {
 		return snapshot, err
 	}
-	hash := sha256.Sum256([]byte(log))
+	headLog, err := command(ctx, run.Path, "git.review_snapshot", "reflog", "show", "--format=%H %gD %gs", "HEAD")
+	if err != nil {
+		return snapshot, err
+	}
+	hash := sha256.Sum256([]byte(log + "\nHEAD\n" + headLog))
 	snapshot.Reflog = hex.EncodeToString(hash[:])
 	names, err := reviewFiles(ctx, run.Path)
 	if err != nil {

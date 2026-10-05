@@ -165,3 +165,7 @@ include the latest reviewer settings, report and diagnostics. Stop interrupts
 review and restores its owned changes before stopping; Watch observes its live
 tmux process. Restart replays pending restoration before any verdict acceptance,
 including when Git was restored but the journal commit did not finish.
+
+A missing Claude transcript during a review retry replaces the reviewer UUID and
+uses a fresh session within reviewer.max_attempts. The attempt-start event retains
+the previous session ID and a harness.session_resume_failed warning code.

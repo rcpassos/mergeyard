@@ -11,7 +11,8 @@ import (
 func TestReviewCompletionIsAtomicAndRequiresRestoration(t *testing.T) {
 	w, bus, db := newWorkflow(t)
 	ctx := context.Background()
-	for _, req := range []workflow.Request{{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 7}, {Trigger: workflow.ClaimSucceeded}, {Trigger: workflow.WorktreeReady}, {Trigger: workflow.ImplementSucceeded}} {
+	round := 1
+	for _, req := range []workflow.Request{{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 7}, {Trigger: workflow.ClaimSucceeded}, {Trigger: workflow.WorktreeReady}, {Trigger: workflow.ImplementSucceeded, Metadata: workflow.MetadataPatch{ReviewRound: &round}}} {
 		if _, err := w.Transition(ctx, "review-run", req); err != nil {
 			t.Fatal(err)
 		}

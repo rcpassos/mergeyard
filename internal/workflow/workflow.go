@@ -87,6 +87,7 @@ type MetadataPatch struct {
 	ApprovedSHA          *string
 	IncrementReviewRound bool
 	Review               *ReviewCompletion
+	ReviewRejection      *ReviewRejection
 }
 
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
@@ -152,6 +153,11 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		if err != nil {
 			return events.Draft{}, err
 		}
+		if request.Metadata.ReviewRejection != nil {
+			if current.Phase != Review || request.Trigger != OperationFailed || request.Metadata.Review != nil {
+				return events.Draft{}, invalid("Review rejection requires a review attention transition")
+			}
+		}
 		if request.Metadata.Review != nil {
 			status := request.Metadata.Review.Report.Status
 			if current.Phase != Review || (status == "approved" && request.Trigger != ReviewApproved) || (status == "changes_required" && request.Trigger != ReviewChangesRequired && request.Trigger != ReviewRoundsExhausted) || (status != "approved" && status != "changes_required") {
@@ -188,7 +194,7 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		if err != nil {
 			return events.Draft{}, storageError(err)
 		}
-		if err := request.Metadata.apply(ctx, tx, id); err != nil {
+		if err := request.Metadata.apply(ctx, tx, id, request.Failure); err != nil {
 			return events.Draft{}, &fault.Error{Code: "internal.run_metadata", Message: "Could not update run metadata", Err: err}
 		}
 		run, err = readRun(ctx, tx, id)
@@ -246,7 +252,12 @@ func (w *Workflow) acquireOperation(ctx context.Context, id string) (func(), err
 	}
 }
 
-func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string) error {
+func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string, failure *fault.Error) error {
+	if patch.ReviewRejection != nil {
+		if err := patch.ReviewRejection.apply(ctx, tx, id, failure); err != nil {
+			return err
+		}
+	}
 	if patch.Review != nil {
 		if err := patch.Review.apply(ctx, tx, id, patch); err != nil {
 			return err

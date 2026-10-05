@@ -66,7 +66,7 @@ they do not access GitHub or mutate a developer checkout.
 
 ## Review protection
 
-SnapshotReview captures HEAD, index tree, branch reflog and exact tracked and
+SnapshotReview captures HEAD, index tree, branch/worktree HEAD reflogs and exact tracked and
 non-ignored files, including symlinks and modes. ReviewChanged also detects
 commits followed by resets. RestoreReview checks persisted ownership, restores
 HEAD/index/files, removes newly created non-ignored files and leaves ignored

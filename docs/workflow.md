@@ -93,3 +93,14 @@ takeover and stop, wait for the operation or their context cancellation. Use the
 runtime's shared `Workflow` instance and do not retain the callback context
 beyond the operation. Once a takeover or stop has persisted, a scheduler operation
 reads that new state before deciding whether to proceed.
+
+## Review verdict persistence
+
+MetadataPatch.Review carries the restored review completion with its attempt ID
+and report. Workflow validates attempt/run/round ownership, restoration,
+contamination and the pinned target before accepting approval or changes required.
+Report persistence, attempt completion, approved SHA, lifecycle and event share
+one transaction. MetadataPatch.ReviewRejection similarly commits a nonretryable
+report/failed attempt with its attention transition; event failure rolls back both.
+Run snapshots include the latest durable reviewer settings/report/diagnostics for
+status output and transition events. M1 histories without a review remain readable.
