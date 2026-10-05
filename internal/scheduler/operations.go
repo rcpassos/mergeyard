@@ -65,6 +65,22 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 			return err
 		}
 	}
+	if run.Phase == workflow.Implement {
+		a, err := s.lastAttempt(ctx, run.ID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			if err := s.discoverImplementSession(ctx, run.ID, &a); err != nil {
+				if !invalidSessionDiscovery(err) {
+					return err
+				}
+				if _, saveErr := s.db.ExecContext(ctx, "UPDATE phase_attempts SET error=? WHERE id=?", err.Error(), a.id); saveErr != nil {
+					return saveErr
+				}
+			}
+		}
+	}
 	if run.Phase == workflow.Review {
 		a, err := s.lastReview(ctx, run)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {

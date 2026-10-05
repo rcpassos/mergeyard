@@ -71,7 +71,7 @@ type Scheduler struct {
 	workflow         *workflow.Workflow
 	workspace        *workspace.Workspace
 	deps             Dependencies
-	claude           *harness.Claude
+	harnesses        map[string]harness.HarnessAdapter
 	tick             sync.Mutex
 	control          *Control
 	running          atomic.Bool
@@ -93,14 +93,20 @@ func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler,
 	if cfg.Concurrency < 1 {
 		return nil, &fault.Error{Code: "config.invalid_concurrency", Message: "Scheduler concurrency must be positive"}
 	}
-	claude := harness.NewClaude(cfg.Agents.Claude)
+	adapters := map[string]harness.HarnessAdapter{"claude": harness.NewClaude(cfg.Agents.Claude), "codex": harness.NewCodex(cfg.Agents.Codex)}
 	for _, repo := range cfg.Repositories {
 		if repo.Enabled {
-			if err := claude.ValidateConfig(repo.Reviewer); err != nil {
-				return nil, err
+			if repo.Reviewer.Agent != "claude" {
+				return nil, &fault.Error{Code: "config.invalid_agent", Message: "Only Claude review is supported"}
 			}
-			if err := claude.ValidateConfig(repo.Implementer); err != nil {
-				return nil, err
+			for _, role := range []config.Role{repo.Implementer, repo.Reviewer} {
+				adapter, ok := adapters[role.Agent]
+				if !ok {
+					return nil, &fault.Error{Code: "config.invalid_agent", Message: "Unsupported phase harness: " + role.Agent}
+				}
+				if err := adapter.ValidateConfig(role); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -118,7 +124,7 @@ func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler,
 		env[k] = v
 	}
 	deps.Env = env
-	return &Scheduler{cfg: cfg, db: resources.DB, bus: resources.Events, workflow: resources.Workflow, workspace: resources.Workspace, deps: deps, claude: claude, control: control}, nil
+	return &Scheduler{cfg: cfg, db: resources.DB, bus: resources.Events, workflow: resources.Workflow, workspace: resources.Workspace, deps: deps, harnesses: adapters, control: control}, nil
 }
 
 // Pause only stops new claims. Existing agent attempts continue on ticks.
@@ -138,14 +144,24 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	defer s.running.Store(false)
 	timer := time.NewTicker(s.cfg.PollInterval)
 	defer timer.Stop()
-	for {
+	identityTimer := time.NewTicker(250 * time.Millisecond)
+	defer identityTimer.Stop()
+	poll := func() {
 		if err := s.Tick(ctx); err != nil && ctx.Err() == nil {
 			slog.ErrorContext(ctx, "scheduler tick", "error", err)
 		}
+	}
+	poll()
+	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
+			poll()
+		case <-identityTimer.C:
+			if err := s.observeImplementIdentities(ctx); err != nil && ctx.Err() == nil {
+				slog.ErrorContext(ctx, "harness identity observation", "error", err)
+			}
 		}
 	}
 }

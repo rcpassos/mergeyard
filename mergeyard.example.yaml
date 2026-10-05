@@ -20,17 +20,17 @@ agents:
   codex:
     executable: codex
     sandbox: workspace-write # workspace-write | danger-full-access
-    network_access: true
+    network_access: true # workspace-write only; full access always permits networking
 
 implementer:
-  agent: claude
+  agent: claude # claude | codex for implementation
   model: null # harness default
   effort: null # harness default; passed through without a catalog
   skills: []
   max_attempts: 1
 
 reviewer:
-  agent: claude
+  agent: claude # review currently requires Claude
   model: null
   effort: null
   skills: []

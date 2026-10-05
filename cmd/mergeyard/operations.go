@@ -101,6 +101,10 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			if run.LastErrorCode != "" {
 				fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 			}
+			if v := run.Implementer; v != nil {
+				fmt.Fprintf(stdout, "  implementer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", terminalText(v.Agent), terminalText(v.Model), terminalText(v.Effort), terminalText(strings.Join(v.Skills, ",")), terminalText(v.Permissions), terminalText(v.SessionID))
+				fmt.Fprintf(stdout, "  implement attempt %d: %s · process %s\n", v.Attempt, terminalText(v.Status), terminalText(v.ProcessSession))
+			}
 			for _, v := range run.FixHistory {
 				fmt.Fprintf(stdout, "  fix round %d attempt %d: %s · session %s · target %s · commit %s · pushed=%t\n", v.Round, v.Attempt, terminalText(v.Status), terminalText(v.SessionID), terminalText(v.TargetSHA), terminalText(v.CommitSHA), v.Pushed)
 				for _, f := range v.Findings {
