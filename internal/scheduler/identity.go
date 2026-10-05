@@ -68,6 +68,9 @@ func (s *Scheduler) discoverSession(ctx context.Context, id string, phase workfl
 	_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
 		_, err := tx.ExecContext(ctx, "UPDATE runs SET "+role+"_session_id=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?", identity, id)
 
+		if err == nil {
+			_, err = tx.ExecContext(ctx, "UPDATE phase_attempts SET session_id=? WHERE id=?", identity, a.id)
+		}
 		if err == nil && table != "" {
 			_, err = tx.ExecContext(ctx, "UPDATE "+table+" SET session_id=? WHERE attempt_id=?", identity, a.id)
 		}

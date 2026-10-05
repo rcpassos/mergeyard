@@ -356,6 +356,10 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		if err != nil {
 			return nil, err
 		}
+		runs[i].SessionRecoveries, err = workflow.LoadSessionRecoveries(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
 		runs[i].Implementer, err = workflow.LoadImplementSnapshot(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err

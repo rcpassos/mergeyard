@@ -62,8 +62,8 @@ func TestFixAndDisputeResumeIndependentReview(t *testing.T) {
 			var implementer, firstReviewer, lastReviewer string
 			var resumed bool
 			runtime.DB.QueryRow("SELECT implementer_session_id FROM runs WHERE id=?", run.ID).Scan(&implementer)
-			runtime.DB.QueryRow("SELECT session_id FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.round=1").Scan(&firstReviewer)
-			runtime.DB.QueryRow("SELECT session_id,resumed_session FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.round=2").Scan(&lastReviewer, &resumed)
+			runtime.DB.QueryRow("SELECT v.session_id FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.round=1").Scan(&firstReviewer)
+			runtime.DB.QueryRow("SELECT v.session_id,resumed_session FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.round=2").Scan(&lastReviewer, &resumed)
 			if !resumed || firstReviewer != lastReviewer || implementer == lastReviewer {
 				t.Fatal("review did not resume its independent conversation")
 			}
@@ -461,7 +461,7 @@ func TestStopSerializesWithFixPushAndPreventsNextReview(t *testing.T) {
 }
 
 func TestFixMissingSessionRecoveryIsBoundedAndReappliesFullInput(t *testing.T) {
-	fix := `case "$*" in *fix-1-1*) printf 'No conversation found with session ID' >&2; exit 1;; esac
+	fix := `case "$*" in *fix-1-1*) printf 'No conversation found with session ID: %s\n' "$3" >&2; exit 1;; esac
  case "$*" in *--resume*) exit 2;; esac
  printf fixed > feature.txt
  ` + fixedReport

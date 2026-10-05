@@ -58,10 +58,10 @@ remains enforced. The network toggle applies to `workspace-write`;
 `danger-full-access` permits networking regardless of that toggle, and snapshots
 show its effective network permission as `true`. Full issue context and schema live outside the worktree. Only
 exit 0, `turn.completed`, and a valid native `last-message.json` from the unique
-attempt can succeed. A verified missing rollout requires attention and keeps its
-UUID during implementation. Review/fix retries can start a fresh conversation
-within the configured role attempt limit after a verified missing-session
-diagnostic. Changing either role's harness on restart requires attention before
+attempt can succeed. A verified missing rollout allows one fresh conversation
+per role, phase, and round without spending a normal attempt. Its prior UUID and
+diagnostic remain in the recovery journal. Changing either role's harness on
+restart requires attention before
 that role can launch another attempt, so a retained UUID cannot be sent to the
 other harness.
 
@@ -190,11 +190,12 @@ review and restores its owned changes before stopping; Watch observes its live
 tmux process. Restart replays pending restoration before any verdict acceptance,
 including when Git was restored but the journal commit did not finish.
 
-A verified missing Claude transcript or Codex rollout during a review retry
-starts a fresh reviewer conversation within reviewer.max_attempts. Codex discovers
-and persists the new identity from its stream. Authentication, model and
-configuration errors do not trigger fresh-session recovery. The attempt-start event retains
-the previous session ID and a harness.session_resume_failed warning code.
+A verified missing Claude transcript or Codex rollout during resumed review
+allows one fresh reviewer conversation per round, separate from
+`reviewer.max_attempts`. Codex discovers and persists the new identity from its
+stream. Authentication, model and configuration errors do not trigger recovery.
+The `harness.session_resume_failed` event retains the previous session ID and
+diagnostic, and run detail/status show the warning and active identity.
 
 ## Fix and re-review
 
@@ -299,3 +300,25 @@ on a later restart publishes the backlog. Existing saved reports without queue
 entries are also recovered, including reports saved while the control plane was
 offline. Publication emits `publication.pending` and `publication.published`
 events alongside warnings.
+
+## Missing conversation recovery
+
+A verified missing Claude conversation or Codex rollout allows one fresh session
+per role, phase, and review round, including with `max_attempts: 1`. The failed
+resume startup remains in attempt history but does not spend a normal attempt or
+advance the review round. Authentication/configuration errors, unknown failures,
+and missing session-start events do not authorize recovery.
+
+Mergeyard commits the recovery allowance, replacement attempt, and deterministic
+process identity before launching. Claude's new UUID is saved in that transaction;
+Codex's replacement UUID is discovered from its native stream. Restarts observe
+that process and its captured output. A missing process or ambiguous launch needs
+attention; it never creates another fresh session. Normal failures consume the
+configured attempt budget, and a second missing conversation in the same phase
+and round needs attention even when normal attempts remain.
+
+Every replacement receives the complete current phase input: issue context and,
+for review/fix, the pinned PR target, diff or findings, and previous fix report
+where applicable. Code, approval gates, and prior round history are preserved.
+The `harness.session_resume_failed` event and a durable warning show the missing
+identity and the role's active replacement identity in run detail and status.

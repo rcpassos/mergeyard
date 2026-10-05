@@ -26,6 +26,8 @@ type reviewProcessInput struct {
 	PR                *github.PullRequest
 	KillDuringRestore bool
 	KillDuringFix     string
+	RecoveryPhase     workflow.Phase
+	RecoveryCrash     string
 	Remote            string
 }
 type interruptedRestoreGit struct{ *managedgit.Manager }
@@ -69,14 +71,18 @@ func TestReviewControlPlaneProcess(t *testing.T) {
 	if input.KillDuringFix == "commit" || input.KillDuringFix == "push" {
 		g = interruptedFixGit{Manager: managedgit.New(runtime.Workspace), stage: input.KillDuringFix}
 	}
-	s, err := scheduler.New(input.Config, schedulerResources(runtime), scheduler.Dependencies{GitHub: gh, Git: g, Runner: runner.NewLocal(runner.Options{SocketName: input.Socket})})
+	var phaseRunner runner.Runner = runner.NewLocal(runner.Options{SocketName: input.Socket})
+	if input.RecoveryCrash != "" {
+		phaseRunner = recoveryCrashRunner{Runner: phaseRunner, phase: input.RecoveryPhase, mode: input.RecoveryCrash}
+	}
+	s, err := scheduler.New(input.Config, schedulerResources(runtime), scheduler.Dependencies{GitHub: gh, Git: g, Runner: phaseRunner})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !input.KillDuringRestore && input.KillDuringFix == "" {
+	if !input.KillDuringRestore && input.KillDuringFix == "" && input.RecoveryCrash == "" {
 		fmt.Println("review-control-plane-ready")
 		time.Sleep(time.Minute)
 		return
@@ -84,6 +90,16 @@ func TestReviewControlPlaneProcess(t *testing.T) {
 	for {
 		if err := s.Tick(context.Background()); err != nil {
 			t.Fatal(err)
+		}
+		if input.RecoveryCrash == "after-identity" {
+			runs, err := s.Runs(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(runs) == 1 && len(runs[0].SessionRecoveries) == 1 && runs[0].SessionRecoveries[0].SessionID != "" {
+				fmt.Println("review-control-plane-ready")
+				select {}
+			}
 		}
 		if input.KillDuringFix == "next review" {
 			runs, err := s.Runs(context.Background())

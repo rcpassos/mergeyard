@@ -215,31 +215,6 @@ func TestCodexRetryUsesExactIdentityAndFullInput(t *testing.T) {
 	}
 }
 
-func TestCodexMissingResumeNeverStartsFreshSession(t *testing.T) {
-	script := codexIdentity + "\n" + `case "$*" in
- *'resume -- '*) echo 'Error: thread/resume: thread/resume failed: no rollout found for thread id 01a10c5b-38a9-7330-b833-04e365cb5f37 (code -32600)' >&2; exit 1;;
- *) echo first-failure >&2; exit 1;; esac`
-	_, runtime, api, _, cfg, r := codexFlow(t, script)
-	cfg.Repositories[0].Implementer.MaxAttempts = 3
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := finish(t, s, workflow.NeedsAttention, workflow.Implement)
-	if run.LastErrorCode != "harness.session_resume_failed" || run.Implementer.Attempt != 2 || run.Implementer.SessionID != codexID {
-		t.Fatalf("missing session: %+v", run)
-	}
-	for range 3 {
-		if err := s.Tick(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	runs, _ := s.Runs(context.Background())
-	if runs[0].Implementer.Attempt != 2 || api.creations != 0 {
-		t.Fatal("missing session silently recovered")
-	}
-}
-
 type observeCodexLaunch struct {
 	runner.Runner
 	observe func(runner.SessionRequest)

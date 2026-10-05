@@ -123,6 +123,9 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 					fmt.Fprintf(stdout, "    required %s (app %d)\n", terminalText(r.Name), r.AppID)
 				}
 			}
+			for _, v := range run.SessionRecoveries {
+				fmt.Fprintf(stdout, "  harness.session_resume_failed: %s round %d · saved session %s is missing; continuing once in a fresh session · %s active session %s\n", terminalText(string(v.Phase)), v.Round, terminalText(v.PreviousSessionID), terminalText(v.Role), terminalText(v.SessionID))
+			}
 			if v := run.Implementer; v != nil {
 				fmt.Fprintf(stdout, "  implementer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", terminalText(v.Agent), terminalText(v.Model), terminalText(v.Effort), terminalText(strings.Join(v.Skills, ",")), terminalText(v.Permissions), terminalText(v.SessionID))
 				fmt.Fprintf(stdout, "  implement attempt %d: %s · process %s\n", v.Attempt, terminalText(v.Status), terminalText(v.ProcessSession))
