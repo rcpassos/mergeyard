@@ -22,6 +22,7 @@ type Config struct {
 	OpenBrowser  bool `yaml:"open_browser"`
 	Workspace    string
 	PollInterval time.Duration `yaml:"poll_interval"`
+	CITimeout    time.Duration `yaml:"ci_timeout"`
 	Concurrency  int
 	Labels       Labels
 	Agents       Agents
@@ -86,7 +87,7 @@ func defaults() Config {
 	role := Role{Agent: "claude", Skills: []string{}, MaxAttempts: 1}
 	return Config{
 		Version: 1, Port: 7331, OpenBrowser: true, Workspace: workspace.DefaultPath,
-		PollInterval: 30 * time.Second, Concurrency: 1,
+		PollInterval: 30 * time.Second, CITimeout: time.Hour, Concurrency: 1,
 		Labels: Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
 		Agents: Agents{
 			Claude: Claude{Executable: "claude", PermissionMode: "bypassPermissions", AllowedTools: []string{}},
@@ -133,6 +134,7 @@ func Parse(data []byte) (Config, *Document, error) {
 	m.read("open_browser", &cfg.OpenBrowser)
 	m.read("workspace", &cfg.Workspace)
 	m.readDuration("poll_interval", &cfg.PollInterval)
+	m.readDuration("ci_timeout", &cfg.CITimeout)
 	m.readPositiveInt("concurrency", &cfg.Concurrency, "config.invalid_concurrency")
 	readLabels(m.child("labels"), &cfg.Labels)
 	agents := m.child("agents")

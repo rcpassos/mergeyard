@@ -60,6 +60,8 @@ type Dependencies struct {
 	GitHub GitHub
 	Git    Git
 	Runner runner.Runner
+	// Now controls CI observation windows; nil uses wall time.
+	Now func() time.Time
 	// Env is the complete harness environment; callers explicitly select it.
 	Env map[string]string
 }
@@ -92,6 +94,15 @@ func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler,
 	}
 	if cfg.Concurrency < 1 {
 		return nil, &fault.Error{Code: "config.invalid_concurrency", Message: "Scheduler concurrency must be positive"}
+	}
+	if cfg.CITimeout == 0 {
+		cfg.CITimeout = time.Hour
+	}
+	if cfg.CITimeout < 0 {
+		return nil, &fault.Error{Code: "config.invalid_duration", Message: "CI timeout must be positive"}
+	}
+	if deps.Now == nil {
+		deps.Now = time.Now
 	}
 	claude := harness.NewClaude(cfg.Agents.Claude)
 	for _, repo := range cfg.Repositories {

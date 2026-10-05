@@ -15,7 +15,7 @@ workspace package is responsible for expanding `~` when using them.
 
 Model and effort strings pass through to the selected harness without a catalog.
 `null` clears a model or effort override. An explicit empty `skills` list clears
-inherited skills. Poll intervals and usage-limit cooldowns must be positive
+inherited skills. CI timeouts, poll intervals and usage-limit cooldowns must be positive
 durations. Resolved labels must be nonempty and distinct, and repositories may
 only be listed once; both comparisons ignore case.
 
@@ -92,7 +92,7 @@ settings, including repositories with `enabled: false`.
 | `config.invalid_max_rounds` | Round limit must be a positive finite integer |
 | `config.invalid_max_attempts` | Role attempt limit must be a positive finite integer |
 | `config.invalid_max_waits` | Usage-limit wait bound must be a positive finite integer |
-| `config.invalid_duration` | Poll interval or cooldown must parse as a positive Go duration |
+| `config.invalid_duration` | CI timeout, poll interval or cooldown must parse as a positive Go duration |
 | `config.invalid_permission_mode` | Claude permission mode must be `auto`, `acceptEdits`, or `bypassPermissions` |
 | `config.invalid_sandbox` | Codex sandbox must be `workspace-write` or `danger-full-access` |
 | `config.invalid_path` | Document edit path cannot be traversed |
@@ -100,3 +100,7 @@ settings, including repositories with `enabled: false`.
 
 Tool versions and harness capability checks belong to runtime/adapter validation;
 this package performs no external commands or GitHub calls.
+
+`ci_timeout` is a top-level positive duration, default `60m`. A run saves its
+first wait start and deadline with reviewer approval. Pending/unknown changes,
+restarts, and later configuration changes do not renew that deadline.

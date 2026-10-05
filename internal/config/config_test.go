@@ -20,7 +20,7 @@ func TestMinimalConfigUsesPRDDefaults(t *testing.T) {
 	role := config.Role{Agent: "claude", Skills: []string{}, MaxAttempts: 1}
 	want := config.Config{
 		Version: 1, Port: 7331, OpenBrowser: true, Workspace: "~/.mergeyard",
-		PollInterval: 30 * time.Second, Concurrency: 1,
+		PollInterval: 30 * time.Second, CITimeout: time.Hour, Concurrency: 1,
 		Labels: config.Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
 		Agents: config.Agents{
 			Claude: config.Claude{Executable: "claude", PermissionMode: "bypassPermissions", AllowedTools: []string{}},
@@ -33,6 +33,18 @@ func TestMinimalConfigUsesPRDDefaults(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("config = %#v; want %#v", got, want)
+	}
+}
+
+func TestCITimeout(t *testing.T) {
+	for _, value := range []string{"0s", "-1m", "broken", "null"} {
+		if _, _, err := config.Parse([]byte("ci_timeout: " + value)); err == nil {
+			t.Fatalf("accepted ci_timeout %s", value)
+		}
+	}
+	cfg, _, err := config.Parse([]byte("ci_timeout: 15m"))
+	if err != nil || cfg.CITimeout != 15*time.Minute {
+		t.Fatalf("timeout: %v %v", cfg.CITimeout, err)
 	}
 }
 

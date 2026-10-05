@@ -39,12 +39,13 @@
 
 {{define "run-row"}}<article class="issue-row"><div>
 <a class="issue-title" href="/runs/{{.ID}}">{{.Repository}} #{{.IssueNumber}} · {{if .Title}}{{.Title}}{{else}}View run{{end}}</a>
-<p class="row-meta">{{if .ReviewPending}}Draft PR created. Review pending.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
+<p class="row-meta">{{if eq .State "READY_TO_MERGE"}}Waiting for your merge{{else if .ReviewPending}}Draft PR created. Review pending.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
 {{if .LastErrorCode}}<p class="error-code">{{.LastErrorCode}}: {{.LastErrorMessage}}</p>{{end}}</div>
 {{if .PRURL}}<a class="row-note" href="{{.PRURL}}" target="_blank" rel="noreferrer">Open PR</a>{{else}}<time class="row-note">{{.UpdatedAt}}</time>{{end}}</article>{{end}}
 
 {{define "run-detail"}}{{with .Run}}
 <div class="run-heading"><h2>{{.Repository}} #{{.IssueNumber}} · {{.Title}}</h2><span class="badge badge-info">{{.State}}</span></div>
+{{if eq .State "READY_TO_MERGE"}}<p class="notice">Waiting for your merge</p>{{end}}
 {{if .ReviewPending}}<p class="notice">Draft PR created. Independent review will start on the next scheduler tick.</p>{{end}}
 {{if .Stopping}}<p class="notice">Stop requested. The phase is stopping or GitHub label cleanup is pending. Retry Stop to finish cleanup.</p>{{end}}
 <p class="issue-summary">{{.Summary}}</p><div class="run-actions">
@@ -71,6 +72,13 @@
 {{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}
 {{with .Report}}<h3>Verdict: {{.Status}}</h3><p>{{.Summary}}</p>
 {{range .Findings}}<article class="notice"><h4>{{.ID}} · {{.Severity}} · {{.Title}}</h4><p>{{.Details}}</p>{{if .File}}<p><code>{{.File}}{{if .Line}}:{{.Line}}{{end}}</code></p>{{end}}</article>{{else}}<p>No findings.</p>{{end}}{{end}}</section>{{end}}
+{{with .CI}}<section class="queue-section"><h2>CI and readiness</h2>
+<dl class="run-facts"><div><dt>Wait started</dt><dd><time>{{.StartedAt}}</time></dd></div><div><dt>Wait deadline</dt><dd><time>{{.Deadline}}</time></dd></div>
+<div><dt>Approved wait commit</dt><dd><code>{{.SHA}}</code></dd></div><div><dt>Current PR head</dt><dd>{{if .CurrentHead}}<code>{{.CurrentHead}}</code>{{if eq .SHA .CurrentHead}} · matches approved commit{{else}} · differs from approved commit{{end}}{{else}}Unknown{{end}}</dd></div></dl>
+{{if .QueryError}}<p class="notice">CI evidence unknown: {{.QueryError}}</p>{{end}}{{if .Warning}}<p class="notice">{{.Warning}}</p>{{end}}
+{{if .ReadyStarted}}<p>Mark-ready intent recorded. GitHub draft state is reconciled before progression.</p>{{end}}
+{{range .Evidence.Checks}}<article class="notice"><h3>{{.Name}} · {{if .State}}{{.State}}{{else}}unknown{{end}}</h3><p>{{.Source}} · {{.Status}} · {{.Conclusion}}</p>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer">Check details</a>{{end}}</article>{{else}}<p>No reported checks in the latest observation.</p>{{end}}
+<p>Required checks: {{range .Evidence.Required}}{{.Name}}{{if .AppID}} (app {{.AppID}}){{end}}; {{else}}None in the latest observation.{{end}}</p></section>{{end}}
 {{if .ApprovedSHA}}<p>Approved commit: <code>{{.ApprovedSHA}}</code></p>{{end}}
 {{if .LastErrorCode}}<section class="notice failure"><h2>Last error</h2><p><code>{{.LastErrorCode}}</code>: {{.LastErrorMessage}}</p></section>{{end}}
 {{end}}<div class="run-history">

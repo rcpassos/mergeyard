@@ -12,6 +12,7 @@ import (
 	"testing"
 	"unicode"
 
+	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/web"
@@ -125,7 +126,7 @@ func TestCLIStatusEscapesUntrustedReviewText(t *testing.T) {
 		t.Fatalf("review report should retain original text: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(web.Status{Workspace: root, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Review, LastErrorCode: "review.failed", LastErrorMessage: attack, Review: &review.Snapshot{Agent: "claude", Model: "model" + attack, Effort: "high", Skills: []string{"review" + attack}, PermissionMode: "auto", SessionID: "session-1", Round: 1, Attempt: 1, TargetSHA: "pinned", Status: "succeeded", Accepted: true, Report: &report}}}})
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Review, LastErrorCode: "review.failed", LastErrorMessage: attack, CI: &ci.Snapshot{SHA: "approved" + attack, CurrentHead: "current" + attack, QueryError: "query" + attack, Warning: "warning" + attack, Evidence: ci.Evidence{Checks: []ci.Check{{Name: "check" + attack, State: "unknown", Status: "completed", Conclusion: "neutral", URL: "https://check.example/" + attack}}, Required: []ci.Requirement{{Name: "required" + attack}}}}, Review: &review.Snapshot{Agent: "claude", Model: "model" + attack, Effort: "high", Skills: []string{"review" + attack}, PermissionMode: "auto", SessionID: "session-1", Round: 1, Attempt: 1, TargetSHA: "pinned", Status: "succeeded", Accepted: true, Report: &report}}}})
 	}))
 	defer server.Close()
 	configPath := filepath.Join(root, "config.yaml")
@@ -142,7 +143,7 @@ func TestCLIStatusEscapesUntrustedReviewText(t *testing.T) {
 			t.Fatalf("unsafe terminal control %U survived status rendering: %q", r, out)
 		}
 	}
-	for _, text := range []string{`\x1b[2J\x1b[H\r\nScheduler: paused\b\t\a\u009b2J\u202e`, "Reviewed café", "owner/repo#7  ACTIVE/review", "verdict approved"} {
+	for _, text := range []string{`\x1b[2J\x1b[H\r\nScheduler: paused\b\t\a\u009b2J\u202e`, "Reviewed café", "owner/repo#7  ACTIVE/review", "verdict approved", "CI wait", "neutral", "required required", "query"} {
 		if !strings.Contains(out, text) {
 			t.Fatalf("missing escaped/readable status %q: %q", text, out)
 		}

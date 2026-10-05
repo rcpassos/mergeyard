@@ -5,6 +5,7 @@ port: 7331
 open_browser: true
 workspace: ~/.mergeyard
 poll_interval: 30s
+ci_timeout: 60m
 concurrency: 1 # global active runs
 
 labels:
