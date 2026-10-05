@@ -34,6 +34,8 @@ type Runner interface {
 	// when reconciliation fails. Persist that ref before retrying the attempt.
 	StartSession(context.Context, SessionRequest) (SessionRef, error)
 	SessionStatus(context.Context, SessionRef) (SessionStatus, error)
+	// ListSessions inventories managed sessions on this runner's tmux socket.
+	ListSessions(context.Context) ([]string, error)
 	StopSession(context.Context, SessionRef) error
 	ReadFile(context.Context, string) ([]byte, error)
 	WriteFile(context.Context, string, []byte, fs.FileMode) error
