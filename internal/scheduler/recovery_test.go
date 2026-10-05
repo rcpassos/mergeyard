@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/web"
@@ -219,5 +220,49 @@ func TestMissingSessionRecoveryAllowanceCannotBeReused(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestMissingCIFixSessionRecoveryRetainsCompleteDiagnostics(t *testing.T) {
+	for _, agent := range []string{"claude", "codex"} {
+		t.Run(agent, func(t *testing.T) {
+			_, runtime, base, _, cfg, r := pairingFlow(t, agent, agent, ciFixedReport)
+			script := ciFixScript(`printf repaired > feature.txt; ` + ciFixedReport)
+			executable := cfg.Agents.Claude.Executable
+			if agent == "claude" {
+				script = `case "$*" in *fix-1-1*) printf 'No conversation found with session ID: %s\n' "$3" >&2; exit 1;; esac
+` + script
+			} else {
+				executable = cfg.Agents.Codex.Executable
+				script = nativeCodexScript(script)
+				injection := `case "$phase_dir" in
+ *fix-1-1*) echo 'Error: thread/resume: thread/resume failed: no rollout found for thread id ` + codexID + ` (code -32600)' >&2; exit 1;;
+ *fix-1-2*) identity='` + replacementID + `';;
+ esac
+`
+				script = strings.Replace(script, ` case "$phase_dir" in *fix-*|*review-2-*)`, injection+` case "$phase_dir" in *fix-1-1*|*review-2-*)`, 1)
+			}
+			if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			api := &ciGitHub{fakeGitHub: base, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "failure", URL: "https://checks.example/build"}}}}
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: ciBranchGitHub{api}, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			finish(t, s, workflow.WaitingForCI, workflow.Review)
+			finish(t, s, workflow.Active, workflow.Fix)
+			api.evidence = ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}
+			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+			if len(run.SessionRecoveries) != 1 || len(run.FixHistory) != 2 || run.Fix.Attempt != 2 || run.ReviewRound != 2 || run.Fix.CI == nil || run.Fix.CI.RepairCause != "ci.check_failed" || run.FixHistory[0].CI == nil || run.Fix.CI.SHA != run.FixHistory[0].CI.SHA {
+				t.Fatalf("lost CI recovery context: %+v", run)
+			}
+			input, err := os.ReadFile(fmt.Sprintf("%s/runs/%s/phases/fix-1-2/input.md", runtime.Workspace.Root, run.ID))
+			for _, text := range []string{"Implement this", "CI repair", "ci.check_failed", "build", "https://checks.example/build", run.Fix.CI.SHA, "responses: []"} {
+				if err != nil || !strings.Contains(string(input), text) {
+					t.Fatalf("fresh CI fix missing %q: %s %v", text, input, err)
+				}
+			}
+		})
 	}
 }

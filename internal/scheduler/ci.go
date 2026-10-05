@@ -118,11 +118,33 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 		return unknown(&fault.Error{Code: "ci.evidence_stale", Message: "Checks were queried for another head or test merge commit"})
 	}
 	if attention != "" {
-		message := "CI failed or timed out. Check diagnostics are saved; automatic CI repair is unavailable until the dependent repair slice lands"
 		if attention == "ci.action_required" {
-			message = "CI was canceled or requires action; inspect the saved check outcomes and links"
+			return fail(attention, "CI was canceled or requires action; inspect the saved check outcomes and links")
 		}
-		return fail(attention, message)
+		if !now.Before(v.Deadline) {
+			return fail("ci.wait_timeout", "CI wait deadline expired; saved terminal check evidence does not authorize a code fix")
+		}
+		v.RepairCause = attention
+		if run.ReviewRound >= s.cfg.MaxRounds {
+			return fail("review.max_rounds_exceeded", "CI repair requires another independent review round; fix was not launched")
+		}
+		// Recheck the PR after querying evidence before authorizing a repair.
+		fresh, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
+		if err != nil {
+			return unknown(err)
+		}
+		if !reviewHeadMatches(fresh, repo, run, gitRun, run.ApprovedSHA) {
+			return fail("ci.head_changed", "PR changed while checking CI; approval invalidated before repair")
+		}
+		if !sameCITarget(target, *fresh) {
+			return unknown(&fault.Error{Code: "ci.base_changed", Message: "PR base or test merge commit changed while querying CI"})
+		}
+		if !s.deps.Now().UTC().Before(v.Deadline) {
+			return fail("ci.wait_timeout", "CI wait deadline expired before repair authorization; no code fix was launched")
+		}
+		approved := ""
+		_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.CIFailed, Metadata: workflow.MetadataPatch{CI: &v, ApprovedSHA: &approved}})
+		return err
 	}
 	if !now.Before(v.Deadline) {
 		return fail("ci.wait_timeout", "CI wait deadline expired; inspect saved check evidence. No code fix was launched")

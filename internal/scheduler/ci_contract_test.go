@@ -78,7 +78,7 @@ func TestSchedulerUsesHeadApprovalAndCurrentTestMergeCI(t *testing.T) {
 		expected   workflow.State
 		writes     int
 	}{
-		{"failure", workflow.NeedsAttention, 0},
+		{"failure", workflow.Active, 0},
 		{"pending", workflow.WaitingForCI, 0},
 		{"success", workflow.ReadyToMerge, 1},
 	} {
@@ -104,7 +104,7 @@ func TestSchedulerUsesHeadApprovalAndCurrentTestMergeCI(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if saved.State != tc.expected || commands.readyCalls != tc.writes || saved.ApprovedSHA != run.ApprovedSHA || saved.CI.SHA != run.ApprovedSHA || saved.CI.Evidence.MergeSHA != "test-merge" || !saved.CI.Deadline.Equal(run.CI.Deadline) {
+			if saved.State != tc.expected || commands.readyCalls != tc.writes || (tc.mergeState != "failure" && saved.ApprovedSHA != run.ApprovedSHA) || (tc.mergeState == "failure" && (saved.ApprovedSHA != "" || saved.Phase != workflow.Fix)) || saved.CI.SHA != run.ApprovedSHA || saved.CI.Evidence.MergeSHA != "test-merge" || !saved.CI.Deadline.Equal(run.CI.Deadline) {
 				t.Fatalf("head/merge gate: %+v CI=%+v writes=%d", saved, saved.CI, commands.readyCalls)
 			}
 			if len(saved.CI.Evidence.Checks) != 2 || saved.CI.Evidence.Checks[1].SHA != "test-merge" || saved.CI.Evidence.Checks[1].Conclusion != tc.mergeState {

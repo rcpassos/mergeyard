@@ -87,6 +87,7 @@
 {{range .FixHistory}}<section class="queue-section"><h2>Implementer fix · round {{.Round}}, attempt {{.Attempt}}</h2>
 <dl class="run-facts"><div><dt>Implementer</dt><dd>{{.Agent}} · model {{.Model}} · effort {{.Effort}}</dd></div><div><dt>Session</dt><dd><code>{{.SessionID}}</code></dd></div><div><dt>Skills / permissions</dt><dd>{{range .Skills}}{{.}} {{else}}None{{end}} · {{.PermissionMode}} · allowed tools {{range .AllowedTools}}{{.}} {{else}}harness default{{end}}</dd></div><div><dt>Status</dt><dd>{{.Status}}{{if .Pushed}} · pushed{{end}}</dd></div><div><dt>Fix target / commit</dt><dd><code>{{.TargetSHA}}</code> / <code>{{.CommitSHA}}</code></dd></div></dl>
 {{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}
+{{with .CI}}<h3>CI repair cause: {{.RepairCause}}</h3><p>Another independent review is required after this fix.</p>{{range .Evidence.Checks}}<article class="notice"><h4>{{.Name}} · {{.Conclusion}}</h4>{{if .Excerpt}}<pre>{{.Excerpt}}</pre>{{end}}{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer">Check details</a>{{end}}</article>{{end}}{{end}}
 {{range .Findings}}<article class="notice"><h4>{{.ID}} · {{.Title}}</h4><p>{{.Details}}</p></article>{{end}}
 {{with .Report}}<h3>Fix status: {{.Status}}</h3><p>{{.Summary}}</p>{{range .Responses}}<article class="notice"><h4>{{.FindingID}} · {{.Resolution}}</h4><p>{{.Note}}</p></article>{{else}}<p>No responses reported.</p>{{end}}{{end}}</section>{{end}}
 
@@ -95,8 +96,9 @@
 {{if .Evidence.MergeSHA}}<div><dt>Verified test merge commit</dt><dd><code>{{.Evidence.MergeSHA}}</code></dd></div>{{end}}
 <div><dt>Approved wait commit</dt><dd><code>{{.SHA}}</code></dd></div><div><dt>Current PR head</dt><dd>{{if .CurrentHead}}<code>{{.CurrentHead}}</code>{{if eq .SHA .CurrentHead}} · matches approved commit{{else}} · differs from approved commit{{end}}{{else}}Unknown{{end}}</dd></div></dl>
 {{if .QueryError}}<p class="notice">CI evidence unknown: {{.QueryError}}</p>{{end}}{{if .Warning}}<p class="notice">{{.Warning}}</p>{{end}}
+{{if .RepairCause}}<p>CI repair cause: <code>{{.RepairCause}}</code></p>{{end}}
 {{if .ReadyStarted}}<p>Mark-ready intent recorded. GitHub draft state is reconciled before progression.</p>{{end}}
-{{range .Evidence.Checks}}<article class="notice"><h3>{{.Name}} · {{if .State}}{{.State}}{{else}}unknown{{end}}</h3><p>{{.Source}} · {{.Status}} · {{.Conclusion}}{{if .AppID}} · app {{.AppID}}{{end}} · commit <code>{{.SHA}}</code></p>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer">Check details</a>{{end}}</article>{{else}}<p>No reported checks in the latest observation.</p>{{end}}
+{{range .Evidence.Checks}}<article class="notice"><h3>{{.Name}} · {{if .State}}{{.State}}{{else}}unknown{{end}}</h3><p>{{.Source}} · {{.Status}} · {{.Conclusion}}{{if .AppID}} · app {{.AppID}}{{end}} · commit <code>{{.SHA}}</code></p>{{if .Excerpt}}<pre>{{.Excerpt}}</pre>{{end}}{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer">Check details</a>{{end}}</article>{{else}}<p>No reported checks in the latest observation.</p>{{end}}
 <p>Required checks: {{range .Evidence.Required}}{{.Name}}{{if .AppID}} (app {{.AppID}}){{end}}; {{else}}None in the latest observation.{{end}}</p></section>{{end}}
 
 {{range .Publications}}<section class="notice"><h3>{{.Phase}} report publication · round {{.Round}}, attempt {{.Attempt}}</h3>

@@ -107,6 +107,9 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			}
 			if v := run.CI; v != nil {
 				fmt.Fprintf(stdout, "  CI wait %s → %s · approved %s · current head %s\n", v.StartedAt.Format(time.RFC3339), v.Deadline.Format(time.RFC3339), terminalText(v.SHA), terminalText(v.CurrentHead))
+				if v.RepairCause != "" {
+					fmt.Fprintf(stdout, "  CI repair cause: %s\n", terminalText(v.RepairCause))
+				}
 				if v.Evidence.MergeSHA != "" {
 					fmt.Fprintf(stdout, "  verified test merge commit %s\n", terminalText(v.Evidence.MergeSHA))
 				}
@@ -118,6 +121,9 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 				}
 				for _, c := range v.Evidence.Checks {
 					fmt.Fprintf(stdout, "    %s: %s (%s/%s) app %d · commit %s %s\n", terminalText(c.Name), terminalText(c.State), terminalText(c.Status), terminalText(c.Conclusion), c.AppID, terminalText(c.SHA), terminalText(c.URL))
+					if c.Excerpt != "" {
+						fmt.Fprintf(stdout, "      %s\n", terminalText(c.Excerpt))
+					}
 				}
 				for _, r := range v.Evidence.Required {
 					fmt.Fprintf(stdout, "    required %s (app %d)\n", terminalText(r.Name), r.AppID)
@@ -133,6 +139,12 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			for _, v := range run.FixHistory {
 				fmt.Fprintf(stdout, "  fixer %s · model %s · effort %s · skills %s · permissions %s · session %s\n", terminalText(v.Agent), terminalText(v.Model), terminalText(v.Effort), terminalText(strings.Join(v.Skills, ",")), terminalText(v.PermissionMode), terminalText(v.SessionID))
 				fmt.Fprintf(stdout, "  fix round %d attempt %d: %s · session %s · target %s · commit %s · pushed=%t\n", v.Round, v.Attempt, terminalText(v.Status), terminalText(v.SessionID), terminalText(v.TargetSHA), terminalText(v.CommitSHA), v.Pushed)
+				if v.CI != nil {
+					fmt.Fprintf(stdout, "    CI repair cause: %s · next independent review round %d\n", terminalText(v.CI.RepairCause), v.Round+1)
+					for _, c := range v.CI.Evidence.Checks {
+						fmt.Fprintf(stdout, "    %s: %s · %s · %s\n", terminalText(c.Name), terminalText(c.Conclusion), terminalText(c.Excerpt), terminalText(c.URL))
+					}
+				}
 				for _, f := range v.Findings {
 					fmt.Fprintf(stdout, "    finding %s: %s — %s\n", terminalText(f.ID), terminalText(f.Title), terminalText(f.Details))
 				}

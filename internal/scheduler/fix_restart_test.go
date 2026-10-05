@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/ci"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -42,8 +44,10 @@ func (g interruptedFixGit) PushFix(ctx context.Context, run managedgit.Run, prev
 func TestFixRecoversAfterControlPlaneKill(t *testing.T) {
 	for _, implementer := range []string{"claude", "codex"} {
 		for _, reviewer := range []string{"claude", "codex"} {
-			for _, mode := range []string{"running", "finished offline", "finished offline with harness change", "commit", "push", "next review"} {
-				t.Run(implementer+"/"+reviewer+"/"+mode, func(t *testing.T) {
+			for _, scenario := range []string{"running", "finished offline", "finished offline with harness change", "commit", "push", "next review", "CI commit", "CI push", "CI next review"} {
+				t.Run(implementer+"/"+reviewer+"/"+scenario, func(t *testing.T) {
+					ciRepair := strings.HasPrefix(scenario, "CI ")
+					mode := strings.TrimPrefix(scenario, "CI ")
 					finishedOffline := mode == "finished offline" || mode == "finished offline with harness change"
 					gate := filepath.Join(t.TempDir(), "release-fix")
 					fix := `while [ ! -f '` + gate + `' ]; do /bin/sleep 0.02; done
@@ -54,7 +58,18 @@ func TestFixRecoversAfterControlPlaneKill(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					s, initial, api, remote, cfg, _ := pairingFlow(t, implementer, reviewer, fix)
+					s, initial, api, remote, cfg, initialRunner := pairingFlow(t, implementer, reviewer, fix)
+					if ciRepair {
+						fix = strings.Replace(fix, fixedReport, ciFixedReport, 1)
+						useCIRepairScript(t, cfg, fix)
+						boundary := &ciGitHub{fakeGitHub: api, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "failure", Excerpt: "compiler error", URL: "https://example.com/build"}}}}
+						var err error
+						s, err = scheduler.New(cfg, schedulerResources(initial), scheduler.Dependencies{GitHub: ciBranchGitHub{boundary}, Runner: initialRunner})
+						if err != nil {
+							t.Fatal(err)
+						}
+						finish(t, s, workflow.WaitingForCI, workflow.Review)
+					}
 					run := finish(t, s, workflow.Active, workflow.Fix)
 					root := initial.Workspace.Root
 					if err := initial.Close(); err != nil {
@@ -137,6 +152,20 @@ func TestFixRecoversAfterControlPlaneKill(t *testing.T) {
 					recovered := finish(t, restarted, workflow.WaitingForCI, workflow.Review)
 					if recovered.ReviewRound != 2 || recovered.Fix.Attempt != 1 || !recovered.Fix.Pushed || recovered.Fix.Agent != implementer || recovered.Fix.Status != "succeeded" {
 						t.Fatalf("recovery=%+v", recovered)
+					}
+					if ciRepair {
+						if recovered.Fix.CI == nil || recovered.Fix.CI.RepairCause != "ci.check_failed" || recovered.Fix.CI.Evidence.Checks[0].Excerpt != "compiler error" || recovered.ApprovedSHA == recovered.Fix.TargetSHA {
+							t.Fatal("CI repair context or new approval lost on restart")
+						}
+						boundary := &ciGitHub{fakeGitHub: api, applyReady: true, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}
+						restarted, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: ciBranchGitHub{boundary}, Runner: runner.NewLocal(runner.Options{SocketName: socket})})
+						if err != nil {
+							t.Fatal(err)
+						}
+						ready := finish(t, restarted, workflow.ReadyToMerge, workflow.Review)
+						if ready.ReviewRound != 2 || boundary.readyCalls != 1 {
+							t.Fatal("repair not ready after restart and independent review")
+						}
 					}
 					if count := gitCommand(t, remote, "rev-list", "--count", "main..mergeyard/issue-7"); count != "2" {
 						t.Fatalf("duplicate commits=%s", count)

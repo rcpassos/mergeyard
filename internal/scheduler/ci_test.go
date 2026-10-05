@@ -30,6 +30,7 @@ type ciGitHub struct {
 func (f *ciGitHub) PullRequestEvidence(_ context.Context, _ string, pr github.PullRequest) (ci.Evidence, error) {
 	sha := pr.Head.SHA
 	e := f.evidence
+	e.Checks = append([]ci.Check(nil), e.Checks...)
 	e.SHA = sha
 	for i := range e.Checks {
 		if e.Checks[i].SHA == "" {
@@ -116,11 +117,11 @@ func TestCICheckMatrix(t *testing.T) {
 		{name: "unknown conclusion", checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "future"}}, state: workflow.WaitingForCI},
 		{name: "stale", checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "stale"}}, state: workflow.WaitingForCI},
 		{name: "wrong check SHA", checks: []ci.Check{{Name: "build", SHA: "old", Source: "check", Status: "completed", Conclusion: "success"}}, state: workflow.WaitingForCI},
-		{name: "optional failure", checks: []ci.Check{{Name: "optional", Source: "check", Status: "completed", Conclusion: "failure"}}, state: workflow.NeedsAttention, code: "ci.repair_unavailable"},
-		{name: "timed out", checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "timed_out"}}, state: workflow.NeedsAttention, code: "ci.repair_unavailable"},
+		{name: "optional failure", checks: []ci.Check{{Name: "optional", Source: "check", Status: "completed", Conclusion: "failure"}}, state: workflow.Active},
+		{name: "timed out", checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "timed_out"}}, state: workflow.Active},
 		{name: "cancelled", checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "cancelled"}}, state: workflow.NeedsAttention, code: "ci.action_required"},
 		{name: "action required", checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "action_required"}}, state: workflow.NeedsAttention, code: "ci.action_required"},
-		{name: "legacy failure", checks: []ci.Check{{Name: "legacy", Source: "status", Conclusion: "failure"}}, state: workflow.NeedsAttention, code: "ci.repair_unavailable"},
+		{name: "legacy failure", checks: []ci.Check{{Name: "legacy", Source: "status", Conclusion: "failure"}}, state: workflow.Active},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, runtime, base, _, cfg, r := localFlow(t, successfulScript)

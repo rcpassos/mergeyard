@@ -292,7 +292,12 @@ func (c *Client) readCommitReports(ctx context.Context, repo, sha string) (commi
 		Status     string `json:"status"`
 		Conclusion string `json:"conclusion"`
 		URL        string `json:"html_url"`
-		App        struct {
+		Output     struct {
+			Title   string `json:"title"`
+			Summary string `json:"summary"`
+			Text    string `json:"text"`
+		} `json:"output"`
+		App struct {
 			ID int64 `json:"id"`
 		} `json:"app"`
 	}
@@ -325,17 +330,24 @@ func (c *Client) readCommitReports(ctx context.Context, repo, sha string) (commi
 		if r.Name == "" || r.SHA == "" || r.Status == "" {
 			return reports, codedError("github.invalid_response", "invalid check-run identity", nil)
 		}
-		reports.checks = append(reports.checks, ci.Check{Name: r.Name, SHA: r.SHA, Source: "check", AppID: r.App.ID, Status: r.Status, Conclusion: r.Conclusion, URL: r.URL})
+		parts := []string{}
+		for _, part := range []string{r.Output.Title, r.Output.Summary, r.Output.Text} {
+			if strings.TrimSpace(part) != "" {
+				parts = append(parts, part)
+			}
+		}
+		reports.checks = append(reports.checks, ci.Check{Name: r.Name, SHA: r.SHA, Source: "check", AppID: r.App.ID, Status: r.Status, Conclusion: r.Conclusion, URL: r.URL, Excerpt: strings.Join(parts, "\n")})
 	}
 	data, err = c.request(ctx, nil, "GET", prefix+"/commits/"+url.PathEscape(sha)+"/statuses?per_page=100", true)
 	if err != nil {
 		return reports, err
 	}
 	type status struct {
-		Name    string        `json:"context"`
-		State   string        `json:"state"`
-		URL     string        `json:"target_url"`
-		Creator statusCreator `json:"creator"`
+		Name        string        `json:"context"`
+		State       string        `json:"state"`
+		URL         string        `json:"target_url"`
+		Description string        `json:"description"`
+		Creator     statusCreator `json:"creator"`
 	}
 	statuses, err := decodePages[status](data)
 	if err != nil {
@@ -354,7 +366,7 @@ func (c *Client) readCommitReports(ctx context.Context, repo, sha string) (commi
 		}
 		seen[key] = true
 		creators[len(reports.checks)] = s.Creator
-		reports.checks = append(reports.checks, ci.Check{Name: s.Name, SHA: sha, Source: "status", Status: s.State, Conclusion: s.State, URL: s.URL})
+		reports.checks = append(reports.checks, ci.Check{Name: s.Name, SHA: sha, Source: "status", Status: s.State, Conclusion: s.State, URL: s.URL, Excerpt: s.Description})
 	}
 	return reports, nil
 }
