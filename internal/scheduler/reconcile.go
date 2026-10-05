@@ -113,6 +113,14 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 	if run.State.Terminal() {
 		return nil
 	}
+	// Honor durable stop intent before restoring labels or inspecting work.
+	var stopRequested bool
+	if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopRequested); err != nil {
+		return err
+	}
+	if stopRequested {
+		return s.stopRun(ctx, run)
+	}
 	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
 		return err

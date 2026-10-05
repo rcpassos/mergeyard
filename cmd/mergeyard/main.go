@@ -12,10 +12,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/doctor"
-	"github.com/rcpassos/mergeyard/internal/fault"
-	"github.com/rcpassos/mergeyard/internal/web"
 )
 
 // command is one entry in the PRD §29 command table.
@@ -87,12 +84,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if cmd.name == "start" {
-		if opts.configPath != "" {
-			err := &fault.Error{Code: "config.start_not_implemented", Path: opts.configPath, Err: errors.New("configuration startup integration is not implemented yet (see #14)")}
-			fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
-			return 1
-		}
-		return start(stdout, stderr)
+		return start(opts.configPath, stdout, stderr)
 	}
 	if cmd.name == "doctor" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -130,6 +122,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	if cmd.name == "status" || cmd.name == "pause" || cmd.name == "resume" || cmd.name == "watch" || cmd.name == "stop" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := operate(ctx, opts.configPath, cmd.name, rest, stdout, stderr); err != nil {
+			fmt.Fprintf(stderr, "mergeyard %s: %v\n", cmd.name, err)
+			return 1
+		}
+		return 0
+	}
 	fmt.Fprintf(stderr, "mergeyard %s: not implemented\n", cmd.name)
 	return 1
 }
@@ -141,34 +142,6 @@ func checkSetup(ctx context.Context, path string, stdout, stderr io.Writer) int 
 		return 1
 	}
 	if report.HasErrors() {
-		return 1
-	}
-	return 0
-}
-
-func start(stdout, stderr io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	runtime, err := app.Open(ctx, "")
-	if err != nil {
-		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
-		return 1
-	}
-	defer runtime.Close()
-	dashboard, err := web.New(runtime.Events, runtime.Scheduler)
-	if err != nil {
-		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
-		return 1
-	}
-	listener, err := web.Listen("127.0.0.1:7331")
-	if err != nil {
-		fmt.Fprintf(stderr, "mergeyard start: %v\n", err)
-		return 1
-	}
-	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s; dashboard at http://%s (configuration startup integration and issue dispatch not implemented yet; see #14)\n", runtime.Workspace.Root, listener.Addr())
-	serveErr := dashboard.Serve(ctx, listener)
-	if err := errors.Join(serveErr, runtime.Close()); err != nil {
-		fmt.Fprintf(stderr, "mergeyard shutdown: %v\n", err)
 		return 1
 	}
 	return 0

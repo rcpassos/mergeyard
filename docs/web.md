@@ -1,8 +1,8 @@
 # Local dashboard foundation
 
-`mergeyard start` serves the dashboard at `http://127.0.0.1:7331`. Configuration
-startup integration and issue dispatch remain tracked in #14. The current
-runtime exposes the global claim gate; pausing it leaves existing runs alone.
+`mergeyard start` serves the dashboard on the configured loopback port (default
+`http://127.0.0.1:7331`) and runs the M1 scheduler. The runtime exposes the global
+claim gate; pausing it leaves existing runs alone.
 
 ## Server boundary
 
@@ -17,6 +17,20 @@ shutdown. The caller closes the runtime and event bus after Serve returns.
 The dashboard serves `GET /`, the scheduler fragment at `GET /scheduler`,
 embedded files at `GET /static/`, and SSE at `GET /events`. Scheduler actions
 are `POST /scheduler/pause` and `POST /scheduler/resume`.
+
+`web.NewWithOperations` additionally exposes the CLI API, sharing the scheduler,
+workflow, and workspace with the dashboard:
+
+- `GET /api/status`: workspace identity, scheduler pause state, run snapshots,
+  and the current CSRF token;
+- `GET /api/runs/<run-id>/watch`: the current live tmux session reference;
+- `POST /api/runs/<run-id>/stop`: interrupt the phase, update labels, and stop
+  the run while preserving its code.
+
+CLI pause/resume use the existing scheduler endpoints with
+`Accept: application/json`, which returns JSON instead of a browser redirect.
+The CLI checks workspace identity before operating, disables HTTP proxies and
+redirect following, and uses a 30-second request timeout.
 
 Every POST requires an exact `Origin: http://127.0.0.1:<port>` and a random
 per-process token, supplied as the `csrf_token` form field or `X-CSRF-Token`

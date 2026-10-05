@@ -78,7 +78,7 @@ type Scheduler struct {
 	reportedFindings map[string]bool // protected by tick; unchanged findings emit once per scheduler lifetime
 }
 
-// New requires an exclusively owned runtime workspace. Startup wiring lives in #14.
+// New requires an exclusively owned runtime workspace.
 func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler, error) {
 	if resources.DB == nil || resources.Events == nil || resources.Workflow == nil || resources.Workspace == nil {
 		return nil, &fault.Error{Code: "internal.scheduler_runtime", Message: "Scheduler requires a database, event bus, shared workflow, and workspace"}

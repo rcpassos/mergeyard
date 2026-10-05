@@ -14,8 +14,18 @@ interval. Cancelling the scheduler leaves agent sessions running.
 
 `Pause(ctx, true)` prevents new claims; existing implementations continue.
 `Pause(ctx, false)` resumes dispatch. These operations publish scheduler events.
-`Runs(ctx)` returns durable workflow snapshots. Startup and CLI/dashboard wiring
-remain the responsibility of issue #14.
+`Runs(ctx)` returns durable workflow snapshots. Startup calls `Reconcile(ctx)`
+before enabling new claims and reports its findings. The CLI starts this
+scheduler and shares its controls with the dashboard.
+
+`Stop(ctx, runID)` serializes with phase advancement and first persists stop
+intent. It interrupts running attempts through the runner, preserves the
+worktree/branch/PR, removes ready and running labels, adds attention if work was created,
+and transitions to `STOPPED`. Failed interruptions or label writes leave intent
+pending; subsequent ticks and startup reconciliation finish the stop before
+advancing work. Successful stops are idempotent. `Watch(ctx, runID)` returns the
+live attempt of the current automated phase, rejecting missing or finished
+sessions.
 
 Repositories are visited in configuration order. Issues are ordered by creation
 time and then issue number. Only open ready issues without running/attention
@@ -76,7 +86,8 @@ It scans every configured repository even when dispatch is paused, disabled, or
 at capacity. Running labels are never silently reset on orphaned issues. Worktree
 directories, registered worktree metadata, and managed tmux sessions without
 persisted ownership are reported and preserved. Terminal runs' retained artifacts
-remain owned. Startup CLI wiring uses this boundary in issue #14.
+remain owned. Startup uses the same boundary before serving the dashboard and
+running the scheduler.
 
 ## Tests
 
