@@ -520,7 +520,17 @@ The exact Claude Code headless output for a usage limit is not yet verified (res
 
 ### Not time-bound limits
 
-Spend caps and exhausted credits (Claude `spend limit` / `credits_required`; Codex `out of credits` / `spend cap`) do not reset on a schedule. They move the run directly to `NEEDS_ATTENTION` with `harness.credits_exhausted` and mark the harness limited until the user retries.
+Spend caps and exhausted credits (Claude `spend limit` / `credits_required`; Codex `out of credits` / `spend cap`) do not reset on a schedule. They move the run directly to `NEEDS_ATTENTION` with `harness.credits_exhausted` and block the harness pending explicitly requested recovery.
+
+Retry uses the selected affected run as a recovery probe. Other work needing that harness remains paused until the probe demonstrates that the harness is usable again. If credits remain unavailable, the harness stays blocked. This avoids launching failures across repositories when a retry happens before credits have actually been restored.
+
+A normally completed model response proves that credits are available, including a valid task report with `blocked` or `failed` status. Login success, process startup, and session discovery alone do not establish recovery. Clearing the credit block does not change the selected run's task outcome; its report follows the normal phase rules.
+
+Only one recovery probe may run per harness. If Stop or takeover interrupts it before recovery is established, release its probe reservation and retain the harness block. An explicit recovery action can then select another affected run. Restart recovers an existing probe instead of launching a duplicate.
+
+Retry is also available to a run in `WAITING_FOR_HARNESS` specifically when it is waiting on an exhausted-credit block. Reconciliation determines its next safe phase. If that phase uses the blocked harness, the selected run becomes its recovery probe. Work using the other harness proceeds normally without reserving a probe or clearing the blocked harness. Ordinary timed waits still honor their reset time.
+
+The blocked harness also exposes an explicit **Check availability** action, available even when no affected run remains eligible for Retry. It makes one minimal model request with no engineering work and clears the credit block only after a normally completed response. It shares the one-probe-per-harness restriction, runs only on explicit user request, and discloses that it consumes the harness account's quota. It does not revive stopped runs.
 
 ### Scope
 
@@ -544,9 +554,13 @@ While a harness is limited:
 - new issues whose implementer uses that harness are not claimed;
 - waiting runs keep their concurrency slot.
 
+Concurrency counts nonterminal runs except `READY_TO_MERGE`, including runs waiting for a harness. With global concurrency `1`, a waiting run therefore prevents a new claim even when the new issue uses the other harness. M3 retains this policy to bound work awaiting readiness and its worktrees.
+
 ### Bound
 
 After `usage_limits.max_waits` (default `3`) consecutive usage-limited attempts for the same phase, the run moves to `NEEDS_ATTENTION` with `harness.usage_limit_waits_exhausted`. This prevents endless waiting when reset times are wrong or detection misfires.
+
+Each explicit Retry after wait exhaustion grants one additional usage-limit wait for that phase, retaining the prior history rather than resetting the full allowance. Retry continues to honor any known harness reset time. Usage-limit waits remain separate from phase-attempt and review-round budgets.
 
 ---
 
@@ -822,10 +836,12 @@ Automated phases run non-interactively, so attaching to their tmux session only 
 
 ### Take over
 
+Takeover requires a prepared worktree and a known implementer session ID. If either is unavailable, the action explains the missing prerequisite and directs the user to recovery/retry. M3 takeover resumes an existing conversation; it does not create a fresh interactive conversation.
+
 `mergeyard takeover <run-id>`:
 
 1. stops the running phase process, if any: SIGINT first, then SIGTERM after a grace period (Claude exits on SIGTERM with the turn unfinished);
-2. waits until the process has exited, because two processes resuming the same session interleave into one transcript;
+2. waits until the process has exited, because two processes resuming the same session interleave into one transcript, and finishes restoring any interrupted review's changes before giving the user control;
 3. moves the run to `MANUAL`;
 4. starts the implementer's harness interactively in the worktree, resuming the implementer's agent session by its exact ID:
    - Claude Code: `cd <worktree> && claude --resume <session-id>`;
@@ -845,6 +861,10 @@ The user selects `Hand back` (or runs `mergeyard handback <run-id>`). Mergeyard 
 2. inspects the worktree, branch, and PR state;
 3. commits and pushes any manual changes;
 4. starts the next required step: `implement` if no PR exists yet, otherwise a review round.
+
+If the required review would exceed the run's review-round allowance, handback explicitly grants one additional round. The action description shows this consequence, and the grant is recorded in run history. This lets manually repaired work receive independent review without requiring a separate Retry action.
+
+Handback succeeds into `WAITING_FOR_HARNESS` when the next phase needs a blocked harness, after the normal inspection and commit/push of manual changes. Temporary limits resume on schedule; exhausted credits require an explicit recovery action. The UI distinguishes these waiting reasons.
 
 The implementer's later fixes resume the same agent session, including the user's manual conversation. If the user clears or branches the conversation during takeover, the harness creates a new session ID; Mergeyard keeps resuming the original ID. The user is responsible for exiting the interactive harness before handing back.
 
@@ -894,8 +914,10 @@ Terminal states: `FAILED`, `STOPPED`, `COMPLETED`. Terminal runs never progress 
 | ACTIVE/any | harness usage limit detected | WAITING_FOR_HARNESS |
 | WAITING_FOR_HARNESS | harness limit expires | ACTIVE/same phase (new attempt) |
 | WAITING_FOR_HARNESS | usage-limit waits exhausted | NEEDS_ATTENTION |
-| any non-terminal | user takes over | MANUAL |
-| MANUAL | user hands back | ACTIVE/next phase |
+| WAITING_FOR_HARNESS | user retries an exhausted-credit block | reconciled next state, subject to single-probe gate |
+| any non-terminal | user takes over with prepared worktree and known implementer session | MANUAL |
+| MANUAL | user hands back, required harness available | ACTIVE/next phase |
+| MANUAL | user hands back, required harness blocked | WAITING_FOR_HARNESS/next phase |
 | ACTIVE/any | `blocked`, invalid result, or retries exhausted | NEEDS_ATTENTION |
 | NEEDS_ATTENTION | user retries | reconciled next state |
 | FAILED | user retries | reconciled next state |
@@ -923,13 +945,15 @@ Stop never deletes code.
 
 ### Retry
 
-Retry is allowed from `NEEDS_ATTENTION` and `FAILED`. Retry:
+Retry is allowed from `NEEDS_ATTENTION` and `FAILED`, and from `WAITING_FOR_HARNESS` when waiting on an exhausted-credit block. Retry:
 
 - reuses the same run ID, branch, worktree, and agent sessions;
 - creates a new phase attempt;
 - does not reset user changes;
 - reconciles Git/PR/CI state first and determines the next safe phase;
 - grants one additional review round when the run stopped on `review.max_rounds_exceeded`.
+
+Retry after exhausted credits follows the single-run recovery probe in section 12. Retry after usage-limit wait exhaustion grants one additional wait as specified there. Handback can also grant a review round under the conditions in section 20.
 
 ### Infrastructure retries
 
@@ -1264,6 +1288,8 @@ Copy worktree path
 
 Read-only: effective config path and values, doctor results, binary versions, workspace path.
 
+Harness status distinguishes a timed usage limit from an exhausted-credit block and shows any recovery probe in progress. A blocked harness offers **Check availability** as described in section 12; configuration values remain read-only.
+
 ---
 
 ## 28. Web Interaction Model
@@ -1290,6 +1316,7 @@ POST /runs/{id}/takeover
 POST /runs/{id}/handback
 POST /runs/{id}/stop
 POST /runs/{id}/retry
+POST /harnesses/{harness}/check
 ```
 
 State-changing requests require CSRF protection and loopback-origin checks.
@@ -1314,6 +1341,7 @@ mergeyard takeover <run-id>
 mergeyard handback <run-id>
 mergeyard stop <run-id>
 mergeyard retry <run-id>
+mergeyard harness check <claude|codex>
 mergeyard reconcile
 ```
 
@@ -1338,6 +1366,10 @@ mergeyard reconcile
 ### `mergeyard reconcile`
 
 Re-runs reconciliation and reports orphaned claims, worktrees, and sessions. It does not silently reset orphaned claims.
+
+### `mergeyard harness check`
+
+Requests the blocked harness's **Check availability** action through the running control plane. This uses account quota for one minimal model request; it is distinct from the non-model diagnostics performed by `doctor`. Browser and CLI requests share the same recovery-probe gate.
 
 ---
 
@@ -1621,6 +1653,8 @@ Stops after the draft PR is opened.
 
 ### M3 — Hardening
 
+The agreed implementation specification and ticket references are tracked in [M3 specification #60](https://github.com/rcpassos/mergeyard/issues/60). Domain vocabulary is defined in [CONTEXT.md](../CONTEXT.md).
+
 - multiple repositories with global and per-repository concurrency;
 - usage-limit detection, waiting, and resumption, after a live check of each harness's usage-limit output;
 - takeover and hand back;
@@ -1678,9 +1712,21 @@ When a harness reports a usage limit during a phase:
 - after `max_waits` consecutive limits for one phase, the run moves to `NEEDS_ATTENTION`;
 - a restart while limited keeps the run waiting and resumes it on schedule.
 
+Waiting retains the run's concurrency slot. Explicit Retry after wait exhaustion grants exactly one additional wait and preserves previous history and the known reset time.
+
+### Exhausted credits
+
+- The originating run requires attention; other work needing that harness waits, and the other harness remains usable within concurrency limits.
+- Explicit Retry can select one affected run, including a run waiting on the credit block, as the recovery probe. Concurrent requests and restarts do not launch a second probe.
+- A normally completed model response clears the credit block even when the task report says `blocked` or `failed`; login, startup, and session discovery alone do not.
+- Interrupting the probe releases its reservation while retaining the block. Work using the other harness does not clear that block.
+- **Check availability** can recover the harness when every affected run has been stopped, without reviving those runs or performing engineering work.
+
 ### Takeover
 
 `takeover` stops automation, moves the run to `MANUAL`, and opens the implementer's session interactively in the worktree. Mergeyard does not progress the run until `handback`.
+
+Takeover requires a prepared worktree and known implementer session. Interrupted review changes are restored before interactive control is offered. Handback reconciles and commits/pushes manual changes, grants one additional review round when required by an exhausted allowance, and enters `WAITING_FOR_HARNESS` when the next phase needs a blocked harness. The UI distinguishes scheduled resumption from required credit recovery.
 
 ### Recovery
 
@@ -1698,6 +1744,8 @@ A restart during implement, review, fix, CI wait, harness wait, or ready-to-merg
 - state-transition guards;
 - round counting and the CI-failure path;
 - usage-limit wait counting;
+- explicit additional-wait and handback review-round grants;
+- credit recovery evidence, single-probe ownership, interruption and restart;
 - path/branch/session naming;
 - error-code mapping;
 - result-schema validation.
