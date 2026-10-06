@@ -408,5 +408,10 @@ prevent Retry from continuing. Reviewing and CI waiting require a clean worktree
 matching the published head. Implementation and fixes may retain unpublished
 edits or descendant commits; divergent or ambiguous ownership requires inspection.
 Retry never resets, cleans, or overwrites files to make the worktree match a PR.
+Before PR creation, it also verifies any published run branch is an ancestor of
+local work; an absent branch permits first publication. A reconciled changed head
+remains the review target in later rounds, with saved fix history retained as context.
+Durable Stop supersedes pending Retry and continues interruption even when PR
+lookup fails. An observed merge still follows completion and maintenance.
 Observed merges go straight to durable completion and safe maintenance, including
 failed runs, while closed-unmerged PRs and live owned processes prevent agent work.

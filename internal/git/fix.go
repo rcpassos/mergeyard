@@ -122,9 +122,23 @@ func inspectFixTarget(ctx context.Context, run Run, target string) error {
 }
 
 func remoteHead(ctx context.Context, run Run, origin string) (string, error) {
+	head, err := optionalRemoteHead(ctx, run, origin)
+	if err != nil {
+		return "", err
+	}
+	if head == "" {
+		return "", failure("review.head_changed", run.Path, fmt.Errorf("run branch missing or ambiguous on remote"))
+	}
+	return head, nil
+}
+
+func optionalRemoteHead(ctx context.Context, run Run, origin string) (string, error) {
 	out, err := command(ctx, run.Path, "git.remote_head", "ls-remote", "--heads", "--", origin, "refs/heads/"+run.Branch)
 	if err != nil {
 		return "", err
+	}
+	if out == "" {
+		return "", nil
 	}
 	fields := strings.Fields(out)
 	if len(fields) != 2 || !shaPattern.MatchString(fields[0]) || fields[1] != "refs/heads/"+run.Branch {

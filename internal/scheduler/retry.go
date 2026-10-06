@@ -70,6 +70,13 @@ func (s *Scheduler) Retry(ctx context.Context, id string) (workflow.Run, error) 
 }
 
 func (s *Scheduler) rejectRetry(ctx context.Context, run workflow.Run, v workflow.RetrySnapshot, cause error) error {
+	if err := s.saveRetryRejection(ctx, run, v, cause); err != nil {
+		return err
+	}
+	return cause
+}
+
+func (s *Scheduler) saveRetryRejection(ctx context.Context, run workflow.Run, v workflow.RetrySnapshot, cause error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	} // Pending intent survives interruption.
@@ -79,10 +86,7 @@ func (s *Scheduler) rejectRetry(ctx context.Context, run workflow.Run, v workflo
 	_, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
 		return events.Draft{RunID: run.ID, Type: "run.retry_rejected", Payload: v}, v.Save(ctx, tx, run.ID)
 	})
-	if err != nil {
-		return err
-	}
-	return cause
+	return err
 }
 
 func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run workflow.Run) error {
@@ -98,6 +102,9 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 	if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopping); err != nil {
 		return err
 	}
+	if run.Merge != nil {
+		return s.finishMerge(ctx, run)
+	}
 	// Observe a merge before any Git check or attempt selection, even for FAILED.
 	_, gitRun, contextErr := s.context(ctx, run)
 	var pr *github.PullRequest
@@ -107,20 +114,32 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 	} else if gitRun.ID != "" {
 		pr, err = s.deps.GitHub.FindOpenPullRequest(ctx, repo.Repo, gitRun.Branch)
 	}
-	if err != nil {
+	if err != nil && !stopping {
 		return err
 	} // Unavailable service keeps intent pending.
-	if run.Merge != nil {
-		return s.finishMerge(ctx, run)
-	}
 	if pr != nil && pr.Merged {
 		return s.merged(ctx, repo, run, pr)
 	}
+	if stopping {
+		// Stop supersedes pending Retry. A failed PR lookup cannot delay
+		// interruption, and a later tick must not resume this retry intent.
+		if run.State.Terminal() {
+			// Terminal runs rely on pending Retry to remain reconcilable.
+			// Retain that intent until interruption is verified complete.
+			if err := s.stopOwnedPhases(ctx, run); err != nil {
+				return err
+			}
+		}
+		if err := s.saveRetryRejection(ctx, run, v, &fault.Error{Code: "retry.stop_pending", Message: "Stop superseded the pending Retry"}); err != nil {
+			return err
+		}
+		if run.State.Terminal() {
+			return nil
+		}
+		return s.stopRun(ctx, run)
+	}
 	if run.PRNumber > 0 && pr == nil {
 		return fail("retry.pr_ambiguous", "Saved PR could not be observed; inspect GitHub before retrying")
-	}
-	if stopping {
-		return fail("retry.stop_pending", "Stop is pending; finish Stop before retrying")
 	}
 	if pr != nil && pr.State != github.Open {
 		return fail("retry.pr_closed", "PR closed without merging; reopen it or inspect preserved work")

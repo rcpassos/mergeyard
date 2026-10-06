@@ -221,6 +221,7 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 			target = v.TargetSHA
 		}
 	}
+	hasRetryTarget := target != ""
 	if run.ReviewRound > 1 || target != "" {
 		fixer, ok := s.deps.Git.(FixGit)
 		if !ok || (run.Fix == nil && target == "") {
@@ -236,6 +237,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	snapshot, err := g.SnapshotReview(ctx, gitRun)
 	if err != nil {
 		return fail(err)
+	}
+	if hasRetryTarget && snapshot.Head != target {
+		return fail(&fault.Error{Code: "review.head_changed", Message: "Review target differs from the reconciled retry target"})
 	}
 	pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
 	if err != nil {
@@ -293,11 +297,13 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	var fixReport *review.FixReport
 	var repair *ci.Snapshot
 	if run.ReviewRound > 1 {
-		if run.Fix == nil || !run.Fix.Pushed || run.Fix.CommitSHA != snapshot.Head || run.Fix.Round != run.ReviewRound-1 {
+		if !hasRetryTarget && (run.Fix == nil || !run.Fix.Pushed || run.Fix.CommitSHA != snapshot.Head || run.Fix.Round != run.ReviewRound-1) {
 			return fail(&fault.Error{Code: "review.head_changed", Message: "Next review target differs from the pinned fix commit"})
 		}
-		previousFindings, fixReport = run.Fix.Findings, run.Fix.Report
-		repair = run.Fix.CI
+		if run.Fix != nil {
+			previousFindings, fixReport = run.Fix.Findings, run.Fix.Report
+			repair = run.Fix.CI
+		}
 	}
 	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair})
 	if err != nil {

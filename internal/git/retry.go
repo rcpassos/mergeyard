@@ -24,19 +24,24 @@ func (m *Manager) InspectRetry(ctx context.Context, run Run, target string, allo
 	if dirty != "" && !allowEdits {
 		return head, failure("retry.worktree_dirty", run.Path, errors.New("preserved edits must be committed and published or moved aside before reviewing or waiting for CI"))
 	}
-	if target == "" {
-		return head, nil
-	}
-	if !shaPattern.MatchString(target) {
+	if target != "" && !shaPattern.MatchString(target) {
 		return head, failure("retry.head_ambiguous", run.Path, errors.New("PR head is missing or invalid"))
 	}
 	origin, err := verifyOrigin(ctx, run)
 	if err != nil {
 		return head, err
 	}
-	remote, err := remoteHead(ctx, run, origin)
+	remote, err := optionalRemoteHead(ctx, run, origin)
 	if err != nil {
 		return head, err
+	}
+	if target == "" {
+		// Before PR creation, any published branch must still be an ancestor
+		// of the preserved local work. Only a genuinely absent branch is new.
+		target = remote
+	}
+	if target == "" {
+		return head, nil
 	}
 	if remote != target {
 		return head, failure("retry.head_ambiguous", run.Path, errors.New("Git remote and PR disagree; inspect before retrying"))
