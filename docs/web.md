@@ -127,3 +127,12 @@ reconciliation, and serves both dashboard pages and the CLI API alongside the
 scheduler. It starts queue discovery and exposes the startup doctor report on
 Settings. Shutdown cancels and joins scheduler, discovery, diagnostics, and
 browser workers before closing runtime storage.
+
+`POST /runs/{id}/retry` and `POST /api/runs/{id}/retry` both use
+`Scheduler.Retry`. Run detail offers Retry for `NEEDS_ATTENTION` and `FAILED`
+unless Stop or merge maintenance is pending. The API returns the actual run
+snapshot, including the next phase, pending/rejected retry intent, additional
+review round, or renewed CI deadline. Detail and CLI status retain retry history;
+`run.retry_requested`, `run.retry_rejected`, and approval invalidation refresh
+pages over SSE. Retry uses the existing Host, Origin, CSRF, workspace-identity,
+and safe error response boundaries. It preserves work and Stop behavior.

@@ -84,6 +84,7 @@ type RunMetadata struct {
 // Nil fields preserve their values; an empty ApprovedSHA clears approval.
 // IncrementReviewRound advances the persisted round within the transaction.
 type MetadataPatch struct {
+	Retry                *RetrySnapshot
 	PRNumber             *int
 	ReviewRound          *int
 	ApprovedSHA          *string
@@ -97,6 +98,7 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
+	Retries           []RetrySnapshot    `json:"retries,omitempty"`
 	SessionRecoveries []SessionRecovery  `json:"session_recoveries,omitempty"`
 	Implementer       *ImplementSnapshot `json:"implementer,omitempty"`
 	RunMetadata
@@ -167,6 +169,9 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		}
 		if request.Metadata.Fix != nil && (current.Phase != Fix || request.Trigger != FixSucceeded) {
 			return events.Draft{}, invalid("Fix completion requires fix success transition")
+		}
+		if request.Metadata.Retry != nil && request.Trigger != Retry && request.Trigger != PRMerged {
+			return events.Draft{}, invalid("Retry selection requires a retry or observed merge transition")
 		}
 		if request.Metadata.ReviewRejection != nil {
 			if current.Phase != Review || request.Trigger != OperationFailed || request.Metadata.Review != nil {
@@ -268,6 +273,18 @@ func (w *Workflow) acquireOperation(ctx context.Context, id string) (func(), err
 }
 
 func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string, failure *fault.Error) error {
+	if patch.Retry != nil {
+		if err := patch.Retry.Save(ctx, tx, id); err != nil {
+			return err
+		}
+		if v := patch.Retry; v.AttemptFrom > 0 {
+			// Reconciliation verified these processes absent before selection.
+			// Retire interrupted launch records with the new attempt authorization.
+			if _, err := tx.ExecContext(ctx, `UPDATE phase_attempts SET status='failed',error='phase.session_missing: Process absent during explicit retry',ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE run_id=? AND phase=? AND round=? AND attempt<? AND status='running'`, id, v.NextPhase, v.Round, v.AttemptFrom); err != nil {
+				return err
+			}
+		}
+	}
 	if patch.CI != nil {
 		if err := ci.Save(ctx, tx, id, *patch.CI); err != nil {
 			return err
@@ -473,6 +490,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 		return Run{}, storageError(err)
 	}
 	run.Merge, err = maintenance.Load(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.Retries, err = LoadRetries(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
 	}

@@ -36,10 +36,23 @@ func (s *Scheduler) retryPhase(ctx context.Context, run workflow.Run, phase work
 	if errorCodeForReview(cause) == "review.head_changed" {
 		return false, nil
 	}
-	if phase == workflow.Implement {
-		return canRetryImplementAttempt(cause, a.number-recovered, max), nil
+	// Explicit retry opens a new configured attempt window, retaining recovery.
+	floor := 1
+	for _, v := range run.Retries {
+		if !v.Pending && v.Error == "" && v.NextPhase == phase && v.Round == run.ReviewRound && v.AttemptFrom > floor {
+			floor = v.AttemptFrom
+		}
 	}
-	return canRetryAttempt(cause, a.number-recovered, max), nil
+	if floor > 1 {
+		if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM session_recoveries r JOIN phase_attempts a ON a.id=r.replacement_attempt_id WHERE r.run_id=? AND r.phase=? AND r.round=? AND a.attempt>=?", run.ID, phase, phaseRound(run, phase), floor).Scan(&recovered); err != nil {
+			return false, err
+		}
+	}
+	number := a.number - floor + 1 - recovered
+	if phase == workflow.Implement {
+		return canRetryImplementAttempt(cause, number, max), nil
+	}
+	return canRetryAttempt(cause, number, max), nil
 }
 
 // reserveRecovery is part of the replacement's launch transaction. A crash after

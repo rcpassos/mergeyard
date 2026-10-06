@@ -128,7 +128,7 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 			return fail("ci.wait_timeout", "CI wait deadline expired; saved terminal check evidence does not authorize a code fix")
 		}
 		v.RepairCause = attention
-		if run.ReviewRound >= s.cfg.MaxRounds {
+		if run.ReviewRound >= s.roundLimit(run) {
 			return fail("review.max_rounds_exceeded", "CI repair requires another independent review round; fix was not launched")
 		}
 		// Recheck the PR after querying evidence before authorizing a repair.

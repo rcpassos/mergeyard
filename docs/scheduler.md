@@ -383,3 +383,35 @@ retrying for completed runs after Git cleanup finishes.
 Failed PR observations do not bypass a saved stop request or the CI wait deadline.
 A successful merge observation remains authoritative; otherwise a pending stop
 continues locally and unavailable CI evidence still expires at its saved deadline.
+
+## Explicit Retry
+
+Dashboard and CLI call the same `Scheduler.Retry` operation for attention and
+failed runs. Retry shares the workflow operation gate with Stop, reconciliation,
+and phase processing. It persists intent before observing external state; the
+selected lifecycle, attempt window, round grant, CI deadline, and timeline event
+commit together. Startup reconciles pending intent, including failed runs, before
+any new execution. Selection alone does not launch a harness. Later ticks observe
+existing completed work or launch the selected phase using the usual attempt
+journal.
+
+Each explicit attempt retry opens the configured attempt window with new physical
+attempt numbers and retained role conversations/history. Missing-session recovery
+remains limited to once per role, phase, and round. Exhausting the review ceiling
+requires explicit Retry to grant exactly the next independent review round;
+ordinary attempt retries and missing-session recovery never grant rounds.
+
+CI Retry observes the PR and checks, preserves matching approval, and renews the
+configured wait deadline. Its normal CI gate observes again before readiness or
+repair. A changed published head clears stale approval even when local edits
+prevent Retry from continuing. Reviewing and CI waiting require a clean worktree
+matching the published head. Implementation and fixes may retain unpublished
+edits or descendant commits; divergent or ambiguous ownership requires inspection.
+Retry never resets, cleans, or overwrites files to make the worktree match a PR.
+Before PR creation, it also verifies any published run branch is an ancestor of
+local work; an absent branch permits first publication. A reconciled changed head
+remains the review target in later rounds, with saved fix history retained as context.
+Durable Stop supersedes pending Retry and continues interruption even when PR
+lookup fails. An observed merge still follows completion and maintenance.
+Observed merges go straight to durable completion and safe maintenance, including
+failed runs, while closed-unmerged PRs and live owned processes prevent agent work.
