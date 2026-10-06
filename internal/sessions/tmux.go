@@ -18,7 +18,7 @@ import (
 	"unicode"
 )
 
-// Manager keeps no process handles; refs and tmux are sufficient after restart.
+// Manager keeps no process handles; refs and phase journals survive restart.
 type Manager struct{ options Options }
 
 func New(options Options) *Manager {
@@ -174,6 +174,9 @@ func (m *Manager) Start(ctx context.Context, req Request) (Ref, error) {
 	if err := errors.Join(writeErr, closeErr); err != nil {
 		return Ref{}, failure("phase.wrapper_write_failed", path, err)
 	}
+	if err := RequireProcessJournal(phaseDir); err != nil {
+		return Ref{}, err
+	}
 	// Multiple shell-command arguments make tmux exec directly, without parsing
 	// the wrapper path as a shell command.
 	if _, err := m.tmux(ctx, "new-session", "-d", "-s", ref.Name, "--", "/bin/sh", path); err != nil {
@@ -194,6 +197,17 @@ func (m *Manager) Start(ctx context.Context, req Request) (Ref, error) {
 func (m *Manager) Status(ctx context.Context, ref Ref) (Status, error) {
 	if err := ctx.Err(); err != nil {
 		return Status{}, failure("phase.canceled", ref.Name, err)
+	}
+	if group, err := loadProcessGroup(ref); err == nil {
+		live, err := group.alive(ctx)
+		if err != nil {
+			return Status{}, failure("phase.process_identity", ref.Name, err)
+		}
+		if live {
+			return Status{State: Running}, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Status{}, failure("phase.process_identity", ref.Name, err)
 	}
 	data, err := os.ReadFile(filepath.Join(ref.PhaseDir, "exit.json"))
 	if err == nil {
@@ -229,13 +243,45 @@ func (m *Manager) Status(ctx context.Context, ref Ref) (Status, error) {
 // A forced kill cannot be observed by the wrapper, so it may leave no metadata.
 func (m *Manager) Stop(ctx context.Context, ref Ref) error {
 	exists, err := m.exists(ctx, ref.Name)
-	if err != nil || !exists {
+	if err != nil {
 		return err
 	}
-	pid, err := m.panePID(ctx, ref)
-	if err != nil {
-		return m.stopError(ctx, ref, err)
+	group, err := loadProcessGroup(ref)
+	if errors.Is(err, os.ErrNotExist) && !exists && requiresProcessJournal(ref) {
+		return nil
 	}
+	if errors.Is(err, os.ErrNotExist) && exists {
+		// Upgrade a live pre-journal session before signaling it.
+		group.PID, err = m.panePID(ctx, ref)
+		if err != nil {
+			return m.stopError(ctx, ref, err)
+		}
+		group.Started, err = processStarted(ctx, group.PID)
+		if err != nil {
+			return err
+		}
+		group.Boot, err = processStarted(ctx, 1)
+		if err != nil {
+			return err
+		}
+		data, err := json.Marshal(group)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(ref.PhaseDir, "process-group.json"), data, 0600); err != nil {
+			return failure("phase.process_identity", ref.Name, err)
+		}
+	} else if err != nil {
+		return failure("phase.process_identity", ref.Name, err)
+	}
+	live, err := group.alive(ctx)
+	if err != nil {
+		return failure("phase.process_identity", ref.Name, err)
+	}
+	if !live {
+		return nil
+	}
+	pid := group.PID
 	for _, signal := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
 		if err := ctx.Err(); err != nil {
 			return failure("phase.canceled", ref.Name, err)
@@ -254,8 +300,15 @@ func (m *Manager) Stop(ctx context.Context, ref Ref) error {
 	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return failure("phase.stop_failed", ref.Name, err)
 	}
-	_, err = m.tmux(ctx, "kill-session", "-t", "="+ref.Name)
-	return m.stopError(ctx, ref, err)
+	// Keep checking the durable group even when tmux disappears on SIGKILL.
+	stopped, err := m.waitStopped(ctx, ref, pid)
+	if err != nil {
+		return err
+	}
+	if !stopped {
+		return failure("phase.stop_pending", ref.Name, errors.New("owned process group has not exited"))
+	}
+	return nil
 }
 
 // A concurrent natural exit makes a failed stop command harmless.
@@ -328,6 +381,10 @@ func wrapper(command Command, phaseDir string) (string, error) {
 	}
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
+	// Record ownership before the harness starts. PID 1's start identifies this
+	// boot/runtime; lstart detects a reused group leader across reconciliation.
+	fmt.Fprintf(&b, "started=$(LC_ALL=C /bin/ps -p $$ -o lstart=) || exit 1\nboot=$(LC_ALL=C /bin/ps -p 1 -o lstart=) || exit 1\nprintf '{\"pid\":%%s,\"started\":\"%%s\",\"boot\":\"%%s\"}\\n' \"$$\" \"$started\" \"$boot\" >%s && /bin/mv -f %s %s || exit 1\n", quote(filepath.Join(phaseDir, "process-group.json.tmp")), quote(filepath.Join(phaseDir, "process-group.json.tmp")), quote(filepath.Join(phaseDir, "process-group.json")))
+
 	fmt.Fprintf(&b, "finish() {\n code=$1\n trap - EXIT\n printf '{\"exit_code\":%%s}\\n' \"$code\" >%s &&\n /bin/mv -f %s %s\n exit \"$code\"\n}\ntrap 'finish \"$?\"' EXIT\ntrap ':' INT TERM HUP\n", quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")))
 	fmt.Fprintf(&b, "exec >%s 2>%s\n", quote(filepath.Join(phaseDir, "events.jsonl")), quote(filepath.Join(phaseDir, "stderr.log")))
 	fmt.Fprintf(&b, "cd %s || exit 1\n/usr/bin/env -i", quote(command.Dir))

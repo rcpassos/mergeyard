@@ -24,8 +24,8 @@ func TestWrapperDoesNotPublishFailedMetadataWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Simulate printf creating a partial file and then reporting a write error.
-	script = strings.Replace(script, "#!/bin/sh\n", "#!/bin/sh\nprintf() { /bin/echo '{'; return 1; }\n", 1)
+	// Simulate a partial exit-metadata write after the process journal succeeds.
+	script = strings.Replace(script, "#!/bin/sh\n", "#!/bin/sh\nprintf() { case \"$1\" in *exit_code*) /bin/echo '{'; return 1;; *) command printf \"$@\";; esac; }\n", 1)
 	path := filepath.Join(dir, "wrapper.sh")
 	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
 		t.Fatal(err)

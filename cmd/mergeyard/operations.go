@@ -94,11 +94,29 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		fmt.Fprintf(stdout, "Scheduler: %s\n", state)
 		count := 0
 		for _, run := range status.Runs {
-			if run.State.Terminal() {
+			if run.State.Terminal() && !(run.Merge != nil && run.Merge.Pending()) {
 				continue
 			}
-			count++
+			if !run.State.Terminal() {
+				count++
+			}
 			fmt.Fprintf(stdout, "%s  %s#%d  %s/%s\n", terminalText(run.ID), terminalText(run.Repository), run.IssueNumber, terminalText(string(run.State)), terminalText(string(run.Phase)))
+			if run.Merge != nil {
+				if run.Merge.Pending() {
+					fmt.Fprintln(stdout, "  Merged — cleanup pending")
+				} else {
+					fmt.Fprintln(stdout, "  Merged — cleanup complete")
+				}
+				if run.Merge.Early {
+					fmt.Fprintln(stdout, "  Early merge before readiness")
+				}
+				for _, action := range run.Merge.Remaining() {
+					fmt.Fprintf(stdout, "    %s\n", terminalText(action))
+				}
+				if run.Merge.Error != "" {
+					fmt.Fprintf(stdout, "  %s\n", terminalText(run.Merge.Error))
+				}
+			}
 			if run.LastErrorCode != "" {
 				fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 			}

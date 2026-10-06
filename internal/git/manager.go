@@ -48,6 +48,8 @@ type Run struct {
 	BasePath    string
 	BaseBranch  string
 	BaseSHA     string
+	// PublishedSHA is optional durable evidence from the observed merged PR head.
+	PublishedSHA string
 }
 
 // Phase describes commit metadata and whether a diff is required. Implement

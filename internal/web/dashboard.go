@@ -16,6 +16,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/maintenance"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -236,6 +237,8 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 		}
 		section := runningSection
 		switch {
+		case run.State == workflow.Completed && run.Merge != nil && run.Merge.Pending():
+			section = attentionSection
 		case run.State.Terminal():
 			if len(data.Recent) < 20 {
 				data.Recent = append(data.Recent, run)
@@ -352,6 +355,11 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		return nil, err
 	}
 	for i := range runs {
+		runs[i].Merge, err = maintenance.Load(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		runs[i].Stopping = runs[i].Stopping && runs[i].Merge == nil
 		runs[i].CI, err = ci.Load(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
