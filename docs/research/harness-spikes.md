@@ -26,6 +26,12 @@ was contradicted; continuation with the rejected alternate model and the skipped
 default-cache build remain blocked. Usage limits and interactive handback remain
 M3 work. Claude M1 checks were not repeated.
 
+Update (2026-10-06): [issue #61's Claude M3 capture](claude-m3/report.md)
+preserves a bounded headless success with `rate_limit_info.status:
+allowed_warning`, reset values, and offline warning fixtures on 2.1.288.
+No headless usage-limit failure was observed; its release gate remains open.
+This warning does not verify the proposed failure classifier in §5.2.
+
 ---
 
 ## 1. Summary table
