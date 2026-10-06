@@ -1,0 +1,172 @@
+{
+  "issue": 62,
+  "classification": "required_usage_limit_failure_unverified",
+  "environment": {
+    "version": "codex-cli 0.156.1",
+    "version_exit_code": 0,
+    "captured_at": "2026-10-06T22:37:49.393498+01:00",
+    "timezone": "Europe/Lisbon",
+    "model": "gpt-6-luna",
+    "prompt": "Do not use tools, read files, or do engineering work. Return schema_version 1, status success, summary \"availability probe\".",
+    "timeout_seconds": 30,
+    "maximum_invocations": 1
+  },
+  "resolved_binary": "/opt/homebrew/bin/codex",
+  "command": {
+    "argv": [
+      "codex",
+      "exec",
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--json",
+      "-C",
+      "/private/tmp/mergeyard-codex-m3-issue62/worktree",
+      "-s",
+      "read-only",
+      "-m",
+      "gpt-6-luna",
+      "-c",
+      "model_reasoning_effort=low",
+      "-c",
+      "sandbox_workspace_write.network_access=false",
+      "-c",
+      "features.plugins=false",
+      "-c",
+      "web_search=\"disabled\"",
+      "--output-schema",
+      "/Users/rafaelpassos/.codex/worktrees/e125/mergeyard/docs/research/codex-m2/schemas/implement.json",
+      "-o",
+      "/private/tmp/mergeyard-codex-m3-issue62/evidence/usage-limit/last-message.json",
+      " Read /private/tmp/mergeyard-codex-m3-issue62/inputs/availability.md and follow it. Do not commit."
+    ],
+    "CODEX_HOME": "/private/tmp/mergeyard-codex-m3-issue62/codex-home"
+  },
+  "run": {
+    "exit_code": 0,
+    "signal_sent": null,
+    "thread_id": "01a11326-c64e-7011-91c1-1e54d8b96f0e",
+    "identity_before_exit": true,
+    "elapsed_seconds": 9.29
+  },
+  "stderr": "Reading additional input from stdin...\n",
+  "native_events": [
+    {
+      "type": "thread.started",
+      "thread_id": "01a11326-c64e-7011-91c1-1e54d8b96f0e"
+    },
+    {
+      "type": "turn.started"
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "agent_message",
+        "text": "I\u2019ll read the instructions in `availability.md` and carry them out as far as the workspace\u2019s read-only access allows."
+      }
+    },
+    {
+      "type": "item.started",
+      "item": {
+        "id": "item_1",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc 'cat /private/tmp/mergeyard-codex-m3-issue62/inputs/availability.md && pwd && git status --short --branch'",
+        "aggregated_output": "",
+        "exit_code": null,
+        "status": "in_progress"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_1",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc 'cat /private/tmp/mergeyard-codex-m3-issue62/inputs/availability.md && pwd && git status --short --branch'",
+        "aggregated_output": "Do not use tools, read files, or do engineering work. Return schema_version 1, status success, summary \"availability probe\".\n/private/tmp/mergeyard-codex-m3-issue62/worktree\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n## No commits yet on main\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    {
+      "type": "item.completed",
+      "item": {
+        "id": "item_2",
+        "type": "agent_message",
+        "text": "{\"schema_version\":1,\"status\":\"success\",\"summary\":\"availability probe\"}"
+      }
+    },
+    {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 23659,
+        "cached_input_tokens": 11008,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 118,
+        "reasoning_output_tokens": 0
+      }
+    }
+  ],
+  "last_message": {
+    "schema_version": 1,
+    "status": "success",
+    "summary": "availability probe"
+  },
+  "rollout_evidence": {
+    "thread_id": "01a11326-c64e-7011-91c1-1e54d8b96f0e",
+    "found": true,
+    "assistant_messages": 2,
+    "records": [
+      {
+        "type": "event_msg",
+        "payload": {
+          "type": "token_count",
+          "rate_limits": {
+            "limit_id": "codex",
+            "limit_name": null,
+            "primary": {
+              "used_percent": 14.0,
+              "window_minutes": 10080,
+              "resets_at": 1791918668
+            },
+            "secondary": null,
+            "credits": {
+              "has_credits": false,
+              "unlimited": false,
+              "balance": "0"
+            },
+            "individual_limit": null,
+            "spend_control_reached": null,
+            "plan_type": "prolite",
+            "rate_limit_reached_type": null
+          }
+        }
+      },
+      {
+        "type": "event_msg",
+        "payload": {
+          "type": "token_count",
+          "rate_limits": {
+            "limit_id": "codex",
+            "limit_name": null,
+            "primary": {
+              "used_percent": 14.0,
+              "window_minutes": 10080,
+              "resets_at": 1791918668
+            },
+            "secondary": null,
+            "credits": {
+              "has_credits": false,
+              "unlimited": false,
+              "balance": "0"
+            },
+            "individual_limit": null,
+            "spend_control_reached": null,
+            "plan_type": "prolite",
+            "rate_limit_reached_type": null
+          }
+        }
+      }
+    ]
+  },
+  "sanitization": "Only this isolated session. No auth, model cache, personal config, session metadata, user prompt transcripts or unrelated sessions. Native event text and timestamps retained."
+}

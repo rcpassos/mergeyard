@@ -1,0 +1,25 @@
+[
+  {
+    "directory": "observed-available-0.156.1",
+    "provenance": "live_observed",
+    "temporary_limit_observed": false,
+    "reset_source": "unavailable",
+    "reset_epochs": []
+  },
+  {
+    "directory": "source-expected-first-limit",
+    "provenance": "synthetic_unverified_variant",
+    "temporary_limit_observed": true,
+    "reset_source": "rollout",
+    "reset_epochs": [
+      1791048197
+    ]
+  },
+  {
+    "directory": "synthetic-no-reset",
+    "provenance": "synthetic_unverified_variant",
+    "temporary_limit_observed": true,
+    "reset_source": "unavailable",
+    "reset_epochs": []
+  }
+]

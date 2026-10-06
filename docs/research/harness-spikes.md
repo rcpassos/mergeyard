@@ -151,6 +151,10 @@ M3 work. Claude M1 checks were not repeated.
 
 ### 3.3 Usage limits
 
+M3 headless follow-up: [issue #62 report](codex-m3-usage-limits/report.md).
+The bounded 0.156.1 request completed normally, so a real headless limit failure
+and first-limited-request reset evidence remain unverified.
+
 - **Exit code:** `1` when a non-retrying `Error` notification arrives for the turn, or the turn ends `Failed`/`Interrupted`. Otherwise `0`. **V-src** `exec/src/lib.rs` (`error_seen` → `std::process::exit(1)`). Other `exit(1)` paths exist (config, not a git repo), so the exit code alone is not a classifier.
 - **JSONL:** `{"type":"error","message":…}` then `{"type":"turn.failed","error":{"message":…}}`. **Only the message string** is exposed. There's no error code and no reset epoch in `--json`. **V-src**
 - **Message templates (0.156.1, `protocol/src/error.rs`, `UsageLimitReachedError`)**, by plan:

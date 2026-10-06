@@ -1,0 +1,32 @@
+{
+  "thread_id": "00000000-0000-4000-8000-000000000062",
+  "found": true,
+  "assistant_messages": 0,
+  "records": [
+    {
+      "type": "event_msg",
+      "payload": {
+        "type": "token_count",
+        "rate_limits": {
+          "limit_id": "codex",
+          "primary": {
+            "used_percent": 100.0,
+            "window_minutes": 300,
+            "resets_at": 1791048197
+          },
+          "secondary": null
+        }
+      }
+    },
+    {
+      "type": "event_msg",
+      "payload": {
+        "type": "task_complete",
+        "error": {
+          "message": "You’ve hit your usage limit. Try again at 6:23 PM.",
+          "codex_error_info": "usage_limit_exceeded"
+        }
+      }
+    }
+  ]
+}

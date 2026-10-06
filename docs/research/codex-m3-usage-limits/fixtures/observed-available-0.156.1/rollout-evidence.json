@@ -1,0 +1,57 @@
+{
+  "thread_id": "01a11326-c64e-7011-91c1-1e54d8b96f0e",
+  "found": true,
+  "assistant_messages": 2,
+  "records": [
+    {
+      "type": "event_msg",
+      "payload": {
+        "type": "token_count",
+        "rate_limits": {
+          "limit_id": "codex",
+          "limit_name": null,
+          "primary": {
+            "used_percent": 14.0,
+            "window_minutes": 10080,
+            "resets_at": 1791918668
+          },
+          "secondary": null,
+          "credits": {
+            "has_credits": false,
+            "unlimited": false,
+            "balance": "0"
+          },
+          "individual_limit": null,
+          "spend_control_reached": null,
+          "plan_type": "prolite",
+          "rate_limit_reached_type": null
+        }
+      }
+    },
+    {
+      "type": "event_msg",
+      "payload": {
+        "type": "token_count",
+        "rate_limits": {
+          "limit_id": "codex",
+          "limit_name": null,
+          "primary": {
+            "used_percent": 14.0,
+            "window_minutes": 10080,
+            "resets_at": 1791918668
+          },
+          "secondary": null,
+          "credits": {
+            "has_credits": false,
+            "unlimited": false,
+            "balance": "0"
+          },
+          "individual_limit": null,
+          "spend_control_reached": null,
+          "plan_type": "prolite",
+          "rate_limit_reached_type": null
+        }
+      }
+    }
+  ]
+}
