@@ -470,3 +470,46 @@ func TestPrepareRefusesBaseSymlinkToUnmanagedCheckout(t *testing.T) {
 		t.Fatal("unmanaged checkout was changed")
 	}
 }
+
+func TestCleanupKeepsUnpublishedRefAfterWorktreeRemoval(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	write(t, run.Path, "new.txt", "published\n")
+	result, err := f.manager.CommitAndPush(context.Background(), run, managedgit.Phase{Title: "implement", RequireChanges: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.PublishedSHA = result.SHA
+	if err := f.manager.CleanupWorktree(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	tree := git(t, run.BasePath, "rev-parse", result.SHA+"^{tree}")
+	unpublished := git(t, run.BasePath, "commit-tree", tree, "-p", result.SHA, "-m", "unpublished work")
+	git(t, run.BasePath, "update-ref", "refs/heads/"+run.Branch, unpublished)
+	requireCode(t, f.manager.CleanupBranch(context.Background(), run), "git.unpublished_work")
+	if git(t, run.BasePath, "rev-parse", "refs/heads/"+run.Branch) != unpublished {
+		t.Fatal("lost unpublished ref after partial cleanup")
+	}
+}
+func TestCleanupUsesMergedPublicationReceiptWhenRemoteBranchIsGone(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	write(t, run.Path, "new.txt", "published\n")
+	result, err := f.manager.CommitAndPush(context.Background(), run, managedgit.Phase{Title: "implement", RequireChanges: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.PublishedSHA = result.SHA
+	git(t, f.remote, "update-ref", "-d", "refs/heads/"+run.Branch)
+	for range 2 {
+		if err := f.manager.Cleanup(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(run.Path); !os.IsNotExist(err) {
+		t.Fatal("published worktree not cleaned")
+	}
+	if git(t, run.BasePath, "branch", "--list", run.Branch) != "" {
+		t.Fatal("published local branch not cleaned")
+	}
+}

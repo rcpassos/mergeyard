@@ -344,7 +344,10 @@ unrelated eligible issues to start. Remote branches are retained.
 Run detail, the queue, and status show “Merged — cleanup pending”, early-merge
 information, the concrete remaining actions, and the latest maintenance error.
 Transient failures retry on later ticks and after restart. Dirty work
-is preserved for human attention; cleanup never force-removes a worktree. Review
+is preserved for human attention; cleanup never force-removes a worktree. A clean worktree and local branch are also
+preserved when their history contains unpublished commits. Merge observation
+records the published PR head; cleanup checks publication before both deletions
+and keeps unknown publication pending. Review
 restoration must succeed before deletion, preserving preexisting human edits.
 
 Worktree removal intent is recorded after ownership inspection and before removal.
@@ -353,3 +356,7 @@ cleanup; unexplained disappearance requires inspection and retains the branch.
 Already absent labels, closed issues, removed trees, and deleted local branches
 are tolerated at their recorded boundaries. Independent report publication keeps
 retrying for completed runs after Git cleanup finishes.
+
+Failed PR observations do not bypass a saved stop request or the CI wait deadline.
+A successful merge observation remains authoritative; otherwise a pending stop
+continues locally and unavailable CI evidence still expires at its saved deadline.

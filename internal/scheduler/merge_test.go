@@ -19,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -583,5 +584,131 @@ func TestMergeObservedDuringCIRepairEvidenceCompletesWithoutFix(t *testing.T) {
 	}
 	if len(saved.FixHistory) != 0 {
 		t.Fatal("merge launched a CI repair")
+	}
+}
+
+func TestEarlyMergePreservesLocallyCommittedUnpublishedFix(t *testing.T) {
+	s, runtime, api, remote, cfg, r := localFlow(t, loopScript(`printf fixed > feature.txt; `+fixedReport))
+	run := finish(t, s, workflow.Active, workflow.Fix)
+	advanceFixUntil(t, s, runtime, run.ID, func(v workflow.Run) bool { return v.Fix != nil && v.Fix.CommitSHA != "" && !v.Fix.Pushed })
+	saved, _ := runtime.Workflow.Get(context.Background(), run.ID)
+	unpublished := saved.Fix.CommitSHA
+	published := gitCommand(t, remote, "rev-parse", "mergeyard/issue-7")
+	if unpublished == published {
+		t.Fatal("fixture already pushed fix")
+	}
+	var path string
+	runtime.DB.QueryRow("SELECT worktree_path FROM runs WHERE id=?", run.ID).Scan(&path)
+	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
+	api.issues["owner/repo"][0].State = github.Closed
+	for range 2 {
+		if _, err := s.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saved, _ = runtime.Workflow.Get(context.Background(), run.ID)
+	if saved.State != workflow.Completed || saved.Merge == nil || !saved.Merge.Pending() || saved.Merge.WorktreeRemoved || saved.Merge.BranchDeleted {
+		t.Fatalf("unpublished fix cleanup: %+v", saved.Merge)
+	}
+	if gitCommand(t, path, "rev-parse", "HEAD") != unpublished || gitCommand(t, remote, "rev-parse", "mergeyard/issue-7") != published {
+		t.Fatal("lost or pushed unpublished commit")
+	}
+	if data, err := os.ReadFile(filepath.Join(path, "feature.txt")); err != nil || string(data) != "fixed" {
+		t.Fatal("lost unpublished source")
+	}
+	root := runtime.Workspace.Root
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := app.Open(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	next, err := scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := next.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gitCommand(t, path, "rev-parse", "HEAD") != unpublished {
+		t.Fatal("restart lost unpublished work")
+	}
+}
+
+type failedPRReadGitHub struct {
+	*mergeGitHub
+	readError    error
+	partialMerge bool
+}
+
+func (f *failedPRReadGitHub) GetPullRequest(ctx context.Context, repo string, n int) (*github.PullRequest, error) {
+	if f.readError != nil {
+		if f.partialMerge {
+			pr, err := f.mergeGitHub.GetPullRequest(ctx, repo, n)
+			if err != nil {
+				return nil, err
+			}
+			partial := *pr
+			partial.Merged = true
+			return &partial, f.readError
+		}
+		return nil, f.readError
+	}
+	return f.mergeGitHub.GetPullRequest(ctx, repo, n)
+}
+func TestFailedPRReadDoesNotBypassExpiredCIWait(t *testing.T) {
+	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	api := &failedPRReadGitHub{mergeGitHub: &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}}
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	now = run.CI.Deadline
+	api.readError = fmt.Errorf("PR read unavailable")
+	_, reconcileErr := s.Reconcile(context.Background())
+	saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+	if err != nil || saved.State != workflow.NeedsAttention || saved.LastErrorCode != "ci.wait_timeout" || saved.CI.QueryError == "" {
+		t.Fatalf("failed PR read bypassed deadline: state=%s code=%s reconcile=%v get=%v", saved.State, saved.LastErrorCode, reconcileErr, err)
+	}
+}
+func TestFailedPRReadDoesNotBypassPersistedStop(t *testing.T) {
+	_, runtime, base, _, cfg, r := localFlow(t, reviewScript(`/bin/sleep 60`))
+	api := &failedPRReadGitHub{mergeGitHub: &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}}
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.Active, workflow.Review)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	base.mutate = func(string, string, int, string) error { return fmt.Errorf("label removal unavailable") }
+	if err := s.Stop(context.Background(), run.ID); err == nil {
+		t.Fatal("fixture stop already completed")
+	}
+	base.mutate = nil
+	api.readError = fmt.Errorf("PR read unavailable")
+	api.partialMerge = true
+	root := runtime.Workspace.Root
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := app.Open(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	s, err = scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, reconcileErr := s.Reconcile(context.Background())
+	saved, err := reopened.Workflow.Get(context.Background(), run.ID)
+	if err != nil || saved.State != workflow.Stopped {
+		t.Fatalf("failed PR read bypassed stop: state=%s reconcile=%v get=%v", saved.State, reconcileErr, err)
 	}
 }

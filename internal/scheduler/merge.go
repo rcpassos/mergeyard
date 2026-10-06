@@ -33,12 +33,12 @@ func (s *Scheduler) saveMerge(ctx context.Context, run workflow.Run, v maintenan
 	})
 	return err
 }
-func (s *Scheduler) merged(ctx context.Context, repo config.Repository, run workflow.Run, _ *github.PullRequest) error {
+func (s *Scheduler) merged(ctx context.Context, repo config.Repository, run workflow.Run, pr *github.PullRequest) error {
 	if run.State.Terminal() {
 		return nil
 	}
 	if run.Merge == nil {
-		v := maintenance.Snapshot{ObservedAt: s.deps.Now().UTC().Format(time.RFC3339Nano), Early: run.State != workflow.ReadyToMerge,
+		v := maintenance.Snapshot{ObservedAt: s.deps.Now().UTC().Format(time.RFC3339Nano), Early: run.State != workflow.ReadyToMerge, PublishedSHA: pr.Head.SHA,
 			ReadyLabel: repo.Labels.Ready, RunningLabel: repo.Labels.Running, AttentionLabel: repo.Labels.NeedsAttention}
 		if err := s.saveMerge(ctx, run, v, "pr.merge_observed"); err != nil {
 			return err
@@ -137,6 +137,7 @@ func (s *Scheduler) cleanupMerge(ctx context.Context, run workflow.Run) error {
 		failures = append(failures, err)
 	}
 	_, gitRun, gitErr := s.context(ctx, run)
+	gitRun.PublishedSHA = v.PublishedSHA
 	if gitErr == nil {
 		gitErr = step(&v.ReviewRestored, func() error {
 			if run.Review == nil || run.Review.Restored {

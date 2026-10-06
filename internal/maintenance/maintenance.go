@@ -10,6 +10,7 @@ import (
 
 type Snapshot struct {
 	ObservedAt       string `json:"observed_at"`
+	PublishedSHA     string `json:"published_sha,omitempty"`
 	Early            bool   `json:"early"`
 	ProcessExited    bool   `json:"process_exited"`
 	ReadyLabel       string `json:"ready_label"`

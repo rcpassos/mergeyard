@@ -35,18 +35,19 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	if run.Merge != nil {
 		return s.finishMerge(ctx, run)
 	}
-	if run.PRNumber > 0 {
-		pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
-		if err != nil {
-			return err
-		}
-		if pr != nil && pr.Merged {
-			return s.merged(ctx, repo, run, pr)
-		}
-	}
 	var stopRequested bool
 	if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopRequested); err != nil {
 		return err
+	}
+	// Failed merge reads must not bypass durable stop recovery.
+	if run.PRNumber > 0 {
+		pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
+		if err != nil && !stopRequested {
+			return err
+		}
+		if err == nil && pr != nil && pr.Merged {
+			return s.merged(ctx, repo, run, pr)
+		}
 	}
 	if stopRequested {
 		return s.stopRun(ctx, run)

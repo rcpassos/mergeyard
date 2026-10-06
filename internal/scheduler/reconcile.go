@@ -126,20 +126,21 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 	if run.Merge != nil {
 		return s.finishMerge(ctx, run)
 	}
-	if run.PRNumber > 0 {
-		pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
-		if err != nil {
-			return err
-		}
-		if pr != nil && pr.Merged {
-			return s.merged(ctx, repo, run, pr)
-		}
-	}
-	// Honor durable stop intent before restoring labels or inspecting work.
 	var stopRequested bool
 	if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopRequested); err != nil {
 		return err
 	}
+	// Failed merge reads must not bypass durable stop recovery or CI deadlines.
+	if run.PRNumber > 0 {
+		pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
+		if err != nil && !stopRequested && run.State != workflow.WaitingForCI {
+			return err
+		}
+		if err == nil && pr != nil && pr.Merged {
+			return s.merged(ctx, repo, run, pr)
+		}
+	}
+	// Honor durable stop intent before restoring labels or inspecting work.
 	if stopRequested {
 		return s.stopRun(ctx, run)
 	}
