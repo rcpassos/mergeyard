@@ -166,7 +166,7 @@ func TestClaudeResumeFailureContract(t *testing.T) {
 	for _, script := range []string{
 		`printf 'No conversation found with session ID: %s\n' "$3" >&2; exit 1`,
 		`printf 'No conversation found with session ID: %s\n' "$3"; exit 1`,
-		`printf '%s\n' '{"type":"result","is_error":true,"subtype":"error_during_execution","errors":["No conversation found with session ID: missing"]}'; exit 1`,
+		`printf '{"type":"result","is_error":true,"subtype":"error_during_execution","errors":["No conversation found with session ID: %s"]}\n' "$3"; exit 1`,
 	} {
 		t.Run(script, func(t *testing.T) {
 			ctx := phase(t)

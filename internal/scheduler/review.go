@@ -69,7 +69,11 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if a.status == "failed" {
 		code, message, _ := strings.Cut(a.failure, ": ")
 		cause := &fault.Error{Code: code, Message: message}
-		if !reviewCanRetry(cause, a.number, repo.Reviewer.MaxAttempts) {
+		retry, retryErr := s.retryPhase(ctx, run, workflow.Review, a.attempt, cause, repo.Reviewer.MaxAttempts)
+		if retryErr != nil {
+			return retryErr
+		}
+		if !retry {
 			return s.recordAttention(ctx, repo, run, reviewFailure(cause, a.number))
 		}
 		return s.startReview(ctx, repo, run, issue, gitRun, a.number+1)
@@ -156,7 +160,11 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 		cause = &fault.Error{Code: "review.head_changed", Message: "PR head changed during review; stale verdict discarded"}
 	}
 	if cause != nil {
-		if !reviewCanRetry(cause, a.number, repo.Reviewer.MaxAttempts) {
+		retry, retryErr := s.retryPhase(ctx, run, workflow.Review, a.attempt, cause, repo.Reviewer.MaxAttempts)
+		if retryErr != nil {
+			return retryErr
+		}
+		if !retry {
 			return s.rejectReview(ctx, repo, run, a, status.ExitCode, report, reviewFailure(cause, a.number))
 		}
 		return s.failReview(ctx, run, a, status.ExitCode, report, cause)
@@ -246,8 +254,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	resume := number > 1 || run.ReviewRound > 1
 	warning := ""
 	previousSession := sessionID
+	var previous reviewAttempt
 	if number > 1 {
-		previous, err := s.lastReview(ctx, run)
+		previous, err = s.lastReview(ctx, run)
 		if err != nil {
 			return err
 		}
@@ -303,6 +312,12 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 			return events.Draft{}, err
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,?,?,?,?,?,?)`, id, snapshot.Head, diff, string(snapshotJSON), sessionID, permission, string(tools))
+		if err != nil {
+			return events.Draft{}, err
+		}
+		if warning != "" {
+			return reserveRecovery(ctx, tx, run, workflow.Review, previous.attempt, id, sessionID)
+		}
 		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{"agent": repo.Reviewer.Agent, "resumed_session": resume, "permissions": s.rolePermissions(repo.Reviewer.Agent), "phase": workflow.Review, "round": run.ReviewRound, "attempt": number, "target_sha": snapshot.Head, "session_id": sessionID, "model": repo.Reviewer.Model, "effort": repo.Reviewer.Effort, "skills": repo.Reviewer.Skills, "permission_mode": permission, "allowed_tools": allowedTools, "warning_code": warning, "previous_session_id": previousSession}}, err
 	})
 	if err != nil {
@@ -317,7 +332,11 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		if restoreErr := s.restoreReview(ctx, gitRun, &a); restoreErr != nil {
 			return fail(restoreErr)
 		}
-		if !reviewCanRetry(err, number, repo.Reviewer.MaxAttempts) {
+		retry, retryErr := s.retryPhase(ctx, run, workflow.Review, a.attempt, err, repo.Reviewer.MaxAttempts)
+		if retryErr != nil {
+			return retryErr
+		}
+		if !retry {
 			return s.rejectReview(ctx, repo, run, a, nil, nil, reviewFailure(err, number))
 		}
 		return s.failReview(ctx, run, a, nil, nil, err)
@@ -395,7 +414,11 @@ func (s *Scheduler) abortReview(ctx context.Context, repo config.Repository, run
 		return s.recordAttention(ctx, repo, run, err)
 	}
 	// Early discovery failures obey the same attempt budget as completed reports.
-	if invalidSessionDiscovery(cause) && reviewCanRetry(cause, a.number, repo.Reviewer.MaxAttempts) {
+	retry, err := s.retryPhase(ctx, run, workflow.Review, a.attempt, cause, repo.Reviewer.MaxAttempts)
+	if err != nil {
+		return err
+	}
+	if invalidSessionDiscovery(cause) && retry {
 		return s.failReview(ctx, run, *a, nil, nil, cause)
 	}
 	return s.rejectReview(ctx, repo, run, *a, nil, nil, cause)

@@ -123,7 +123,7 @@ func (*Codex) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseResu
 		return PhaseResult{}, phaseError("phase.unsupported", "Only implement, review, and fix phases are supported", nil)
 	}
 	diagnostic := strings.TrimSpace(string(artifacts.Stderr))
-	if ctx.Resume && artifacts.ExitCode != 0 && strings.Contains(diagnostic, "thread/resume failed: no rollout found for thread id "+ctx.SessionID+" (code ") {
+	if ctx.Resume && artifacts.ExitCode != 0 && matchesExactDiagnostic(artifacts.Stderr, "Error: thread/resume: thread/resume failed: no rollout found for thread id "+ctx.SessionID+" (code -32600)") {
 		return PhaseResult{}, phaseError("harness.session_resume_failed", diagnostic, nil)
 	}
 	if artifacts.ExitCode != 0 {

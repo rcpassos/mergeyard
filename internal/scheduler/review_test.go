@@ -285,7 +285,7 @@ func TestReviewPreservesPreexistingWorkAndPermitsIgnoredBuildOutput(t *testing.T
 func TestReviewerResumeFailureStartsFreshIndependentSession(t *testing.T) {
 	script := `case "$*" in
  *review-1-1*) printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"failed","summary":"Try again","findings":[]}}';;
- *review-1-2*) printf '%s\n' 'No conversation found with session ID' >&2; exit 1;;
+ *review-1-2*) printf 'No conversation found with session ID: %s\n' "$3" >&2; exit 1;;
  *) case "$*" in *--resume*) exit 2;; esac
 ` + approvedReview + `
 ;; esac`
@@ -298,7 +298,7 @@ func TestReviewerResumeFailureStartsFreshIndependentSession(t *testing.T) {
 	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
 	var first, last string
 	var resumed bool
-	runtime.DB.QueryRow("SELECT session_id FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.phase='review' AND a.attempt=1").Scan(&first)
+	runtime.DB.QueryRow("SELECT v.session_id FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.phase='review' AND a.attempt=1").Scan(&first)
 	runtime.DB.QueryRow("SELECT v.session_id,a.resumed_session FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.phase='review' AND a.attempt=3").Scan(&last, &resumed)
 	if first == last || resumed || run.Review.Attempt != 3 || run.ReviewRound != 1 {
 		t.Fatalf("missing session fallback: first=%s last=%s resumed=%t run=%+v", first, last, resumed, run)
@@ -309,7 +309,7 @@ func TestReviewerResumeFailureStartsFreshIndependentSession(t *testing.T) {
 	}
 	warning := false
 	for _, event := range history {
-		if event.Type == "phase.attempt_started" && strings.Contains(string(event.Payload), "harness.session_resume_failed") {
+		if event.Type == "harness.session_resume_failed" {
 			warning = true
 		}
 	}

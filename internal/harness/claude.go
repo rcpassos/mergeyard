@@ -113,10 +113,10 @@ func (*Claude) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseRes
 	if ctx.Phase != workflow.Implement && ctx.Phase != workflow.Review && ctx.Phase != workflow.Fix {
 		return PhaseResult{}, phaseError("phase.unsupported", "Only implement, review, and fix phases are supported", nil)
 	}
-	const resumeFailure = "No conversation found with session ID"
+	resumeFailure := "No conversation found with session ID: " + ctx.SessionID
 	if ctx.Resume && artifacts.ExitCode != 0 &&
-		(strings.Contains(string(artifacts.Stderr), resumeFailure) || strings.HasPrefix(strings.TrimSpace(string(artifacts.Stdout)), resumeFailure)) {
-		return PhaseResult{}, phaseError("harness.session_resume_failed", "Claude could not resume the requested session", nil)
+		(matchesExactDiagnostic(artifacts.Stderr, resumeFailure) || strings.TrimSpace(string(artifacts.Stdout)) == resumeFailure) {
+		return PhaseResult{}, phaseError("harness.session_resume_failed", resumeFailure, nil)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(artifacts.Stdout))
 	var last json.RawMessage
@@ -154,8 +154,8 @@ func (*Claude) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseRes
 		return PhaseResult{}, phaseError("phase.result_invalid", "Harness result is invalid", err)
 	}
 	if ctx.Resume && (artifacts.ExitCode != 0 || (event.IsError != nil && *event.IsError)) &&
-		strings.Contains(event.Result+"\n"+strings.Join(event.Errors, "\n"), resumeFailure) {
-		return PhaseResult{}, phaseError("harness.session_resume_failed", "Claude could not resume the requested session", nil)
+		matchesExactDiagnostic([]byte(event.Result+"\n"+strings.Join(event.Errors, "\n")), resumeFailure) {
+		return PhaseResult{}, phaseError("harness.session_resume_failed", resumeFailure, nil)
 	}
 	switch event.Subtype {
 	case "error_max_structured_output_retries":

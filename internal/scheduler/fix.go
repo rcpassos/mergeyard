@@ -83,7 +83,11 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 	if a.status == "failed" {
 		code, message, _ := strings.Cut(a.failure, ": ")
 		cause := &fault.Error{Code: code, Message: message}
-		if !canRetryAttempt(cause, a.number, repo.Implementer.MaxAttempts) {
+		retry, retryErr := s.retryPhase(ctx, run, workflow.Fix, a.attempt, cause, repo.Implementer.MaxAttempts)
+		if retryErr != nil {
+			return retryErr
+		}
+		if !retry {
 			return fail(fixFailure(cause, a.number, repo.Implementer.MaxAttempts))
 		}
 		return s.startFix(ctx, repo, run, gitRun, a.number+1)
@@ -275,7 +279,14 @@ func (s *Scheduler) finishFixAttempt(ctx context.Context, repo config.Repository
 	if err != nil {
 		return err
 	}
-	if cause != nil && (!canRetryAttempt(cause, a.number, repo.Implementer.MaxAttempts) || errorCodeForReview(cause) == "review.head_changed") {
+	if cause != nil {
+		retry, retryErr := s.retryPhase(ctx, run, workflow.Fix, a.attempt, cause, repo.Implementer.MaxAttempts)
+		if retryErr != nil {
+			return retryErr
+		}
+		if retry {
+			return nil
+		}
 		return s.recordAttention(ctx, repo, run, fixFailure(cause, a.number, repo.Implementer.MaxAttempts))
 	}
 	return nil
@@ -340,8 +351,9 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	adapter := s.harnesses[repo.Implementer.Agent]
 	resume := sessionID != ""
 	warning, previousSession := "", sessionID
+	var previous fixAttempt
 	if number > 1 {
-		previous, err := s.lastFix(ctx, run)
+		previous, err = s.lastFix(ctx, run)
 		if err != nil {
 			return err
 		}
@@ -399,6 +411,12 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 			return events.Draft{}, err
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,ci_json) VALUES (?,?,?,?,?,?,?)`, id, sessionID, target, string(encoded), permission, string(tools), diagnostics)
+		if err != nil {
+			return events.Draft{}, err
+		}
+		if warning != "" {
+			return reserveRecovery(ctx, tx, run, workflow.Fix, previous.attempt, id, sessionID)
+		}
 		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{"agent": repo.Implementer.Agent, "permissions": s.rolePermissions(repo.Implementer.Agent), "phase": workflow.Fix, "round": run.ReviewRound, "attempt": number, "session_id": sessionID, "resumed_session": resume, "model": repo.Implementer.Model, "effort": repo.Implementer.Effort, "skills": repo.Implementer.Skills, "permission_mode": permission, "allowed_tools": allowedTools, "warning_code": warning, "previous_session_id": previousSession, "ci": repair}}, err
 	})
 	if err != nil {
