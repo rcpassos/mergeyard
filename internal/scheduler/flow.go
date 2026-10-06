@@ -258,6 +258,9 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	if err != nil {
 		return harness.PhaseResult{}, false, err
 	}
+	if next := explicitAttempt(run, workflow.Implement, a.number); next > 0 {
+		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, next)
+	}
 	if a.status == "succeeded" {
 		data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.ref.PhaseDir, "result.json"))
 		if err != nil {

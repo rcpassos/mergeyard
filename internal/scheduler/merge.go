@@ -34,7 +34,7 @@ func (s *Scheduler) saveMerge(ctx context.Context, run workflow.Run, v maintenan
 	return err
 }
 func (s *Scheduler) merged(ctx context.Context, repo config.Repository, run workflow.Run, pr *github.PullRequest) error {
-	if run.State.Terminal() {
+	if run.State == workflow.Stopped || run.State == workflow.Completed {
 		return nil
 	}
 	if run.Merge == nil {
@@ -64,7 +64,17 @@ func (s *Scheduler) finishMerge(ctx context.Context, run workflow.Run) error {
 		}
 	}
 	if run.State != workflow.Completed {
-		if _, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.PRMerged}); err != nil {
+		request := workflow.Request{Trigger: workflow.PRMerged}
+		if run.State == workflow.Failed {
+			request.Trigger = workflow.Retry
+			request.NextState = workflow.Completed
+		}
+		if v := run.PendingRetry(); v != nil {
+			v.Pending = false
+			v.NextState = workflow.Completed
+			request.Metadata.Retry = v
+		}
+		if _, err := s.workflow.Transition(ctx, run.ID, request); err != nil {
 			return err
 		}
 		run.State = workflow.Completed

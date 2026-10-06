@@ -124,7 +124,7 @@ type runView struct {
 	Title, Summary, IssueURL, PRURL, Branch, Worktree, SessionID string
 	Agent, Model, Effort, Skills, ProcessSession, LogPath        string
 	Attempt, Round                                               int
-	ReviewPending, CanStop, Stopping                             bool
+	ReviewPending, CanStop, CanRetry, Stopping                   bool
 }
 
 type issueView struct {
@@ -360,6 +360,11 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 			return nil, err
 		}
 		runs[i].Stopping = runs[i].Stopping && runs[i].Merge == nil
+		runs[i].CanRetry = (runs[i].State == workflow.NeedsAttention || runs[i].State == workflow.Failed) && !runs[i].Stopping && runs[i].Merge == nil
+		runs[i].Retries, err = workflow.LoadRetries(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
 		runs[i].CI, err = ci.Load(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
@@ -424,6 +429,23 @@ func (s *Server) stopRunPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.dashboard.Scheduler.Stop(r.Context(), r.PathValue("id")); err != nil {
 		s.actionError(w, r, err)
+		return
+	}
+	if r.Header.Get("HX-Request") == "true" {
+		r.URL.Path = "/runs/" + r.PathValue("id")
+		s.page(w, r)
+		return
+	}
+	http.Redirect(w, r, "/runs/"+r.PathValue("id"), http.StatusSeeOther)
+}
+
+func (s *Server) retryRunPage(w http.ResponseWriter, r *http.Request) {
+	if s.dashboard == nil {
+		s.respondError(w, r, &fault.Error{Code: "internal.run_not_found"}, "internal.run_not_found", http.StatusNotFound, "Run not found")
+		return
+	}
+	if _, err := s.operations.Retry(r.Context(), r.PathValue("id")); err != nil {
+		s.operationError(w, r, err)
 		return
 	}
 	if r.Header.Get("HX-Request") == "true" {

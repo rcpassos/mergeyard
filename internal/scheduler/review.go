@@ -61,6 +61,9 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if err != nil {
 		return s.recordAttention(ctx, repo, run, err)
 	}
+	if next := explicitAttempt(run, workflow.Review, a.number); next > 0 {
+		return s.startReview(ctx, repo, run, issue, gitRun, next)
+	}
 	if a.restoring && !a.restored {
 		if err := s.restoreReview(ctx, gitRun, &a); err != nil {
 			return s.recordAttention(ctx, repo, run, err)
@@ -175,7 +178,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if report.Status == "changes_required" {
 		approved = ""
 		trigger = workflow.ReviewChangesRequired
-		if run.ReviewRound >= s.cfg.MaxRounds {
+		if run.ReviewRound >= s.roundLimit(run) {
 			trigger = workflow.ReviewRoundsExhausted
 			failure = &fault.Error{Code: "review.max_rounds_exceeded", Message: "Review requested changes with no review rounds remaining"}
 		}
@@ -212,12 +215,21 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if !ok {
 		return fail(&fault.Error{Code: "git.review_unsupported", Message: "Git adapter cannot protect reviewer changes"})
 	}
-	if run.ReviewRound > 1 {
+	target := ""
+	for _, v := range run.Retries {
+		if !v.Pending && v.Error == "" && v.NextPhase == workflow.Review && v.Round == run.ReviewRound && v.TargetSHA != "" {
+			target = v.TargetSHA
+		}
+	}
+	if run.ReviewRound > 1 || target != "" {
 		fixer, ok := s.deps.Git.(FixGit)
-		if !ok || run.Fix == nil {
+		if !ok || (run.Fix == nil && target == "") {
 			return fail(&fault.Error{Code: "git.fix_unsupported", Message: "Cannot verify the pinned fix before re-review"})
 		}
-		if err := fixer.InspectFixTarget(ctx, gitRun, run.Fix.CommitSHA); err != nil {
+		if target == "" {
+			target = run.Fix.CommitSHA
+		}
+		if err := fixer.InspectFixTarget(ctx, gitRun, target); err != nil {
 			return fail(err)
 		}
 	}

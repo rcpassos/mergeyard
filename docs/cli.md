@@ -36,14 +36,26 @@ runtime database or acquire the owner's lock.
   intent before further work advances. Stop removes ready even if it arrives before claim processing has cleared that
   label, preventing redispatch after the run becomes terminal.
 
-The runtime supports Claude or Codex implementation and independent Claude review.
-Claude implementations continue through bounded fixes and re-review; Codex fix
-execution requires attention. Approval waits for CI monitoring in a later slice.
-Status includes implementer identity/settings, process and attempt, fix history,
-per-finding fixed/disputed responses and publication progress alongside reviewer
-identity/settings, target SHA, round, attempt, verdict and findings. The existing
-`takeover`, `handback`, `retry`, and `open`
-command entries remain reserved for their respective later work.
+- `mergeyard retry <run-id>`: reconcile a `NEEDS_ATTENTION` or `FAILED` run and
+  display its actual next state and phase. Reuse its ID, branch, worktree, role
+  sessions, and history. Agent execution starts on a later scheduler tick only
+  when reconciliation selects agent work. A repeated request while the run is
+  progressing returns its current state without another grant or attempt.
+
+Retry grants one additional independent review round after
+`review.max_rounds_exceeded`. A CI timeout on the unchanged approved commit
+receives a fresh configured wait window; passing checks can advance immediately,
+while failures and action requests follow the normal repair/attention rules.
+Neither waiting again nor observing an already merged PR launches an agent.
+Changed published heads require another review. Local edits, divergent heads,
+closed PRs, and still-running processes receive an actionable diagnosis; Retry
+never resets or cleans work. Retry does not replenish a role's missing-session
+recovery allowance for its phase and round.
+
+Status includes failed runs, retry instructions and history, granted rounds,
+renewed CI deadlines, role settings/session identities, verdicts, findings,
+fix responses, CI evidence, and pending merge maintenance. Both Claude and Codex
+are supported in either role. `takeover`, `handback`, and `open` remain reserved.
 
 `mergeyard reconcile` runs the same reconciliation without claiming new work.
 It acquires the configured workspace lock, so stop the control plane first if

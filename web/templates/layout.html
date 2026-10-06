@@ -55,7 +55,10 @@
 {{if .PRURL}}<a class="btn btn-outline" href="{{.PRURL}}" target="_blank" rel="noreferrer">Open PR</a>{{end}}
 {{if .ProcessSession}}<button class="btn btn-outline" type="button" data-copy="mergeyard watch {{.ID}}">Copy watch command</button>{{end}}
 {{if .Worktree}}<button class="btn btn-outline" type="button" data-copy="{{.Worktree}}">Copy worktree path</button>{{end}}
+{{if .CanRetry}}<form method="post" action="/runs/{{.ID}}/retry" hx-post="/runs/{{.ID}}/retry" hx-target="#content" hx-swap="outerHTML"><input type="hidden" name="csrf_token" value="{{$.Token}}"><button class="btn btn-primary" type="submit">Retry run</button></form>{{end}}
 {{if .CanStop}}<form method="post" action="/runs/{{.ID}}/stop" hx-post="/runs/{{.ID}}/stop" hx-target="#content" hx-swap="outerHTML"><input type="hidden" name="csrf_token" value="{{$.Token}}"><button class="btn btn-error" type="submit">{{if .Stopping}}Retry Stop{{else}}Stop run{{end}}</button></form>{{end}}</div>
+{{if .CanRetry}}<p class="notice">Retry reconciles the PR, CI, Git ownership, edits, and processes before selecting the next phase. Your work is preserved.</p>{{end}}
+{{range .Retries}}<section class="notice"><h3>Retry · {{.RequestedAt}}</h3>{{if .Pending}}<p>Reconciliation pending. Retry again to continue this request.</p>{{else if .Error}}<p class="error-code">{{.Error}}</p>{{else}}<p>Selected {{.NextState}}{{if .NextPhase}} / {{.NextPhase}}{{end}} · round {{.Round}}</p>{{if .GrantedRound}}<p>Additional review round granted: {{.GrantedRound}}</p>{{end}}{{if .Deadline}}<p>Renewed CI deadline: {{.Deadline}}</p>{{end}}{{end}}</section>{{end}}
 <dl class="run-facts">
 <div><dt>Run ID</dt><dd><code>{{.ID}}</code></dd></div>
 <div><dt>Phase / round / attempt</dt><dd>{{if .Phase}}{{.Phase}}{{else}}Not started{{end}} / {{.Round}} / {{.Attempt}}</dd></div>

@@ -50,7 +50,7 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 	var failures []error
 	reconcilable := map[string]bool{}
 	for _, run := range runs {
-		if run.State.Terminal() && !(run.State == workflow.Completed && run.Merge != nil && run.Merge.Pending()) {
+		if run.PendingRetry() == nil && run.State.Terminal() && !(run.State == workflow.Completed && run.Merge != nil && run.Merge.Pending()) {
 			continue
 		}
 		repo, ok := s.repository(run.Repository)
@@ -117,6 +117,9 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 }
 
 func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, run workflow.Run) error {
+	if run.PendingRetry() != nil {
+		return s.resumeRetry(ctx, repo, run)
+	}
 	if run.State.Terminal() {
 		if run.State == workflow.Completed && run.Merge != nil {
 			return s.cleanupMerge(ctx, run)
@@ -145,10 +148,16 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 		return s.stopRun(ctx, run)
 	}
 	if run.State == workflow.WaitingForCI {
-		return s.waitCI(ctx, repo, run)
+		if err := s.waitCI(ctx, repo, run); err != nil {
+			return err
+		}
+		return s.retryProgressLabels(ctx, repo, run)
 	}
 	if run.State == workflow.ReadyToMerge {
-		return s.observeReady(ctx, repo, run)
+		if err := s.observeReady(ctx, repo, run); err != nil {
+			return err
+		}
+		return s.retryProgressLabels(ctx, repo, run)
 	}
 	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
@@ -255,6 +264,11 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 			if err := s.deps.GitHub.RemoveLabel(ctx, repo.Repo, run.IssueNumber, repo.Labels.Ready); err != nil {
 				return err
 			}
+		}
+	}
+	if len(run.Retries) > 0 {
+		if err := s.retryLabels(ctx, repo, run); err != nil {
+			return err
 		}
 	}
 	return s.advanceRun(ctx, repo, run)

@@ -162,3 +162,49 @@ func TestCLIStatusEscapesUntrustedReviewText(t *testing.T) {
 		t.Fatal("review text spoofed a status line")
 	}
 }
+
+func TestCLIRetrySendsProtectedRequestAndDisplaysSelection(t *testing.T) {
+	root := t.TempDir()
+	token := "retry-token"
+	requested := 0
+	selected := workflow.Run{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Fix, Retries: []workflow.RetrySnapshot{{NextState: workflow.Active, NextPhase: workflow.Fix, Round: 1, GrantedRound: 2, Deadline: "2026-10-06T13:00:00Z"}}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: token, Runs: []workflow.Run{{ID: "run-1", State: workflow.Failed, LastErrorCode: "review.max_rounds_exceeded", LastErrorMessage: "Retry to continue"}}})
+	})
+	mux.HandleFunc("POST /api/runs/run-1/retry", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {
+			http.Error(w, "unauthorized", 403)
+			return
+		}
+		requested++
+		json.NewEncoder(w).Encode(selected)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	path := filepath.Join(root, "config.yaml")
+	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, port)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("retry", "run-1", "--config", path)
+	if code != 0 || requested != 1 {
+		t.Fatalf("retry: %d %d %s", code, requested, errOut)
+	}
+	for _, want := range []string{"Run run-1: ACTIVE/fix", "Retry selected ACTIVE/fix", "Additional review round granted: 2", "Renewed CI deadline: 2026-10-06T13:00:00Z"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q: %s", want, out)
+		}
+	}
+	code, out, errOut = runCLI("status", "--config", path)
+	if code != 0 || !strings.Contains(out, "FAILED/") || !strings.Contains(out, "mergeyard retry run-1") {
+		t.Fatalf("failed runs invisible: %s %s", out, errOut)
+	}
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", filepath.Join(root, "other"), port)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut = runCLI("retry", "run-1", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "workspace.mismatch") || requested != 1 {
+		t.Fatalf("retry touched wrong workspace: %d %s %d", code, errOut, requested)
+	}
+}

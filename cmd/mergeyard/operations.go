@@ -94,7 +94,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		fmt.Fprintf(stdout, "Scheduler: %s\n", state)
 		count := 0
 		for _, run := range status.Runs {
-			if run.State.Terminal() && !(run.Merge != nil && run.Merge.Pending()) {
+			if run.State.Terminal() && run.State != workflow.Failed && !(run.Merge != nil && run.Merge.Pending()) {
 				continue
 			}
 			if !run.State.Terminal() {
@@ -119,6 +119,12 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			}
 			if run.LastErrorCode != "" {
 				fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
+			}
+			if run.State == workflow.NeedsAttention || run.State == workflow.Failed {
+				fmt.Fprintf(stdout, "  Retry: mergeyard retry %s (reconciles preserved work first)\n", terminalText(run.ID))
+			}
+			for _, v := range run.Retries {
+				printRetry(stdout, v)
 			}
 			if run.State == workflow.ReadyToMerge {
 				fmt.Fprintln(stdout, "  Waiting for your merge")
@@ -212,6 +218,18 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			return err
 		}
 		fmt.Fprintf(stdout, "Run %s stopped.\n", args[0])
+	case "retry":
+		var run workflow.Run
+		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/retry", &run); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Run %s: %s/%s\n", terminalText(run.ID), terminalText(string(run.State)), terminalText(string(run.Phase)))
+		if len(run.Retries) > 0 {
+			printRetry(stdout, run.Retries[len(run.Retries)-1])
+		}
+		if run.LastErrorCode != "" {
+			fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
+		}
 	case "watch":
 		var ref runner.SessionRef
 		if err := client.request(ctx, http.MethodGet, "/api/runs/"+url.PathEscape(args[0])+"/watch", &ref); err != nil {
@@ -225,6 +243,24 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		return nil
 	}
 	return nil
+}
+
+func printRetry(out io.Writer, v workflow.RetrySnapshot) {
+	if v.Pending {
+		fmt.Fprintln(out, "  Retry requested; reconciliation pending")
+		return
+	}
+	if v.Error != "" {
+		fmt.Fprintf(out, "  Retry requires attention: %s\n", terminalText(v.Error))
+		return
+	}
+	fmt.Fprintf(out, "  Retry selected %s/%s · round %d\n", terminalText(string(v.NextState)), terminalText(string(v.NextPhase)), v.Round)
+	if v.GrantedRound > 0 {
+		fmt.Fprintf(out, "  Additional review round granted: %d\n", v.GrantedRound)
+	}
+	if v.Deadline != "" {
+		fmt.Fprintf(out, "  Renewed CI deadline: %s\n", terminalText(v.Deadline))
+	}
 }
 
 // Escape terminal controls at the presentation boundary. Keep report text intact

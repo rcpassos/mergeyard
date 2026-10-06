@@ -66,7 +66,7 @@ func (s *Scheduler) lastFix(ctx context.Context, run workflow.Run) (fixAttempt, 
 
 func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflow.Run) error {
 	fail := func(err error) error { return s.recordAttention(ctx, repo, run, err) }
-	if run.ReviewRound >= s.cfg.MaxRounds {
+	if run.ReviewRound >= s.roundLimit(run) {
 		return fail(&fault.Error{Code: "review.max_rounds_exceeded", Message: "No subsequent review round is available; fix was not launched"})
 	}
 	_, gitRun, err := s.context(ctx, run)
@@ -79,6 +79,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 	}
 	if err != nil {
 		return fail(err)
+	}
+	if next := explicitAttempt(run, workflow.Fix, a.number); next > 0 {
+		return s.startFix(ctx, repo, run, gitRun, next)
 	}
 	if a.status == "failed" {
 		code, message, _ := strings.Cut(a.failure, ": ")
