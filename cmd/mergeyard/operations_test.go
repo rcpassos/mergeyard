@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/rcpassos/mergeyard/internal/ci"
+	"github.com/rcpassos/mergeyard/internal/maintenance"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/web"
@@ -25,7 +26,8 @@ func TestCLIControlsUseOwningRuntimeAndWatchReadOnly(t *testing.T) {
 	mux := http.NewServeMux()
 	paused := false
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(web.Status{Workspace: root, Paused: paused, Token: token, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Implement, SessionRecoveries: []workflow.SessionRecovery{{Phase: workflow.Implement, Role: "implementer", Round: 0, PreviousSessionID: "missing-session", SessionID: "codex-session"}}, Implementer: &workflow.ImplementSnapshot{Agent: "codex", SessionID: "codex-session", Model: "chosen-model", Effort: "medium", Skills: []string{"implement"}, Permissions: "workspace-write · network true · approvals never", Attempt: 2, Status: "running", ProcessSession: "live-phase"}}, {ID: "old-run", State: workflow.Completed}}})
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Paused: paused, Token: token, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Implement, SessionRecoveries: []workflow.SessionRecovery{{Phase: workflow.Implement, Role: "implementer", Round: 0, PreviousSessionID: "missing-session", SessionID: "codex-session"}}, Implementer: &workflow.ImplementSnapshot{Agent: "codex", SessionID: "codex-session", Model: "chosen-model", Effort: "medium", Skills: []string{"implement"}, Permissions: "workspace-write · network true · approvals never", Attempt: 2, Status: "running", ProcessSession: "live-phase"}}, {ID: "merged-run", Repository: "owner/repo", IssueNumber: 8, State: workflow.Completed, Merge: &maintenance.Snapshot{Early: true, ProcessExited: true, Error: "dirty work preserved"}}, {ID: "old-run", State: workflow.Completed}}})
+
 	})
 	mux.HandleFunc("POST /scheduler/{action}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {
@@ -72,7 +74,8 @@ func TestCLIControlsUseOwningRuntimeAndWatchReadOnly(t *testing.T) {
 			t.Fatalf("status = %s", out)
 		}
 		if action == "status" {
-			for _, text := range []string{"implementer codex", "chosen-model", "medium", "implement", "workspace-write", "codex-session", "attempt 2: running", "live-phase", "harness.session_resume_failed", "missing-session", "continuing once in a fresh session", "implementer active session codex-session"} {
+			for _, text := range []string{"Merged — cleanup pending", "Early merge before readiness", "Remove running label", "dirty work preserved", "implementer codex", "chosen-model", "medium", "implement", "workspace-write", "codex-session", "attempt 2: running", "live-phase", "harness.session_resume_failed", "missing-session", "continuing once in a fresh session", "implementer active session codex-session"} {
+
 				if !strings.Contains(out, text) {
 					t.Fatalf("missing implementer status %q: %s", text, out)
 				}

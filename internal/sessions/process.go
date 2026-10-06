@@ -1,0 +1,84 @@
+package sessions
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+)
+
+// processGroup survives tmux/parent exit so stop can still find owned children.
+// Boot and leader start identities prevent signaling a reused live leader.
+type processGroup struct {
+	PID     int    `json:"pid"`
+	Started string `json:"started"`
+	Boot    string `json:"boot"`
+}
+
+func loadProcessGroup(ref Ref) (processGroup, error) {
+	var group processGroup
+	data, err := os.ReadFile(filepath.Join(ref.PhaseDir, "process-group.json"))
+	if err != nil {
+		return group, err
+	}
+	if err = json.Unmarshal(data, &group); err != nil {
+		return group, err
+	}
+	if group.PID <= 1 || strings.TrimSpace(group.Started) == "" || strings.TrimSpace(group.Boot) == "" {
+		return group, errors.New("invalid process group identity")
+	}
+	return group, nil
+}
+func processStarted(ctx context.Context, pid int) (string, error) {
+	cmd := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	var exited *exec.ExitError
+	if errors.As(err, &exited) && exited.ExitCode() == 1 && len(out) == 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(string(out)), err
+}
+func (g processGroup) alive(ctx context.Context) (bool, error) {
+	err := syscall.Kill(-g.PID, 0)
+	if errors.Is(err, syscall.ESRCH) {
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, syscall.EPERM) {
+		return false, err
+	}
+	boot, err := processStarted(ctx, 1)
+	if err != nil {
+		return false, err
+	}
+	started, err := processStarted(ctx, g.PID)
+	if err != nil {
+		return false, err
+	}
+	if boot != strings.TrimSpace(g.Boot) || (started != "" && started != strings.TrimSpace(g.Started)) {
+		return false, errors.New("process identity changed; preserve work and inspect before stopping")
+	}
+	return true, nil
+}
+
+// RequireProcessJournal records the execution format before a running attempt
+// is committed. A missing group journal then proves the harness never launched
+// when tmux is absent, because the wrapper journals its group before invocation.
+func RequireProcessJournal(phaseDir string) error {
+	if err := os.WriteFile(filepath.Join(phaseDir, "process-group-required"), []byte("v1"), 0600); err != nil {
+		return failure("phase.process_identity", phaseDir, err)
+	}
+	return nil
+}
+func requiresProcessJournal(ref Ref) bool {
+	data, err := os.ReadFile(filepath.Join(ref.PhaseDir, "process-group-required"))
+	return err == nil && string(data) == "v1"
+}

@@ -39,12 +39,14 @@
 
 {{define "run-row"}}<article class="issue-row"><div>
 <a class="issue-title" href="/runs/{{.ID}}">{{.Repository}} #{{.IssueNumber}} · {{if .Title}}{{.Title}}{{else}}View run{{end}}</a>
-<p class="row-meta">{{if eq .State "READY_TO_MERGE"}}Waiting for your merge{{else if .ReviewPending}}Draft PR created. Review pending.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
+<p class="row-meta">{{if .Merge}}{{if .Merge.Pending}}Merged — cleanup pending{{else}}Merged — cleanup complete{{end}}{{else if eq .State "READY_TO_MERGE"}}Waiting for your merge{{else if .ReviewPending}}Draft PR created. Review pending.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
+{{with .Merge}}{{if .Early}}<p class="row-meta">Early merge before readiness</p>{{end}}{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}{{if .Pending}}<ul class="row-meta">{{range .Remaining}}<li>{{.}}</li>{{end}}</ul>{{end}}{{end}}
 {{if .LastErrorCode}}<p class="error-code">{{.LastErrorCode}}: {{.LastErrorMessage}}</p>{{end}}</div>
 {{if .PRURL}}<a class="row-note" href="{{.PRURL}}" target="_blank" rel="noreferrer">Open PR</a>{{else}}<time class="row-note">{{.UpdatedAt}}</time>{{end}}</article>{{end}}
 
 {{define "run-detail"}}{{with .Run}}
 <div class="run-heading"><h2>{{.Repository}} #{{.IssueNumber}} · {{.Title}}</h2><span class="badge badge-info">{{.State}}</span></div>
+{{with .Merge}}<section class="notice"><h3>{{if .Pending}}Merged — cleanup pending{{else}}Merged — cleanup complete{{end}}</h3><p>Merge observed {{.ObservedAt}}{{if .Early}} · Early merge before readiness{{end}}</p>{{if .Error}}<p>{{.Error}}</p>{{end}}{{if .Pending}}<ul>{{range .Remaining}}<li>{{.}}</li>{{end}}</ul>{{end}}</section>{{end}}
 {{if eq .State "READY_TO_MERGE"}}<p class="notice">Waiting for your merge</p>{{end}}
 {{if .ReviewPending}}<p class="notice">Draft PR created. Independent review will start on the next scheduler tick.</p>{{end}}
 {{if .Stopping}}<p class="notice">Stop requested. The phase is stopping or GitHub label cleanup is pending. Retry Stop to finish cleanup.</p>{{end}}

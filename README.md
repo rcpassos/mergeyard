@@ -6,8 +6,8 @@ and gives you a local dashboard to monitor the queue and stop runs.
 
 **Current stage: bounded review/fix loop with either harness.** The scheduler runs
 Claude Code or Codex independently as implementer and reviewer. All four role
-pairings continue through bounded fixes and re-review. CI monitoring and merge
-detection are planned.
+pairings continue through bounded fixes and re-review. CI monitoring, bounded CI
+repair, and manual merge completion are supported.
 
 ## Install
 

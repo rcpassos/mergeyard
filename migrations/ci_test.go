@@ -66,7 +66,7 @@ func TestCIUpgradePreservesPublishedM2History(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait, err := ci.Load(ctx, db, "m2")
-	if err != nil || wait != nil || state != "WAITING_FOR_CI" || sha != "approved" || round != 2 || commit != "approved" || event != `{"commit_sha":"approved"}` || permissions != "workspace-write · network true · approvals never" || version != 12 || publicationBody != "frozen body" || publicationState != "published" || commentID != 42 {
+	if err != nil || wait != nil || state != "WAITING_FOR_CI" || sha != "approved" || round != 2 || commit != "approved" || event != `{"commit_sha":"approved"}` || permissions != "workspace-write · network true · approvals never" || version != 13 || publicationBody != "frozen body" || publicationState != "published" || commentID != 42 {
 		t.Fatal("CI upgrade changed existing M2 history")
 	}
 }

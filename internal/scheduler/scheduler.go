@@ -239,6 +239,9 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	repoSlots := map[string]int{}
 	existing := map[string]bool{}
 	for _, run := range runs {
+		if run.Merge != nil && run.Merge.Pending() {
+			existing[issueKey(run.Repository, run.IssueNumber)] = true
+		}
 		if !run.State.Terminal() {
 			existing[issueKey(run.Repository, run.IssueNumber)] = true
 			if run.State != workflow.ReadyToMerge {
