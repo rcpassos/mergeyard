@@ -71,7 +71,9 @@ func TestMissingSessionRecoverySurvivesControlPlaneKill(t *testing.T) {
 					}
 					var run workflow.Run
 					// Halt at the failed resume, before the next tick reserves recovery.
-					waitFor(t, func() bool {
+					// Reaching review round two advances several complete phases; use
+					// the normal flow budget rather than a short artifact wait.
+					waitForWithin(t, 30*time.Second, func() bool {
 						if err := s.Tick(context.Background()); err != nil {
 							t.Fatal(err)
 						}

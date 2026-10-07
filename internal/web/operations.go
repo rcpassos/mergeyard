@@ -9,6 +9,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -19,6 +20,7 @@ type Operations interface {
 	Stop(context.Context, string) error
 	Retry(context.Context, string) (workflow.Run, error)
 	Watch(context.Context, string) (runner.SessionRef, error)
+	Takeover(context.Context, string) (harness.InteractiveCommand, error)
 }
 
 // Status is a snapshot from the process owning the configured workspace.
@@ -68,6 +70,14 @@ func (s *Server) retryRun(w http.ResponseWriter, r *http.Request) {
 	}
 	s.json(w, run)
 }
+func (s *Server) takeoverRun(w http.ResponseWriter, r *http.Request) {
+	command, err := s.operations.Takeover(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.operationError(w, r, err)
+		return
+	}
+	s.json(w, command)
+}
 func (s *Server) json(w http.ResponseWriter, value any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
@@ -76,10 +86,14 @@ func (s *Server) json(w http.ResponseWriter, value any) {
 func (s *Server) operationError(w http.ResponseWriter, r *http.Request, err error) {
 	code := "internal.run_operation"
 	status := http.StatusInternalServerError
+	message := "Could not complete run operation. Check the application log for details."
 	var failure *fault.Error
 	if errors.As(err, &failure) && errorCodePattern.MatchString(failure.Code) {
 		code = failure.Code
 		switch code {
+		case "takeover.unavailable", "takeover.operation_pending", "takeover.worktree_missing", "takeover.session_missing", "takeover.session_invalid", "takeover.harness_unknown", "takeover.process_ambiguous":
+			status = http.StatusConflict
+			message = failure.Message
 		case "internal.run_not_found":
 			status = http.StatusNotFound
 		case "run.terminal", "phase.not_running", "retry.unavailable", "retry.process_running", "retry.stop_pending", "retry.pr_closed", "retry.worktree_dirty", "retry.head_diverged", "retry.head_ambiguous", "retry.pr_ambiguous", "retry.review_unrestored", "harness.session_resume_failed", "internal.run_conflict":
@@ -88,5 +102,5 @@ func (s *Server) operationError(w http.ResponseWriter, r *http.Request, err erro
 	}
 	slog.ErrorContext(r.Context(), "Run operation failed", "error_code", code, "action", r.URL.Path, "error", err)
 	w.Header().Set("X-Mergeyard-Error-Code", code)
-	http.Error(w, code+": Could not complete run operation. Check the application log for details.", status)
+	http.Error(w, code+": "+message, status)
 }

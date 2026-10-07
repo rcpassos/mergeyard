@@ -135,7 +135,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if cmd.name == "status" || cmd.name == "pause" || cmd.name == "resume" || cmd.name == "watch" || cmd.name == "stop" || cmd.name == "retry" {
+	if cmd.name == "status" || cmd.name == "pause" || cmd.name == "resume" || cmd.name == "watch" || cmd.name == "stop" || cmd.name == "retry" || cmd.name == "takeover" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := operate(ctx, opts.configPath, cmd.name, rest, stdout, stderr); err != nil {

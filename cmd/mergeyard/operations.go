@@ -16,6 +16,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/web"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -101,6 +102,12 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 				count++
 			}
 			fmt.Fprintf(stdout, "%s  %s#%d  %s/%s\n", terminalText(run.ID), terminalText(run.Repository), run.IssueNumber, terminalText(string(run.State)), terminalText(string(run.Phase)))
+			if run.TakeoverStatus == workflow.TakeoverRequested {
+				fmt.Fprintln(stdout, "  Takeover requested; automation is suspended while processes stop and review restoration finishes")
+			}
+			if run.State == workflow.Manual {
+				fmt.Fprintf(stdout, "  Resume the exact implementer: mergeyard takeover %s\n", terminalText(run.ID))
+			}
 			if run.Merge != nil {
 				if run.Merge.Pending() {
 					fmt.Fprintln(stdout, "  Merged — cleanup pending")
@@ -230,6 +237,13 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		if run.LastErrorCode != "" {
 			fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 		}
+	case "takeover":
+		var command harness.InteractiveCommand
+		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/takeover", &command); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Run %s is MANUAL. Exit the interactive harness before handing control back.\n", terminalText(args[0]))
+		return runner.RunInteractive(ctx, status.Workspace, args[0], runner.ExecRequest{Executable: command.Executable, Args: command.Args, Dir: command.Dir}, os.Stdin, stdout, stderr)
 	case "watch":
 		var ref runner.SessionRef
 		if err := client.request(ctx, http.MethodGet, "/api/runs/"+url.PathEscape(args[0])+"/watch", &ref); err != nil {

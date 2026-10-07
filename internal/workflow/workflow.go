@@ -43,6 +43,16 @@ const (
 	Fix       Phase = "fix"
 )
 
+// TakeoverStatus journals preparation separately from the run's lifecycle.
+type TakeoverStatus string
+
+const (
+	TakeoverRequested TakeoverStatus = "requested"
+	TakeoverManual    TakeoverStatus = "manual"
+	TakeoverAttention TakeoverStatus = "attention"
+	TakeoverCancelled TakeoverStatus = "cancelled"
+)
+
 type Trigger string
 
 const (
@@ -119,6 +129,7 @@ type Run struct {
 	CompletedAt      string                `json:"completed_at,omitempty"`
 	LastErrorCode    string                `json:"last_error_code,omitempty"`
 	LastErrorMessage string                `json:"last_error_message,omitempty"`
+	TakeoverStatus   TakeoverStatus        `json:"takeover_status,omitempty"`
 }
 
 // Request supplies trigger-specific information, not an arbitrary new state.
@@ -213,6 +224,27 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		}
 		if err != nil {
 			return events.Draft{}, storageError(err)
+		}
+		if current.ID != "" {
+			// Finish the intent in the same transaction as its lifecycle outcome.
+			status := TakeoverStatus("")
+			switch request.Trigger {
+			case TakeOver:
+				status = TakeoverManual
+			case Stop, PRMerged:
+				if current.TakeoverStatus != "" {
+					status = TakeoverCancelled
+				}
+			case OperationFailed:
+				if current.TakeoverStatus == TakeoverRequested || current.TakeoverStatus == TakeoverManual {
+					status = TakeoverAttention
+				}
+			}
+			if status != "" {
+				if _, err := tx.ExecContext(ctx, "UPDATE runs SET takeover_status=? WHERE id=?", status, id); err != nil {
+					return events.Draft{}, storageError(err)
+				}
+			}
 		}
 		if err := request.Metadata.apply(ctx, tx, id, request.Failure); err != nil {
 			return events.Draft{}, &fault.Error{Code: "internal.run_metadata", Message: "Could not update run metadata", Err: err}
@@ -479,10 +511,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	var run Run
 	err := db.QueryRowContext(ctx, `SELECT id, repository, issue_number, state, COALESCE(current_phase, ''),
 		created_at, updated_at, COALESCE(completed_at, ''), COALESCE(last_error_code, ''), COALESCE(last_error_message, ''),
-		COALESCE(pr_number, 0), review_round, COALESCE(approved_sha, '')
+		COALESCE(pr_number, 0), review_round, COALESCE(approved_sha, ''), takeover_status
 		FROM runs WHERE id = ?`, id).Scan(&run.ID, &run.Repository, &run.IssueNumber, &run.State, &run.Phase,
 		&run.CreatedAt, &run.UpdatedAt, &run.CompletedAt, &run.LastErrorCode, &run.LastErrorMessage,
-		&run.PRNumber, &run.ReviewRound, &run.ApprovedSHA)
+		&run.PRNumber, &run.ReviewRound, &run.ApprovedSHA, &run.TakeoverStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, &fault.Error{Code: "internal.run_not_found", Message: "Run does not exist", Path: id, Err: err}
 	}

@@ -117,6 +117,9 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 }
 
 func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, run workflow.Run) error {
+	if run.TakeoverStatus == workflow.TakeoverRequested {
+		return s.prepareTakeover(ctx, run)
+	}
 	if run.PendingRetry() != nil {
 		return s.resumeRetry(ctx, repo, run)
 	}

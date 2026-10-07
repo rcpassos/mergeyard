@@ -32,6 +32,9 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	if run.State.Terminal() {
 		return nil
 	}
+	if run.TakeoverStatus == workflow.TakeoverRequested {
+		return s.prepareTakeover(ctx, run)
+	}
 	if run.Merge != nil {
 		return s.finishMerge(ctx, run)
 	}
