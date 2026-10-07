@@ -810,3 +810,152 @@ func TestHandbackOpensBoundedReviewerAttemptWindow(t *testing.T) {
 		})
 	}
 }
+
+func TestHandbackCountsOrdinaryReplacementWhenMissingStartupPrecedesWindow(t *testing.T) {
+	for _, agent := range []string{"claude", "codex"} {
+		for _, phase := range []workflow.Phase{workflow.Implement, workflow.Review} {
+			t.Run(agent+"/"+string(phase), func(t *testing.T) {
+				s, runtime, api, _, cfg, r := recoveryFlow(t, agent, phase, "success")
+				var before workflow.Run
+				waitForWithin(t, 30*time.Second, func() bool {
+					if err := s.Tick(context.Background()); err != nil {
+						t.Fatal(err)
+					}
+					runs, err := s.Runs(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(runs) != 1 || runs[0].Phase != phase {
+						return false
+					}
+					before = runs[0]
+					if phase == workflow.Implement {
+						return before.Implementer.Status == "failed" && strings.HasPrefix(before.Implementer.Error, "harness.session_resume_failed:")
+					}
+					return before.Review != nil && before.Review.Status == "failed" && strings.HasPrefix(before.Review.Error, "harness.session_resume_failed:")
+				})
+				if before.State != workflow.Active || len(before.SessionRecoveries) != 0 {
+					t.Fatalf("replacement already launched: %+v", before)
+				}
+				// The missing startup is outside the handback window. Every subsequent
+				// invocation completes startup and fails ordinarily, so max_attempts=1
+				// must count the replacement and forbid a second ordinary execution.
+				executable, script := cfg.Agents.Claude.Executable, `echo 'temporary execution failure' >&2; exit 1`
+				if agent == "codex" {
+					executable = cfg.Agents.Codex.Executable
+					script = `printf '%s\n' '{"type":"thread.started","thread_id":"` + replacementID + `"}'
+` + script
+				}
+				if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.Takeover(context.Background(), before.ID); err != nil {
+					t.Fatal(err)
+				}
+				selected, err := s.Handback(context.Background(), before.ID)
+				if err != nil || selected.Handbacks[0].AttemptFrom != 2 {
+					t.Fatalf("new window: %+v %v", selected, err)
+				}
+				s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+				if err != nil {
+					t.Fatal(err)
+				}
+				after := finish(t, s, workflow.NeedsAttention, phase)
+				attempt := after.Implementer.Attempt
+				if phase == workflow.Review {
+					attempt = after.Review.Attempt
+				}
+				if attempt != 2 || len(after.SessionRecoveries) != 1 {
+					t.Fatalf("max_attempts=1 authorized two ordinary executions after handback: physical attempt=%d recoveries=%d", attempt, len(after.SessionRecoveries))
+				}
+				for range 2 {
+					if err := s.Tick(context.Background()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				saved, err := runtime.Workflow.Get(context.Background(), before.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if saved.State != workflow.NeedsAttention || len(saved.Handbacks) != 1 || len(saved.SessionRecoveries) != 1 {
+					t.Fatalf("budget exhaustion lost on restart/reconcile: %+v", saved)
+				}
+			})
+		}
+	}
+}
+
+func TestHandbackDiscountsMissingStartupInsideFreshAttemptWindow(t *testing.T) {
+	for _, agent := range []string{"claude", "codex"} {
+		for _, phase := range []workflow.Phase{workflow.Implement, workflow.Review} {
+			t.Run(agent+"/"+string(phase), func(t *testing.T) {
+				_, runtime, api, _, cfg, r := recoveryFlow(t, agent, phase, "success")
+				executable := cfg.Agents.Claude.Executable
+				if agent == "codex" {
+					executable = cfg.Agents.Codex.Executable
+				}
+				round := 0
+				if phase == workflow.Review {
+					round = 2
+				}
+				first := fmt.Sprintf("%s-%d-1", phase, round)
+				second := fmt.Sprintf("%s-%d-2", phase, round)
+				data, err := os.ReadFile(executable)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Exhaust the old one-attempt window with an ordinary failure.
+				prefix := `case "$*" in *` + first + `*) echo 'temporary execution failure' >&2; exit 1;; esac
+`
+				if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+prefix+strings.TrimPrefix(string(data), "#!/bin/sh\n")), 0700); err != nil {
+					t.Fatal(err)
+				}
+				s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+				if err != nil {
+					t.Fatal(err)
+				}
+				before := finish(t, s, workflow.NeedsAttention, phase)
+				session := before.Implementer.SessionID
+				if phase == workflow.Review {
+					session = before.Review.SessionID
+				}
+				missing := `printf 'No conversation found with session ID: %s\n' "$3" >&2`
+				identity := ""
+				if agent == "codex" {
+					missing = `echo 'Error: thread/resume: thread/resume failed: no rollout found for thread id ` + session + ` (code -32600)' >&2`
+					identity = `printf '%s\n' '{"type":"thread.started","thread_id":"` + replacementID + `"}'`
+				}
+				script := `case "$*" in *` + second + `*) ` + missing + `; exit 1;; esac
+` + identity + `
+echo 'temporary execution failure' >&2; exit 1
+`
+				if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script), 0700); err != nil {
+					t.Fatal(err)
+				}
+				cfg.Repositories[0].Implementer.MaxAttempts = 2
+				cfg.Repositories[0].Reviewer.MaxAttempts = 2
+				s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.Takeover(context.Background(), before.ID); err != nil {
+					t.Fatal(err)
+				}
+				selected, err := s.Handback(context.Background(), before.ID)
+				if err != nil || selected.Handbacks[0].AttemptFrom != 2 {
+					t.Fatalf("new window: %+v %v", selected, err)
+				}
+				after := finish(t, s, workflow.NeedsAttention, phase)
+				attempt := after.Implementer.Attempt
+				if phase == workflow.Review {
+					attempt = after.Review.Attempt
+				}
+				// Startup 2 is discounted; ordinary executions 3 and 4 spend the two
+				// configured attempts, while the next ordinary execution is forbidden.
+				if attempt != 4 || len(after.SessionRecoveries) != 1 {
+					t.Fatalf("in-window missing startup changed max_attempts=2: attempt=%d recoveries=%d", attempt, len(after.SessionRecoveries))
+				}
+			})
+		}
+	}
+}

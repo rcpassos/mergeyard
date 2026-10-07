@@ -149,3 +149,7 @@ handback and explicit Retry share the same absolute attempt-window floor for
 launch selection and failure accounting; missing-session recovery stays bounded
 per phase/round. Unsaved PR discovery during handback inspects all states and
 requires a unique matching branch/repository identity before publication.
+
+Only missing startups whose failed attempt is inside the selected attempt window
+are excluded from that window's ordinary budget. A recovery replacement launched
+after handback counts as ordinary work when its missing startup preceded handback.
