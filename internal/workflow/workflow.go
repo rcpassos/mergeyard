@@ -94,6 +94,7 @@ type RunMetadata struct {
 // Nil fields preserve their values; an empty ApprovedSHA clears approval.
 // IncrementReviewRound advances the persisted round within the transaction.
 type MetadataPatch struct {
+	HarnessWait          *HarnessWait
 	Handback             *HandbackSnapshot
 	Retry                *RetrySnapshot
 	PRNumber             *int
@@ -109,10 +110,12 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
-	Handbacks         []HandbackSnapshot `json:"handbacks,omitempty"`
-	Retries           []RetrySnapshot    `json:"retries,omitempty"`
-	SessionRecoveries []SessionRecovery  `json:"session_recoveries,omitempty"`
-	Implementer       *ImplementSnapshot `json:"implementer,omitempty"`
+	HarnessWait        *HarnessWait       `json:"harness_wait,omitempty"`
+	HarnessWaitHistory []HarnessWait      `json:"harness_wait_history,omitempty"`
+	Handbacks          []HandbackSnapshot `json:"handbacks,omitempty"`
+	Retries            []RetrySnapshot    `json:"retries,omitempty"`
+	SessionRecoveries  []SessionRecovery  `json:"session_recoveries,omitempty"`
+	Implementer        *ImplementSnapshot `json:"implementer,omitempty"`
 	RunMetadata
 	Merge            *maintenance.Snapshot `json:"merge,omitempty"`
 	CI               *ci.Snapshot          `json:"ci,omitempty"`
@@ -179,6 +182,9 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		next, eventType, err := destination(current, request)
 		if err != nil {
 			return events.Draft{}, err
+		}
+		if request.Metadata.HarnessWait != nil && request.Trigger != HarnessLimited && request.Trigger != OperationFailed {
+			return events.Draft{}, invalid("Harness wait requires a limit or attention transition")
 		}
 		if request.Metadata.Handback != nil && request.Trigger != HandBack && request.Trigger != OperationFailed {
 			return events.Draft{}, invalid("Handback selection requires a handback or attention transition")
@@ -319,6 +325,11 @@ func (w *Workflow) acquireOperation(ctx context.Context, id string) (func(), err
 }
 
 func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string, failure *fault.Error) error {
+	if patch.HarnessWait != nil {
+		if err := patch.HarnessWait.save(ctx, tx, id); err != nil {
+			return err
+		}
+	}
 	if patch.Handback != nil {
 		if err := patch.Handback.Save(ctx, tx, id); err != nil {
 			return err
@@ -539,6 +550,14 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	}
 	if err != nil {
 		return Run{}, storageError(err)
+	}
+	run.HarnessWaitHistory, err = LoadHarnessWaits(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	if len(run.HarnessWaitHistory) > 0 {
+		v := run.HarnessWaitHistory[len(run.HarnessWaitHistory)-1]
+		run.HarnessWait = &v
 	}
 	run.Merge, err = maintenance.Load(ctx, db, id)
 	if err != nil {

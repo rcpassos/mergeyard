@@ -42,6 +42,9 @@ func (s *Scheduler) Reconcile(ctx context.Context) (ReconcileReport, error) {
 }
 
 func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
+	if err := s.updateHarnessAvailability(ctx); err != nil {
+		return ReconcileReport{}, err
+	}
 	report := ReconcileReport{Findings: []Finding{}}
 	runs, err := s.Runs(ctx)
 	if err != nil {
@@ -164,6 +167,9 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 	// Honor durable stop intent before restoring labels or inspecting work.
 	if stopRequested {
 		return s.stopRun(ctx, run)
+	}
+	if run.State == workflow.WaitingForHarness {
+		return s.resumeHarnessWait(ctx, run)
 	}
 	if run.State == workflow.WaitingForCI {
 		if err := s.waitCI(ctx, repo, run); err != nil {

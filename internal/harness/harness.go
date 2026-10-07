@@ -3,6 +3,7 @@ package harness
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/execution"
@@ -18,6 +19,7 @@ type HarnessAdapter interface {
 	BuildInvocation(PhaseContext, RoleConfig) (Invocation, error)
 	BuildInteractiveInvocation(sessionID, worktree string) (InteractiveCommand, error)
 	ParseResult(PhaseContext, PhaseArtifacts) (PhaseResult, error)
+	ClassifyFailure(PhaseArtifacts, time.Time) FailureClassification
 }
 
 // SessionDiscoverer reads early identity from complete records in a live stream.
@@ -33,13 +35,14 @@ const (
 )
 
 type HarnessCapabilities struct {
-	ModelSelection      bool
-	EffortSelection     bool
-	SkillSelection      bool
-	StructuredOutput    bool
-	SessionResume       bool
-	UsageLimitDetection bool
-	SessionIDSource     SessionIDSource
+	ModelSelection            bool
+	EffortSelection           bool
+	SkillSelection            bool
+	StructuredOutput          bool
+	SessionResume             bool
+	TemporaryLimitDetection   bool
+	CreditExhaustionDetection bool
+	SessionIDSource           SessionIDSource
 }
 
 type RoleConfig = config.Role
@@ -49,6 +52,7 @@ type Invocation = execution.Command
 // before launching a preassigned session. Env is the complete child environment.
 // PhaseDir is an existing attempt directory outside the worktree.
 type PhaseContext struct {
+	Interruption string
 	Phase        workflow.Phase
 	WorktreePath string
 	PhaseDir     string

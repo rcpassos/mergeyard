@@ -11,6 +11,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runner"
+	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -26,10 +27,11 @@ type Operations interface {
 
 // Status is a snapshot from the process owning the configured workspace.
 type Status struct {
-	Workspace string         `json:"workspace"`
-	Paused    bool           `json:"paused"`
-	Runs      []workflow.Run `json:"runs"`
-	Token     string         `json:"csrf_token"`
+	Harnesses []scheduler.HarnessAvailability `json:"harnesses,omitempty"`
+	Workspace string                          `json:"workspace"`
+	Paused    bool                            `json:"paused"`
+	Runs      []workflow.Run                  `json:"runs"`
+	Token     string                          `json:"csrf_token"`
 }
 
 // NewWithOperations enables the CLI API on the same server as the dashboard.
@@ -46,7 +48,17 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		s.operationError(w, r, err)
 		return
 	}
-	s.json(w, Status{Workspace: s.workspace, Paused: s.scheduler.Paused(), Runs: runs, Token: s.token})
+	var availability []scheduler.HarnessAvailability
+	if provider, ok := s.operations.(interface {
+		HarnessAvailability(context.Context) ([]scheduler.HarnessAvailability, error)
+	}); ok {
+		availability, err = provider.HarnessAvailability(r.Context())
+		if err != nil {
+			s.operationError(w, r, err)
+			return
+		}
+	}
+	s.json(w, Status{Harnesses: availability, Workspace: s.workspace, Paused: s.scheduler.Paused(), Runs: runs, Token: s.token})
 }
 func (s *Server) stopRun(w http.ResponseWriter, r *http.Request) {
 	if err := s.operations.Stop(r.Context(), r.PathValue("id")); err != nil {

@@ -442,7 +442,8 @@ effort_selection
 skill_selection
 structured_output
 session_resume
-usage_limit_detection
+temporary_limit_detection
+credit_exhaustion_detection
 ```
 
 `structured_output` and `session_resume` are required for MVP adapters. Adapters also declare their `session_id_source`: `preassigned` (Mergeyard chooses the ID) or `discovered` (read from the harness output).
@@ -504,7 +505,7 @@ Subscription-backed harnesses enforce usage limits, such as rolling 5-hour or we
 
 - When a phase attempt exits unsuccessfully, the adapter classifies whether the cause was a usage limit using the harness's exit code, structured output, or known error messages in the phase output, and extracts the reset time when the harness reports one.
 - This classification applies only to failed exits. Phase completion is still determined by exit metadata and the structured result (section 13).
-- Detection patterns are adapter-specific and maintained with the adapter. Unrecognized failures follow the normal phase-failure path. An adapter without the `usage_limit_detection` capability treats every failure as a normal phase failure.
+- Detection patterns are adapter-specific and maintained with the adapter. Unrecognized failures follow the normal phase-failure path. An adapter without the `temporary_limit_detection` capability treats every failure as a normal phase failure.
 
 Adapter signals, preferring structured sources over message text:
 

@@ -58,9 +58,11 @@ type Resources struct {
 }
 
 type Dependencies struct {
-	GitHub GitHub
-	Git    Git
-	Runner runner.Runner
+	// Harnesses optionally supplies adapters at the external harness boundary.
+	Harnesses map[string]harness.HarnessAdapter
+	GitHub    GitHub
+	Git       Git
+	Runner    runner.Runner
 	// Now controls CI observation windows; nil uses wall time.
 	Now func() time.Time
 	// Env is the complete harness environment; callers explicitly select it.
@@ -102,10 +104,22 @@ func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler,
 	if cfg.CITimeout < 0 {
 		return nil, &fault.Error{Code: "config.invalid_duration", Message: "CI timeout must be positive"}
 	}
+	if cfg.UsageLimits.Cooldown <= 0 {
+		cfg.UsageLimits.Cooldown = 30 * time.Minute
+	}
+	if cfg.UsageLimits.MaxWaits < 1 {
+		cfg.UsageLimits.MaxWaits = 3
+	}
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
 	adapters := map[string]harness.HarnessAdapter{"claude": harness.NewClaude(cfg.Agents.Claude), "codex": harness.NewCodex(cfg.Agents.Codex)}
+	for name, adapter := range deps.Harnesses {
+		if adapter == nil || adapter.Type() != name {
+			return nil, &fault.Error{Code: "config.invalid_agent", Message: "Harness override must match its type"}
+		}
+		adapters[name] = adapter
+	}
 	for _, repo := range cfg.Repositories {
 		if repo.Enabled {
 			for _, role := range []config.Role{repo.Implementer, repo.Reviewer} {
@@ -253,6 +267,14 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	}
 	for _, repo := range s.cfg.Repositories {
 		if !repo.Enabled || slots >= s.cfg.Concurrency || s.control.Paused() {
+			continue
+		}
+		gate, err := s.harnessGate(ctx, repo.Implementer.Agent)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if gate != nil {
 			continue
 		}
 		limit := repo.Concurrency

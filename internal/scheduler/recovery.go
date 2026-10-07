@@ -45,7 +45,11 @@ func (s *Scheduler) retryPhase(ctx context.Context, run workflow.Run, phase work
 			return false, err
 		}
 	}
-	number := a.number - floor + 1 - recovered
+	var limited int
+	if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM phase_attempts WHERE run_id=? AND phase=? AND round=? AND attempt>=? AND status='usage_limited'", run.ID, phase, phaseRound(run, phase), floor).Scan(&limited); err != nil {
+		return false, err
+	}
+	number := a.number - floor + 1 - recovered - limited
 	if phase == workflow.Implement {
 		return canRetryImplementAttempt(cause, number, max), nil
 	}

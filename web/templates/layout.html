@@ -15,8 +15,9 @@
 
 {{define "content"}}<main id="content" class="workbench" hx-get="{{.Path}}" hx-trigger="dashboard-update from:body" hx-target="this" hx-swap="outerHTML" hx-sync="this:queue last">
 <h1>{{.Title}}</h1>
+<section aria-label="Harness availability">{{range .Harnesses}}<p class="connection">{{.Harness}}: {{if .Available}}Available{{else}}Waiting until {{.ResetAt}} · {{.ResetTimeSource}} · {{.Source}}{{end}}{{if not .TemporaryLimitDetection}} · Temporary-limit detection unavailable; usage limits consume the ordinary attempt budget.{{end}}</p>{{end}}</section>
 {{if or (eq .Page "dashboard") (eq .Page "queue")}}
-<div class="status-bar">{{template "scheduler" .}}<div class="capacity"><span class="capacity-value">{{.Used}} / {{.Limit}}</span><span>Concurrency slots in use</span><small>Includes attention and CI waiting runs.</small></div></div>
+<div class="status-bar">{{template "scheduler" .}}<div class="capacity"><span class="capacity-value">{{.Used}} / {{.Limit}}</span><span>Concurrency slots in use</span><small>Includes attention, harness waiting, manual, and CI waiting runs.</small></div></div>
 {{if not .QueueReady}}<p class="notice">Discovering ready and blocked issues on GitHub…</p>{{end}}
 {{if .QueueError}}<p class="notice" role="status">{{.QueueError}}</p>{{end}}
 {{if .QueueTime}}<p class="connection">GitHub queue last synced <time>{{.QueueTime}}</time></p>{{end}}
@@ -39,7 +40,7 @@
 
 {{define "run-row"}}<article class="issue-row"><div>
 <a class="issue-title" href="/runs/{{.ID}}">{{.Repository}} #{{.IssueNumber}} · {{if .Title}}{{.Title}}{{else}}View run{{end}}</a>
-<p class="row-meta">{{if .Merge}}{{if .Merge.Pending}}Merged — cleanup pending{{else}}Merged — cleanup complete{{end}}{{else if eq .State "READY_TO_MERGE"}}Waiting for your merge{{else if .ReviewPending}}Draft PR created. Review pending.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
+<p class="row-meta">{{if and (eq .State "WAITING_FOR_HARNESS") .HarnessWait}}Usage limit · {{.HarnessWait.Harness}} · reset {{.HarnessWait.ResetAt}} · {{.HarnessWait.ResetTimeSource}} · {{.HarnessWait.Source}} · {{end}}{{if .Merge}}{{if .Merge.Pending}}Merged — cleanup pending{{else}}Merged — cleanup complete{{end}}{{else if eq .State "READY_TO_MERGE"}}Waiting for your merge{{else if .ReviewPending}}Draft PR created. Review pending.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
 {{with .Merge}}{{if .Early}}<p class="row-meta">Early merge before readiness</p>{{end}}{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}{{if .Pending}}<ul class="row-meta">{{range .Remaining}}<li>{{.}}</li>{{end}}</ul>{{end}}{{end}}
 {{if .LastErrorCode}}<p class="error-code">{{.LastErrorCode}}: {{.LastErrorMessage}}</p>{{end}}</div>
 {{if .PRURL}}<a class="row-note" href="{{.PRURL}}" target="_blank" rel="noreferrer">Open PR</a>{{else}}<time class="row-note">{{.UpdatedAt}}</time>{{end}}</article>{{end}}
@@ -65,7 +66,8 @@
 {{if .CanRetry}}<p class="notice">Retry reconciles the PR, CI, Git ownership, edits, and processes before selecting the next phase. Your work is preserved.</p>{{end}}
 {{if .CanHandback}}<p class="notice">Exit the interactive harness before handback. Manual changes will be committed and pushed. With a PR, independent review follows; without a PR, implementation resumes. If review rounds are exhausted, handback grants exactly one additional round. Clearing or branching the conversation does not change the original implementer session Mergeyard resumes.</p>{{end}}
 {{range .Handbacks}}<section class="notice"><h3>Handback · {{.RequestedAt}}</h3>{{if .Pending}}<p>Publication and reconciliation pending. Retry handback to continue this request.</p>{{end}}{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}{{if .NextPhase}}<p>Selected {{.NextState}} / {{.NextPhase}} · round {{.Round}}</p>{{end}}{{if .GrantedRound}}<p>{{if .Pending}}Will grant{{else if .Error}}Requested{{else}}Granted{{end}} additional review round: {{.GrantedRound}}</p>{{end}}{{if .CommitSHA}}<p>Manual commit: <code>{{.CommitSHA}}</code></p>{{end}}</section>{{end}}
-{{range .Retries}}<section class="notice"><h3>Retry · {{.RequestedAt}}</h3>{{if .Pending}}<p>Reconciliation pending. Retry again to continue this request.</p>{{else if .Error}}<p class="error-code">{{.Error}}</p>{{else}}<p>Selected {{.NextState}}{{if .NextPhase}} / {{.NextPhase}}{{end}} · round {{.Round}}</p>{{if .GrantedRound}}<p>Additional review round granted: {{.GrantedRound}}</p>{{end}}{{if .Deadline}}<p>Renewed CI deadline: {{.Deadline}}</p>{{end}}{{end}}</section>{{end}}
+{{range .HarnessWaitHistory}}<section class="notice"><h3>Usage-limit wait · {{.Harness}}</h3><p>{{.Reason}} · {{.Phase}} / round {{.Round}} · reset {{.ResetAt}} · {{.ResetTimeSource}} · {{.Source}}</p>{{if .AttemptID}}<p>Interrupted execution: <code>{{.AttemptID}}</code> · consecutive limit {{.Consecutive}} · wait allowance {{.Allowance}}</p>{{else}}<p>Account gate; no execution started.</p>{{end}}</section>{{end}}
+{{range .Retries}}<section class="notice"><h3>Retry · {{.RequestedAt}}</h3>{{if .Pending}}<p>Reconciliation pending. Retry again to continue this request.</p>{{else if .Error}}<p class="error-code">{{.Error}}</p>{{else}}<p>Selected {{.NextState}}{{if .NextPhase}} / {{.NextPhase}}{{end}} · round {{.Round}}</p>{{if .GrantedWait}}<p>Exactly one additional usage-limit wait granted; allowance {{.GrantedWait}}. Known reset time remains in effect.</p>{{end}}{{if .GrantedRound}}<p>Additional review round granted: {{.GrantedRound}}</p>{{end}}{{if .Deadline}}<p>Renewed CI deadline: {{.Deadline}}</p>{{end}}{{end}}</section>{{end}}
 <dl class="run-facts">
 <div><dt>Run ID</dt><dd><code>{{.ID}}</code></dd></div>
 <div><dt>Phase / round / attempt</dt><dd>{{if .Phase}}{{.Phase}}{{else}}Not started{{end}} / {{.Round}} / {{.Attempt}}</dd></div>
@@ -124,6 +126,7 @@
 
 {{define "settings"}}<p class="intro">The values below are read-only. Edit the YAML configuration and restart Mergeyard to apply changes.</p>
 <dl class="run-facts"><div><dt>Configuration path</dt><dd>{{if .ConfigPath}}<code>{{.ConfigPath}}</code>{{else}}No configuration file selected{{end}}</dd></div><div><dt>Workspace</dt><dd><code>{{.Workspace}}</code></dd></div></dl>
+<section><h2>Usage-limit recovery history</h2>{{range .RecoveryRuns}}{{if .HarnessWaitHistory}}<p>Run <a href="/runs/{{.ID}}">{{.Repository}} #{{.IssueNumber}}</a> · {{.State}} / {{.Phase}}</p>{{range .HarnessWaitHistory}}<p>{{.Harness}} · reset {{.ResetAt}} · {{.ResetTimeSource}} · {{.Source}} · consecutive {{.Consecutive}} / allowance {{.Allowance}}</p>{{end}}{{range .Retries}}{{if .GrantedWait}}<p>Exactly one additional usage-limit wait granted; allowance {{.GrantedWait}}.</p>{{end}}{{end}}{{end}}{{end}}</section>
 <div class="run-history"><section><h2>Effective configuration</h2><pre class="settings-values" tabindex="0">{{.ConfigText}}</pre></section><section><h2>Doctor results</h2><p class="connection">Checked when the dashboard starts.</p><pre class="settings-values" tabindex="0">{{.Doctor}}</pre></section></div>{{end}}
 
 {{define "phase-output"}}<section id="phase-output"{{if .Run.CanStop}} hx-get="/runs/{{.Run.ID}}/output" hx-trigger="every 2s" hx-target="this" hx-swap="outerHTML" hx-sync="this:queue last"{{end}}><h2>Phase output</h2><p class="connection">{{.LogMessage}}</p><pre class="log-tail" tabindex="0">{{if .Log}}{{.Log}}{{else}}No readable output yet.{{end}}</pre></section>{{end}}

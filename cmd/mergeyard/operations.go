@@ -94,6 +94,13 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		}
 		fmt.Fprintf(stdout, "Scheduler: %s\n", state)
 		count := 0
+		for _, v := range status.Harnesses {
+			state := "available"
+			if !v.Available {
+				state = "waiting until " + v.ResetAt.Format(time.RFC3339) + " (" + v.ResetTimeSource + "; " + v.Source + ")"
+			}
+			fmt.Fprintf(stdout, "Harness %s: %s\n", terminalText(v.Harness), terminalText(state))
+		}
 		for _, run := range status.Runs {
 			if run.State.Terminal() && run.State != workflow.Failed && !(run.Merge != nil && run.Merge.Pending()) {
 				continue
@@ -129,6 +136,9 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			}
 			if run.State == workflow.NeedsAttention || run.State == workflow.Failed {
 				fmt.Fprintf(stdout, "  Retry: mergeyard retry %s (reconciles preserved work first)\n", terminalText(run.ID))
+			}
+			for _, v := range run.HarnessWaitHistory {
+				fmt.Fprintf(stdout, "  Usage-limit wait: %s · %s · reset %s · %s · %s · consecutive %d / allowance %d\n", terminalText(v.Harness), terminalText(v.Reason), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source), v.Consecutive, v.Allowance)
 			}
 			for _, v := range run.Handbacks {
 				printHandback(stdout, v)
@@ -303,6 +313,9 @@ func printRetry(out io.Writer, v workflow.RetrySnapshot) {
 		return
 	}
 	fmt.Fprintf(out, "  Retry selected %s/%s · round %d\n", terminalText(string(v.NextState)), terminalText(string(v.NextPhase)), v.Round)
+	if v.GrantedWait > 0 {
+		fmt.Fprintf(out, "  Exactly one additional usage-limit wait granted; allowance %d. Known reset time remains in effect.\n", v.GrantedWait)
+	}
 	if v.GrantedRound > 0 {
 		fmt.Fprintf(out, "  Additional review round granted: %d\n", v.GrantedRound)
 	}

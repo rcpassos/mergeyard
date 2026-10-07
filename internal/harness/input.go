@@ -38,6 +38,9 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 		return "", err
 	}
 	var text strings.Builder
+	if phase.Interruption != "" {
+		text.WriteString("## Interruption context\n\n" + phase.Interruption + "\n\n")
+	}
 	fmt.Fprintf(&text, "# Implement issue #%d\n\n## Context\n\nRepository: %s\nBase branch: %s\nWorktree: %s\nIssue URL: %s\n\n",
 		input.IssueNumber, input.Repository, input.BaseBranch, phase.WorktreePath, input.IssueURL)
 	text.WriteString("## Constraints\n\n- Do not commit. Mergeyard owns commits and pull requests.\n")

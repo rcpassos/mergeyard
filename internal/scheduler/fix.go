@@ -83,6 +83,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 	if next := explicitAttempt(run, workflow.Fix, a.number); next > 0 {
 		return s.startFix(ctx, repo, run, gitRun, next)
 	}
+	if a.status == "usage_limited" {
+		return s.startFix(ctx, repo, run, gitRun, a.number+1)
+	}
 	if a.status == "failed" {
 		code, message, _ := strings.Cut(a.failure, ": ")
 		cause := &fault.Error{Code: code, Message: message}
@@ -144,7 +147,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 				lastMessage, cause = s.readLastMessage(ctx, a.ref.PhaseDir)
 			}
 			if cause == nil {
-				result, err := s.harnesses[a.agent].ParseResult(harness.PhaseContext{Phase: workflow.Fix, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+				result, err := s.parseExecution(a.agent, harness.PhaseContext{Phase: workflow.Fix, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 				cause = err
 				if err == nil {
 					report = &review.FixReport{SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses}
@@ -260,6 +263,9 @@ func (s *Scheduler) finishFixAttempt(ctx context.Context, repo config.Repository
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if isTemporaryLimit(cause) {
+		return s.limitExecution(ctx, repo, run, a.attempt, cause)
+	}
 	var data any
 	if report != nil {
 		encoded, err := json.Marshal(report)
@@ -304,6 +310,9 @@ func fixFailure(cause error, number, max int) error {
 }
 
 func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run workflow.Run, gitRun managedgit.Run, number int) error {
+	if gated, err := s.gatePhase(ctx, run, repo.Implementer.Agent); gated || err != nil {
+		return err
+	}
 	fail := func(err error) error { return s.recordAttention(ctx, repo, run, err) }
 	if run.Implementer != nil {
 		if err := validateImplementerHarness(run.Implementer.Agent, repo.Implementer.Agent); err != nil {
@@ -383,7 +392,7 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	if err := sessions.RequireProcessJournal(phaseDir); err != nil {
 		return fail(err)
 	}
-	phase := harness.PhaseContext{Phase: workflow.Fix, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
+	phase := harness.PhaseContext{Phase: workflow.Fix, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env, Interruption: interruptionContext(run, workflow.Fix)}
 	input, err := harness.WriteFixInput(ctx, s.deps.Runner, phase, harness.FixInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, PRBody: pr.Body, TargetSHA: target, Round: run.ReviewRound, Findings: findings, CI: repair})
 	if err != nil {
 		return fail(err)

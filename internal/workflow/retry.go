@@ -18,6 +18,8 @@ type RetrySnapshot struct {
 	NextPhase    Phase  `json:"next_phase,omitempty"`
 	Round        int    `json:"round"`
 	AttemptFrom  int    `json:"attempt_from,omitempty"`
+	GrantedWait  int    `json:"granted_wait,omitempty"`
+	WaitSequence int    `json:"wait_sequence,omitempty"`
 	GrantedRound int    `json:"granted_round,omitempty"`
 	TargetSHA    string `json:"target_sha,omitempty"`
 	Deadline     string `json:"deadline,omitempty"`
