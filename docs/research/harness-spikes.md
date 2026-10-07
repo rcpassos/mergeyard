@@ -26,6 +26,14 @@ was contradicted; continuation with the rejected alternate model and the skipped
 default-cache build remain blocked. Usage limits and interactive handback remain
 M3 work. Claude M1 checks were not repeated.
 
+Update (2026-10-06): [issue #63’s Codex M3 evidence](codex-m3/report.md)
+verifies interrupted headless → interactive → headless continuity on one exact
+UUID, normal interactive approval with explicitly selected permissions, and
+native completion under reapplied headless settings on Codex 0.156.1. The
+report records the initial model refusal and the successful approval follow-up,
+as well as the remaining release dependencies. Claude Q10 remains the baseline;
+usage-limit evidence and Mergeyard lifecycle integration remain separate work.
+
 Update (2026-10-06): [issue #61's Claude M3 capture](claude-m3/report.md)
 preserves a bounded headless success with `rate_limit_info.status:
 allowed_warning`, reset values, and offline warning fixtures on 2.1.288.
