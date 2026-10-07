@@ -435,6 +435,12 @@ func attemptCause(a attempt) error {
 }
 
 func explicitAttempt(run workflow.Run, phase workflow.Phase, number int) int {
+	for i := len(run.Handbacks) - 1; i >= 0; i-- {
+		v := run.Handbacks[i]
+		if !v.Pending && v.Error == "" && v.NextPhase == phase && v.Round == run.ReviewRound && v.AttemptFrom > number {
+			return v.AttemptFrom
+		}
+	}
 	for i := len(run.Retries) - 1; i >= 0; i-- {
 		v := run.Retries[i]
 		if !v.Pending && v.Error == "" && v.NextPhase == phase && v.Round == run.ReviewRound && v.AttemptFrom > number {
@@ -446,6 +452,11 @@ func explicitAttempt(run workflow.Run, phase workflow.Phase, number int) int {
 
 func (s *Scheduler) roundLimit(run workflow.Run) int {
 	max := s.cfg.MaxRounds
+	for _, v := range run.Handbacks {
+		if !v.Pending && v.Error == "" && v.GrantedRound > max {
+			max = v.GrantedRound
+		}
+	}
 	for _, v := range run.Retries {
 		if !v.Pending && v.Error == "" && v.GrantedRound > max {
 			max = v.GrantedRound

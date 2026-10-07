@@ -340,3 +340,29 @@ func TestConcurrentCLITakeoverLaunchesOneInteractiveProcess(t *testing.T) {
 		t.Fatalf("ownership survived exit: %d %s", code, errOut)
 	}
 }
+
+func TestCLIHandbackDisclosesSelectionAndAdditionalRound(t *testing.T) {
+	root := t.TempDir()
+	token := "handback-token"
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: token})
+	})
+	mux.HandleFunc("POST /api/runs/manual/handback", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {
+			http.Error(w, "missing protection", 403)
+			return
+		}
+		json.NewEncoder(w).Encode(workflow.Run{ID: "manual", State: workflow.Active, Phase: workflow.Review, Handbacks: []workflow.HandbackSnapshot{{NextState: workflow.Active, NextPhase: workflow.Review, Round: 2, GrantedRound: 2}}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("--config", path, "handback", "manual")
+	if code != 0 || !strings.Contains(out, "ACTIVE/review") || !strings.Contains(out, "Additional review round granted: 2") {
+		t.Fatalf("handback: %d %s %s", code, out, errOut)
+	}
+}

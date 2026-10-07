@@ -131,3 +131,14 @@ completion. The separate `merge_cleanup` journal persists maintenance progress
 outside the coding lifecycle. Run snapshots include that journal for status,
 events, and UI. `pr.merge_observed` records merge intent; `merge.cleanup_updated`
 records individual maintenance boundaries and pending errors.
+
+## Manual handback
+
+The scheduler serializes handback with other run operations and holds interactive
+ownership through reconciliation and publication. `run_handbacks` records intent,
+inspected remote head, pinned commit and selected phase/round. `MetadataPatch.Handback`
+finishes the journal in the `HandBack` lifecycle transaction, clearing approval
+and persisting any absolute round grant with the new phase. A rejected operation
+records its error with the attention transition. Stop and observed merge cancel
+pending intent in their lifecycle transaction. Replay preserves commits, pushes
+and grants; only later ticks can start implementation or independent review.

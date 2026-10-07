@@ -216,12 +216,20 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		return fail(&fault.Error{Code: "git.review_unsupported", Message: "Git adapter cannot protect reviewer changes"})
 	}
 	target := ""
+	selectedAt := ""
 	for _, v := range run.Retries {
 		if !v.Pending && v.Error == "" && v.NextPhase == workflow.Review && v.Round == run.ReviewRound && v.TargetSHA != "" {
 			target = v.TargetSHA
+			selectedAt = v.RequestedAt
 		}
 	}
-	hasRetryTarget := target != ""
+	for _, v := range run.Handbacks {
+		if !v.Pending && v.Error == "" && v.NextPhase == workflow.Review && v.Round == run.ReviewRound && v.RequestedAt >= selectedAt {
+			target = v.CommitSHA
+			selectedAt = v.RequestedAt
+		}
+	}
+	hasReconciledTarget := target != ""
 	if run.ReviewRound > 1 || target != "" {
 		fixer, ok := s.deps.Git.(FixGit)
 		if !ok || (run.Fix == nil && target == "") {
@@ -238,8 +246,8 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if err != nil {
 		return fail(err)
 	}
-	if hasRetryTarget && snapshot.Head != target {
-		return fail(&fault.Error{Code: "review.head_changed", Message: "Review target differs from the reconciled retry target"})
+	if hasReconciledTarget && snapshot.Head != target {
+		return fail(&fault.Error{Code: "review.head_changed", Message: "Review target differs from the reconciled target"})
 	}
 	pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
 	if err != nil {
@@ -297,7 +305,7 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	var fixReport *review.FixReport
 	var repair *ci.Snapshot
 	if run.ReviewRound > 1 {
-		if !hasRetryTarget && (run.Fix == nil || !run.Fix.Pushed || run.Fix.CommitSHA != snapshot.Head || run.Fix.Round != run.ReviewRound-1) {
+		if !hasReconciledTarget && (run.Fix == nil || !run.Fix.Pushed || run.Fix.CommitSHA != snapshot.Head || run.Fix.Round != run.ReviewRound-1) {
 			return fail(&fault.Error{Code: "review.head_changed", Message: "Next review target differs from the pinned fix commit"})
 		}
 		if run.Fix != nil {

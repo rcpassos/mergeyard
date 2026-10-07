@@ -94,6 +94,7 @@ type RunMetadata struct {
 // Nil fields preserve their values; an empty ApprovedSHA clears approval.
 // IncrementReviewRound advances the persisted round within the transaction.
 type MetadataPatch struct {
+	Handback             *HandbackSnapshot
 	Retry                *RetrySnapshot
 	PRNumber             *int
 	ReviewRound          *int
@@ -108,6 +109,7 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
+	Handbacks         []HandbackSnapshot `json:"handbacks,omitempty"`
 	Retries           []RetrySnapshot    `json:"retries,omitempty"`
 	SessionRecoveries []SessionRecovery  `json:"session_recoveries,omitempty"`
 	Implementer       *ImplementSnapshot `json:"implementer,omitempty"`
@@ -178,6 +180,9 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		if err != nil {
 			return events.Draft{}, err
 		}
+		if request.Metadata.Handback != nil && request.Trigger != HandBack && request.Trigger != OperationFailed {
+			return events.Draft{}, invalid("Handback selection requires a handback or attention transition")
+		}
 		if request.Metadata.Fix != nil && (current.Phase != Fix || request.Trigger != FixSucceeded) {
 			return events.Draft{}, invalid("Fix completion requires fix success transition")
 		}
@@ -229,9 +234,18 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 			// Finish the intent in the same transaction as its lifecycle outcome.
 			status := TakeoverStatus("")
 			switch request.Trigger {
+			case HandBack:
+				status = TakeoverCancelled
 			case TakeOver:
 				status = TakeoverManual
 			case Stop, PRMerged:
+				if v := current.PendingHandback(); v != nil {
+					v.Pending = false
+					v.Error = "handback.cancelled: Stop or observed merge superseded handback"
+					if err := v.Save(ctx, tx, id); err != nil {
+						return events.Draft{}, err
+					}
+				}
 				if current.TakeoverStatus != "" {
 					status = TakeoverCancelled
 				}
@@ -305,6 +319,11 @@ func (w *Workflow) acquireOperation(ctx context.Context, id string) (func(), err
 }
 
 func (patch MetadataPatch) apply(ctx context.Context, tx *sql.Tx, id string, failure *fault.Error) error {
+	if patch.Handback != nil {
+		if err := patch.Handback.Save(ctx, tx, id); err != nil {
+			return err
+		}
+	}
 	if patch.Retry != nil {
 		if err := patch.Retry.Save(ctx, tx, id); err != nil {
 			return err
@@ -522,6 +541,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 		return Run{}, storageError(err)
 	}
 	run.Merge, err = maintenance.Load(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.Handbacks, err = LoadHandbacks(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
 	}

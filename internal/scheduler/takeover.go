@@ -24,7 +24,7 @@ func (s *Scheduler) Takeover(ctx context.Context, id string) (harness.Interactiv
 		if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", id).Scan(&stopping); err != nil {
 			return err
 		}
-		if stopping || run.PendingRetry() != nil {
+		if stopping || run.PendingRetry() != nil || run.PendingHandback() != nil {
 			return &fault.Error{Code: "takeover.operation_pending", Message: "Finish the pending Stop or Retry before requesting takeover"}
 		}
 		var err error
@@ -87,7 +87,7 @@ func (s *Scheduler) ManualCommand(ctx context.Context, id string) (harness.Inter
 	if err != nil {
 		return harness.InteractiveCommand{}, err
 	}
-	if run.State != workflow.Manual || run.TakeoverStatus != workflow.TakeoverManual {
+	if run.State != workflow.Manual || run.TakeoverStatus != workflow.TakeoverManual || run.PendingHandback() != nil {
 		return harness.InteractiveCommand{}, &fault.Error{Code: "takeover.unavailable", Message: "Prepare takeover before resuming the implementer"}
 	}
 	_, gitRun, err := s.context(ctx, run)

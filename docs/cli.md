@@ -55,7 +55,7 @@ recovery allowance for its phase and round.
 Status includes failed runs, retry instructions and history, granted rounds,
 renewed CI deadlines, role settings/session identities, verdicts, findings,
 fix responses, CI evidence, and pending merge maintenance. Both Claude and Codex
-are supported in either role. `handback` and `open` remain reserved.
+are supported in either role. `open` remains reserved.
 
 `mergeyard reconcile` runs the same reconciliation without claiming new work.
 It acquires the configured workspace lock, so stop the control plane first if
@@ -99,3 +99,29 @@ Git restoration, worktree removal, and local branch deletion remain pending.
 Issue and label cleanup can finish independently. After interactive exit, a
 later reconciliation resumes Git cleanup using the existing ownership and
 dirty-work safeguards. The lock also excludes new CLI resumes during cleanup.
+
+## Handback
+
+Exit the interactive harness, then run `mergeyard handback <run-id>` against the
+same configuration. Mergeyard checks every recorded phase process and reserves
+interactive ownership before reconciling the worktree, branch, issue and PR.
+Closed or ambiguous state and unexpected divergence preserve your work for
+attention; handback never resets or force-pushes it.
+
+Tracked edits and non-ignored new files are committed and pushed through the
+existing Git safeguards. Your own commits are retained. Without a PR, handback
+selects implementation and resumes the original implementer conversation. With
+an open PR, it invalidates approval and selects independent review. An unfinished
+review round is reused; an accepted verdict requires the next round. If that
+round exceeds the allowance, this explicit request grants exactly one additional
+review round. The CLI discloses the selected phase and grant, and status retains
+publication errors and history.
+
+Publication is journaled before external effects. An interrupted request remains
+manual while the scheduler reconciles it after restart; repeated handback resumes
+the same intent without duplicate commits or grants. Pending publication withholds
+interactive resume until handback finishes or Stop cancels it. Inspect the saved
+error and application log if publication cannot finish. Clearing or branching the
+interactive conversation does not replace Mergeyard's authoritative original
+session identity. The user is responsible for exiting any interactive harness
+started outside Mergeyard's ownership-aware launcher before handback.

@@ -76,6 +76,7 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 	mux.HandleFunc("POST /runs/{id}/stop", s.stopRunPage)
 	mux.HandleFunc("POST /runs/{id}/retry", s.retryRunPage)
 	mux.HandleFunc("POST /runs/{id}/takeover", s.takeoverRunPage)
+	mux.HandleFunc("POST /runs/{id}/handback", s.handbackRunPage)
 	mux.HandleFunc("GET /scheduler", func(w http.ResponseWriter, r *http.Request) { s.render(w, "scheduler") })
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /events", s.stream)
@@ -87,6 +88,7 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 		mux.HandleFunc("POST /api/runs/{id}/stop", s.stopRun)
 		mux.HandleFunc("POST /api/runs/{id}/retry", s.retryRun)
 		mux.HandleFunc("POST /api/runs/{id}/takeover", s.takeoverRun)
+		mux.HandleFunc("POST /api/runs/{id}/handback", s.handbackRun)
 	}
 	s.handler = mux
 	return s, nil

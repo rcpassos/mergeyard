@@ -130,6 +130,9 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			if run.State == workflow.NeedsAttention || run.State == workflow.Failed {
 				fmt.Fprintf(stdout, "  Retry: mergeyard retry %s (reconciles preserved work first)\n", terminalText(run.ID))
 			}
+			for _, v := range run.Handbacks {
+				printHandback(stdout, v)
+			}
 			for _, v := range run.Retries {
 				printRetry(stdout, v)
 			}
@@ -237,6 +240,16 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		if run.LastErrorCode != "" {
 			fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 		}
+	case "handback":
+		fmt.Fprintln(stdout, "Handback commits and pushes manual work. Exit the interactive harness first. If independent review exceeds the allowance, exactly one additional review round will be granted.")
+		var run workflow.Run
+		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/handback", &run); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Run %s: %s/%s\n", terminalText(run.ID), terminalText(string(run.State)), terminalText(string(run.Phase)))
+		if len(run.Handbacks) > 0 {
+			printHandback(stdout, run.Handbacks[len(run.Handbacks)-1])
+		}
 	case "takeover":
 		var command harness.InteractiveCommand
 		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/takeover", &command); err != nil {
@@ -257,6 +270,25 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		return nil
 	}
 	return nil
+}
+
+func printHandback(out io.Writer, v workflow.HandbackSnapshot) {
+	if v.Pending {
+		fmt.Fprintln(out, "  Handback publication and reconciliation pending")
+	}
+	if v.Error != "" {
+		fmt.Fprintf(out, "  Handback requires attention: %s\n", terminalText(v.Error))
+	}
+	if v.NextPhase != "" {
+		fmt.Fprintf(out, "  Handback selected %s/%s · round %d\n", terminalText(string(v.NextState)), terminalText(string(v.NextPhase)), v.Round)
+	}
+	if v.GrantedRound > 0 {
+		if !v.Pending && v.Error == "" {
+			fmt.Fprintf(out, "  Additional review round granted: %d\n", v.GrantedRound)
+		} else {
+			fmt.Fprintf(out, "  Additional review round requested: %d\n", v.GrantedRound)
+		}
+	}
 }
 
 func printRetry(out io.Writer, v workflow.RetrySnapshot) {

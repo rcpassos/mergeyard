@@ -20,6 +20,7 @@ type Operations interface {
 	Stop(context.Context, string) error
 	Retry(context.Context, string) (workflow.Run, error)
 	Watch(context.Context, string) (runner.SessionRef, error)
+	Handback(context.Context, string) (workflow.Run, error)
 	Takeover(context.Context, string) (harness.InteractiveCommand, error)
 }
 
@@ -70,6 +71,14 @@ func (s *Server) retryRun(w http.ResponseWriter, r *http.Request) {
 	}
 	s.json(w, run)
 }
+func (s *Server) handbackRun(w http.ResponseWriter, r *http.Request) {
+	run, err := s.operations.Handback(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.operationError(w, r, err)
+		return
+	}
+	s.json(w, run)
+}
 func (s *Server) takeoverRun(w http.ResponseWriter, r *http.Request) {
 	command, err := s.operations.Takeover(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -91,7 +100,7 @@ func (s *Server) operationError(w http.ResponseWriter, r *http.Request, err erro
 	if errors.As(err, &failure) && errorCodePattern.MatchString(failure.Code) {
 		code = failure.Code
 		switch code {
-		case "takeover.unavailable", "takeover.operation_pending", "takeover.worktree_missing", "takeover.session_missing", "takeover.session_invalid", "takeover.harness_unknown", "takeover.process_ambiguous":
+		case "handback.unavailable", "handback.operation_pending", "handback.process_ambiguous", "handback.review_unrestored", "handback.context_missing", "handback.git_unsupported", "handback.pr_ambiguous", "handback.pr_closed", "handback.git_ambiguous", "handback.publication_pending", "takeover.interactive_running", "takeover.unavailable", "takeover.operation_pending", "takeover.worktree_missing", "takeover.session_missing", "takeover.session_invalid", "takeover.harness_unknown", "takeover.process_ambiguous":
 			status = http.StatusConflict
 			message = failure.Message
 		case "internal.run_not_found":
