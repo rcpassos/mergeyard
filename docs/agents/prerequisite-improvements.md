@@ -1,6 +1,6 @@
 # Implementation prerequisites and test preflight
 
-Status: agreed scope, 2026-10-07. Implementation has not started.
+Status: implemented and locally verified, 2026-10-07.
 
 This scope comes from the retrospective on issue #62 and [PR #74](https://github.com/rcpassos/mergeyard/pull/74).
 That session prepared research tooling but could not observe the required live
@@ -139,3 +139,39 @@ outside this work. Mergeyard's runtime harness recovery behavior is unchanged.
 Issue #62 remains open until its required real failure evidence is captured.
 
 Keep this design and its implementation separate from PR #74.
+
+## Implementation and skill deployment
+
+`scripts/test_preflight.py` provides the standalone check, and `make test` invokes
+it before script and Go tests. The public CLI/Make checks are in
+`scripts/test_preflight_test.py`.
+
+The portable skill sources live under `agent-skills/`: `skills/implement`,
+`skills/implement-spec`, and `references/implementation-prerequisites.md`.
+The shared reference sits outside both skill folders. Copies are deployed under
+the same relative layout in `~/.agents/`; update these three source files together
+before redeploying. The installed entry points preserve their original invocation
+metadata. This bundle adds no skill discovery surface or executable framework.
+
+An independent read-only decision rehearsal checked six scenarios: ordinary
+offline work, a successful capture with an exhausted probe allowance, reusable
+real failure evidence, synthetic evidence with separate preparation work,
+mixed blocked/unblocked spec tickets, and replacement of a still-running failed
+test. All selected the expected work, blockers and ownership actions.
+
+The bundled skill validator could not run because PyYAML is unavailable, and its
+schema excludes the existing `disable-model-invocation` field. Validation instead
+confirmed byte-for-byte preservation of the original frontmatter, resolution of
+both entry points' shared-reference links, and the independent scenario outcomes.
+
+Local validation passed: Python 3.9 syntax checks, the 17 public preflight checks
+(including a real isolated tmux smoke check), `make test`, `make lint`, `make build`,
+and the committed dashboard-asset comparison. Unchanged Go packages reused their
+valid cached test results. The existing CI workflow reaches the same preflight
+through `make test`; no remote CI run was started by this implementation task.
+
+The two-axis review found one shutdown-cleanup bug and one fixture-simplification
+recommendation. Both were addressed and the cleanup regression passed. The
+preflight now retains an owned foreground server, disables client auto-start,
+and confirms termination before removing its socket. A denied shutdown command
+causes a failure after bounded owned-process cleanup, rather than false readiness.

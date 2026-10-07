@@ -129,12 +129,40 @@ overrides, [setup](docs/setup.md) for adding repositories, and
 ## Development and releases
 
 ```sh
-make test   # Go tests, including installer tests; install tmux for integration tests
+make test   # offline preflight, script checks, Go tests and research checks
 make lint   # gofmt and go vet
 make build  # rebuild dashboard assets with Node.js 24, then compile Go
 ```
 
 Commit generated `web/static/` files with dashboard source changes.
+
+`make test` requires Go meeting `go.mod`, Python 3.9+, Git, tmux, writable
+temporary/build-cache paths, executable temporary files, localhost ports, and
+process inspection. Its preflight checks these before Go compilation, including
+an isolated tmux launch. Run it directly for diagnostics:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_preflight.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p '*_test.py' -v
+```
+
+The preflight has a 30-second deadline and up to five seconds for owned-resource
+cleanup; `--timeout <seconds>` can shorten the deadline. It honors configured
+cache/temp paths and makes no service calls, authentication checks, repairs, or
+downloads. A warm read-only module cache is allowed. Missing tools, denied local
+ports/process inspection, and unusable tmux fail with a capability and remedy.
+The smoke check owns a foreground tmux server and confirms termination before
+reporting readiness, including bounded cleanup when its shutdown command fails.
+For a denied host build cache, choose an accessible task cache, for example
+`GOCACHE=/tmp/mergeyard-go-cache make test`. For sandbox restrictions, rerun only
+in an authorized environment that permits the named capability, after the failed
+run exits. Direct focused test commands retain their existing behavior.
+
+`make test` rejects `MERGEYARD_GITHUB_INTEGRATION=1`,
+`MERGEYARD_GITHUB_PR_INTEGRATION=1`, and `MERGEYARD_SCHEDULER_INTEGRATION=1`.
+Unset them for the offline suite. Deliberate live integration checks use the
+existing recipes in [GitHub fixtures](internal/github/testdata/README.md) and
+[scheduler tests](docs/scheduler.md#tests).
 
 Pushing a version tag such as `v0.1.0` triggers tests, builds all four platform
 archives, and publishes them with checksums, the installer, and release notes.
