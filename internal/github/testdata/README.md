@@ -82,7 +82,11 @@ bodies never become command arguments or stdin during issue reads.
 
 `FindOpenPullRequest` checks every REST page for an open PR whose head repository
 and branch match the requested source. It returns nil for no match and
-`pr.multiple_open` for multiple matches. `CreateDraftPullRequest` sends the title
+`pr.multiple_open` for multiple matches. `FindPullRequest` uses the same paginated
+identity checks with `state=all`, retaining closed and merged PRs; multiple
+matches across states return `pr.multiple_matches` for preservation rather than
+silent selection. See the [REST list parameters](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests).
+`CreateDraftPullRequest` sends the title
 `#<issue> <issue title>`, head/base, and generated body as JSON stdin. An explicit
 HTTP 422 "Draft pull requests are not supported in this repository" response
 triggers one normal-PR creation attempt. The returned `PullRequest.Draft` records

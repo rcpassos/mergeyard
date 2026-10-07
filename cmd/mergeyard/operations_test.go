@@ -340,3 +340,74 @@ func TestConcurrentCLITakeoverLaunchesOneInteractiveProcess(t *testing.T) {
 		t.Fatalf("ownership survived exit: %d %s", code, errOut)
 	}
 }
+
+func TestCLIHandbackDisclosesSelectionAndAdditionalRound(t *testing.T) {
+	root := t.TempDir()
+	token := "handback-token"
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: token})
+	})
+	mux.HandleFunc("POST /api/runs/manual/handback", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {
+			http.Error(w, "missing protection", 403)
+			return
+		}
+		json.NewEncoder(w).Encode(workflow.Run{ID: "manual", State: workflow.Active, Phase: workflow.Review, Handbacks: []workflow.HandbackSnapshot{{NextState: workflow.Active, NextPhase: workflow.Review, Round: 2, GrantedRound: 2}}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("--config", path, "handback", "manual")
+	if code != 0 || !strings.Contains(out, "ACTIVE/review") || !strings.Contains(out, "Additional review round granted: 2") {
+		t.Fatalf("handback: %d %s %s", code, out, errOut)
+	}
+}
+
+func TestCLITakeoverOwnsInteractiveLockBeforeDelayedResponse(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "runs", "run-1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(root, "interactive")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf resumed\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	handbackAttempt := make(chan error, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "token"})
+	})
+	mux.HandleFunc("POST /api/runs/run-1/takeover", func(w http.ResponseWriter, r *http.Request) {
+		// Manual preparation has finished, but its HTTP response has not reached
+		// the CLI. Handback must be excluded throughout this launch window.
+		lock, err := runner.AcquireInteractive(root, "run-1")
+		if err == nil {
+			lock.Close()
+		}
+		handbackAttempt <- err
+		json.NewEncoder(w).Encode(harness.InteractiveCommand{Executable: executable, Dir: root, Args: []string{"--resume", "01a10c5b-38a9-7330-b833-04e365cb5f37"}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("--config", path, "takeover", "run-1")
+	if code != 0 || !strings.Contains(out, "resumed") {
+		t.Fatalf("takeover: %d %s %s", code, out, errOut)
+	}
+	if err := <-handbackAttempt; err == nil || !strings.Contains(err.Error(), "takeover.interactive_running") {
+		t.Fatalf("handback could finish before delayed CLI launch: %v", err)
+	}
+	// A completed launch must release the same ownership reservation.
+	lock, err := runner.AcquireInteractive(root, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock.Close()
+}

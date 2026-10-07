@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rcpassos/mergeyard/internal/ci"
@@ -216,12 +217,32 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		return fail(&fault.Error{Code: "git.review_unsupported", Message: "Git adapter cannot protect reviewer changes"})
 	}
 	target := ""
+	var selectedAt time.Time
+	selectTarget := func(sha, requested string) error {
+		requestedAt, err := time.Parse(time.RFC3339Nano, requested)
+		if err != nil {
+			return &fault.Error{Code: "review.selection_invalid", Message: "Cannot order saved Retry and handback selections; inspect recovery history"}
+		}
+		if !requestedAt.Before(selectedAt) {
+			target, selectedAt = sha, requestedAt
+		}
+		return nil
+	}
 	for _, v := range run.Retries {
 		if !v.Pending && v.Error == "" && v.NextPhase == workflow.Review && v.Round == run.ReviewRound && v.TargetSHA != "" {
-			target = v.TargetSHA
+			if err := selectTarget(v.TargetSHA, v.RequestedAt); err != nil {
+				return fail(err)
+			}
 		}
 	}
-	hasRetryTarget := target != ""
+	for _, v := range run.Handbacks {
+		if !v.Pending && v.Error == "" && v.NextPhase == workflow.Review && v.Round == run.ReviewRound {
+			if err := selectTarget(v.CommitSHA, v.RequestedAt); err != nil {
+				return fail(err)
+			}
+		}
+	}
+	hasReconciledTarget := target != ""
 	if run.ReviewRound > 1 || target != "" {
 		fixer, ok := s.deps.Git.(FixGit)
 		if !ok || (run.Fix == nil && target == "") {
@@ -238,8 +259,8 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if err != nil {
 		return fail(err)
 	}
-	if hasRetryTarget && snapshot.Head != target {
-		return fail(&fault.Error{Code: "review.head_changed", Message: "Review target differs from the reconciled retry target"})
+	if hasReconciledTarget && snapshot.Head != target {
+		return fail(&fault.Error{Code: "review.head_changed", Message: "Review target differs from the reconciled target"})
 	}
 	pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
 	if err != nil {
@@ -297,7 +318,7 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	var fixReport *review.FixReport
 	var repair *ci.Snapshot
 	if run.ReviewRound > 1 {
-		if !hasRetryTarget && (run.Fix == nil || !run.Fix.Pushed || run.Fix.CommitSHA != snapshot.Head || run.Fix.Round != run.ReviewRound-1) {
+		if !hasReconciledTarget && (run.Fix == nil || !run.Fix.Pushed || run.Fix.CommitSHA != snapshot.Head || run.Fix.Round != run.ReviewRound-1) {
 			return fail(&fault.Error{Code: "review.head_changed", Message: "Next review target differs from the pinned fix commit"})
 		}
 		if run.Fix != nil {

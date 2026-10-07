@@ -17,11 +17,24 @@ import (
 // resume invocation. The run's advisory lock excludes concurrent CLI resumes;
 // unlike the runtime lock, it does not own or write lifecycle state.
 func RunInteractive(ctx context.Context, root, runID string, command ExecRequest, stdin io.Reader, stdout, stderr io.Writer) error {
+	return RunInteractivePrepared(ctx, root, runID, func(context.Context) (ExecRequest, error) {
+		return command, nil
+	}, stdin, stdout, stderr)
+}
+
+// RunInteractivePrepared reserves ownership before preparing manual control.
+// Holding the reservation across the response and launch prevents handback or
+// merge cleanup from overtaking a delayed CLI and racing its interactive child.
+func RunInteractivePrepared(ctx context.Context, root, runID string, prepare func(context.Context) (ExecRequest, error), stdin io.Reader, stdout, stderr io.Writer) error {
 	lock, err := AcquireInteractive(root, runID)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
+	command, err := prepare(ctx)
+	if err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, command.Executable, command.Args...)
 	cmd.Dir = command.Dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr

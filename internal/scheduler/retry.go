@@ -351,7 +351,7 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 // Label failures remain retryable bookkeeping, after CI observation so they
 // cannot delay expiration or restore progress labels on a new attention state.
 func (s *Scheduler) retryProgressLabels(ctx context.Context, repo config.Repository, run workflow.Run) error {
-	if len(run.Retries) == 0 {
+	if len(run.Retries) == 0 && len(run.Handbacks) == 0 {
 		return nil
 	}
 	current, err := s.workflow.Get(ctx, run.ID)
@@ -435,17 +435,36 @@ func attemptCause(a attempt) error {
 }
 
 func explicitAttempt(run workflow.Run, phase workflow.Phase, number int) int {
-	for i := len(run.Retries) - 1; i >= 0; i-- {
-		v := run.Retries[i]
-		if !v.Pending && v.Error == "" && v.NextPhase == phase && v.Round == run.ReviewRound && v.AttemptFrom > number {
-			return v.AttemptFrom
-		}
+	if floor := attemptWindowStart(run, phase); floor > number {
+		return floor
 	}
 	return 0
 }
 
+// Explicit Retry and successful handback both open a configured attempt window.
+// Use the same absolute floor for launching work and accounting for failures.
+func attemptWindowStart(run workflow.Run, phase workflow.Phase) int {
+	floor := 1
+	for _, v := range run.Handbacks {
+		if !v.Pending && v.Error == "" && v.NextPhase == phase && v.Round == run.ReviewRound && v.AttemptFrom > floor {
+			floor = v.AttemptFrom
+		}
+	}
+	for _, v := range run.Retries {
+		if !v.Pending && v.Error == "" && v.NextPhase == phase && v.Round == run.ReviewRound && v.AttemptFrom > floor {
+			floor = v.AttemptFrom
+		}
+	}
+	return floor
+}
+
 func (s *Scheduler) roundLimit(run workflow.Run) int {
 	max := s.cfg.MaxRounds
+	for _, v := range run.Handbacks {
+		if !v.Pending && v.Error == "" && v.GrantedRound > max {
+			max = v.GrantedRound
+		}
+	}
 	for _, v := range run.Retries {
 		if !v.Pending && v.Error == "" && v.GrantedRound > max {
 			max = v.GrantedRound

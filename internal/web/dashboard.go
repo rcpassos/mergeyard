@@ -151,7 +151,7 @@ type runView struct {
 	Agent, Model, Effort, Skills, ProcessSession, LogPath        string
 	Attempt, Round                                               int
 	ReviewPending, CanStop, CanRetry, Stopping                   bool
-	CanTakeover                                                  bool
+	CanHandback, CanTakeover                                     bool
 	ResumeCommand, TakeoverPrerequisite                          string
 }
 
@@ -389,6 +389,11 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		}
 		runs[i].Stopping = runs[i].Stopping && runs[i].Merge == nil
 		runs[i].CanRetry = (runs[i].State == workflow.NeedsAttention || runs[i].State == workflow.Failed) && !runs[i].Stopping && runs[i].Merge == nil && runs[i].TakeoverStatus != workflow.TakeoverRequested
+		runs[i].Handbacks, err = workflow.LoadHandbacks(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		runs[i].CanHandback = runs[i].State == workflow.Manual && runs[i].TakeoverStatus == workflow.TakeoverManual && !runs[i].Stopping && runs[i].Merge == nil
 		runs[i].Retries, err = workflow.LoadRetries(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
@@ -430,10 +435,12 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 				runs[i].ResumeCommand = launcher.ShellCommand()
 			} else if err == nil {
 				runs[i].TakeoverPrerequisite = "Resume command unavailable. Start the dashboard with its configuration path so takeover can reach the owning workspace."
+			} else if runs[i].PendingHandback() != nil {
+				runs[i].TakeoverPrerequisite = "Handback publication is pending. Finish handback or Stop before resuming the implementer."
 			} else {
 				runs[i].TakeoverPrerequisite = "Resume command unavailable. Inspect the preserved worktree and implementer identity before requesting takeover again."
 			}
-		} else if !runs[i].State.Terminal() && runs[i].State != workflow.Manual && runs[i].Merge == nil && !runs[i].Stopping && runs[i].PendingRetry() == nil {
+		} else if !runs[i].State.Terminal() && runs[i].State != workflow.Manual && runs[i].Merge == nil && !runs[i].Stopping && runs[i].PendingRetry() == nil && runs[i].PendingHandback() == nil {
 			switch {
 			case runs[i].Worktree == "":
 				runs[i].TakeoverPrerequisite = "Takeover needs a prepared worktree."
@@ -495,6 +502,23 @@ func (s *Server) retryRunPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.operations.Retry(r.Context(), r.PathValue("id")); err != nil {
+		s.operationError(w, r, err)
+		return
+	}
+	if r.Header.Get("HX-Request") == "true" {
+		r.URL.Path = "/runs/" + r.PathValue("id")
+		s.page(w, r)
+		return
+	}
+	http.Redirect(w, r, "/runs/"+r.PathValue("id"), http.StatusSeeOther)
+}
+
+func (s *Server) handbackRunPage(w http.ResponseWriter, r *http.Request) {
+	if s.dashboard == nil {
+		s.respondError(w, r, &fault.Error{Code: "internal.run_not_found"}, "internal.run_not_found", http.StatusNotFound, "Run not found")
+		return
+	}
+	if _, err := s.operations.Handback(r.Context(), r.PathValue("id")); err != nil {
 		s.operationError(w, r, err)
 		return
 	}

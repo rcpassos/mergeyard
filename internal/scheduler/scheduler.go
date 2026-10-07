@@ -34,6 +34,7 @@ type GitHub interface {
 	AddLabel(context.Context, string, int, string) error
 	RemoveLabel(context.Context, string, int, string) error
 	FindOpenPullRequest(context.Context, string, string) (*github.PullRequest, error)
+	FindPullRequest(context.Context, string, string) (*github.PullRequest, error)
 	CreateDraftPullRequest(context.Context, string, string, string, github.PullRequestContent) (*github.PullRequest, error)
 }
 

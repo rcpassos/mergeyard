@@ -117,6 +117,21 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 }
 
 func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, run workflow.Run) error {
+	if run.PendingHandback() != nil {
+		var stopping bool
+		if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopping); err != nil {
+			return err
+		}
+		if stopping {
+			return s.stopRun(ctx, run)
+		}
+		lock, err := runner.AcquireInteractive(s.workspace.Root, run.ID)
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
+		return s.resumeHandback(ctx, repo, run)
+	}
 	if run.TakeoverStatus == workflow.TakeoverRequested {
 		return s.prepareTakeover(ctx, run)
 	}
@@ -269,7 +284,7 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 			}
 		}
 	}
-	if len(run.Retries) > 0 {
+	if len(run.Retries) > 0 || len(run.Handbacks) > 0 {
 		if err := s.retryLabels(ctx, repo, run); err != nil {
 			return err
 		}

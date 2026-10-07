@@ -159,3 +159,12 @@ If a PR merges while a CLI or dashboard-command takeover is open, the dashboard 
 and shows pending cleanup. Interactive ownership protects the worktree and
 branch through control-plane restarts; Git cleanup resumes after the session
 exits. Independent issue/label cleanup continues while Git cleanup is deferred.
+
+`POST /runs/{id}/handback` and `POST /api/runs/{id}/handback` call the shared
+handback operation with the same request protections and interactive ownership
+gate as the CLI. Manual run detail offers **Hand back run**, discloses commit/push
+and review-round behavior, and requires the user to exit interactive execution.
+The run snapshot and dashboard retain selected phase, pinned manual commit,
+pending publication/recovery errors and the additional round grant. Handback
+history and lifecycle events refresh over SSE. A pending handback cannot launch
+an interactive resume or automated phase; restart reconciles publication first.

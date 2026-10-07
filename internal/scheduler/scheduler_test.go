@@ -90,6 +90,9 @@ func (f *fakeGitHub) RemoveLabel(_ context.Context, repo string, n int, label st
 func (f *fakeGitHub) FindOpenPullRequest(_ context.Context, _ string, branch string) (*github.PullRequest, error) {
 	return f.prs[branch], nil
 }
+func (f *fakeGitHub) FindPullRequest(_ context.Context, _ string, branch string) (*github.PullRequest, error) {
+	return f.prs[branch], nil
+}
 func (f *fakeGitHub) CreateDraftPullRequest(_ context.Context, repo, branch, base string, content github.PullRequestContent) (*github.PullRequest, error) {
 	f.creations++
 	if f.prs == nil {
