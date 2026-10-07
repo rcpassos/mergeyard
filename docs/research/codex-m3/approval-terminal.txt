@@ -1,0 +1,22 @@
+Selected actual terminal menu; ANSI removed, cursor moves become line breaks.
+Disposable paths replaced with ROOT, including terminal wrapping.
+
+Would you like to run the following command?
+
+  Environment: local
+
+  Reason: May I create the harmless approval probe file outside the worktree
+  so we can observe the approval flow?
+
+  $ printf 'permission-approved\n' >
+  ROOT/approval.txt
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `printf 'permission-
+     approved\n' > ROOT/approval.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
+
+Operator input: y (one-time approval).
