@@ -148,3 +148,8 @@ Normal interactive permissions are selected explicitly for either harness.
 Takeover uses the existing Host, Origin, CSRF, loopback, and CLI workspace checks;
 known prerequisite errors include actionable messages. Manual runs retain their
 slot and never launch automated agent phases after restart.
+
+If a PR merges while a CLI takeover is open, the dashboard records completion
+and shows pending cleanup. Interactive ownership protects the worktree and
+branch through control-plane restarts; Git cleanup resumes after the session
+exits. Independent issue/label cleanup continues while Git cleanup is deferred.

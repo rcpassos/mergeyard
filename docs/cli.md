@@ -89,3 +89,9 @@ or restoration state preserves work in `NEEDS_ATTENTION`; inspect the diagnosis
 before explicitly requesting takeover again. Repeated preparation has no new
 attempt or lifecycle event. `MANUAL` survives restart without agent launches;
 safe observation of an externally merged PR remains active.
+
+Merge cleanup shares the interactive process lock. While the session is open,
+Git restoration, worktree removal, and local branch deletion remain pending.
+Issue and label cleanup can finish independently. After interactive exit, a
+later reconciliation resumes Git cleanup using the existing ownership and
+dirty-work safeguards. The lock also excludes new CLI resumes during cleanup.

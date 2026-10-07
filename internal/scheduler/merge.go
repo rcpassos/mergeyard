@@ -12,6 +12,7 @@ import (
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/maintenance"
+	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -146,6 +147,13 @@ func (s *Scheduler) cleanupMerge(ctx context.Context, run workflow.Run) error {
 	}); err != nil {
 		failures = append(failures, err)
 	}
+	// Share ownership with CLI resumes and retain it across every Git mutation.
+	// A separate status check would permit a launch between checking and removal.
+	lock, lockErr := runner.AcquireInteractive(s.workspace.Root, run.ID)
+	if lockErr != nil {
+		return s.mergeFailure(ctx, run, v, errors.Join(append(failures, lockErr)...))
+	}
+	defer lock.Close()
 	_, gitRun, gitErr := s.context(ctx, run)
 	gitRun.PublishedSHA = v.PublishedSHA
 	if gitErr == nil {

@@ -12,15 +12,18 @@ import (
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/sessions"
 	"github.com/rcpassos/mergeyard/internal/web"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -710,5 +713,160 @@ func TestFailedPRReadDoesNotBypassPersistedStop(t *testing.T) {
 	saved, err := reopened.Workflow.Get(context.Background(), run.ID)
 	if err != nil || saved.State != workflow.Stopped {
 		t.Fatalf("failed PR read bypassed stop: state=%s reconcile=%v get=%v", saved.State, reconcileErr, err)
+	}
+}
+
+func TestMergeCleanupWaitsForInteractiveTakeoverExit(t *testing.T) {
+	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	command, err := s.Takeover(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := t.TempDir()
+	started, release := filepath.Join(gate, "started"), filepath.Join(gate, "release")
+	interactiveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	t.Cleanup(func() { os.WriteFile(release, nil, 0600) })
+	done := make(chan error, 1)
+	go func() {
+		done <- runner.RunInteractive(interactiveCtx, runtime.Workspace.Root, run.ID, runner.ExecRequest{
+			Executable: "/bin/sh", Dir: command.Dir,
+			Args: []string{"-c", `printf ready > "$1"; while [ ! -f "$2" ]; do sleep 0.02; done`, "interactive", started, release},
+		}, nil, io.Discard, io.Discard)
+	}()
+	waitFor(t, func() bool { _, err := os.Stat(started); return err == nil })
+	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("interactive child exited before release: %v", err)
+	default:
+	}
+	if _, err := os.Stat(command.Dir); err != nil {
+		t.Fatalf("merge removed worktree while interactive child was still alive: %v", err)
+	}
+	saved, err := runtime.Workflow.Get(ctx, run.ID)
+	if err != nil || saved.State != workflow.Completed || !saved.Merge.Pending() || saved.Merge.WorktreeRemoved || saved.Merge.BranchDeleted || !saved.Merge.IssueClosed {
+		t.Fatalf("interactive merge cleanup: %+v %v", saved, err)
+	}
+	if gitCommand(t, command.Dir, "branch", "--show-current") != "mergeyard/issue-7" {
+		t.Fatal("removed interactive branch")
+	}
+
+	// Ownership survives a control-plane restart while the same child is alive.
+	root := runtime.Workspace.Root
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := app.Open(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	next, err := scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := next.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(command.Dir); err != nil {
+		t.Fatalf("restart removed live interactive worktree: %v", err)
+	}
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("interactive child did not exit")
+	}
+	for range 2 {
+		if _, err := next.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saved, err = reopened.Workflow.Get(ctx, run.ID)
+	if err != nil || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted || saved.Merge.Error != "" {
+		t.Fatalf("cleanup did not resume after interactive exit: %+v %v", saved.Merge, err)
+	}
+	if _, err := os.Stat(command.Dir); !os.IsNotExist(err) {
+		t.Fatalf("merged worktree was not cleaned after exit: %v", err)
+	}
+}
+
+type heldMergeCleanupGit struct {
+	*managedgit.Manager
+	started chan struct{}
+	release chan struct{}
+}
+
+func (g *heldMergeCleanupGit) CleanupWorktree(ctx context.Context, run managedgit.Run) error {
+	close(g.started)
+	select {
+	case <-g.release:
+		return g.Manager.CleanupWorktree(ctx, run)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestInteractiveResumeCannotLaunchDuringMergeCleanup(t *testing.T) {
+	s, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	command, err := s.Takeover(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := &heldMergeCleanupGit{Manager: managedgit.New(runtime.Workspace), started: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	release := func() { once.Do(func() { close(held.release) }) }
+	defer release()
+	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
+	s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Git: held, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
+	done := make(chan error, 1)
+	go func() { _, err := s.Reconcile(context.Background()); done <- err }()
+	select {
+	case <-held.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("merge cleanup did not start")
+	}
+	started := filepath.Join(t.TempDir(), "interactive-started")
+	err = runner.RunInteractive(context.Background(), runtime.Workspace.Root, run.ID, runner.ExecRequest{
+		Executable: "/bin/sh", Dir: command.Dir,
+		Args: []string{"-c", `printf started > "$1"`, "interactive", started},
+	}, nil, io.Discard, io.Discard)
+	var failure *fault.Error
+	if !errors.As(err, &failure) || failure.Code != "takeover.interactive_running" {
+		t.Fatalf("interactive launch raced cleanup: %v", err)
+	}
+	if _, err := os.Stat(started); !os.IsNotExist(err) {
+		t.Fatalf("interactive process launched during cleanup: %v", err)
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+	if err != nil || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted {
+		t.Fatalf("cleanup did not finish: %+v %v", saved.Merge, err)
 	}
 }
