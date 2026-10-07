@@ -90,6 +90,10 @@ before explicitly requesting takeover again. Repeated preparation has no new
 attempt or lifecycle event. `MANUAL` survives restart without agent launches;
 safe observation of an externally merged PR remains active.
 
+The dashboard's copy command invokes this same CLI launcher using the running
+binary and configuration. It revalidates the owning workspace and exact saved
+implementer conversation, then holds interactive ownership until exit.
+
 Merge cleanup shares the interactive process lock. While the session is open,
 Git restoration, worktree removal, and local branch deletion remain pending.
 Issue and label cleanup can finish independently. After interactive exit, a

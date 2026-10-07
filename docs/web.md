@@ -140,16 +140,22 @@ and safe error response boundaries. It preserves work and Stop behavior.
 `POST /runs/{id}/takeover` and `POST /api/runs/{id}/takeover` share
 `Scheduler.Takeover`. Run detail offers Take over run when its prerequisites
 are recorded, explains missing worktree/session identity, and shows pending
-preparation. It displays an escaped, copyable exact-ID shell command only after
+preparation. It displays an escaped, copyable `mergeyard takeover` command only after
 process exit and review restoration have completed. The API returns executable,
 argument vector, and worktree; it does not launch an interactive terminal.
+The copied command uses the running Mergeyard executable, an absolute configuration
+path, and the daemon's original working directory, so workspace identity is checked
+even when pasted elsewhere or when configuration paths are relative. It resumes
+the exact implementer identity through the same ownership-aware CLI launcher;
+the identity remains visible in the run detail. A missing configuration path
+withholds the command and displays an actionable explanation.
 Normal interactive permissions are selected explicitly for either harness.
 `run.takeover_requested` and `run.manual` refresh the dashboard over SSE.
 Takeover uses the existing Host, Origin, CSRF, loopback, and CLI workspace checks;
 known prerequisite errors include actionable messages. Manual runs retain their
 slot and never launch automated agent phases after restart.
 
-If a PR merges while a CLI takeover is open, the dashboard records completion
+If a PR merges while a CLI or dashboard-command takeover is open, the dashboard records completion
 and shows pending cleanup. Interactive ownership protects the worktree and
 branch through control-plane restarts; Git cleanup resumes after the session
 exits. Independent issue/label cleanup continues while Git cleanup is deferred.

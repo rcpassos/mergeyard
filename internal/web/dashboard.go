@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/maintenance"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
@@ -27,12 +30,15 @@ import (
 // DashboardOptions connects pages to the same persisted runtime and lifecycle
 // controls used by dispatch. Diagnostics runs once in RunUpdates, outside HTTP.
 type DashboardOptions struct {
-	DB          *sql.DB
-	Workspace   *workspace.Workspace
-	Scheduler   *scheduler.Scheduler
-	Config      config.Config
-	ConfigPath  string
-	Diagnostics func(context.Context) doctor.Report
+	DB         *sql.DB
+	Workspace  *workspace.Workspace
+	Scheduler  *scheduler.Scheduler
+	Config     config.Config
+	ConfigPath string
+	// CLIExecutable defaults to the running binary. Tests and embedded callers
+	// can supply their Mergeyard CLI; copied commands must use its ownership gate.
+	CLIExecutable string
+	Diagnostics   func(context.Context) doctor.Report
 }
 
 type dashboard struct {
@@ -43,6 +49,7 @@ type dashboard struct {
 	queueError  string
 	queueTime   string
 	diagnostics string
+	cliDir      string
 }
 
 // NewDashboard adds runtime-backed pages to the local HTTP foundation.
@@ -50,11 +57,30 @@ func NewDashboard(bus *events.Bus, control Scheduler, options DashboardOptions) 
 	if options.DB == nil || options.Workspace == nil || options.Scheduler == nil {
 		return nil, &fault.Error{Code: "internal.web_dependencies", Message: "Dashboard requires runtime storage, workspace, and scheduler"}
 	}
+	var err error
+	if options.CLIExecutable == "" {
+		options.CLIExecutable, err = os.Executable()
+		if err != nil {
+			return nil, &fault.Error{Code: "internal.web_dependencies", Message: "Cannot locate the Mergeyard CLI for takeover", Err: err}
+		}
+	}
+	// Preserve the daemon's working directory for configurations whose workspace
+	// path is relative. The CLI itself resumes in the worktree returned by the API.
+	cliDir, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	if options.ConfigPath != "" {
+		options.ConfigPath, err = filepath.Abs(options.ConfigPath)
+		if err != nil {
+			return nil, err
+		}
+	}
 	s, err := NewWithOperations(bus, control, options.Scheduler, options.Workspace.Root)
 	if err != nil {
 		return nil, err
 	}
-	s.dashboard = &dashboard{DashboardOptions: options, diagnostics: "Diagnostics have not been run."}
+	s.dashboard = &dashboard{DashboardOptions: options, diagnostics: "Diagnostics have not been run.", cliDir: cliDir}
 	return s, nil
 }
 
@@ -397,9 +423,13 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		}
 		// Use the implementer's identity even when a reviewer owns the phase.
 		if runs[i].State == workflow.Manual && runs[i].TakeoverStatus == workflow.TakeoverManual {
-			command, err := d.Scheduler.ManualCommand(ctx, runs[i].ID)
-			if err == nil {
-				runs[i].ResumeCommand = command.ShellCommand()
+			_, err := d.Scheduler.ManualCommand(ctx, runs[i].ID)
+			if err == nil && d.ConfigPath != "" {
+				launcher := harness.InteractiveCommand{Executable: d.CLIExecutable, Dir: d.cliDir,
+					Args: []string{"--config", d.ConfigPath, "takeover", "--", runs[i].ID}}
+				runs[i].ResumeCommand = launcher.ShellCommand()
+			} else if err == nil {
+				runs[i].TakeoverPrerequisite = "Resume command unavailable. Start the dashboard with its configuration path so takeover can reach the owning workspace."
 			} else {
 				runs[i].TakeoverPrerequisite = "Resume command unavailable. Inspect the preserved worktree and implementer identity before requesting takeover again."
 			}

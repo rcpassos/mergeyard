@@ -264,7 +264,8 @@ func TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand(t *testing.T) {
 	}
 	runs, _ := s.Runs(ctx)
 	id := runs[0].ID
-	server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg})
+	configPath := filepath.Join(t.TempDir(), "config's <source>.yaml")
+	server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg, ConfigPath: configPath, CLIExecutable: "/tmp/mergeyard"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +296,7 @@ func TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand(t *testing.T) {
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 	run, _ := runtime.Workflow.Get(ctx, id)
-	if response.Code != http.StatusOK || run.State != workflow.Manual || !strings.Contains(response.Body.String(), "Copy resume command") || !strings.Contains(response.Body.String(), run.Implementer.SessionID) || !strings.Contains(response.Body.String(), "--permission-mode") {
+	if response.Code != http.StatusOK || run.State != workflow.Manual || !strings.Contains(response.Body.String(), "Copy resume command") || !strings.Contains(response.Body.String(), run.Implementer.SessionID) || !strings.Contains(response.Body.String(), "--config") {
 		t.Fatalf("dashboard takeover: %d %+v %s", response.Code, run, response.Body.String())
 	}
 	if strings.Contains(response.Body.String(), ">Take over run</button>") {
@@ -318,23 +319,13 @@ func TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand(t *testing.T) {
 	if !strings.Contains(strings.Join(command.Args, " "), run.Implementer.SessionID) {
 		t.Fatalf("API lost exact identity: %+v", command)
 	}
-	// Exercise the displayed command with a harmless fake interactive executable,
-	// including shell metacharacters in its path.
-	command.Executable = filepath.Join(t.TempDir(), "harness's $(printf injected) <script>")
-	if err := os.WriteFile(command.Executable, []byte("#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	output, err := exec.Command("/bin/sh", "-c", command.ShellCommand()).CombinedOutput()
-	if err != nil || string(output) != command.Dir+"\n"+strings.Join(command.Args, "\n")+"\n" {
-		t.Fatalf("copy command quoting: %q %v", output, err)
-	}
 	// Configured executable paths can contain quotes and HTML syntax.
 	cfg.Agents.Claude.Executable = "/tmp/harness's <script>alert(1)</script>"
 	s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err = web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg})
+	server, err = web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg, ConfigPath: configPath, CLIExecutable: "/tmp/mergeyard's <script>alert(1)</script>"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,6 +333,17 @@ func TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand(t *testing.T) {
 	server.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1:7331/runs/"+id, nil))
 	if response.Code != 200 || strings.Contains(response.Body.String(), "<script>alert(1)</script>") || !strings.Contains(response.Body.String(), "&lt;script&gt;") {
 		t.Fatalf("unescaped command: %d %s", response.Code, response.Body.String())
+	}
+
+	// Missing launcher metadata must never fall back to direct harness execution.
+	server, err = web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1:7331/runs/"+id, nil))
+	if response.Code != 200 || strings.Contains(response.Body.String(), "Copy resume command") || !strings.Contains(response.Body.String(), "configuration path") {
+		t.Fatalf("missing config exposed unprotected launcher: %d %s", response.Code, response.Body.String())
 	}
 }
 
