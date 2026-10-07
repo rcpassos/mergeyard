@@ -16,6 +16,7 @@ type HarnessAdapter interface {
 	Capabilities() HarnessCapabilities
 	ValidateConfig(RoleConfig) error
 	BuildInvocation(PhaseContext, RoleConfig) (Invocation, error)
+	BuildInteractiveInvocation(sessionID, worktree string) (InteractiveCommand, error)
 	ParseResult(PhaseContext, PhaseArtifacts) (PhaseResult, error)
 }
 

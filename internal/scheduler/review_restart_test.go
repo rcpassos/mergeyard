@@ -25,6 +25,7 @@ type reviewProcessInput struct {
 	Workspace, Socket string
 	PR                *github.PullRequest
 	KillDuringRestore bool
+	TakeoverCrash     string
 	KillDuringFix     string
 	RecoveryPhase     workflow.Phase
 	RecoveryCrash     string
@@ -72,6 +73,9 @@ func TestReviewControlPlaneProcess(t *testing.T) {
 		g = interruptedFixGit{Manager: managedgit.New(runtime.Workspace), stage: input.KillDuringFix}
 	}
 	var phaseRunner runner.Runner = runner.NewLocal(runner.Options{SocketName: input.Socket})
+	if input.TakeoverCrash == "stopped" {
+		phaseRunner = takeoverCrashRunner{phaseRunner}
+	}
 	if input.RecoveryCrash != "" {
 		phaseRunner = recoveryCrashRunner{Runner: phaseRunner, phase: input.RecoveryPhase, mode: input.RecoveryCrash}
 	}
@@ -81,6 +85,16 @@ func TestReviewControlPlaneProcess(t *testing.T) {
 	}
 	if _, err := s.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if input.TakeoverCrash != "" {
+		runs, err := s.Runs(context.Background())
+		if err != nil || len(runs) != 1 {
+			t.Fatalf("takeover fixture runs: %+v %v", runs, err)
+		}
+		if _, err := s.Takeover(context.Background(), runs[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("takeover crash boundary was not reached")
 	}
 	if !input.KillDuringRestore && input.KillDuringFix == "" && input.RecoveryCrash == "" {
 		fmt.Println("review-control-plane-ready")
@@ -219,7 +233,12 @@ func TestReviewRecoversAfterControlPlaneKill(t *testing.T) {
 }
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	waitForWithin(t, 5*time.Second, condition)
+}
+
+func waitForWithin(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for !condition() {
 		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for process artifact")

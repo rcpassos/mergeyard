@@ -29,6 +29,9 @@ type RetryGit interface {
 func (s *Scheduler) Retry(ctx context.Context, id string) (workflow.Run, error) {
 	var result workflow.Run
 	err := s.workflow.WithRunOperation(ctx, id, func(ctx context.Context, run workflow.Run) error {
+		if run.TakeoverStatus == workflow.TakeoverRequested {
+			return &fault.Error{Code: "takeover.operation_pending", Message: "Finish takeover or Stop before requesting Retry"}
+		}
 		if run.State != workflow.NeedsAttention && run.State != workflow.Failed {
 			if len(run.Retries) > 0 && run.State != workflow.Stopped && run.State != workflow.Manual {
 				result = run

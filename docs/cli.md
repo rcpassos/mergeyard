@@ -55,7 +55,7 @@ recovery allowance for its phase and round.
 Status includes failed runs, retry instructions and history, granted rounds,
 renewed CI deadlines, role settings/session identities, verdicts, findings,
 fix responses, CI evidence, and pending merge maintenance. Both Claude and Codex
-are supported in either role. `takeover`, `handback`, and `open` remain reserved.
+are supported in either role. `handback` and `open` remain reserved.
 
 `mergeyard reconcile` runs the same reconciliation without claiming new work.
 It acquires the configured workspace lock, so stop the control plane first if
@@ -64,3 +64,38 @@ it is running. The command prints findings and preserves orphaned artifacts.
 Status output escapes terminal controls and Unicode formatting controls in review
 text, locations, settings and attention diagnostics. Stored reports keep their
 original text; control sequences appear as visible escapes in the terminal.
+
+`mergeyard takeover <run-id>` prepares manual control through the running
+control plane, then launches the exact implementer conversation in its worktree.
+It requires a nonterminal run, prepared worktree, and recorded implementer UUID;
+a pending Stop or Retry must finish first. Missing prerequisites give an
+actionable error and never create a fresh conversation. Automated processes are
+interrupted and their exit verified; interrupted review changes are restored
+before the run enters `MANUAL`. Partial implementation and fix edits are retained.
+
+Claude resumes with `--resume SESSION_ID --permission-mode default`. Codex uses
+`resume -C WORKTREE -a on-request -s workspace-write -- SESSION_ID`, matching the
+[verified interactive continuity contract](research/codex-m3/report.md).
+These invocations use interactive permissions rather than unattended settings.
+The CLI attaches its normal terminal streams and environment directly, without
+launching an automated tmux phase. A launch failure leaves the run `MANUAL`;
+retry takeover to resume the same conversation. A per-run process lock rejects
+concurrent CLI resumes and releases when the interactive process exits. Exit the interactive harness
+before handing control back. Handback is a separate implementation slice.
+
+Takeover intent is saved before interruption. A cancelled request or restart
+finishes that preparation before advancing automation. Uncertain process, Git,
+or restoration state preserves work in `NEEDS_ATTENTION`; inspect the diagnosis
+before explicitly requesting takeover again. Repeated preparation has no new
+attempt or lifecycle event. `MANUAL` survives restart without agent launches;
+safe observation of an externally merged PR remains active.
+
+The dashboard's copy command invokes this same CLI launcher using the running
+binary and configuration. It revalidates the owning workspace and exact saved
+implementer conversation, then holds interactive ownership until exit.
+
+Merge cleanup shares the interactive process lock. While the session is open,
+Git restoration, worktree removal, and local branch deletion remain pending.
+Issue and label cleanup can finish independently. After interactive exit, a
+later reconciliation resumes Git cleanup using the existing ownership and
+dirty-work safeguards. The lock also excludes new CLI resumes during cleanup.

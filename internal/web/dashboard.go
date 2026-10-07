@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/maintenance"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
@@ -27,12 +30,15 @@ import (
 // DashboardOptions connects pages to the same persisted runtime and lifecycle
 // controls used by dispatch. Diagnostics runs once in RunUpdates, outside HTTP.
 type DashboardOptions struct {
-	DB          *sql.DB
-	Workspace   *workspace.Workspace
-	Scheduler   *scheduler.Scheduler
-	Config      config.Config
-	ConfigPath  string
-	Diagnostics func(context.Context) doctor.Report
+	DB         *sql.DB
+	Workspace  *workspace.Workspace
+	Scheduler  *scheduler.Scheduler
+	Config     config.Config
+	ConfigPath string
+	// CLIExecutable defaults to the running binary. Tests and embedded callers
+	// can supply their Mergeyard CLI; copied commands must use its ownership gate.
+	CLIExecutable string
+	Diagnostics   func(context.Context) doctor.Report
 }
 
 type dashboard struct {
@@ -43,6 +49,7 @@ type dashboard struct {
 	queueError  string
 	queueTime   string
 	diagnostics string
+	cliDir      string
 }
 
 // NewDashboard adds runtime-backed pages to the local HTTP foundation.
@@ -50,11 +57,30 @@ func NewDashboard(bus *events.Bus, control Scheduler, options DashboardOptions) 
 	if options.DB == nil || options.Workspace == nil || options.Scheduler == nil {
 		return nil, &fault.Error{Code: "internal.web_dependencies", Message: "Dashboard requires runtime storage, workspace, and scheduler"}
 	}
+	var err error
+	if options.CLIExecutable == "" {
+		options.CLIExecutable, err = os.Executable()
+		if err != nil {
+			return nil, &fault.Error{Code: "internal.web_dependencies", Message: "Cannot locate the Mergeyard CLI for takeover", Err: err}
+		}
+	}
+	// Preserve the daemon's working directory for configurations whose workspace
+	// path is relative. The CLI itself resumes in the worktree returned by the API.
+	cliDir, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	if options.ConfigPath != "" {
+		options.ConfigPath, err = filepath.Abs(options.ConfigPath)
+		if err != nil {
+			return nil, err
+		}
+	}
 	s, err := NewWithOperations(bus, control, options.Scheduler, options.Workspace.Root)
 	if err != nil {
 		return nil, err
 	}
-	s.dashboard = &dashboard{DashboardOptions: options, diagnostics: "Diagnostics have not been run."}
+	s.dashboard = &dashboard{DashboardOptions: options, diagnostics: "Diagnostics have not been run.", cliDir: cliDir}
 	return s, nil
 }
 
@@ -125,6 +151,8 @@ type runView struct {
 	Agent, Model, Effort, Skills, ProcessSession, LogPath        string
 	Attempt, Round                                               int
 	ReviewPending, CanStop, CanRetry, Stopping                   bool
+	CanTakeover                                                  bool
+	ResumeCommand, TakeoverPrerequisite                          string
 }
 
 type issueView struct {
@@ -274,7 +302,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 	query := `SELECT r.id,r.repository,r.issue_number,r.state,COALESCE(r.current_phase,''),r.review_round,r.created_at,r.updated_at,
  COALESCE(r.last_error_code,''),COALESCE(r.last_error_message,''),COALESCE(r.branch,''),COALESCE(r.worktree_path,''),
  CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_agent,'') ELSE COALESCE(r.implementer_agent,'') END,CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_session_id,'') ELSE COALESCE(r.implementer_session_id,'') END,COALESCE(s.issue_json,'{}'),COALESCE(s.pr_url,''),COALESCE(r.pr_number,0),
- COALESCE(a.attempt,0),COALESCE(a.round,0),COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.process_session,''),COALESCE(a.log_path,''),COALESCE(a.skills_json,''),r.stop_requested
+ COALESCE(a.attempt,0),COALESCE(a.round,0),COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.process_session,''),COALESCE(a.log_path,''),COALESCE(a.skills_json,''),r.stop_requested,r.takeover_status
  FROM runs r LEFT JOIN scheduler_runs s ON s.run_id=r.id
  LEFT JOIN phase_attempts a ON a.id=(SELECT id FROM phase_attempts WHERE run_id=r.id AND phase=r.current_phase ORDER BY round DESC,attempt DESC LIMIT 1)`
 	var args []any
@@ -297,7 +325,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		var issueJSON, skillsJSON string
 		if err := rows.Scan(&run.ID, &run.Repository, &run.IssueNumber, &run.State, &run.Phase, &run.ReviewRound, &run.CreatedAt, &run.UpdatedAt,
 			&run.LastErrorCode, &run.LastErrorMessage, &run.Branch, &run.Worktree, &run.Agent, &run.SessionID, &issueJSON, &run.PRURL, &run.PRNumber,
-			&run.Attempt, &run.Round, &run.Model, &run.Effort, &run.ProcessSession, &run.LogPath, &skillsJSON, &run.Stopping); err != nil {
+			&run.Attempt, &run.Round, &run.Model, &run.Effort, &run.ProcessSession, &run.LogPath, &skillsJSON, &run.Stopping, &run.TakeoverStatus); err != nil {
 			return nil, err
 		}
 		var issue github.Issue
@@ -360,7 +388,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 			return nil, err
 		}
 		runs[i].Stopping = runs[i].Stopping && runs[i].Merge == nil
-		runs[i].CanRetry = (runs[i].State == workflow.NeedsAttention || runs[i].State == workflow.Failed) && !runs[i].Stopping && runs[i].Merge == nil
+		runs[i].CanRetry = (runs[i].State == workflow.NeedsAttention || runs[i].State == workflow.Failed) && !runs[i].Stopping && runs[i].Merge == nil && runs[i].TakeoverStatus != workflow.TakeoverRequested
 		runs[i].Retries, err = workflow.LoadRetries(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
@@ -392,6 +420,28 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		runs[i].Review, err = review.LoadSnapshot(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
+		}
+		// Use the implementer's identity even when a reviewer owns the phase.
+		if runs[i].State == workflow.Manual && runs[i].TakeoverStatus == workflow.TakeoverManual {
+			_, err := d.Scheduler.ManualCommand(ctx, runs[i].ID)
+			if err == nil && d.ConfigPath != "" {
+				launcher := harness.InteractiveCommand{Executable: d.CLIExecutable, Dir: d.cliDir,
+					Args: []string{"--config", d.ConfigPath, "takeover", "--", runs[i].ID}}
+				runs[i].ResumeCommand = launcher.ShellCommand()
+			} else if err == nil {
+				runs[i].TakeoverPrerequisite = "Resume command unavailable. Start the dashboard with its configuration path so takeover can reach the owning workspace."
+			} else {
+				runs[i].TakeoverPrerequisite = "Resume command unavailable. Inspect the preserved worktree and implementer identity before requesting takeover again."
+			}
+		} else if !runs[i].State.Terminal() && runs[i].State != workflow.Manual && runs[i].Merge == nil && !runs[i].Stopping && runs[i].PendingRetry() == nil {
+			switch {
+			case runs[i].Worktree == "":
+				runs[i].TakeoverPrerequisite = "Takeover needs a prepared worktree."
+			case runs[i].Implementer == nil || runs[i].Implementer.SessionID == "":
+				runs[i].TakeoverPrerequisite = "Takeover needs the implementer's session identity. Wait for it to be recorded; a new conversation will not be created."
+			default:
+				runs[i].CanTakeover = true
+			}
 		}
 	}
 	return runs, nil
@@ -445,6 +495,23 @@ func (s *Server) retryRunPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.operations.Retry(r.Context(), r.PathValue("id")); err != nil {
+		s.operationError(w, r, err)
+		return
+	}
+	if r.Header.Get("HX-Request") == "true" {
+		r.URL.Path = "/runs/" + r.PathValue("id")
+		s.page(w, r)
+		return
+	}
+	http.Redirect(w, r, "/runs/"+r.PathValue("id"), http.StatusSeeOther)
+}
+
+func (s *Server) takeoverRunPage(w http.ResponseWriter, r *http.Request) {
+	if s.dashboard == nil {
+		s.respondError(w, r, &fault.Error{Code: "internal.run_not_found"}, "internal.run_not_found", http.StatusNotFound, "Run not found")
+		return
+	}
+	if _, err := s.operations.Takeover(r.Context(), r.PathValue("id")); err != nil {
 		s.operationError(w, r, err)
 		return
 	}
