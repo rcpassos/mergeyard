@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/runner"
@@ -607,5 +608,205 @@ func TestHandbackReconcilesLabelsAfterPublicationSelection(t *testing.T) {
 	after, err := runtime.Workflow.Get(context.Background(), before.ID)
 	if err != nil || len(after.Handbacks) != 1 || after.Handbacks[0].GrantedRound != 2 {
 		t.Fatalf("label recovery duplicated handback: %+v %v", after, err)
+	}
+}
+
+func TestHandbackOpensConfiguredImplementAttemptWindow(t *testing.T) {
+	script := `attempt_count_file="$0.attempt-count"
+ attempt_count=0
+ if [ -f "$attempt_count_file" ]; then attempt_count=$(cat "$attempt_count_file"); fi
+ attempt_count=$((attempt_count+1))
+ printf '%s' "$attempt_count" > "$attempt_count_file"
+ if [ "$attempt_count" -lt 3 ]; then exit 1; fi
+ ` + successfulScript
+	s, runtime, api, _, cfg, r := localFlow(t, script)
+	before := finish(t, s, workflow.NeedsAttention, workflow.Implement)
+	cfg.Repositories[0].Implementer.MaxAttempts = 2
+	var err error
+	s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Takeover(context.Background(), before.ID); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := s.Handback(context.Background(), before.ID)
+	if err != nil || selected.Handbacks[0].AttemptFrom != 2 {
+		t.Fatalf("fresh window: %+v %v", selected, err)
+	}
+	// A physical attempt after handback gets its own configured two-attempt
+	// window, including after reconstructing the scheduler from saved state.
+	s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		run, err := runtime.Workflow.Get(context.Background(), before.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.State == workflow.NeedsAttention {
+			t.Fatalf("handback's first failure exhausted max_attempts=2: physical attempt %d, %s", run.Implementer.Attempt, run.LastErrorCode)
+		}
+		return run.Implementer.Attempt == 3
+	})
+	after := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	if after.Implementer.SessionID != before.Implementer.SessionID || after.Implementer.Attempt != 3 || len(after.Handbacks) != 1 {
+		t.Fatalf("attempt window lost identity/history: %+v", after)
+	}
+}
+
+type handbackDiscoveryGitHub struct{ *fakeGitHub }
+
+func (g handbackDiscoveryGitHub) FindOpenPullRequest(ctx context.Context, repo, branch string) (*github.PullRequest, error) {
+	pr, err := g.fakeGitHub.FindOpenPullRequest(ctx, repo, branch)
+	if err == nil && pr != nil && pr.State != github.Open {
+		return nil, nil
+	}
+	return pr, err
+}
+
+func TestHandbackPreservesUnsavedClosedAndMergedPRs(t *testing.T) {
+	for _, merged := range []bool{false, true} {
+		t.Run(fmt.Sprint(merged), func(t *testing.T) {
+			s, runtime, api, remote, cfg, r := localFlow(t, `exit 1`)
+			before := finish(t, s, workflow.NeedsAttention, workflow.Implement)
+			var err error
+			s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: handbackDiscoveryGitHub{api}, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Takeover(context.Background(), before.ID); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", before.ID)
+			if err := os.WriteFile(filepath.Join(path, "published.txt"), []byte("manual PR work"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			gitCommand(t, path, "add", ".")
+			gitCommand(t, path, "commit", "-m", "manual PR work")
+			gitCommand(t, path, "push", "origin", "HEAD:refs/heads/mergeyard/issue-7")
+			head := gitCommand(t, remote, "rev-parse", "mergeyard/issue-7")
+			pr := &github.PullRequest{Number: 88, State: github.Closed, Merged: merged, URL: "https://github.com/owner/repo/pull/88"}
+			pr.Head.Ref = "mergeyard/issue-7"
+			pr.Head.Repo.FullName = "owner/repo"
+			pr.Head.SHA = head
+			api.prs = map[string]*github.PullRequest{"mergeyard/issue-7": pr}
+			if err := os.WriteFile(filepath.Join(path, "manual.txt"), []byte("preserve this edit"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			selected, err := s.Handback(context.Background(), before.ID)
+			if err == nil || selected.State != workflow.NeedsAttention || selected.LastErrorCode != "handback.pr_closed" {
+				t.Fatalf("unsaved closed/merged PR treated as absent: %s/%s %v", selected.State, selected.Phase, err)
+			}
+			data, err := os.ReadFile(filepath.Join(path, "manual.txt"))
+			if err != nil || string(data) != "preserve this edit" || gitCommand(t, path, "rev-parse", "HEAD") != head || gitCommand(t, remote, "rev-parse", "mergeyard/issue-7") != head {
+				t.Fatal("closed PR work was published or overwritten")
+			}
+		})
+	}
+}
+
+type ambiguousHandbackGitHub struct{ *fakeGitHub }
+
+func (g ambiguousHandbackGitHub) FindPullRequest(context.Context, string, string) (*github.PullRequest, error) {
+	return nil, &fault.Error{Code: "pr.multiple_matches", Message: "more than one matching PR across states"}
+}
+
+func TestHandbackPreservesAmbiguousUnsavedPRHistory(t *testing.T) {
+	s, runtime, api, remote, cfg, r := localFlow(t, `exit 1`)
+	before := finish(t, s, workflow.NeedsAttention, workflow.Implement)
+	var err error
+	s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: ambiguousHandbackGitHub{api}, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Takeover(context.Background(), before.ID); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", before.ID)
+	if err := os.WriteFile(filepath.Join(path, "manual.txt"), []byte("preserved"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := s.Handback(context.Background(), before.ID)
+	if err == nil || selected.State != workflow.NeedsAttention || selected.LastErrorCode != "handback.pr_ambiguous" || selected.PendingHandback() != nil {
+		t.Fatalf("ambiguous history accepted: %+v %v", selected, err)
+	}
+	if gitCommand(t, path, "status", "--porcelain") == "" || gitCommand(t, remote, "ls-remote", "--heads", remote, "refs/heads/mergeyard/issue-7") != "" {
+		t.Fatal("ambiguous PR history caused publication")
+	}
+}
+
+func TestHandbackOpensBoundedReviewerAttemptWindow(t *testing.T) {
+	for _, success := range []bool{false, true} {
+		t.Run(fmt.Sprint(success), func(t *testing.T) {
+			reviewResult := `exit 1`
+			if success {
+				reviewResult = approvedReview
+			}
+			script := `case "$*" in *review-*)
+ attempt_count_file="$0.review-count"
+ attempt_count=0
+ if [ -f "$attempt_count_file" ]; then attempt_count=$(cat "$attempt_count_file"); fi
+ attempt_count=$((attempt_count+1))
+ printf '%s' "$attempt_count" > "$attempt_count_file"
+ if [ "$attempt_count" -lt 3 ]; then exit 1; fi
+ ` + reviewResult + `;; *) ` + successfulScript + `;; esac`
+			_, runtime, api, _, cfg, r := localFlow(t, script)
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := finish(t, s, workflow.NeedsAttention, workflow.Review)
+			cfg.Repositories[0].Reviewer.MaxAttempts = 2
+			s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Takeover(context.Background(), before.ID); err != nil {
+				t.Fatal(err)
+			}
+			selected, err := s.Handback(context.Background(), before.ID)
+			if err != nil || selected.ReviewRound != 1 || selected.Handbacks[0].AttemptFrom != 2 {
+				t.Fatalf("unfinished review window: %+v %v", selected, err)
+			}
+			s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, func() bool {
+				if err := s.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				run, err := runtime.Workflow.Get(context.Background(), before.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if run.State == workflow.NeedsAttention && run.Review.Attempt < 3 {
+					t.Fatalf("handback prematurely exhausted reviewer budget at attempt %d", run.Review.Attempt)
+				}
+				return run.Review.Attempt == 3
+			})
+			state := workflow.NeedsAttention
+			if success {
+				state = workflow.WaitingForCI
+			}
+			after := finish(t, s, state, workflow.Review)
+			if after.Review.Attempt != 3 || after.ReviewRound != 1 || len(after.Handbacks) != 1 || after.Review.SessionID == after.Implementer.SessionID {
+				t.Fatalf("review budget or independent identity lost: %+v", after)
+			}
+			if !success {
+				if err := s.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				after, _ = runtime.Workflow.Get(context.Background(), before.ID)
+				if after.Review.Attempt != 3 {
+					t.Fatal("handback budget authorized an extra attempt")
+				}
+			}
+		})
 	}
 }

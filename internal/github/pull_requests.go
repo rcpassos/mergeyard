@@ -66,6 +66,16 @@ func pullRequestPath(repo string, number int) (string, error) {
 // FindOpenPullRequest returns nil when no PR exists for this repository's branch.
 // Every page is inspected so multiple open PRs cannot be silently selected.
 func (c *Client) FindOpenPullRequest(ctx context.Context, repo, branch string) (*PullRequest, error) {
+	return c.findBranchPullRequest(ctx, repo, branch, true)
+}
+
+// FindPullRequest inspects every state before manual work can be published.
+// Multiple matching PRs, including closed history, require human reconciliation.
+func (c *Client) FindPullRequest(ctx context.Context, repo, branch string) (*PullRequest, error) {
+	return c.findBranchPullRequest(ctx, repo, branch, false)
+}
+
+func (c *Client) findBranchPullRequest(ctx context.Context, repo, branch string, openOnly bool) (*PullRequest, error) {
 	path, err := pullRequestPath(repo, 0)
 	if err != nil {
 		return nil, err
@@ -73,7 +83,11 @@ func (c *Client) FindOpenPullRequest(ctx context.Context, repo, branch string) (
 	if strings.TrimSpace(branch) == "" {
 		return nil, codedError("github.invalid_input", "head branch must be nonempty", nil)
 	}
-	query := url.Values{"state": {"open"}, "head": {strings.SplitN(repo, "/", 2)[0] + ":" + branch}, "per_page": {"100"}}
+	state := "all"
+	if openOnly {
+		state = "open"
+	}
+	query := url.Values{"state": {state}, "head": {strings.SplitN(repo, "/", 2)[0] + ":" + branch}, "per_page": {"100"}}
 	data, err := c.request(ctx, nil, "GET", path+"?"+query.Encode(), true)
 	if err != nil {
 		return nil, err
@@ -95,11 +109,14 @@ func (c *Client) FindOpenPullRequest(ctx context.Context, repo, branch string) (
 			if err := validatePullRequest(pr); err != nil {
 				return nil, err
 			}
-			if pr.State != Open || pr.Head.Ref != branch || !strings.EqualFold(pr.Head.Repo.FullName, repo) {
+			if (openOnly && pr.State != Open) || pr.Head.Ref != branch || !strings.EqualFold(pr.Head.Repo.FullName, repo) {
 				continue
 			}
 			if found != nil {
-				return nil, codedError("pr.multiple_open", "more than one open PR exists for the branch", nil)
+				if openOnly {
+					return nil, codedError("pr.multiple_open", "more than one open PR exists for the branch", nil)
+				}
+				return nil, codedError("pr.multiple_matches", "more than one PR exists for the branch across states", nil)
 			}
 			found = &pr
 		}

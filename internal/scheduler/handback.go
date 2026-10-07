@@ -181,9 +181,13 @@ func (s *Scheduler) resumeHandback(ctx context.Context, repo config.Repository, 
 	if number > 0 {
 		pr, err = s.deps.GitHub.GetPullRequest(ctx, repo.Repo, number)
 	} else {
-		pr, err = s.deps.GitHub.FindOpenPullRequest(ctx, repo.Repo, gitRun.Branch)
+		pr, err = s.deps.GitHub.FindPullRequest(ctx, repo.Repo, gitRun.Branch)
 	}
 	if err != nil {
+		var coded *fault.Error
+		if errors.As(err, &coded) && coded.Code == "pr.multiple_matches" {
+			return reject("handback.pr_ambiguous", "Multiple PRs match the run branch across states; inspect GitHub before publishing manual work")
+		}
 		return pending(err)
 	}
 	if number > 0 && pr == nil {

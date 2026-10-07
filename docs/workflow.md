@@ -142,3 +142,10 @@ and persisting any absolute round grant with the new phase. A rejected operation
 records its error with the attention transition. Stop and observed merge cancel
 pending intent in their lifecycle transaction. Replay preserves commits, pushes
 and grants; only later ticks can start implementation or independent review.
+
+CLI takeover reserves interactive ownership before the preparation request,
+closing the gap between a successful response and interactive launch. Successful
+handback and explicit Retry share the same absolute attempt-window floor for
+launch selection and failure accounting; missing-session recovery stays bounded
+per phase/round. Unsaved PR discovery during handback inspects all states and
+requires a unique matching branch/repository identity before publication.

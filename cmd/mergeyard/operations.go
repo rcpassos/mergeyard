@@ -251,12 +251,14 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			printHandback(stdout, run.Handbacks[len(run.Handbacks)-1])
 		}
 	case "takeover":
-		var command harness.InteractiveCommand
-		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/takeover", &command); err != nil {
-			return err
-		}
-		fmt.Fprintf(stdout, "Run %s is MANUAL. Exit the interactive harness before handing control back.\n", terminalText(args[0]))
-		return runner.RunInteractive(ctx, status.Workspace, args[0], runner.ExecRequest{Executable: command.Executable, Args: command.Args, Dir: command.Dir}, os.Stdin, stdout, stderr)
+		return runner.RunInteractivePrepared(ctx, status.Workspace, args[0], func(ctx context.Context) (runner.ExecRequest, error) {
+			var command harness.InteractiveCommand
+			if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/takeover", &command); err != nil {
+				return runner.ExecRequest{}, err
+			}
+			fmt.Fprintf(stdout, "Run %s is MANUAL. Exit the interactive harness before handing control back.\n", terminalText(args[0]))
+			return runner.ExecRequest{Executable: command.Executable, Args: command.Args, Dir: command.Dir}, nil
+		}, os.Stdin, stdout, stderr)
 	case "watch":
 		var ref runner.SessionRef
 		if err := client.request(ctx, http.MethodGet, "/api/runs/"+url.PathEscape(args[0])+"/watch", &ref); err != nil {

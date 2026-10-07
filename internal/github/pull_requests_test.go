@@ -368,3 +368,45 @@ func TestPullRequestsRespectCanceledContext(t *testing.T) {
 	_, err = client.UpdatePullRequest(ctx, "rcpassos/mergeyard", 24, content)
 	requireCode(t, err, "github.canceled")
 }
+
+func TestFindPullRequestAcrossStatesAndPages(t *testing.T) {
+	open := string(pullRequestJSON(24, true, "manual PR"))
+	closed := strings.ReplaceAll(open, `"state":"open"`, `"state":"closed"`)
+	merged := strings.Replace(closed, `"draft":true`, `"draft":false,"merged":true`, 1)
+	fork := strings.ReplaceAll(closed, `"rcpassos/mergeyard"`, `"someone/fork"`)
+	other := strings.ReplaceAll(closed, "mergeyard/issue-12", "unrelated")
+	for _, tc := range []struct {
+		name, data, code string
+		want             github.State
+		merged           bool
+	}{
+		{"absent", "[]", "", "", false},
+		{"open", "[" + open + "]", "", github.Open, false},
+		{"closed on later page", "[" + fork + "," + other + "] [" + closed + "]", "", github.Closed, false},
+		{"merged", "[" + merged + "]", "", github.Closed, true},
+		{"ambiguous across states", "[" + open + "] [" + closed + "]", "pr.multiple_matches", "", false},
+		{"invalid later page", "[" + closed + "] {}", "github.invalid_response", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &recordedGH{responses: []response{{stdout: []byte(tc.data)}}}
+			pr, err := github.New(runner).FindPullRequest(context.Background(), "rcpassos/mergeyard", "mergeyard/issue-12")
+			if tc.code != "" {
+				requireCode(t, err, tc.code)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if pr != nil {
+					t.Fatalf("absent: %+v", pr)
+				}
+			} else if pr == nil || pr.State != tc.want || pr.Merged != tc.merged {
+				t.Fatalf("all-state PR: %+v", pr)
+			}
+			if !contains(runner.calls[0].args, "repos/rcpassos/mergeyard/pulls?head=rcpassos%3Amergeyard%2Fissue-12&per_page=100&state=all") || !contains(runner.calls[0].args, "--paginate") {
+				t.Fatalf("did not inspect all states/pages: %+v", runner.calls)
+			}
+		})
+	}
+}

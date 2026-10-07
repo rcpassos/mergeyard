@@ -80,8 +80,10 @@ These invocations use interactive permissions rather than unattended settings.
 The CLI attaches its normal terminal streams and environment directly, without
 launching an automated tmux phase. A launch failure leaves the run `MANUAL`;
 retry takeover to resume the same conversation. A per-run process lock rejects
-concurrent CLI resumes and releases when the interactive process exits. Exit the interactive harness
-before handing control back. Handback is a separate implementation slice.
+concurrent CLI resumes. The CLI reserves this ownership before requesting takeover
+and holds it across the response and interactive launch, then releases it when
+the interactive process exits. Exit the interactive harness before handing
+control back.
 
 Takeover intent is saved before interruption. A cancelled request or restart
 finishes that preparation before advancing automation. Uncertain process, Git,
@@ -105,6 +107,8 @@ dirty-work safeguards. The lock also excludes new CLI resumes during cleanup.
 Exit the interactive harness, then run `mergeyard handback <run-id>` against the
 same configuration. Mergeyard checks every recorded phase process and reserves
 interactive ownership before reconciling the worktree, branch, issue and PR.
+Without a saved PR number, discovery checks all PR states for the branch; closed,
+merged or multiple matching PRs preserve work for attention before publication.
 Closed or ambiguous state and unexpected divergence preserve your work for
 attention; handback never resets or force-pushes it.
 
@@ -114,7 +118,9 @@ selects implementation and resumes the original implementer conversation. With
 an open PR, it invalidates approval and selects independent review. An unfinished
 review round is reused; an accepted verdict requires the next round. If that
 round exceeds the allowance, this explicit request grants exactly one additional
-review round. The CLI discloses the selected phase and grant, and status retains
+review round. Resuming an interrupted phase opens its configured attempt window
+without replenishing missing-session recovery. The CLI discloses the selected
+phase and grant, and status retains
 publication errors and history.
 
 Publication is journaled before external effects. An interrupted request remains
