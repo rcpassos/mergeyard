@@ -153,6 +153,8 @@ downloads. A warm read-only module cache is allowed. Missing tools, denied local
 ports/process inspection, and unusable tmux fail with a capability and remedy.
 The smoke check owns a foreground tmux server and confirms termination before
 reporting readiness, including bounded cleanup when its shutdown command fails.
+The shutdown command gets at most two of the five cleanup seconds; three seconds
+are reserved for forced termination, reaping, and owned-resource removal.
 For a denied host build cache, choose an accessible task cache, for example
 `GOCACHE=/tmp/mergeyard-go-cache make test`. For sandbox restrictions, rerun only
 in an authorized environment that permits the named capability, after the failed

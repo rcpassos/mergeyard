@@ -175,3 +175,9 @@ recommendation. Both were addressed and the cleanup regression passed. The
 preflight now retains an owned foreground server, disables client auto-start,
 and confirms termination before removing its socket. A denied shutdown command
 causes a failure after bounded owned-process cleanup, rather than false readiness.
+
+R1 follow-up reserves three seconds of the five-second cleanup allowance for
+forced termination, reaping and resource removal. A stalled shutdown RPC is
+limited to two seconds, including process startup. The public regression checks
+that the server exits and its socket and temporary resources are removed even
+with delayed OS reaping.

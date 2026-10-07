@@ -126,20 +126,28 @@ class Checks:
     def run(self, command, env=None, cleanup=False):
         if cleanup:
             self.begin_cleanup()
+            # The shutdown RPC cannot spend the forced-cleanup reserve, even
+            # when an earlier failed probe has already used part of the budget.
+            command_deadline = min(time.monotonic() + 2, self.deadline - 3)
+            if command_deadline <= time.monotonic():
+                raise RuntimeError("tmux cleanup: time reserved for forced termination; allow owned-server shutdown")
         else:
             self.check()
+            command_deadline = self.deadline
         previous = set(self.owned)
         failed = True
         try:
             process = self.spawn(command, env=env)
             if not cleanup:
                 self.check()
-            output, errors = process.communicate(timeout=max(0.001, self.deadline - time.monotonic()))
+            output, errors = process.communicate(timeout=max(0.001, command_deadline - time.monotonic()))
             if not cleanup:
                 self.check()
             failed = False
             return subprocess.CompletedProcess(command, process.returncode, output, errors)
         except subprocess.TimeoutExpired as error:
+            if cleanup:
+                raise RuntimeError("tmux cleanup: shutdown command stalled; allow owned-server shutdown") from error
             raise RuntimeError(f"{self.capability}: deadline exceeded; {self.remedy}") from error
         finally:
             # Covers cancellation after Popen returns but before its handle is

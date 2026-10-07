@@ -65,6 +65,17 @@ def bind(self, address):
 socket.socket.bind = bind
 import pathlib, subprocess
 native_popen = subprocess.Popen
+native_wait = native_popen.wait
+def wait(self, timeout=None):
+    if (os.environ.get("PREFLIGHT_TEST_SLOW_TMUX_REAP") == "1"
+            and "-D" in self.args and self.returncode is None):
+        import time
+        # Model a modest OS reaping delay at the subprocess boundary.
+        time.sleep(0.02)
+        if timeout is not None and timeout < 0.02:
+            raise subprocess.TimeoutExpired(self.args, timeout)
+    return native_wait(self, timeout=timeout)
+native_popen.wait = wait
 def popen(command, *args, **kwargs):
     denied = os.environ.get("PREFLIGHT_TEST_NOEXEC_PATH")
     executable = pathlib.Path(command[0])
@@ -310,6 +321,30 @@ elif "kill-server" in sys.argv:
                     os.kill(int(pid_file.read_text()), signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+
+    def test_stalled_tmux_shutdown_reserves_forced_cleanup_and_unlinks_socket(self):
+        pid_file = self.root / "tmux.pid"
+        shutdown_started = self.root / "shutdown-started"
+        self.env["PREFLIGHT_TEST_TMUX_PID"] = str(pid_file)
+        self.env["PREFLIGHT_TEST_SHUTDOWN_STARTED"] = str(shutdown_started)
+        self.env["PREFLIGHT_TEST_SLOW_TMUX_REAP"] = "1"
+        self.tool("tmux", '''
+import os, pathlib, sys, time
+if "new-session" in sys.argv:
+    pathlib.Path(sys.argv[-1]).write_text("offline identity")
+elif "kill-server" in sys.argv:
+    pathlib.Path(os.environ["PREFLIGHT_TEST_SHUTDOWN_STARTED"]).write_text(str(time.monotonic()))
+    time.sleep(60)
+''')
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("shutdown command stalled", result.stderr)
+        self.assertNotIn("ready", result.stdout)
+        self.assert_stopped(int(pid_file.read_text()))
+        socket_dir = Path(self.sockets.name) / ("tmux-" + str(os.getuid()))
+        self.assertEqual(list(socket_dir.iterdir()), [], "Stalled shutdown left an owned socket behind")
+        self.assertEqual(list(self.tmp.iterdir()), [])
+        self.assertLess(time.monotonic() - float(shutdown_started.read_text()), 5)
 
 
 if __name__ == "__main__":
