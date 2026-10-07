@@ -125,6 +125,8 @@ type runView struct {
 	Agent, Model, Effort, Skills, ProcessSession, LogPath        string
 	Attempt, Round                                               int
 	ReviewPending, CanStop, CanRetry, Stopping                   bool
+	CanTakeover                                                  bool
+	ResumeCommand, TakeoverPrerequisite                          string
 }
 
 type issueView struct {
@@ -274,7 +276,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 	query := `SELECT r.id,r.repository,r.issue_number,r.state,COALESCE(r.current_phase,''),r.review_round,r.created_at,r.updated_at,
  COALESCE(r.last_error_code,''),COALESCE(r.last_error_message,''),COALESCE(r.branch,''),COALESCE(r.worktree_path,''),
  CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_agent,'') ELSE COALESCE(r.implementer_agent,'') END,CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_session_id,'') ELSE COALESCE(r.implementer_session_id,'') END,COALESCE(s.issue_json,'{}'),COALESCE(s.pr_url,''),COALESCE(r.pr_number,0),
- COALESCE(a.attempt,0),COALESCE(a.round,0),COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.process_session,''),COALESCE(a.log_path,''),COALESCE(a.skills_json,''),r.stop_requested
+ COALESCE(a.attempt,0),COALESCE(a.round,0),COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.process_session,''),COALESCE(a.log_path,''),COALESCE(a.skills_json,''),r.stop_requested,r.takeover_status
  FROM runs r LEFT JOIN scheduler_runs s ON s.run_id=r.id
  LEFT JOIN phase_attempts a ON a.id=(SELECT id FROM phase_attempts WHERE run_id=r.id AND phase=r.current_phase ORDER BY round DESC,attempt DESC LIMIT 1)`
 	var args []any
@@ -297,7 +299,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		var issueJSON, skillsJSON string
 		if err := rows.Scan(&run.ID, &run.Repository, &run.IssueNumber, &run.State, &run.Phase, &run.ReviewRound, &run.CreatedAt, &run.UpdatedAt,
 			&run.LastErrorCode, &run.LastErrorMessage, &run.Branch, &run.Worktree, &run.Agent, &run.SessionID, &issueJSON, &run.PRURL, &run.PRNumber,
-			&run.Attempt, &run.Round, &run.Model, &run.Effort, &run.ProcessSession, &run.LogPath, &skillsJSON, &run.Stopping); err != nil {
+			&run.Attempt, &run.Round, &run.Model, &run.Effort, &run.ProcessSession, &run.LogPath, &skillsJSON, &run.Stopping, &run.TakeoverStatus); err != nil {
 			return nil, err
 		}
 		var issue github.Issue
@@ -360,7 +362,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 			return nil, err
 		}
 		runs[i].Stopping = runs[i].Stopping && runs[i].Merge == nil
-		runs[i].CanRetry = (runs[i].State == workflow.NeedsAttention || runs[i].State == workflow.Failed) && !runs[i].Stopping && runs[i].Merge == nil
+		runs[i].CanRetry = (runs[i].State == workflow.NeedsAttention || runs[i].State == workflow.Failed) && !runs[i].Stopping && runs[i].Merge == nil && runs[i].TakeoverStatus != workflow.TakeoverRequested
 		runs[i].Retries, err = workflow.LoadRetries(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
@@ -392,6 +394,24 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		runs[i].Review, err = review.LoadSnapshot(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
+		}
+		// Use the implementer's identity even when a reviewer owns the phase.
+		if runs[i].State == workflow.Manual && runs[i].TakeoverStatus == workflow.TakeoverManual {
+			command, err := d.Scheduler.ManualCommand(ctx, runs[i].ID)
+			if err == nil {
+				runs[i].ResumeCommand = command.ShellCommand()
+			} else {
+				runs[i].TakeoverPrerequisite = "Resume command unavailable. Inspect the preserved worktree and implementer identity before requesting takeover again."
+			}
+		} else if !runs[i].State.Terminal() && runs[i].State != workflow.Manual && runs[i].Merge == nil && !runs[i].Stopping && runs[i].PendingRetry() == nil {
+			switch {
+			case runs[i].Worktree == "":
+				runs[i].TakeoverPrerequisite = "Takeover needs a prepared worktree."
+			case runs[i].Implementer == nil || runs[i].Implementer.SessionID == "":
+				runs[i].TakeoverPrerequisite = "Takeover needs the implementer's session identity. Wait for it to be recorded; a new conversation will not be created."
+			default:
+				runs[i].CanTakeover = true
+			}
 		}
 	}
 	return runs, nil
@@ -445,6 +465,23 @@ func (s *Server) retryRunPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.operations.Retry(r.Context(), r.PathValue("id")); err != nil {
+		s.operationError(w, r, err)
+		return
+	}
+	if r.Header.Get("HX-Request") == "true" {
+		r.URL.Path = "/runs/" + r.PathValue("id")
+		s.page(w, r)
+		return
+	}
+	http.Redirect(w, r, "/runs/"+r.PathValue("id"), http.StatusSeeOther)
+}
+
+func (s *Server) takeoverRunPage(w http.ResponseWriter, r *http.Request) {
+	if s.dashboard == nil {
+		s.respondError(w, r, &fault.Error{Code: "internal.run_not_found"}, "internal.run_not_found", http.StatusNotFound, "Run not found")
+		return
+	}
+	if _, err := s.operations.Takeover(r.Context(), r.PathValue("id")); err != nil {
 		s.operationError(w, r, err)
 		return
 	}

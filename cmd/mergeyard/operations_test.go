@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/rcpassos/mergeyard/internal/ci"
+	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/maintenance"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/runner"
@@ -206,5 +208,135 @@ func TestCLIRetrySendsProtectedRequestAndDisplaysSelection(t *testing.T) {
 	code, _, errOut = runCLI("retry", "run-1", "--config", path)
 	if code != 1 || !strings.Contains(errOut, "workspace.mismatch") || requested != 1 {
 		t.Fatalf("retry touched wrong workspace: %d %s %d", code, errOut, requested)
+	}
+}
+
+func TestCLITakeoverResumesExactIDInWorktree(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "runs", "run-1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(root, "work tree's $(touch never)")
+	if err := os.Mkdir(worktree, 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(root, "harness's executable")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	id := "01a10c5b-38a9-7330-b833-04e365cb5f37"
+	token := "takeover-token"
+	requests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: token})
+	})
+	mux.HandleFunc("POST /api/runs/run-1/takeover", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {
+			http.Error(w, "unauthorized", 403)
+			return
+		}
+		requests++
+		json.NewEncoder(w).Encode(harness.InteractiveCommand{Executable: executable, Dir: worktree, Args: []string{"--resume", id, "--permission-mode", "default"}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	path := filepath.Join(root, "config.yaml")
+	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, port)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("takeover", "run-1", "--config", path)
+	if code != 0 || requests != 1 || !strings.Contains(out, worktree+"\n--resume\n"+id+"\n--permission-mode\ndefault\n") {
+		t.Fatalf("takeover launch: %d %d %q %s", code, requests, out, errOut)
+	}
+	if err := os.Remove(executable); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut = runCLI("takeover", "run-1", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "takeover.launch_failed") {
+		t.Fatalf("launch failure missing manual recovery: %d %s", code, errOut)
+	}
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", filepath.Join(root, "other"), port)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut = runCLI("takeover", "run-1", "--config", path)
+	if code != 1 || requests != 2 || !strings.Contains(errOut, "workspace.mismatch") {
+		t.Fatalf("takeover changed another workspace: %d %d %s", code, requests, errOut)
+	}
+}
+
+func TestConcurrentCLITakeoverLaunchesOneInteractiveProcess(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "runs", "run-1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(root, "interactive")
+	started, release, launches := filepath.Join(root, "started"), filepath.Join(root, "release"), filepath.Join(root, "launches")
+	script := "#!/bin/sh\nprintf 'launch\\n' >> '" + launches + "'\ntouch '" + started + "'\nwhile [ ! -f '" + release + "' ]; do sleep 0.01; done\n"
+	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	defer os.WriteFile(release, nil, 0600)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "token"})
+	})
+	mux.HandleFunc("POST /api/runs/run-1/takeover", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(harness.InteractiveCommand{Executable: executable, Dir: root, Args: []string{"--resume", "01a10c5b-38a9-7330-b833-04e365cb5f37"}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	configPath := filepath.Join(root, "config.yaml")
+	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, port)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		code int
+		err  string
+	}
+	first, second := make(chan result, 1), make(chan result, 1)
+	invoke := func(done chan result) {
+		code, _, err := runCLI("takeover", "run-1", "--config", configPath)
+		done <- result{code, err}
+	}
+	go invoke(first)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first interactive process did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	go invoke(second)
+	var repeated result
+	returned := false
+	select {
+	case repeated = <-second:
+		returned = true
+	case <-time.After(time.Second):
+	}
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	initial := <-first
+	if !returned {
+		repeated = <-second
+	}
+	if initial.code != 0 || repeated.code != 1 || !strings.Contains(repeated.err, "takeover.interactive_running") {
+		t.Fatalf("concurrent interactive resumes: %+v %+v", initial, repeated)
+	}
+	data, err := os.ReadFile(launches)
+	if err != nil || string(data) != "launch\n" {
+		t.Fatalf("duplicate interactive launch: %q %v", data, err)
+	}
+	// Exit releases ownership, so later intentional resume remains usable.
+	code, _, errOut := runCLI("takeover", "run-1", "--config", configPath)
+	if code != 0 {
+		t.Fatalf("ownership survived exit: %d %s", code, errOut)
 	}
 }

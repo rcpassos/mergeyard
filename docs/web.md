@@ -136,3 +136,15 @@ review round, or renewed CI deadline. Detail and CLI status retain retry history
 `run.retry_requested`, `run.retry_rejected`, and approval invalidation refresh
 pages over SSE. Retry uses the existing Host, Origin, CSRF, workspace-identity,
 and safe error response boundaries. It preserves work and Stop behavior.
+
+`POST /runs/{id}/takeover` and `POST /api/runs/{id}/takeover` share
+`Scheduler.Takeover`. Run detail offers Take over run when its prerequisites
+are recorded, explains missing worktree/session identity, and shows pending
+preparation. It displays an escaped, copyable exact-ID shell command only after
+process exit and review restoration have completed. The API returns executable,
+argument vector, and worktree; it does not launch an interactive terminal.
+Normal interactive permissions are selected explicitly for either harness.
+`run.takeover_requested` and `run.manual` refresh the dashboard over SSE.
+Takeover uses the existing Host, Origin, CSRF, loopback, and CLI workspace checks;
+known prerequisite errors include actionable messages. Manual runs retain their
+slot and never launch automated agent phases after restart.

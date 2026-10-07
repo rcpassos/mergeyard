@@ -76,7 +76,6 @@ func TestHelpListsEveryCommand(t *testing.T) {
 func TestUnimplementedCommandsFail(t *testing.T) {
 	invocations := [][]string{
 		{"open"},
-		{"takeover", "run-1"},
 		{"handback", "run-1"},
 	}
 	for _, args := range invocations {
