@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -531,5 +532,80 @@ func TestHandbackNoPRPublishesUnchangedOrEditedWorkForEitherHarness(t *testing.T
 				}
 			})
 		}
+	}
+}
+
+func TestHandbackAfterRetryReviewsNewestManualCommitWithFractionalTimestamp(t *testing.T) {
+	_, runtime, api, remote, cfg, r := localFlow(t, `case "$*" in *review-*) exit 1;; *) `+successfulScript+`;; esac`)
+	now := time.Date(2026, 10, 7, 12, 0, 0, 123450000, time.UTC)
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := finish(t, s, workflow.NeedsAttention, workflow.Review)
+	if _, err := s.Retry(context.Background(), before.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Takeover(context.Background(), before.ID); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", before.ID)
+	if err := os.WriteFile(filepath.Join(path, "manual.txt"), []byte("new manual work"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 10, 7, 12, 0, 0, 123456000, time.UTC)
+	selected, err := s.Handback(context.Background(), before.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.ReviewRound != 1 {
+		t.Fatalf("fixture did not retain round: %+v", selected)
+	}
+	replacePhaseScript(t, cfg, workflow.Review, reviewScript(approvedReview))
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := runtime.Workflow.Get(context.Background(), before.ID)
+	head := gitCommand(t, remote, "rev-parse", "mergeyard/issue-7")
+	if err != nil || after.State != workflow.Active || after.Phase != workflow.Review || after.Review.Attempt != 2 || after.Review.TargetSHA != head {
+		t.Fatalf("newer handback target lost: %+v %v", after, err)
+	}
+}
+
+func TestHandbackReconcilesLabelsAfterPublicationSelection(t *testing.T) {
+	_, runtime, api, _, cfg, r := pairingFlow(t, "claude", "claude", disputedReport)
+	cfg.MaxRounds = 1
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := finish(t, s, workflow.NeedsAttention, workflow.Review)
+	if _, err := s.Takeover(context.Background(), before.ID); err != nil {
+		t.Fatal(err)
+	}
+	api.mutate = func(action, repo string, n int, label string) error {
+		if action == "remove" && label == "agent-needs-attention" {
+			return fmt.Errorf("label response lost")
+		}
+		return nil
+	}
+	selected, err := s.Handback(context.Background(), before.ID)
+	if err == nil || selected.State != workflow.Active || len(selected.Handbacks) != 1 {
+		t.Fatalf("fixture did not select before label failure: %+v %v", selected, err)
+	}
+	api.mutate = nil
+	s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if has(api.issues["owner/repo"][0], "agent-needs-attention") || !has(api.issues["owner/repo"][0], "agent-running") {
+		t.Fatal("handback label bookkeeping was not recovered")
+	}
+	after, err := runtime.Workflow.Get(context.Background(), before.ID)
+	if err != nil || len(after.Handbacks) != 1 || after.Handbacks[0].GrantedRound != 2 {
+		t.Fatalf("label recovery duplicated handback: %+v %v", after, err)
 	}
 }

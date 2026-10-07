@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rcpassos/mergeyard/internal/ci"
@@ -216,17 +217,29 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		return fail(&fault.Error{Code: "git.review_unsupported", Message: "Git adapter cannot protect reviewer changes"})
 	}
 	target := ""
-	selectedAt := ""
+	var selectedAt time.Time
+	selectTarget := func(sha, requested string) error {
+		requestedAt, err := time.Parse(time.RFC3339Nano, requested)
+		if err != nil {
+			return &fault.Error{Code: "review.selection_invalid", Message: "Cannot order saved Retry and handback selections; inspect recovery history"}
+		}
+		if !requestedAt.Before(selectedAt) {
+			target, selectedAt = sha, requestedAt
+		}
+		return nil
+	}
 	for _, v := range run.Retries {
 		if !v.Pending && v.Error == "" && v.NextPhase == workflow.Review && v.Round == run.ReviewRound && v.TargetSHA != "" {
-			target = v.TargetSHA
-			selectedAt = v.RequestedAt
+			if err := selectTarget(v.TargetSHA, v.RequestedAt); err != nil {
+				return fail(err)
+			}
 		}
 	}
 	for _, v := range run.Handbacks {
-		if !v.Pending && v.Error == "" && v.NextPhase == workflow.Review && v.Round == run.ReviewRound && v.RequestedAt >= selectedAt {
-			target = v.CommitSHA
-			selectedAt = v.RequestedAt
+		if !v.Pending && v.Error == "" && v.NextPhase == workflow.Review && v.Round == run.ReviewRound {
+			if err := selectTarget(v.CommitSHA, v.RequestedAt); err != nil {
+				return fail(err)
+			}
 		}
 	}
 	hasReconciledTarget := target != ""

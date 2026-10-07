@@ -351,7 +351,7 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 // Label failures remain retryable bookkeeping, after CI observation so they
 // cannot delay expiration or restore progress labels on a new attention state.
 func (s *Scheduler) retryProgressLabels(ctx context.Context, repo config.Repository, run workflow.Run) error {
-	if len(run.Retries) == 0 {
+	if len(run.Retries) == 0 && len(run.Handbacks) == 0 {
 		return nil
 	}
 	current, err := s.workflow.Get(ctx, run.ID)

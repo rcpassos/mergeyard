@@ -284,7 +284,7 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 			}
 		}
 	}
-	if len(run.Retries) > 0 {
+	if len(run.Retries) > 0 || len(run.Handbacks) > 0 {
 		if err := s.retryLabels(ctx, repo, run); err != nil {
 			return err
 		}

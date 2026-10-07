@@ -10,6 +10,18 @@ import (
 func (m *Manager) InspectHandback(ctx context.Context, run Run, target string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	remote, err := m.inspectHandbackAncestry(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	if target != "" && remote != target {
+		return "", failure("handback.head_ambiguous", run.Path, errors.New("PR and remote head disagree"))
+	}
+	return remote, nil
+}
+
+// The caller holds m.mu across inspection and any following commit.
+func (m *Manager) inspectHandbackAncestry(ctx context.Context, run Run) (string, error) {
 	if err := m.inspectReview(ctx, run); err != nil {
 		return "", err
 	}
@@ -20,9 +32,6 @@ func (m *Manager) InspectHandback(ctx context.Context, run Run, target string) (
 	remote, err := optionalRemoteHead(ctx, run, origin)
 	if err != nil {
 		return "", err
-	}
-	if target != "" && remote != target {
-		return "", failure("handback.head_ambiguous", run.Path, errors.New("PR and remote head disagree"))
 	}
 	ancestor := remote
 	if ancestor == "" {
@@ -38,26 +47,12 @@ func (m *Manager) InspectHandback(ctx context.Context, run Run, target string) (
 func (m *Manager) CommitHandback(ctx context.Context, run Run, previous string) (CommitResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.inspectReview(ctx, run); err != nil {
-		return CommitResult{}, err
-	}
-	origin, err := verifyOrigin(ctx, run)
-	if err != nil {
-		return CommitResult{}, err
-	}
-	remote, err := optionalRemoteHead(ctx, run, origin)
+	remote, err := m.inspectHandbackAncestry(ctx, run)
 	if err != nil {
 		return CommitResult{}, err
 	}
 	if remote != previous {
 		return CommitResult{}, failure("handback.head_ambiguous", run.Path, errors.New("remote changed before manual commit"))
-	}
-	ancestor := previous
-	if ancestor == "" {
-		ancestor = run.BaseSHA
-	}
-	if _, err := command(ctx, run.Path, "handback.head_diverged", "merge-base", "--is-ancestor", ancestor, "HEAD"); err != nil {
-		return CommitResult{}, err
 	}
 	return commit(ctx, run, Phase{Title: "manual handback"})
 }
