@@ -13,6 +13,7 @@ test:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p '*_test.py'
 	go test -timeout=30m ./...
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s docs/research/codex-m2 -p '*_test.py'
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s docs/research/codex-m3-usage-limits -p '*_test.py'
 
 lint:
 	@unformatted="$$(gofmt -l .)"; \
