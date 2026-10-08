@@ -266,6 +266,23 @@ func TestExpiredTemporaryResetDoesNotDescribeCreditProbeDelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+	var snapshot struct {
+		Runs []struct {
+			HarnessWait map[string]json.RawMessage `json:"harness_wait"`
+			History     []workflow.HarnessWait     `json:"harness_wait_history"`
+		} `json:"runs"`
+	}
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &snapshot) != nil || len(snapshot.Runs) != 1 {
+		t.Fatalf("run JSON: %d %s", response.Code, response.Body.String())
+	}
+	if _, present := snapshot.Runs[0].HarnessWait["reset_at"]; present {
+		t.Fatalf("current credit wait JSON retained expired reset: %s", response.Body.String())
+	}
+	if len(snapshot.Runs[0].History) != 2 || !snapshot.Runs[0].History[1].ResetAt.Equal(reset) {
+		t.Fatalf("observed reset history lost: %+v", snapshot.Runs[0].History)
+	}
+	response = httptest.NewRecorder()
 	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil))
 	if response.Code != 200 || strings.Contains(response.Body.String(), "Probe may run after temporary reset") {
 		t.Fatalf("expired delay displayed: %d %s", response.Code, response.Body.String())

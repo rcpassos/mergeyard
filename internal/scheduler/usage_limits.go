@@ -348,3 +348,15 @@ func (s *Scheduler) retryStartsAgent(ctx context.Context, run workflow.Run, v wo
 	}
 	return a.status != "succeeded", err
 }
+
+// runSnapshot keeps current credit-wait JSON consistent with harness availability.
+// Copy the wait so control-plane reset authority and observation history survive.
+func (s *Scheduler) runSnapshot(run workflow.Run) workflow.Run {
+	if wait := run.HarnessWait; wait != nil && wait.Reason == "credits_exhausted" && !s.deps.Now().Before(wait.ResetAt) {
+		current := *wait
+		current.ResetAt = time.Time{}
+		current.ResetTimeSource = ""
+		run.HarnessWait = &current
+	}
+	return run
+}

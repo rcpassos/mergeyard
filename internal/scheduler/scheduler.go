@@ -226,7 +226,7 @@ func (s *Scheduler) Runs(ctx context.Context) ([]workflow.Run, error) {
 		if err != nil {
 			return nil, err
 		}
-		runs = append(runs, run)
+		runs = append(runs, s.runSnapshot(run))
 	}
 	return runs, nil
 }

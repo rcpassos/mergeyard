@@ -77,7 +77,7 @@ func (s *Scheduler) Retry(ctx context.Context, id string) (workflow.Run, error) 
 		}
 		return err
 	})
-	return result, err
+	return s.runSnapshot(result), err
 }
 
 func (s *Scheduler) rejectRetry(ctx context.Context, run workflow.Run, v workflow.RetrySnapshot, cause error) error {

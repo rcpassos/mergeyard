@@ -11,7 +11,8 @@ import (
 
 // HarnessLimit is the account-wide restriction authority. Expired timed records
 // remain so earlier cooldown observations still follow a later reported reset.
-// This component owns every harness_limits write and its availability events.
+// Harness-limit and credit-probe components share harness_limits writes.
+// This component governs timed restrictions and expiration events.
 type HarnessLimit struct {
 	Reason          string
 	RestrictionID   string

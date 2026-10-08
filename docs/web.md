@@ -108,7 +108,7 @@ distinguishes interrupted executions and explicit grants from account gates wher
 no execution started. Ready-to-merge runs release their slot and wait for the user's
 merge. Recent runs are limited to the latest 20 ended runs. The settings page
 displays resolved values, configuration/workspace paths, doctor results, and
-usage-limit recovery history; it has no configuration write endpoint.
+harness recovery history; it has no configuration write endpoint.
 
 `POST /runs/{id}/stop` uses the same `Scheduler.Stop` as the CLI. It coordinates
 with in-flight operations, stops running phase sessions, removes ready and
@@ -157,7 +157,8 @@ probe progress, Retry controls, and recovery history over SSE. Probe-related
 harness events can carry the selected run ID; see `docs/workflow.md` for the event
 contract. A credit block remains indefinite after a temporary reset expires.
 Expired resets remain in durable history but no longer display as a future probe
-launch delay.
+launch delay. Current run JSON omits an expired credit-wait reset;
+`harness_wait_history` retains its observed timestamp and provenance.
 
 `POST /runs/{id}/takeover` and `POST /api/runs/{id}/takeover` share
 `Scheduler.Takeover`. Run detail offers Take over run when its prerequisites
