@@ -18,6 +18,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/maintenance"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/runner"
+	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/web"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -410,4 +411,44 @@ func TestCLITakeoverOwnsInteractiveLockBeforeDelayedResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	lock.Close()
+}
+
+func TestCLIStatusShowsHarnessAvailabilityAndWaitKinds(t *testing.T) {
+	for _, prelaunch := range []bool{true, false} {
+		t.Run(map[bool]string{true: "account-gate", false: "interrupted-execution"}[prelaunch], func(t *testing.T) {
+			root := t.TempDir()
+			reset := time.Date(2026, 10, 8, 12, 5, 0, 0, time.UTC)
+			wait := workflow.HarnessWait{Harness: "claude", Reason: "temporary_limit", Phase: workflow.Review, Round: 1, ResetAt: reset, ResetTimeSource: "reported", Source: "native-fixture"}
+			if !prelaunch {
+				wait.AttemptID = "interrupted-1"
+				wait.Attempt = 1
+				wait.Consecutive = 2
+				wait.Allowance = 3
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "runtime-token", Harnesses: []scheduler.HarnessAvailability{{Harness: "claude", Available: false, ResetAt: reset, ResetTimeSource: "reported", Source: "native-fixture"}, {Harness: "codex", Available: true}}, Runs: []workflow.Run{{ID: "waiting-run", Repository: "owner/repo", IssueNumber: 7, State: workflow.WaitingForHarness, Phase: workflow.Review, HarnessWait: &wait, HarnessWaitHistory: []workflow.HarnessWait{wait}, Retries: []workflow.RetrySnapshot{{NextState: workflow.WaitingForHarness, NextPhase: workflow.Review, Round: 1, GrantedWait: 4}}}}})
+			}))
+			defer server.Close()
+			path := filepath.Join(root, "config.yaml")
+			if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, stderr := runCLI("status", "--config", path)
+			if code != 0 {
+				t.Fatalf("status failed %d %s", code, stderr)
+			}
+			for _, text := range []string{"Harness claude: waiting until 2026-10-08T12:05:00Z (reported; native-fixture)", "Harness codex: available", "owner/repo#7  WAITING_FOR_HARNESS/review", "Exactly one additional usage-limit wait granted; allowance 4"} {
+				if !strings.Contains(out, text) {
+					t.Errorf("missing status %q: %s", text, out)
+				}
+			}
+			if prelaunch {
+				if !strings.Contains(out, "Account gate; no execution started.") || strings.Contains(out, "consecutive 0 / allowance 0") {
+					t.Fatalf("misleading account-gate status: %s", out)
+				}
+			} else if !strings.Contains(out, "consecutive 2 / allowance 3") || !strings.Contains(out, "interrupted-1") {
+				t.Fatalf("interrupted-execution diagnostics missing: %s", out)
+			}
+		})
+	}
 }

@@ -47,7 +47,12 @@ The other retry destinations emit `run.claimed`, `run.preparing`, `ci.updated`,
 `WAITING_FOR_HARNESS` emits `run.waiting_for_harness`; resuming it emits
 `phase.started` because §21 starts a new attempt. `harness.usage_limited` and
 `harness.available` are application events without a run ID, published once per
-harness limit by the component that writes `harness_limits`. Rejected
+harness change by the workflow's harness-limit component, which owns every
+`harness_limits` mutation. Detection commits the run transition and harness event
+in one ordered event batch; expiry commits its acknowledgement and availability
+event together. Reported resets take precedence over estimated cooldowns. Expired
+records retain that reset authority so waiting runs cannot revive a superseded
+cooldown after restart. Rejected
 transitions and storage failures leave both the run and event history unchanged.
 Logging and in-process delivery happen only after commit.
 

@@ -137,8 +137,12 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			if run.State == workflow.NeedsAttention || run.State == workflow.Failed {
 				fmt.Fprintf(stdout, "  Retry: mergeyard retry %s (reconciles preserved work first)\n", terminalText(run.ID))
 			}
+			if run.State == workflow.WaitingForHarness && run.HarnessWait != nil {
+				v := run.HarnessWait
+				fmt.Fprintf(stdout, "  Waiting for harness %s until %s · %s · %s\n", terminalText(v.Harness), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source))
+			}
 			for _, v := range run.HarnessWaitHistory {
-				fmt.Fprintf(stdout, "  Usage-limit wait: %s · %s · reset %s · %s · %s · consecutive %d / allowance %d\n", terminalText(v.Harness), terminalText(v.Reason), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source), v.Consecutive, v.Allowance)
+				printHarnessWait(stdout, v)
 			}
 			for _, v := range run.Handbacks {
 				printHandback(stdout, v)
@@ -282,6 +286,15 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		return nil
 	}
 	return nil
+}
+
+func printHarnessWait(out io.Writer, v workflow.HarnessWait) {
+	fmt.Fprintf(out, "  Usage-limit wait: %s · %s · observed reset %s · %s · %s", terminalText(v.Harness), terminalText(v.Reason), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source))
+	if v.AttemptID == "" {
+		fmt.Fprintln(out, " · Account gate; no execution started.")
+		return
+	}
+	fmt.Fprintf(out, " · interrupted execution %s · consecutive %d / allowance %d\n", terminalText(v.AttemptID), v.Consecutive, v.Allowance)
 }
 
 func printHandback(out io.Writer, v workflow.HandbackSnapshot) {

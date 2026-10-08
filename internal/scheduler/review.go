@@ -321,7 +321,8 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		}
 		resume = false
 	}
-	phase := harness.PhaseContext{Phase: workflow.Review, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env, Interruption: interruptionContext(run, workflow.Review)}
+	phase := harness.PhaseContext{Phase: workflow.Review, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
+	phase.Interruption = interruptionContext(previous.attempt, phase)
 	issue, err = s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
 		return err

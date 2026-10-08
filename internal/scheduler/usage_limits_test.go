@@ -385,6 +385,20 @@ func TestOrdinaryFailureAfterLimitStillHasOrdinaryAttemptBudget(t *testing.T) {
 	fake.outcome.Kind = harness.Ordinary
 	now = waiting.HarnessWait.ResetAt
 	done := finish(t, s, workflow.Active, workflow.Review)
+	input, err := os.ReadFile(filepath.Join(runtime.Workspace.Root, "runs", done.ID, "phases", "implement-0-3", "input.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(input), "## Interruption context") {
+		t.Fatalf("ordinary retry has stale interruption note: %s", input)
+	}
+	resumed, err := os.ReadFile(filepath.Join(runtime.Workspace.Root, "runs", done.ID, "phases", "implement-0-2", "input.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(resumed), "usage limit") || strings.Contains(string(resumed), "reviewer changes") {
+		t.Fatalf("implementation interruption note describes unrelated reviewer work: %s", resumed)
+	}
 	if done.Implementer.Attempt != 3 || fake.calls != 2 || len(done.HarnessWaitHistory) != 1 {
 		t.Fatalf("ordinary attempt budget %+v calls=%d", done, fake.calls)
 	}
@@ -529,6 +543,13 @@ func TestUsageLimitResumeUsesExistingMissingSessionRecovery(t *testing.T) {
 			waiting := finish(t, s, workflow.WaitingForHarness, workflow.Implement)
 			now = waiting.HarnessWait.ResetAt
 			done := finish(t, s, workflow.Active, workflow.Review)
+			input, err := os.ReadFile(filepath.Join(runtime.Workspace.Root, "runs", done.ID, "phases", "implement-0-3", "input.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(input), "## Interruption context") {
+				t.Fatalf("fresh recovery session has stale interruption note: %s", input)
+			}
 			if done.Implementer.Attempt != 3 || len(done.SessionRecoveries) != 1 || done.SessionRecoveries[0].PreviousSessionID != waiting.Implementer.SessionID || done.Implementer.SessionID == waiting.Implementer.SessionID {
 				t.Fatalf("recovery %+v", done)
 			}

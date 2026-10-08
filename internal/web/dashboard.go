@@ -398,9 +398,9 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(runs[i].HarnessWaitHistory) > 0 {
-			v := runs[i].HarnessWaitHistory[len(runs[i].HarnessWaitHistory)-1]
-			runs[i].HarnessWait = &v
+		runs[i].HarnessWait, err = workflow.CurrentHarnessWait(ctx, d.DB, runs[i].HarnessWaitHistory)
+		if err != nil {
+			return nil, err
 		}
 		runs[i].Merge, err = maintenance.Load(ctx, d.DB, runs[i].ID)
 		if err != nil {

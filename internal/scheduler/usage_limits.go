@@ -2,13 +2,11 @@ package scheduler
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/config"
-	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -32,9 +30,7 @@ func (s *Scheduler) parseExecution(agent string, phase harness.PhaseContext, art
 	if err == nil {
 		return result, nil
 	}
-	code := errorCodeForReview(err)
-	nativeFailure := artifacts.ExitCode != 0 || code == "phase.execution_failed" || code == "harness.session_resume_failed" || code == "phase.max_turns_exceeded" || code == "phase.budget_exceeded"
-	if !nativeFailure {
+	if s.harnesses[agent].NativeSucceeded(artifacts) {
 		return result, err
 	}
 	outcome := s.harnesses[agent].ClassifyFailure(artifacts, s.deps.Now().UTC())
@@ -84,9 +80,6 @@ func (s *Scheduler) limitExecution(ctx context.Context, repo config.Repository, 
 	if err != nil {
 		return err
 	}
-	if err := s.updateHarnessAvailability(ctx); err != nil {
-		return err
-	}
 	if failure != nil {
 		return s.attentionLabels(ctx, repo, run)
 	}
@@ -109,17 +102,13 @@ func (s *Scheduler) HarnessAvailability(ctx context.Context) ([]HarnessAvailabil
 	for _, name := range []string{"claude", "codex"} {
 		caps := s.harnesses[name].Capabilities()
 		v := HarnessAvailability{Harness: name, Available: true, TemporaryLimitDetection: caps.TemporaryLimitDetection, CreditExhaustionDetection: caps.CreditExhaustionDetection}
-		var reset string
-		err := s.db.QueryRowContext(ctx, "SELECT limited_until,reset_time_source,signal_source FROM harness_limits WHERE harness_type=?", name).Scan(&reset, &v.ResetTimeSource, &v.Source)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		limit, err := workflow.LoadHarnessLimit(ctx, s.db, name)
+		if err != nil {
 			return nil, err
 		}
-		if err == nil {
-			v.ResetAt, err = time.Parse(time.RFC3339Nano, reset)
-			if err != nil {
-				return nil, err
-			}
-			v.Available = !s.deps.Now().Before(v.ResetAt)
+		if limit != nil {
+			v.ResetAt, v.ResetTimeSource, v.Source = limit.ResetAt, limit.ResetTimeSource, limit.Source
+			v.Available = !s.deps.Now().Before(limit.ResetAt)
 		}
 		result = append(result, v)
 	}
@@ -127,22 +116,14 @@ func (s *Scheduler) HarnessAvailability(ctx context.Context) ([]HarnessAvailabil
 }
 
 func (s *Scheduler) harnessGate(ctx context.Context, agent string) (*workflow.HarnessWait, error) {
-	var reset, source, signal string
-	err := s.db.QueryRowContext(ctx, "SELECT limited_until,reset_time_source,signal_source FROM harness_limits WHERE harness_type=?", agent).Scan(&reset, &source, &signal)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	limit, err := workflow.LoadHarnessLimit(ctx, s.db, agent)
 	if err != nil {
 		return nil, err
 	}
-	at, err := time.Parse(time.RFC3339Nano, reset)
-	if err != nil {
-		return nil, err
-	}
-	if !s.deps.Now().Before(at) {
+	if limit == nil || !s.deps.Now().Before(limit.ResetAt) {
 		return nil, nil
 	}
-	return &workflow.HarnessWait{Harness: agent, Reason: "temporary_limit", ResetAt: at, ResetTimeSource: source, Source: signal, DetectedAt: s.deps.Now().UTC()}, nil
+	return &workflow.HarnessWait{Harness: agent, Reason: "temporary_limit", ResetAt: limit.ResetAt, ResetTimeSource: limit.ResetTimeSource, Source: limit.Source, DetectedAt: s.deps.Now().UTC()}, nil
 }
 
 func (s *Scheduler) gatePhase(ctx context.Context, run workflow.Run, agent string) (bool, error) {
@@ -174,50 +155,15 @@ func (s *Scheduler) resumeHarnessWait(ctx context.Context, run workflow.Run) err
 	return err // A later tick launches the same phase, with a distinct execution.
 }
 
-// Persist notification acknowledgement with each availability event. Recovery
-// can replay this after a crash without repeating an unchanged harness event.
-func (s *Scheduler) updateHarnessAvailability(ctx context.Context) error {
-	for _, name := range []string{"claude", "codex"} {
-		var reset, notified, source, signal string
-		err := s.db.QueryRowContext(ctx, "SELECT limited_until,notified_until,reset_time_source,signal_source FROM harness_limits WHERE harness_type=?", name).Scan(&reset, &notified, &source, &signal)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if reset != notified {
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				_, err := tx.ExecContext(ctx, "UPDATE harness_limits SET notified_until=limited_until WHERE harness_type=?", name)
-				return events.Draft{Type: "harness.usage_limited", Payload: map[string]string{"harness": name, "reset_at": reset, "reset_time_source": source, "source": signal}}, err
-			})
-			if err != nil {
-				return err
-			}
-		}
-		at, err := time.Parse(time.RFC3339Nano, reset)
-		if err != nil {
-			return err
-		}
-		if !s.deps.Now().Before(at) {
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				_, err := tx.ExecContext(ctx, "DELETE FROM harness_limits WHERE harness_type=? AND limited_until=?", name, reset)
-				return events.Draft{Type: "harness.available", Payload: map[string]string{"harness": name}}, err
-			})
-			if err != nil {
-				return err
-			}
-		}
+// Describe only the execution actually being resumed. An ordinary retry or a
+// fresh missing-session recovery has its own context, not an old limit notice.
+func interruptionContext(previous attempt, phase harness.PhaseContext) string {
+	if previous.status != "usage_limited" || !phase.Resume || previous.sessionID == "" || previous.sessionID != phase.SessionID {
+		return ""
 	}
-	return nil
-}
-
-func interruptionContext(run workflow.Run, phase workflow.Phase) string {
-	for i := len(run.HarnessWaitHistory) - 1; i >= 0; i-- {
-		wait := run.HarnessWaitHistory[i]
-		if wait.Phase == phase && wait.Round == phaseRound(run, phase) && wait.AttemptID != "" {
-			return fmt.Sprintf("The previous %s execution was interrupted by a temporary usage limit. Resume the same conversation and phase. Partial implementer edits are preserved; inspect them before continuing. Interrupted reviewer changes were restored. Settings and full phase context are reapplied. Interrupted execution: %s; reset source: %s.", phase, wait.AttemptID, wait.ResetTimeSource)
-		}
+	work := "Partial edits are preserved; inspect them before continuing."
+	if phase.Phase == workflow.Review {
+		work = "Reviewer changes from that execution were restored; review the pinned target again without editing repository files."
 	}
-	return ""
+	return fmt.Sprintf("The previous %s execution (%s) was interrupted by a temporary usage limit. Resume this phase in the same conversation. %s Effective settings and full phase context are reapplied.", phase.Phase, previous.id, work)
 }

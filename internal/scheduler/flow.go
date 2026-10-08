@@ -424,7 +424,8 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	if err := sessions.RequireProcessJournal(phaseDir); err != nil {
 		return err
 	}
-	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env, Interruption: interruptionContext(run, workflow.Implement)}
+	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
+	phase.Interruption = interruptionContext(previous, phase)
 	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
 		return err

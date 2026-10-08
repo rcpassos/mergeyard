@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/rcpassos/mergeyard/internal/events"
 	"time"
 )
 
@@ -48,34 +49,32 @@ func LoadHarnessWaits(ctx context.Context, db queryer, id string) ([]HarnessWait
 	return history, rows.Err()
 }
 
-func (v HarnessWait) save(ctx context.Context, tx *sql.Tx, id string) error {
+func (v HarnessWait) save(ctx context.Context, tx *sql.Tx, id string) (*events.Draft, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var attempt any
 	if v.AttemptID != "" {
 		attempt = v.AttemptID
 		result, err := tx.ExecContext(ctx, `UPDATE phase_attempts SET status='usage_limited',exit_code=?,ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),error='harness.temporary_limit: Execution interrupted by a temporary usage limit' WHERE id=? AND run_id=? AND phase=? AND round=? AND status='running'`, v.ExitCode, v.AttemptID, id, v.Phase, v.Round)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		n, err := result.RowsAffected()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if n != 1 {
-			return invalid("Usage limit requires the current running execution")
+			return nil, invalid("Usage limit requires the current running execution")
 		}
 	}
 	_, err = tx.ExecContext(ctx, "INSERT INTO harness_waits(run_id,phase_attempt_id,snapshot_json) VALUES(?,?,?)", id, attempt, string(data))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if v.AttemptID != "" {
-		// Never shorten a known account restriction when another in-flight run
-		// finishes later with a less reliable or earlier reset.
-		_, err = tx.ExecContext(ctx, `INSERT INTO harness_limits(harness_type,limited_until,reset_time_source,detected_at,phase_attempt_id,signal_source) VALUES(?,?,?,?,?,?) ON CONFLICT(harness_type) DO UPDATE SET limited_until=excluded.limited_until,reset_time_source=excluded.reset_time_source,detected_at=excluded.detected_at,phase_attempt_id=excluded.phase_attempt_id,signal_source=excluded.signal_source WHERE julianday(excluded.limited_until)>julianday(harness_limits.limited_until)`, v.Harness, v.ResetAt.Format(time.RFC3339Nano), v.ResetTimeSource, v.DetectedAt.Format(time.RFC3339Nano), v.AttemptID, v.Source)
+		return saveHarnessLimit(ctx, tx, v)
 	}
-	return err
+	return nil, nil
 }

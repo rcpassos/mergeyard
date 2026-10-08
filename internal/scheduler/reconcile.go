@@ -42,7 +42,7 @@ func (s *Scheduler) Reconcile(ctx context.Context) (ReconcileReport, error) {
 }
 
 func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
-	if err := s.updateHarnessAvailability(ctx); err != nil {
+	if err := s.workflow.ReconcileHarnessLimits(ctx, s.deps.Now().UTC()); err != nil {
 		return ReconcileReport{}, err
 	}
 	report := ReconcileReport{Findings: []Finding{}}
