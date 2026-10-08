@@ -197,6 +197,44 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 		// Explicit retry cannot distinguish reviewer changes from later user edits.
 		return fail("retry.review_unrestored", "Review restoration is unfinished; inspect preserved work before retrying")
 	}
+	if v.Cause == waitsExhausted {
+		wait := run.HarnessWait
+		if wait == nil || wait.AttemptID == "" || wait.Phase != run.Phase || wait.Round != phaseRound(run, run.Phase) {
+			return fail("retry.phase_ambiguous", "Cannot identify the interrupted execution")
+		}
+		if pr != nil {
+			target := ""
+			if run.Phase == workflow.Review && run.Review != nil {
+				target = run.Review.TargetSHA
+			}
+			if run.Phase == workflow.Fix && run.Fix != nil {
+				target = run.Fix.TargetSHA
+			}
+			if !reviewHeadMatches(pr, repo, run, gitRun, target) {
+				return fail("retry.head_ambiguous", "PR changed during usage-limit waiting")
+			}
+		}
+		g, ok := s.deps.Git.(RetryGit)
+		if !ok {
+			return fail("git.retry_unsupported", "Git adapter cannot inspect preserved work")
+		}
+		target := ""
+		if pr != nil {
+			target = pr.Head.SHA
+		}
+		if _, err := g.InspectRetry(ctx, gitRun, target, run.Phase != workflow.Review); err != nil {
+			return s.rejectRetry(ctx, run, v, err)
+		}
+		v.Pending = false
+		v.NextState, v.NextPhase, v.Round = workflow.WaitingForHarness, run.Phase, run.ReviewRound
+		v.GrantedWait, v.WaitSequence = wait.Allowance+1, wait.Sequence
+		selected, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: v.NextState, NextPhase: v.NextPhase, Metadata: workflow.MetadataPatch{Retry: &v}})
+		if err != nil {
+			v.Pending = true
+			return s.rejectRetry(ctx, run, v, err)
+		}
+		return s.retryLabels(ctx, repo, selected)
+	}
 	v.Round = run.ReviewRound
 	v.NextState, v.NextPhase = workflow.Active, run.Phase
 	patch := workflow.MetadataPatch{Retry: &v}

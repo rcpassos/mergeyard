@@ -70,6 +70,9 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			return s.recordAttention(ctx, repo, run, err)
 		}
 	}
+	if a.status == "usage_limited" {
+		return s.startReview(ctx, repo, run, issue, gitRun, a.number+1)
+	}
 	if a.status == "failed" {
 		code, message, _ := strings.Cut(a.failure, ": ")
 		cause := &fault.Error{Code: code, Message: message}
@@ -132,7 +135,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			lastMessage, cause = s.readLastMessage(ctx, a.ref.PhaseDir)
 		}
 		if cause == nil {
-			result, err := s.harnesses[a.agent].ParseResult(harness.PhaseContext{Phase: workflow.Review, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+			result, err := s.parseExecution(a.agent, harness.PhaseContext{Phase: workflow.Review, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 			cause = err
 			if err == nil {
 				report = &review.Report{SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Findings: result.Findings}
@@ -149,7 +152,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			}
 		}
 	}
-	if a.contaminated {
+	if a.contaminated && !isTemporaryLimit(cause) {
 		cause = &fault.Error{Code: "review.code_changed", Message: "Reviewer changed repository files, index, or commits; restored pre-review work and discarded verdict"}
 	}
 	// Fetch again after restoration and parsing. Never authorize a different head.
@@ -162,6 +165,9 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	}
 	if !reviewHeadMatches(pr, repo, run, gitRun, a.target) {
 		cause = &fault.Error{Code: "review.head_changed", Message: "PR head changed during review; stale verdict discarded"}
+	}
+	if isTemporaryLimit(cause) {
+		return s.limitExecution(ctx, repo, run, a.attempt, cause)
 	}
 	if cause != nil {
 		retry, retryErr := s.retryPhase(ctx, run, workflow.Review, a.attempt, cause, repo.Reviewer.MaxAttempts)
@@ -203,6 +209,9 @@ func reviewHeadMatches(pr *github.PullRequest, repo config.Repository, run workf
 }
 func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run workflow.Run, issue github.Issue, gitRun managedgit.Run, number int) error {
 	fail := func(err error) error { return s.recordAttention(ctx, repo, run, err) }
+	if gated, err := s.gatePhase(ctx, run, repo.Reviewer.Agent); gated || err != nil {
+		return err
+	}
 
 	var sessionAgent string
 	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(reviewer_agent,'') FROM runs WHERE id=?", run.ID).Scan(&sessionAgent); err != nil {
@@ -297,6 +306,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		if err != nil {
 			return err
 		}
+		if previous.status == "usage_limited" && sessionID == "" {
+			return fail(&fault.Error{Code: "harness.session_missing", Message: "Interrupted reviewer conversation identity is unavailable; inspect preserved work"})
+		}
 		if strings.HasPrefix(previous.failure, "harness.session_resume_failed: ") {
 			sessionID = ""
 			resume = false
@@ -310,6 +322,7 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		resume = false
 	}
 	phase := harness.PhaseContext{Phase: workflow.Review, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
+	phase.Interruption = interruptionContext(previous.attempt, phase)
 	issue, err = s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
 		return err

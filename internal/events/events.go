@@ -54,54 +54,72 @@ func (b *Bus) Publish(ctx context.Context, draft Draft) (Event, error) {
 // The callback must use the supplied transaction and must not call the Bus.
 // No log or subscriber notification escapes a rolled-back transaction.
 func (b *Bus) Commit(ctx context.Context, change func(*sql.Tx) (Draft, error)) (Event, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.closed {
-		return Event{}, &fault.Error{Code: "internal.event_closed", Message: "Event bus is closed"}
-	}
-	tx, err := b.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Event{}, databaseError(err)
-	}
-	defer tx.Rollback()
-	draft, err := change(tx)
+	committed, err := b.CommitBatch(ctx, func(tx *sql.Tx) ([]Draft, error) {
+		draft, err := change(tx)
+		return []Draft{draft}, err
+	})
 	if err != nil {
 		return Event{}, err
 	}
-	if draft.Type == "" {
-		return Event{}, &fault.Error{Code: "internal.event_invalid", Message: "Event type is required"}
+	return committed[0], nil
+}
+
+// CommitBatch records related component events and their mutation atomically.
+// Delivery retains database order and begins only after the whole batch commits.
+func (b *Bus) CommitBatch(ctx context.Context, change func(*sql.Tx) ([]Draft, error)) ([]Event, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil, &fault.Error{Code: "internal.event_closed", Message: "Event bus is closed"}
 	}
-	payload, err := json.Marshal(draft.Payload)
+	tx, err := b.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Event{}, &fault.Error{Code: "internal.event_invalid", Message: "Event payload must be valid JSON", Err: err}
+		return nil, databaseError(err)
 	}
-	var runID any
-	if draft.RunID != "" {
-		runID = draft.RunID
-	}
-	event := Event{RunID: draft.RunID, Type: draft.Type, Payload: payload}
-	err = tx.QueryRowContext(ctx, `INSERT INTO events (run_id, type, payload_json)
-		VALUES (?, ?, ?) RETURNING id, created_at`, runID, draft.Type, string(payload)).Scan(&event.ID, &event.CreatedAt)
+	defer tx.Rollback()
+	drafts, err := change(tx)
 	if err != nil {
-		return Event{}, databaseError(err)
+		return nil, err
+	}
+	if len(drafts) == 0 {
+		return nil, &fault.Error{Code: "internal.event_invalid", Message: "Event batch must contain an event"}
+	}
+	committed := make([]Event, 0, len(drafts))
+	for _, draft := range drafts {
+		if draft.Type == "" {
+			return nil, &fault.Error{Code: "internal.event_invalid", Message: "Event type is required"}
+		}
+		payload, err := json.Marshal(draft.Payload)
+		if err != nil {
+			return nil, &fault.Error{Code: "internal.event_invalid", Message: "Event payload must be valid JSON", Err: err}
+		}
+		var runID any
+		if draft.RunID != "" {
+			runID = draft.RunID
+		}
+		event := Event{RunID: draft.RunID, Type: draft.Type, Payload: payload}
+		if err := tx.QueryRowContext(ctx, `INSERT INTO events(run_id,type,payload_json) VALUES(?,?,?) RETURNING id,created_at`, runID, draft.Type, string(payload)).Scan(&event.ID, &event.CreatedAt); err != nil {
+			return nil, databaseError(err)
+		}
+		committed = append(committed, event)
 	}
 	if err := tx.Commit(); err != nil {
-		return Event{}, databaseError(err)
+		return nil, databaseError(err)
 	}
-	b.logger.InfoContext(ctx, "event", "event_id", event.ID, "run_id", event.RunID,
-		"event_type", event.Type, "payload", event.Payload, "created_at", event.CreatedAt)
-	for subscriber := range b.subscribers {
-		copy := event
-		copy.Payload = append(json.RawMessage(nil), event.Payload...)
-		select {
-		case subscriber <- copy:
-		default:
-			// Disconnect slow consumers; they can replay from their last ID.
-			close(subscriber)
-			delete(b.subscribers, subscriber)
+	for _, event := range committed {
+		b.logger.InfoContext(ctx, "event", "event_id", event.ID, "run_id", event.RunID, "event_type", event.Type, "payload", event.Payload, "created_at", event.CreatedAt)
+		for subscriber := range b.subscribers {
+			copy := event
+			copy.Payload = append(json.RawMessage(nil), event.Payload...)
+			select {
+			case subscriber <- copy:
+			default:
+				close(subscriber)
+				delete(b.subscribers, subscriber)
+			}
 		}
 	}
-	return event, nil
+	return committed, nil
 }
 
 // Subscribe returns a bounded stream and an idempotent cancellation function.

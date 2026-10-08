@@ -130,3 +130,50 @@ func TestCloseEndsStreamsAndRejectsWrites(t *testing.T) {
 		t.Fatalf("publish after close persisted an event: %+v, %v", history, err)
 	}
 }
+
+func TestCommitBatchPublishesTogetherOrRollsBackTogether(t *testing.T) {
+	for _, invalidSecond := range []bool{false, true} {
+		t.Run(map[bool]string{false: "committed", true: "rolled-back"}[invalidSecond], func(t *testing.T) {
+			bus, db, logs := newBus(t)
+			live, cancel := bus.Subscribe(2)
+			defer cancel()
+			committed, err := bus.CommitBatch(context.Background(), func(tx *sql.Tx) ([]events.Draft, error) {
+				if _, err := tx.Exec("INSERT INTO runs(id,repository,issue_number,state) VALUES('batched','owner/repo',1,'CLAIMING')"); err != nil {
+					return nil, err
+				}
+				var payload any = map[string]string{"harness": "claude"}
+				if invalidSecond {
+					payload = make(chan int)
+				}
+				return []events.Draft{{RunID: "batched", Type: "run.claimed"}, {Type: "harness.usage_limited", Payload: payload}}, nil
+			})
+			history, historyErr := bus.History(context.Background(), 0, 10)
+			if historyErr != nil {
+				t.Fatal(historyErr)
+			}
+			var runs int
+			if err := db.QueryRow("SELECT count(*) FROM runs WHERE id='batched'").Scan(&runs); err != nil {
+				t.Fatal(err)
+			}
+			if invalidSecond {
+				if err == nil || runs != 0 || len(history) != 0 || logs.Len() != 0 {
+					t.Fatalf("partial batch escaped: runs=%d history=%v logs=%s error=%v", runs, history, logs, err)
+				}
+				select {
+				case event := <-live:
+					t.Fatalf("rolled-back event broadcast: %+v", event)
+				default:
+				}
+				return
+			}
+			if err != nil || runs != 1 || len(history) != 2 || len(committed) != 2 {
+				t.Fatalf("batch missing: runs=%d history=%v events=%v error=%v", runs, history, committed, err)
+			}
+			for _, event := range committed {
+				if got := <-live; got.ID != event.ID {
+					t.Fatalf("batch delivery out of order: %+v %+v", event, got)
+				}
+			}
+		})
+	}
+}

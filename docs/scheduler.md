@@ -32,8 +32,9 @@ time and then issue number. Only open ready issues without running/attention
 labels, unresolved native GitHub blockers, or an existing nonterminal run are
 claimed. Dependency API errors fail closed. Body text is never interpreted as a
 dependency. Global and repository limits count all nonterminal runs except
-`READY_TO_MERGE`, including attention, manual and waiting states. M1 does not
-apply usage-limit scheduling.
+`READY_TO_MERGE`, including attention, manual and waiting states. Account-wide
+harness gates withhold new claims and phase launches using the limited harness;
+eligible other-harness work and CI observation continue within capacity.
 
 Claims first persist `CLAIMING`, then add running, remove ready, persist
 `PREPARING`, and prepare the managed base/worktree. Label failure aborts the
@@ -415,3 +416,45 @@ Durable Stop supersedes pending Retry and continues interruption even when PR
 lookup fails. An observed merge still follows completion and maintenance.
 Observed merges go straight to durable completion and safe maintenance, including
 failed runs, while closed-unmerged PRs and live owned processes prevent agent work.
+
+## Temporary usage limits
+
+Completed executions without adapter-owned native-success evidence pass through
+the harness adapter's `ClassifyFailure(artifacts, observedAt)` seam. Its normalized outcomes are
+`ordinary`, `temporary_limit` (optional reliable reset and signal source), and
+`credits_exhausted`. Successful native output, including `allowed_warning`, and
+valid task-level blocked/failed results do not enter the classifier.
+
+Claude and Codex currently advertise neither `TemporaryLimitDetection` nor
+`CreditExhaustionDetection`; their classifiers return `ordinary`. Until the
+separate evidence-backed bindings land, usage limits surface as ordinary failures
+and consume the configured attempt budget. Core fixtures supply classified
+outcomes directly, without inventing native limit signals.
+
+A temporary limit saves the interrupted execution as `usage_limited` and records
+`WAITING_FOR_HARNESS`, the same phase/round, and reset provenance atomically. A
+reliable future reported reset wins over an estimated account cooldown in either
+observation order; within the same source class, the later reset wins. An absent
+or stale reset uses `usage_limits.cooldown` (default `30m`). The account gate spans all repositories
+using that harness. Waiting and attention runs retain global and repository
+slots; eligible work on the other harness and CI observation continue within
+capacity. Existing running processes are observed rather than relaunched.
+
+When the reset arrives, the next execution resumes the same role conversation
+with full phase input and effective settings. Interruption context describes only
+an immediately preceding usage-limited execution resumed in the same conversation;
+ordinary retries and fresh missing-session recovery do not inherit that note.
+Implementer edits are retained; reviewer edits are restored before waiting. Interrupted
+executions spend neither ordinary attempts nor review rounds. Verified missing
+conversations use the existing one-time missing-session recovery; ambiguous or
+unavailable identity requires attention.
+
+At `usage_limits.max_waits` consecutive interrupted executions (default `3`),
+the run requires attention with `harness.usage_limit_waits_exhausted`. Explicit
+Retry grants exactly one additional wait, keeps all history, and honors the known
+reset. Repeated Retry while that selection is pending or waiting is idempotent.
+Ordinary completion ends the consecutive streak. Status, run detail, settings,
+and events show the harness gate, reset/cooldown source, interrupted executions,
+and explicit grants. Account gates before a phase's first execution display that
+no execution started rather than a zero wait budget. Credits recovery is handled
+by its separate implementation slice.

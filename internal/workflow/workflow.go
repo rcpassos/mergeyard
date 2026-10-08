@@ -94,6 +94,7 @@ type RunMetadata struct {
 // Nil fields preserve their values; an empty ApprovedSHA clears approval.
 // IncrementReviewRound advances the persisted round within the transaction.
 type MetadataPatch struct {
+	HarnessWait          *HarnessWait
 	Handback             *HandbackSnapshot
 	Retry                *RetrySnapshot
 	PRNumber             *int
@@ -109,10 +110,12 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
-	Handbacks         []HandbackSnapshot `json:"handbacks,omitempty"`
-	Retries           []RetrySnapshot    `json:"retries,omitempty"`
-	SessionRecoveries []SessionRecovery  `json:"session_recoveries,omitempty"`
-	Implementer       *ImplementSnapshot `json:"implementer,omitempty"`
+	HarnessWait        *HarnessWait       `json:"harness_wait,omitempty"`
+	HarnessWaitHistory []HarnessWait      `json:"harness_wait_history,omitempty"`
+	Handbacks          []HandbackSnapshot `json:"handbacks,omitempty"`
+	Retries            []RetrySnapshot    `json:"retries,omitempty"`
+	SessionRecoveries  []SessionRecovery  `json:"session_recoveries,omitempty"`
+	Implementer        *ImplementSnapshot `json:"implementer,omitempty"`
 	RunMetadata
 	Merge            *maintenance.Snapshot `json:"merge,omitempty"`
 	CI               *ci.Snapshot          `json:"ci,omitempty"`
@@ -167,45 +170,48 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 	}
 	defer release()
 	var run Run
-	_, err = w.events.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+	_, err = w.events.CommitBatch(ctx, func(tx *sql.Tx) ([]events.Draft, error) {
 		if strings.TrimSpace(id) == "" {
-			return events.Draft{}, invalid("Run ID is required")
+			return nil, invalid("Run ID is required")
 		}
 		current, err := readRun(ctx, tx, id)
 		var missing *fault.Error
 		if err != nil && !(errors.As(err, &missing) && missing.Code == "internal.run_not_found" && request.Trigger == IssueClaimed) {
-			return events.Draft{}, err
+			return nil, err
 		}
 		next, eventType, err := destination(current, request)
 		if err != nil {
-			return events.Draft{}, err
+			return nil, err
+		}
+		if request.Metadata.HarnessWait != nil && request.Trigger != HarnessLimited && request.Trigger != OperationFailed {
+			return nil, invalid("Harness wait requires a limit or attention transition")
 		}
 		if request.Metadata.Handback != nil && request.Trigger != HandBack && request.Trigger != OperationFailed {
-			return events.Draft{}, invalid("Handback selection requires a handback or attention transition")
+			return nil, invalid("Handback selection requires a handback or attention transition")
 		}
 		if request.Metadata.Fix != nil && (current.Phase != Fix || request.Trigger != FixSucceeded) {
-			return events.Draft{}, invalid("Fix completion requires fix success transition")
+			return nil, invalid("Fix completion requires fix success transition")
 		}
 		if request.Metadata.Retry != nil && request.Trigger != Retry && request.Trigger != PRMerged {
-			return events.Draft{}, invalid("Retry selection requires a retry or observed merge transition")
+			return nil, invalid("Retry selection requires a retry or observed merge transition")
 		}
 		if request.Metadata.ReviewRejection != nil {
 			if current.Phase != Review || request.Trigger != OperationFailed || request.Metadata.Review != nil {
-				return events.Draft{}, invalid("Review rejection requires a review attention transition")
+				return nil, invalid("Review rejection requires a review attention transition")
 			}
 		}
 		if request.Metadata.Review != nil {
 			status := request.Metadata.Review.Report.Status
 			if current.Phase != Review || (status == "approved" && request.Trigger != ReviewApproved) || (status == "changes_required" && request.Trigger != ReviewChangesRequired && request.Trigger != ReviewRoundsExhausted) || (status != "approved" && status != "changes_required") {
-				return events.Draft{}, invalid("Review completion and transition disagree")
+				return nil, invalid("Review completion and transition disagree")
 			}
 		}
 		if err := request.Metadata.validate(); err != nil {
-			return events.Draft{}, err
+			return nil, err
 		}
 		if current.ID == "" {
 			if strings.TrimSpace(request.Repository) == "" || request.IssueNumber < 1 {
-				return events.Draft{}, invalid("A new run requires a repository and a positive issue number")
+				return nil, invalid("A new run requires a repository and a positive issue number")
 			}
 			_, err = tx.ExecContext(ctx, `INSERT INTO runs (id, repository, issue_number, state) VALUES (?, ?, ?, ?)`,
 				id, request.Repository, request.IssueNumber, next.State)
@@ -213,7 +219,7 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 			var code, message any
 			if next.State == NeedsAttention || next.State == Failed {
 				if request.Failure == nil || strings.TrimSpace(request.Failure.Code) == "" || strings.TrimSpace(request.Failure.Message) == "" {
-					return events.Draft{}, invalid("Attention and failed runs require an error code and human message")
+					return nil, invalid("Attention and failed runs require an error code and human message")
 				}
 				code, message = request.Failure.Code, request.Failure.Message
 			}
@@ -228,7 +234,7 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 				next.State, phase, next.State, code, message, id)
 		}
 		if err != nil {
-			return events.Draft{}, storageError(err)
+			return nil, storageError(err)
 		}
 		if current.ID != "" {
 			// Finish the intent in the same transaction as its lifecycle outcome.
@@ -243,7 +249,7 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 					v.Pending = false
 					v.Error = "handback.cancelled: Stop or observed merge superseded handback"
 					if err := v.Save(ctx, tx, id); err != nil {
-						return events.Draft{}, err
+						return nil, err
 					}
 				}
 				if current.TakeoverStatus != "" {
@@ -256,19 +262,30 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 			}
 			if status != "" {
 				if _, err := tx.ExecContext(ctx, "UPDATE runs SET takeover_status=? WHERE id=?", status, id); err != nil {
-					return events.Draft{}, storageError(err)
+					return nil, storageError(err)
 				}
 			}
 		}
+		var harnessEvent *events.Draft
+		if request.Metadata.HarnessWait != nil {
+			harnessEvent, err = request.Metadata.HarnessWait.save(ctx, tx, id)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if err := request.Metadata.apply(ctx, tx, id, request.Failure); err != nil {
-			return events.Draft{}, &fault.Error{Code: "internal.run_metadata", Message: "Could not update run metadata", Err: err}
+			return nil, &fault.Error{Code: "internal.run_metadata", Message: "Could not update run metadata", Err: err}
 		}
 		run, err = readRun(ctx, tx, id)
 		if err != nil {
-			return events.Draft{}, err
+			return nil, err
 		}
 		payload := transitionEvent{From: current.State, FromPhase: current.Phase, Trigger: request.Trigger, Run: run}
-		return events.Draft{RunID: id, Type: eventType, Payload: payload}, nil
+		drafts := []events.Draft{{RunID: id, Type: eventType, Payload: payload}}
+		if harnessEvent != nil {
+			drafts = append(drafts, *harnessEvent)
+		}
+		return drafts, nil
 	})
 	if err != nil {
 		return Run{}, err
@@ -537,6 +554,14 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, &fault.Error{Code: "internal.run_not_found", Message: "Run does not exist", Path: id, Err: err}
 	}
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.HarnessWaitHistory, err = LoadHarnessWaits(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.HarnessWait, err = CurrentHarnessWait(ctx, db, run.HarnessWaitHistory)
 	if err != nil {
 		return Run{}, storageError(err)
 	}

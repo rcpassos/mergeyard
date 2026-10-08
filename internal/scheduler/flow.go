@@ -273,6 +273,9 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		err = json.Unmarshal(data, &result)
 		return result, err == nil, err
 	}
+	if a.status == "usage_limited" {
+		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, a.number+1)
+	}
 	if a.status == "failed" {
 		max := repo.Implementer.MaxAttempts
 		if max < 1 {
@@ -332,7 +335,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	}
 	var result harness.PhaseResult
 	if err == nil {
-		result, err = s.harnesses[a.agent].ParseResult(harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, artifacts)
+		result, err = s.parseExecution(a.agent, harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, artifacts)
 	}
 	if err == nil {
 		data, marshalErr := json.Marshal(result)
@@ -350,6 +353,9 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	}
 	if ctx.Err() != nil {
 		return result, false, ctx.Err()
+	}
+	if isTemporaryLimit(err) {
+		return result, false, s.limitExecution(ctx, repo, run, a, err)
 	}
 	attemptStatus, event := "succeeded", "phase.completed"
 	if err != nil {
@@ -380,6 +386,9 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 }
 
 func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, run workflow.Run, issue github.Issue, gitRun managedgit.Run, number int) error {
+	if gated, err := s.gatePhase(ctx, run, repo.Implementer.Agent); gated || err != nil {
+		return err
+	}
 	var sessionID, sessionAgent string
 	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(implementer_session_id,''),COALESCE(implementer_agent,'') FROM runs WHERE id=?", run.ID).Scan(&sessionID, &sessionAgent); err != nil {
 		return err
@@ -397,6 +406,9 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		if err != nil {
 			return err
 		}
+		if previous.status == "usage_limited" && sessionID == "" {
+			return &fault.Error{Code: "harness.session_missing", Message: "Interrupted conversation identity is unavailable; inspect preserved work"}
+		}
 		recovery = strings.HasPrefix(previous.failure, "harness.session_resume_failed: ")
 		if recovery {
 			sessionID, resume = "", false
@@ -413,6 +425,7 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		return err
 	}
 	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
+	phase.Interruption = interruptionContext(previous, phase)
 	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
 		return err

@@ -178,6 +178,8 @@ const (
 type timelineEntry struct{ Type, Time, Details string }
 
 type pageData struct {
+	Harnesses                                 []scheduler.HarnessAvailability
+	RecoveryRuns                              []workflow.Run
 	Page, Title, Path, Token                  string
 	Paused                                    bool
 	Used, Limit                               int
@@ -225,6 +227,11 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *dashboard) populate(ctx context.Context, data *pageData, id string) error {
+	var err error
+	data.Harnesses, err = d.Scheduler.HarnessAvailability(ctx)
+	if err != nil {
+		return err
+	}
 	data.Limit = d.Config.Concurrency
 	d.mu.RLock()
 	queue := append([]scheduler.QueueIssue(nil), d.queue...)
@@ -235,6 +242,10 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 		data.ConfigPath, data.Workspace = d.ConfigPath, d.Workspace.Root
 		cfg, err := yaml.Marshal(d.Config)
 		data.ConfigText = string(cfg)
+		if err != nil {
+			return err
+		}
+		data.RecoveryRuns, err = d.Scheduler.Runs(ctx)
 		return err
 	}
 	runs, err := d.runs(ctx, id)
@@ -383,6 +394,14 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		return nil, err
 	}
 	for i := range runs {
+		runs[i].HarnessWaitHistory, err = workflow.LoadHarnessWaits(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		runs[i].HarnessWait, err = workflow.CurrentHarnessWait(ctx, d.DB, runs[i].HarnessWaitHistory)
+		if err != nil {
+			return nil, err
+		}
 		runs[i].Merge, err = maintenance.Load(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
