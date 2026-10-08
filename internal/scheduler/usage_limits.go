@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
@@ -29,14 +30,14 @@ func (*temporaryLimitError) Error() string {
 // native completion never enter the classifier, even when tool text names limits.
 func (s *Scheduler) parseExecution(ctx context.Context, runID, attemptID, agent string, phase harness.PhaseContext, artifacts harness.PhaseArtifacts) (harness.PhaseResult, error) {
 	result, err := s.harnesses[agent].ParseResult(phase, artifacts)
-	if err == nil || s.harnesses[agent].NativeSucceeded(artifacts) {
-		if proofErr := s.workflow.FinishCreditProbe(ctx, runID, attemptID, s.harnesses[agent].NativeSucceeded(artifacts), s.deps.Now().UTC()); proofErr != nil {
+	completed := s.harnesses[agent].NativeSucceeded(artifacts)
+	if completed {
+		if proofErr := s.workflow.RecordCreditProof(ctx, runID, attemptID, s.deps.Now().UTC()); proofErr != nil {
 			return result, proofErr
 		}
-		return result, err
 	}
-	if releaseErr := s.workflow.FinishCreditProbe(ctx, runID, attemptID, false, s.deps.Now().UTC()); releaseErr != nil {
-		return result, releaseErr
+	if err == nil || completed {
+		return result, err
 	}
 	outcome := s.harnesses[agent].ClassifyFailure(artifacts, s.deps.Now().UTC())
 	if outcome.Kind == harness.TemporaryLimit {
@@ -145,6 +146,10 @@ func (s *Scheduler) HarnessAvailability(ctx context.Context) ([]HarnessAvailabil
 		}
 		if limit != nil {
 			v.ResetAt, v.ResetTimeSource, v.Source = limit.ResetAt, limit.ResetTimeSource, limit.Source
+			if limit.Reason == "credits_exhausted" && !s.deps.Now().Before(limit.ResetAt) {
+				v.ResetAt = time.Time{}
+				v.ResetTimeSource = ""
+			}
 			v.Reason, v.ProbeID, v.ProbeRunID, v.ProbeAttemptID = limit.Reason, limit.ProbeID, limit.ProbeRunID, limit.ProbeAttemptID
 			v.Available = limit.Reason != "credits_exhausted" && !s.deps.Now().Before(limit.ResetAt)
 		}
@@ -229,7 +234,11 @@ func interruptionContext(previous attempt, phase harness.PhaseContext) string {
 }
 
 func (s *Scheduler) selectCreditProbe(ctx context.Context, run workflow.Run, repo config.Repository, v workflow.RetrySnapshot, patch *workflow.MetadataPatch) error {
-	if v.NextState != workflow.Active {
+	starts, err := s.retryStartsAgent(ctx, run, v)
+	if err != nil {
+		return err
+	}
+	if !starts {
 		return nil
 	}
 	agent := repo.Implementer.Agent
@@ -252,20 +261,90 @@ func (s *Scheduler) selectCreditProbe(ctx context.Context, run workflow.Run, rep
 
 // RetryEligible keeps credit recovery surfaces behind adapter capability. The
 // reconciliation in Retry remains authoritative about the selected next work.
-func (s *Scheduler) RetryEligible(run workflow.Run) bool {
-	if run.Merge != nil || run.TakeoverStatus == workflow.TakeoverRequested {
-		return false
+func (s *Scheduler) RetryEligible(ctx context.Context, run workflow.Run) (bool, error) {
+	if !run.RetryAllowed() || run.Merge != nil || run.TakeoverStatus == workflow.TakeoverRequested {
+		return false, nil
 	}
-	creditWaiting := run.State == workflow.WaitingForHarness && run.HarnessWait != nil && run.HarnessWait.Reason == "credits_exhausted"
-	if run.State != workflow.NeedsAttention && run.State != workflow.Failed && !creditWaiting {
-		return false
+	var stopping bool
+	if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopping); err != nil {
+		return false, err
 	}
-	if creditWaiting || run.LastErrorCode == "harness.credits_exhausted" {
-		return run.HarnessWait != nil && s.harnesses[run.HarnessWait.Harness] != nil && s.harnesses[run.HarnessWait.Harness].Capabilities().CreditExhaustionDetection
+	if stopping {
+		return false, nil
 	}
-	return true
+	for _, p := range run.CreditProbes {
+		if p.Status == "reserved" || p.Status == "running" {
+			return false, nil
+		}
+	}
+	repo, ok := s.repository(run.Repository)
+	if !ok {
+		return false, nil
+	}
+	phase := run.Phase
+	state := workflow.Active
+	if run.PRNumber > 0 {
+		head := ""
+		if run.Review != nil {
+			head = run.Review.TargetSHA
+		}
+		if run.Phase == workflow.Fix && run.Fix != nil && run.Fix.Round == run.ReviewRound && run.Fix.Status == "succeeded" && run.Fix.CommitSHA != "" {
+			head = run.Fix.CommitSHA
+		}
+		if run.CI != nil && run.CI.SHA == head && run.CI.CurrentHead != "" {
+			head = run.CI.CurrentHead
+		}
+		approved := run.ApprovedSHA != "" && run.ApprovedSHA == head && run.Review != nil && run.Review.Accepted && run.Review.Report != nil && run.Review.Report.Status == "approved" && run.Review.TargetSHA == head
+		state, phase = retryPRWork(run, head, approved)
+	}
+	starts, err := s.retryStartsAgent(ctx, run, workflow.RetrySnapshot{NextState: state, NextPhase: phase})
+	if err != nil {
+		return false, err
+	}
+	if !starts {
+		return true, nil
+	}
+	agent := repo.Implementer.Agent
+	if phase == workflow.Review {
+		agent = repo.Reviewer.Agent
+	}
+	limit, err := workflow.LoadHarnessLimit(ctx, s.db, agent)
+	if err != nil {
+		return false, err
+	}
+	if limit != nil && limit.Reason == "credits_exhausted" {
+		return limit.ProbeID == "" && s.harnesses[agent].Capabilities().CreditExhaustionDetection, nil
+	}
+	return true, nil
 }
 
 func (s *Scheduler) creditProbeReady(limit *workflow.HarnessLimit, runID string) bool {
 	return limit != nil && limit.Reason == "credits_exhausted" && limit.ProbeRunID == runID && limit.ProbeAttemptID == "" && !s.deps.Now().Before(limit.ResetAt) && s.harnesses[limit.Harness].Capabilities().CreditExhaustionDetection
+}
+
+// Publication and saved fix completion reuse evidence; they cannot prove credit
+// recovery and must never reserve the account's only model probe.
+func (s *Scheduler) retryStartsAgent(ctx context.Context, run workflow.Run, v workflow.RetrySnapshot) (bool, error) {
+	if v.NextState != workflow.Active {
+		return false, nil
+	}
+	if v.AttemptFrom > 0 {
+		return true, nil
+	}
+	var a attempt
+	var err error
+	switch v.NextPhase {
+	case workflow.Implement:
+		a, err = s.lastAttempt(ctx, run.ID)
+	case workflow.Fix:
+		var f fixAttempt
+		f, err = s.lastFix(ctx, run)
+		a = f.attempt
+	default:
+		return true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	return a.status != "succeeded", err
 }

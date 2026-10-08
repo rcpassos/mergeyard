@@ -277,22 +277,6 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 				}
 			}
 		}
-		var probeEvent *events.Draft
-		if request.Metadata.CreditProbe != nil {
-			if request.Trigger != Retry {
-				return nil, invalid("Credit probe requires Retry")
-			}
-			if err := request.Metadata.CreditProbe.reserve(ctx, tx, id); err != nil {
-				return nil, err
-			}
-			probeEvent = &events.Draft{RunID: id, Type: "harness.probe_reserved", Payload: request.Metadata.CreditProbe}
-		}
-		if request.Trigger == Stop || request.Trigger == OperationFailed || request.Trigger == InternalFailure || request.Trigger == PRMerged || request.Trigger == TakeOver {
-			probeEvent, err = releaseCreditProbes(ctx, tx, id)
-			if err != nil {
-				return nil, err
-			}
-		}
 		var harnessEvent *events.Draft
 		if request.Metadata.HarnessWait != nil {
 			harnessEvent, err = request.Metadata.HarnessWait.save(ctx, tx, id)
@@ -302,6 +286,20 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		}
 		if err := request.Metadata.apply(ctx, tx, id, request.Failure); err != nil {
 			return nil, &fault.Error{Code: "internal.run_metadata", Message: "Could not update run metadata", Err: err}
+		}
+		probeEvents, err := reconcileCreditProbes(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		var probeEvent *events.Draft
+		if request.Metadata.CreditProbe != nil {
+			if request.Trigger != Retry {
+				return nil, invalid("Credit probe requires Retry")
+			}
+			if err := request.Metadata.CreditProbe.reserve(ctx, tx, id); err != nil {
+				return nil, err
+			}
+			probeEvent = &events.Draft{RunID: id, Type: "harness.probe_reserved", Payload: request.Metadata.CreditProbe}
 		}
 		run, err = readRun(ctx, tx, id)
 		if err != nil {
@@ -315,6 +313,7 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		if probeEvent != nil {
 			drafts = append(drafts, *probeEvent)
 		}
+		drafts = append(drafts, probeEvents...)
 		return drafts, nil
 	})
 	if err != nil {
@@ -333,13 +332,17 @@ func (w *Workflow) WithRunOperation(ctx context.Context, id string, operation fu
 		return err
 	}
 	defer release()
+	if err := w.ReconcileCreditProbes(ctx); err != nil {
+		return err
+	}
 	run, err := w.Get(ctx, id)
 	if err != nil {
 		return err
 	}
 	operationContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	return operation(context.WithValue(operationContext, operationContextKey{}, heldOperation{workflow: w, id: id}), run)
+	operationErr := operation(context.WithValue(operationContext, operationContextKey{}, heldOperation{workflow: w, id: id}), run)
+	return errors.Join(operationErr, w.ReconcileCreditProbes(ctx))
 }
 
 type operationContextKey struct{}
@@ -518,7 +521,7 @@ func destination(current Run, request Request) (Run, string, error) {
 				return next, "run.handed_back", nil
 			}
 		case Retry:
-			if current.State == NeedsAttention || current.State == Failed || (current.State == WaitingForHarness && current.HarnessWait != nil && current.HarnessWait.Reason == "credits_exhausted") {
+			if current.RetryAllowed() {
 				if eventType, ok := reconciledEvents[request.NextState]; ok {
 					if request.NextPhase != "" && !validPhase(request.NextPhase) {
 						return Run{}, "", invalid("Reconciliation supplied an unknown phase")
@@ -643,4 +646,12 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 		return Run{}, storageError(err)
 	}
 	return run, nil
+}
+
+// CreditWaiting identifies the exceptional waiting state that accepts Retry.
+func (r Run) CreditWaiting() bool {
+	return r.State == WaitingForHarness && r.HarnessWait != nil && r.HarnessWait.Reason == "credits_exhausted"
+}
+func (r Run) RetryAllowed() bool {
+	return r.State == NeedsAttention || r.State == Failed || r.CreditWaiting()
 }

@@ -73,6 +73,9 @@ func TestCreditRetrySelectedRunRecoversWithoutReset(t *testing.T) {
 					t.Fatalf("credit controls capability=%v: %d %s", enabled, response.Code, body)
 				}
 			}
+			h.detection = false
+			assertCreditConflict(t, server, attention.ID, "harness.credit_detection_unavailable", "Credit recovery is unavailable")
+			h.detection = true
 			now = now.Add(365 * 24 * time.Hour)
 			if err := s.Tick(context.Background()); err != nil {
 				t.Fatal(err)
@@ -210,6 +213,30 @@ func TestCreditProbeConcurrentSelectionStopAndWaitingRetry(t *testing.T) {
 	winner := first.run
 	if first.err != nil {
 		winner = second.run
+	}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := s.Runs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := web.NewDashboard(rt.Events, rt.Scheduler, web.DashboardOptions{DB: rt.DB, Workspace: rt.Workspace, Scheduler: s, Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range busy {
+		if run.RetryEligible {
+			t.Fatalf("busy harness offered Retry: %+v", run)
+		}
+		page := httptest.NewRecorder()
+		server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+		if page.Code != 200 || strings.Contains(page.Body.String(), ">Retry run<") {
+			t.Fatalf("busy probe offered Retry: %d %s", page.Code, page.Body.String())
+		}
+		if run.ID != winner.ID {
+			assertCreditConflict(t, server, run.ID, "harness.probe_unavailable", "refresh before retrying")
+		}
 	}
 	for range 2 {
 		v, err := s.Retry(context.Background(), winner.ID)
@@ -520,7 +547,7 @@ func TestCreditRetryReconcilesWorkOnOtherHarness(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				return got.Review != nil && got.Review.Agent == other
+				return got.State == workflow.WaitingForHarness && got.Phase == workflow.Fix && got.Review != nil && got.Review.Agent == other && got.Review.Status == "succeeded"
 			})
 			states, err := s.HarnessAvailability(context.Background())
 			if err != nil {

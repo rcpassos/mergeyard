@@ -83,7 +83,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 	if next := explicitAttempt(run, workflow.Fix, a.number); next > 0 {
 		return s.startFix(ctx, repo, run, gitRun, next)
 	}
-	if a.status == "usage_limited" || a.status == "credits_exhausted" {
+	if a.status == "usage_limited" {
 		return s.startFix(ctx, repo, run, gitRun, a.number+1)
 	}
 	if a.status == "failed" {
@@ -262,11 +262,6 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 func (s *Scheduler) finishFixAttempt(ctx context.Context, repo config.Repository, run workflow.Run, a fixAttempt, exit *int, report *review.FixReport, cause error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
-	}
-	if cause != nil && !isHarnessLimit(cause) {
-		if err := s.workflow.FinishCreditProbe(ctx, run.ID, a.id, false, s.deps.Now().UTC()); err != nil {
-			return err
-		}
 	}
 	if isHarnessLimit(cause) {
 		return s.limitExecution(ctx, repo, run, a.attempt, cause)
@@ -448,9 +443,6 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		return nil
 	}
 	if err != nil && ctx.Err() == nil {
-		if releaseErr := s.workflow.FinishCreditProbe(ctx, run.ID, id, false, s.deps.Now().UTC()); releaseErr != nil {
-			return releaseErr
-		}
 		return s.finishFixAttempt(ctx, repo, run, fixAttempt{attempt: attempt{id: id, agent: repo.Implementer.Agent, number: number}}, nil, nil, err)
 	}
 	return err

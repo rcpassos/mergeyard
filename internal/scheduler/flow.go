@@ -273,7 +273,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		err = json.Unmarshal(data, &result)
 		return result, err == nil, err
 	}
-	if a.status == "usage_limited" || a.status == "credits_exhausted" {
+	if a.status == "usage_limited" {
 		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, a.number+1)
 	}
 	if a.status == "failed" {
@@ -356,11 +356,6 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	}
 	if isHarnessLimit(err) {
 		return result, false, s.limitExecution(ctx, repo, run, a, err)
-	}
-	if err != nil {
-		if releaseErr := s.workflow.FinishCreditProbe(ctx, run.ID, a.id, false, s.deps.Now().UTC()); releaseErr != nil {
-			return result, false, releaseErr
-		}
 	}
 	attemptStatus, event := "succeeded", "phase.completed"
 	if err != nil {
@@ -479,9 +474,6 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		return nil
 	}
 	if err != nil && ctx.Err() == nil {
-		if releaseErr := s.workflow.FinishCreditProbe(ctx, run.ID, id, false, s.deps.Now().UTC()); releaseErr != nil {
-			return releaseErr
-		}
 		if _, saveErr := s.db.ExecContext(ctx, `UPDATE phase_attempts SET status='failed',ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),error=? WHERE run_id=? AND phase='implement' AND attempt=?`, err.Error(), run.ID, number); saveErr != nil {
 			return saveErr
 		}

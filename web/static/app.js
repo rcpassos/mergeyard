@@ -28,7 +28,7 @@ events.addEventListener('diagnostics.updated', () => {
 });
 document.body.addEventListener('htmx:responseError', (event) => {
   const code = event.detail.xhr.getResponseHeader('X-Mergeyard-Error-Code');
-  document.querySelector('#action-error').textContent = (code?.startsWith('takeover.') || code?.startsWith('handback.'))
+  document.querySelector('#action-error').textContent = (event.detail.xhr.status === 409 || code?.startsWith('takeover.') || code?.startsWith('handback.'))
     ? event.detail.xhr.responseText.trim()
     : code
     ? `${code}: The action failed. Check the application log for details.`

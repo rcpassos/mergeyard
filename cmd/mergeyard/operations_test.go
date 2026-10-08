@@ -173,7 +173,7 @@ func TestCLIRetrySendsProtectedRequestAndDisplaysSelection(t *testing.T) {
 	selected := workflow.Run{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Fix, Retries: []workflow.RetrySnapshot{{NextState: workflow.Active, NextPhase: workflow.Fix, Round: 1, GrantedRound: 2, Deadline: "2026-10-06T13:00:00Z"}}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: token, Runs: []workflow.Run{{ID: "run-1", State: workflow.Failed, LastErrorCode: "review.max_rounds_exceeded", LastErrorMessage: "Retry to continue"}}})
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: token, Runs: []workflow.Run{{ID: "run-1", State: workflow.Failed, RetryEligible: true, LastErrorCode: "review.max_rounds_exceeded", LastErrorMessage: "Retry to continue"}}})
 	})
 	mux.HandleFunc("POST /api/runs/run-1/retry", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {

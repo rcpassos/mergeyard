@@ -147,8 +147,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			if run.LastErrorCode != "" {
 				fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 			}
-			credit := run.LastErrorCode == "harness.credits_exhausted" || (run.State == workflow.WaitingForHarness && run.HarnessWait != nil && run.HarnessWait.Reason == "credits_exhausted")
-			if run.RetryEligible || (!credit && (run.State == workflow.NeedsAttention || run.State == workflow.Failed)) {
+			if run.RetryEligible {
 				fmt.Fprintf(stdout, "  Retry: mergeyard retry %s (reconciles preserved work first)\n", terminalText(run.ID))
 			}
 			if run.State == workflow.WaitingForHarness && run.HarnessWait != nil {

@@ -32,7 +32,7 @@ func (s *Scheduler) Retry(ctx context.Context, id string) (workflow.Run, error) 
 		if run.TakeoverStatus == workflow.TakeoverRequested {
 			return &fault.Error{Code: "takeover.operation_pending", Message: "Finish takeover or Stop before requesting Retry"}
 		}
-		if run.State != workflow.NeedsAttention && run.State != workflow.Failed && !(run.State == workflow.WaitingForHarness && run.HarnessWait != nil && run.HarnessWait.Reason == "credits_exhausted") {
+		if !run.RetryAllowed() {
 			if len(run.Retries) > 0 && run.State != workflow.Stopped && run.State != workflow.Manual {
 				result = run
 				return nil
@@ -304,19 +304,7 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 				observedCI = &wait
 			}
 		}
-		if approved {
-			v.NextState, v.NextPhase = workflow.WaitingForCI, workflow.Review
-		} else if run.Phase == workflow.Fix && run.Fix != nil && run.Fix.Status == "succeeded" && run.Fix.CommitSHA == pr.Head.SHA {
-			// A push may have completed before its acknowledgement or round
-			// transition. Finish the saved fix without launching another agent.
-			v.NextPhase = workflow.Fix
-		} else if run.Phase == workflow.Fix && run.Review != nil && run.Review.TargetSHA == pr.Head.SHA {
-			v.NextPhase = workflow.Fix
-		} else if run.Review != nil && run.Review.Accepted && run.Review.TargetSHA == pr.Head.SHA && run.Review.Report != nil && run.Review.Report.Status == "changes_required" {
-			v.NextPhase = workflow.Fix
-		} else {
-			v.NextPhase = workflow.Review
-		}
+		v.NextState, v.NextPhase = retryPRWork(run, pr.Head.SHA, approved)
 		if v.Round < 1 {
 			v.Round = 1
 			patch.ReviewRound = &v.Round
@@ -527,4 +515,22 @@ func (s *Scheduler) roundLimit(run workflow.Run) int {
 		}
 	}
 	return max
+}
+
+// retryPRWork selects work from reconciled PR evidence. Snapshot eligibility uses
+// the same selection with the latest locally observed head; Retry refreshes it.
+func retryPRWork(run workflow.Run, head string, approved bool) (workflow.State, workflow.Phase) {
+	if approved {
+		return workflow.WaitingForCI, workflow.Review
+	}
+	if run.Phase == workflow.Fix && run.Fix != nil && run.Fix.Status == "succeeded" && run.Fix.CommitSHA == head {
+		return workflow.Active, workflow.Fix
+	}
+	if run.Phase == workflow.Fix && run.Review != nil && run.Review.TargetSHA == head {
+		return workflow.Active, workflow.Fix
+	}
+	if run.Review != nil && run.Review.Accepted && run.Review.TargetSHA == head && run.Review.Report != nil && run.Review.Report.Status == "changes_required" {
+		return workflow.Active, workflow.Fix
+	}
+	return workflow.Active, workflow.Review
 }

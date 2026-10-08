@@ -70,7 +70,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if next := explicitAttempt(run, workflow.Review, a.number); next > 0 {
 		return s.startReview(ctx, repo, run, issue, gitRun, next)
 	}
-	if a.status == "usage_limited" || a.status == "credits_exhausted" {
+	if a.status == "usage_limited" {
 		return s.startReview(ctx, repo, run, issue, gitRun, a.number+1)
 	}
 	if a.status == "failed" {
@@ -170,9 +170,6 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 		return s.limitExecution(ctx, repo, run, a.attempt, cause)
 	}
 	if cause != nil {
-		if err := s.workflow.FinishCreditProbe(ctx, run.ID, a.id, false, s.deps.Now().UTC()); err != nil {
-			return err
-		}
 		retry, retryErr := s.retryPhase(ctx, run, workflow.Review, a.attempt, cause, repo.Reviewer.MaxAttempts)
 		if retryErr != nil {
 			return retryErr
@@ -397,9 +394,6 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		return nil
 	}
 	if err != nil && ctx.Err() == nil {
-		if releaseErr := s.workflow.FinishCreditProbe(ctx, run.ID, id, false, s.deps.Now().UTC()); releaseErr != nil {
-			return releaseErr
-		}
 		a := reviewAttempt{attempt: attempt{id: id, agent: repo.Reviewer.Agent, number: number}, target: snapshot.Head, snapshot: snapshot}
 		if restoreErr := s.restoreReview(ctx, gitRun, &a); restoreErr != nil {
 			return fail(restoreErr)
