@@ -437,7 +437,7 @@ func TestCLIStatusShowsHarnessAvailabilityAndWaitKinds(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("status failed %d %s", code, stderr)
 			}
-			for _, text := range []string{"Harness claude: waiting until 2026-10-08T12:05:00Z (reported; native-fixture)", "Harness codex: available", "owner/repo#7  WAITING_FOR_HARNESS/review", "Exactly one additional usage-limit wait granted; allowance 4"} {
+			for _, text := range []string{"Harness claude: waiting until 2026-10-08T12:05:00Z (reported; native-fixture)", "Harness codex: available", "owner/repo#7  WAITING_FOR_HARNESS/review", "review / round 1 · reviewer", "temporary_limit", "Exactly one additional usage-limit wait granted; allowance 4"} {
 				if !strings.Contains(out, text) {
 					t.Errorf("missing status %q: %s", text, out)
 				}

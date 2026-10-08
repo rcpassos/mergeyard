@@ -13,6 +13,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/config"
+	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runner"
@@ -24,6 +25,23 @@ type usageProcessInput struct {
 	Config                             config.Config
 	Workspace, Socket, Agent, Boundary string
 	Now                                time.Time
+	Phase                              workflow.Phase
+	PR                                 *github.PullRequest
+	Remote                             string
+}
+
+type interruptionCrashHarness struct{ harness.HarnessAdapter }
+
+func (h interruptionCrashHarness) ClassifyFailure(harness.PhaseArtifacts, time.Time) harness.FailureClassification {
+	fmt.Println("review-control-plane-ready")
+	select {} // Kill after completed execution evidence, before persisting the limit.
+}
+
+type beforeRestoreGit struct{ *managedgit.Manager }
+
+func (g beforeRestoreGit) RestoreReview(context.Context, managedgit.Run, managedgit.ReviewSnapshot) error {
+	fmt.Println("review-control-plane-ready")
+	select {} // The restoration journal is durable but Git remains contaminated.
 }
 
 func TestUsageLimitControlPlaneProcess(t *testing.T) {
@@ -44,18 +62,41 @@ func TestUsageLimitControlPlaneProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}, prs: map[string]*github.PullRequest{"mergeyard/issue-7": input.PR}}
+	var gh scheduler.GitHub = api
+	if input.Remote != "" {
+		api.head = func(branch string) string { return gitCommand(t, input.Remote, "rev-parse", "refs/heads/"+branch) }
+		gh = branchGitHub{api}
+	}
+	phase := input.Phase
+	if phase == "" {
+		phase = workflow.Implement
+	}
 	var r runner.Runner = runner.NewLocal(runner.Options{SocketName: input.Socket})
 	if input.Boundary == "resuming" {
-		r = recoveryCrashRunner{Runner: r, phase: workflow.Implement, mode: "after-launch"}
+		r = recoveryCrashRunner{Runner: r, phase: phase, mode: "after-launch"}
+	}
+	if input.Boundary == "before-relaunch" {
+		r = recoveryCrashRunner{Runner: r, phase: phase, mode: "before-launch"}
 	}
 	adapter := harness.HarnessAdapter(harness.NewClaude(input.Config.Agents.Claude))
 	if input.Agent == "codex" {
 		adapter = harness.NewCodex(input.Config.Agents.Codex)
 	}
 	fake := &classifiedHarness{HarnessAdapter: adapter, outcome: harness.FailureClassification{Kind: harness.TemporaryLimit}}
+	var h harness.HarnessAdapter = fake
+	if input.Boundary == "interruption" {
+		h = interruptionCrashHarness{fake}
+	}
+	var g scheduler.Git = managedgit.New(runtime.Workspace)
+	if input.Boundary == "before-restoration" {
+		g = beforeRestoreGit{managedgit.New(runtime.Workspace)}
+	}
+	if input.Boundary == "restoration" {
+		g = interruptedRestoreGit{managedgit.New(runtime.Workspace)}
+	}
 	now := input.Now
-	s, err := scheduler.New(input.Config, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r, Now: func() time.Time { return now }, Harnesses: map[string]harness.HarnessAdapter{input.Agent: fake}})
+	s, err := scheduler.New(input.Config, schedulerResources(runtime), scheduler.Dependencies{GitHub: gh, Git: g, Runner: r, Now: func() time.Time { return now }, Harnesses: map[string]harness.HarnessAdapter{input.Agent: h}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,36 +134,7 @@ func TestTemporaryLimitSurvivesControlPlaneKill(t *testing.T) {
 				socket := fmt.Sprintf("mergeyard-usage-restart-%d", time.Now().UnixNano())
 				t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
 				now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-				input, _ := json.Marshal(usageProcessInput{Config: cfg, Workspace: root, Socket: socket, Agent: agent, Boundary: boundary, Now: now})
-				path := filepath.Join(t.TempDir(), "input.json")
-				if err := os.WriteFile(path, input, 0600); err != nil {
-					t.Fatal(err)
-				}
-				executable, err := os.Executable()
-				if err != nil {
-					t.Fatal(err)
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-				defer cancel()
-				cmd := exec.CommandContext(ctx, executable, "-test.run=^TestUsageLimitControlPlaneProcess$")
-				cmd.Env = append(os.Environ(), "MERGEYARD_TEST_USAGE_PROCESS="+path)
-				cmd.Stderr = os.Stderr
-				stdout, err := cmd.StdoutPipe()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := cmd.Start(); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
-				scanner := bufio.NewScanner(stdout)
-				if !scanner.Scan() || scanner.Text() != "review-control-plane-ready" {
-					t.Fatalf("subprocess not ready: %q %v", scanner.Text(), scanner.Err())
-				}
-				if err := cmd.Process.Kill(); err != nil {
-					t.Fatal(err)
-				}
-				cmd.Wait()
+				killUsageControlPlane(t, usageProcessInput{Config: cfg, Workspace: root, Socket: socket, Agent: agent, Boundary: boundary, Now: now})
 				runtime, err := app.Open(context.Background(), root)
 				if err != nil {
 					t.Fatal(err)
@@ -161,4 +173,47 @@ func TestTemporaryLimitSurvivesControlPlaneKill(t *testing.T) {
 			})
 		}
 	}
+}
+
+func killUsageControlPlane(t *testing.T, input usageProcessInput) {
+	t.Helper()
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "input.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestUsageLimitControlPlaneProcess$")
+	cmd.Env = append(os.Environ(), "MERGEYARD_TEST_USAGE_PROCESS="+path)
+	log, err := os.Create(filepath.Join(t.TempDir(), "child.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	cmd.Stderr = log
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "review-control-plane-ready" {
+		diagnostic, _ := os.ReadFile(log.Name())
+		t.Fatalf("crash boundary not reached: %q %v\n%s", scanner.Text(), scanner.Err(), diagnostic)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Wait() // Confirm the owned control plane has exited before opening SQLite.
 }

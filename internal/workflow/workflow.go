@@ -43,6 +43,14 @@ const (
 	Fix       Phase = "fix"
 )
 
+// Role identifies the harness role that owns the phase.
+func (p Phase) Role() string {
+	if p == Review {
+		return "reviewer"
+	}
+	return "implementer"
+}
+
 // TakeoverStatus journals preparation separately from the run's lifecycle.
 type TakeoverStatus string
 

@@ -62,13 +62,13 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if err != nil {
 		return s.recordAttention(ctx, repo, run, err)
 	}
-	if next := explicitAttempt(run, workflow.Review, a.number); next > 0 {
-		return s.startReview(ctx, repo, run, issue, gitRun, next)
-	}
 	if a.restoring && !a.restored {
 		if err := s.restoreReview(ctx, gitRun, &a); err != nil {
 			return s.recordAttention(ctx, repo, run, err)
 		}
+	}
+	if next := explicitAttempt(run, workflow.Review, a.number); next > 0 {
+		return s.startReview(ctx, repo, run, issue, gitRun, next)
 	}
 	if a.status == "usage_limited" {
 		return s.startReview(ctx, repo, run, issue, gitRun, a.number+1)
@@ -225,6 +225,17 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if !ok {
 		return fail(&fault.Error{Code: "git.review_unsupported", Message: "Git adapter cannot protect reviewer changes"})
 	}
+	var previous reviewAttempt
+	var err error
+	if number > 1 {
+		previous, err = s.lastReview(ctx, run)
+		if err != nil {
+			return err
+		}
+		if err := s.restoreReview(ctx, gitRun, &previous); err != nil {
+			return fail(err)
+		}
+	}
 	target := ""
 	var selectedAt time.Time
 	selectTarget := func(sha, requested string) error {
@@ -268,6 +279,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if err != nil {
 		return fail(err)
 	}
+	if previous.status == "usage_limited" && snapshot.Head != previous.target && (!hasReconciledTarget || snapshot.Head != target) {
+		return fail(&fault.Error{Code: "review.head_changed", Message: "Review target changed during usage-limit waiting; inspect preserved work"})
+	}
 	if hasReconciledTarget && snapshot.Head != target {
 		return fail(&fault.Error{Code: "review.head_changed", Message: "Review target differs from the reconciled target"})
 	}
@@ -300,12 +314,7 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	resume := number > 1 || run.ReviewRound > 1
 	warning := ""
 	previousSession := sessionID
-	var previous reviewAttempt
 	if number > 1 {
-		previous, err = s.lastReview(ctx, run)
-		if err != nil {
-			return err
-		}
 		if previous.status == "usage_limited" && sessionID == "" {
 			return fail(&fault.Error{Code: "harness.session_missing", Message: "Interrupted reviewer conversation identity is unavailable; inspect preserved work"})
 		}
@@ -322,7 +331,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		resume = false
 	}
 	phase := harness.PhaseContext{Phase: workflow.Review, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
-	phase.Interruption = interruptionContext(previous.attempt, phase)
+	if previous.target == snapshot.Head {
+		phase.Interruption = interruptionContext(previous.attempt, phase)
+	}
 	issue, err = s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
 		return err

@@ -150,7 +150,9 @@ func replacePhaseScript(t *testing.T, cfg config.Config, phase workflow.Phase, s
 func waitForPhase(t *testing.T, s *scheduler.Scheduler, phase workflow.Phase) workflow.Run {
 	t.Helper()
 	var result workflow.Run
-	waitFor(t, func() bool {
+	// This drives implementation and possibly review before reaching the held
+	// phase; use the workflow deadline rather than the short artifact deadline.
+	waitForWithin(t, 30*time.Second, func() bool {
 		if err := s.Tick(context.Background()); err != nil {
 			t.Fatal(err)
 		}

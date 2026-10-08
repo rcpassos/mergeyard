@@ -449,12 +449,22 @@ executions spend neither ordinary attempts nor review rounds. Verified missing
 conversations use the existing one-time missing-session recovery; ambiguous or
 unavailable identity requires attention.
 
+Review and fix recovery applies to all Claude/Codex role pairings, including
+account restrictions discovered before a phase launches. Review restoration is
+journaled before resumption or verdict acceptance. Automatic review resumption
+keeps the interrupted target SHA; a changed head requires attention and explicit
+Retry reconciliation before reviewing the new target. A crash with a reserved
+execution but no process evidence requires attention rather than replaying an
+ambiguous launch.
+
 At `usage_limits.max_waits` consecutive interrupted executions (default `3`),
 the run requires attention with `harness.usage_limit_waits_exhausted`. Explicit
 Retry grants exactly one additional wait, keeps all history, and honors the known
 reset. Repeated Retry while that selection is pending or waiting is idempotent.
-Ordinary completion ends the consecutive streak. Status, run detail, settings,
-and events show the harness gate, reset/cooldown source, interrupted executions,
-and explicit grants. Account gates before a phase's first execution display that
-no execution started rather than a zero wait budget. Credits recovery is handled
-by its separate implementation slice.
+Each phase and review round has its own allowance; a review wait grant cannot
+extend the fix allowance or a later review round.
+Ordinary completion ends the consecutive streak. Status, run detail, and settings
+show the affected phase, round, role, harness gate, reset/cooldown source,
+interrupted executions, and explicit grants. Account gates before a phase's first
+execution display that no execution started rather than a zero wait budget.
+Credits recovery is handled by its separate implementation slice.
