@@ -32,12 +32,20 @@ func (s *Scheduler) Retry(ctx context.Context, id string) (workflow.Run, error) 
 		if run.TakeoverStatus == workflow.TakeoverRequested {
 			return &fault.Error{Code: "takeover.operation_pending", Message: "Finish takeover or Stop before requesting Retry"}
 		}
-		if run.State != workflow.NeedsAttention && run.State != workflow.Failed {
+		if run.State != workflow.NeedsAttention && run.State != workflow.Failed && !(run.State == workflow.WaitingForHarness && run.HarnessWait != nil && run.HarnessWait.Reason == "credits_exhausted") {
 			if len(run.Retries) > 0 && run.State != workflow.Stopped && run.State != workflow.Manual {
 				result = run
 				return nil
 			}
 			return &fault.Error{Code: "retry.unavailable", Message: "Retry requires a failed or needs-attention run"}
+		}
+		if run.State == workflow.WaitingForHarness {
+			for _, probe := range run.CreditProbes {
+				if probe.Status == "reserved" || probe.Status == "running" {
+					result = run
+					return nil
+				}
+			}
 		}
 		repo, ok := s.repository(run.Repository)
 		if !ok {
@@ -228,7 +236,14 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 		v.Pending = false
 		v.NextState, v.NextPhase, v.Round = workflow.WaitingForHarness, run.Phase, run.ReviewRound
 		v.GrantedWait, v.WaitSequence = wait.Allowance+1, wait.Sequence
-		selected, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: v.NextState, NextPhase: v.NextPhase, Metadata: workflow.MetadataPatch{Retry: &v}})
+		patch := workflow.MetadataPatch{Retry: &v}
+		if wait.Reason == "credits_exhausted" {
+			v.NextState = workflow.Active
+			if err := s.selectCreditProbe(ctx, run, repo, v, &patch); err != nil {
+				return s.rejectRetry(ctx, run, v, err)
+			}
+		}
+		selected, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: v.NextState, NextPhase: v.NextPhase, Metadata: patch})
 		if err != nil {
 			v.Pending = true
 			return s.rejectRetry(ctx, run, v, err)
@@ -370,6 +385,9 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 			}
 			v.AttemptFrom = a.number + 1
 		}
+	}
+	if err := s.selectCreditProbe(ctx, run, repo, v, &patch); err != nil {
+		return s.rejectRetry(ctx, run, v, err)
 	}
 	v.Pending = false
 	selected, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: v.NextState, NextPhase: v.NextPhase, Metadata: patch})

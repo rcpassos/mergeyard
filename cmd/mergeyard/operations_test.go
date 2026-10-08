@@ -452,3 +452,32 @@ func TestCLIStatusShowsHarnessAvailabilityAndWaitKinds(t *testing.T) {
 		})
 	}
 }
+
+func TestCLIStatusShowsCreditWaitProbeAndCapabilityGatedRetry(t *testing.T) {
+	for _, eligible := range []bool{false, true} {
+		t.Run(fmt.Sprint(eligible), func(t *testing.T) {
+			root := t.TempDir()
+			wait := workflow.HarnessWait{Harness: "claude", Reason: "credits_exhausted", Phase: workflow.Implement}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "runtime-token", Harnesses: []scheduler.HarnessAvailability{{Harness: "claude", Reason: "credits_exhausted", ProbeID: "probe", ProbeRunID: "selected-run", ProbeAttemptID: "execution"}}, Runs: []workflow.Run{{ID: "waiting-run", Repository: "owner/repo", IssueNumber: 7, State: workflow.WaitingForHarness, Phase: workflow.Implement, HarnessWait: &wait, HarnessWaitHistory: []workflow.HarnessWait{wait}, RetryEligible: eligible, CreditProbes: []workflow.CreditProbe{{Harness: "claude", Status: "released", AttemptID: "old-execution"}}}}})
+			}))
+			defer server.Close()
+			path := filepath.Join(root, "config.yaml")
+			if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, stderr := runCLI("status", "--config", path)
+			if code != 0 {
+				t.Fatalf("status %d %s", code, stderr)
+			}
+			for _, value := range []string{"credits exhausted; explicit recovery required", "recovery probe probe for run selected-run", "running execution execution", "no scheduled reset", "Credit recovery probe: claude · released · execution old-execution"} {
+				if !strings.Contains(out, value) {
+					t.Fatalf("missing %s: %s", value, out)
+				}
+			}
+			if strings.Contains(out, "Retry: mergeyard retry waiting-run") != eligible || strings.Contains(out, "0001-01-01") {
+				t.Fatalf("credit Retry eligibility: %s", out)
+			}
+		})
+	}
+}

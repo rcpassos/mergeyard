@@ -83,7 +83,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 	if next := explicitAttempt(run, workflow.Fix, a.number); next > 0 {
 		return s.startFix(ctx, repo, run, gitRun, next)
 	}
-	if a.status == "usage_limited" {
+	if a.status == "usage_limited" || a.status == "credits_exhausted" {
 		return s.startFix(ctx, repo, run, gitRun, a.number+1)
 	}
 	if a.status == "failed" {
@@ -147,7 +147,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 				lastMessage, cause = s.readLastMessage(ctx, a.ref.PhaseDir)
 			}
 			if cause == nil {
-				result, err := s.parseExecution(a.agent, harness.PhaseContext{Phase: workflow.Fix, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+				result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Fix, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 				cause = err
 				if err == nil {
 					report = &review.FixReport{SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses}
@@ -263,7 +263,12 @@ func (s *Scheduler) finishFixAttempt(ctx context.Context, repo config.Repository
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if isTemporaryLimit(cause) {
+	if cause != nil && !isHarnessLimit(cause) {
+		if err := s.workflow.FinishCreditProbe(ctx, run.ID, a.id, false, s.deps.Now().UTC()); err != nil {
+			return err
+		}
+	}
+	if isHarnessLimit(cause) {
 		return s.limitExecution(ctx, repo, run, a.attempt, cause)
 	}
 	var data any
@@ -427,6 +432,9 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		if err != nil {
 			return events.Draft{}, err
 		}
+		if err := workflow.BindCreditProbe(ctx, tx, run.ID, repo.Implementer.Agent, id, s.deps.Now().UTC()); err != nil {
+			return events.Draft{}, err
+		}
 		if warning != "" {
 			return reserveRecovery(ctx, tx, run, workflow.Fix, previous.attempt, id, sessionID)
 		}
@@ -440,6 +448,9 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		return nil
 	}
 	if err != nil && ctx.Err() == nil {
+		if releaseErr := s.workflow.FinishCreditProbe(ctx, run.ID, id, false, s.deps.Now().UTC()); releaseErr != nil {
+			return releaseErr
+		}
 		return s.finishFixAttempt(ctx, repo, run, fixAttempt{attempt: attempt{id: id, agent: repo.Implementer.Agent, number: number}}, nil, nil, err)
 	}
 	return err

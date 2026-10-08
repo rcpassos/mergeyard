@@ -467,4 +467,35 @@ Ordinary completion ends the consecutive streak. Status, run detail, and setting
 show the affected phase, round, role, harness gate, reset/cooldown source,
 interrupted executions, and explicit grants. Account gates before a phase's first
 execution display that no execution started rather than a zero wait budget.
-Credits recovery is handled by its separate implementation slice.
+
+## Exhausted credits
+
+A classified `credits_exhausted` interruption records an indefinite account block
+with no reset time. The originating run requires attention with
+`harness.credits_exhausted`; other work needing that harness waits. Interrupted
+executions retain their work, role conversation and ordinary attempt budget.
+
+Retry reconciles the issue, PR, worktree and processes before choosing the next
+work. It is also allowed from a run waiting specifically for credit recovery.
+When the chosen work uses the blocked harness, Retry atomically reserves one
+recovery probe for that harness. All other affected work remains paused. A temporary limit observed during
+credit recovery retains its reported reset or cooldown; a reserved probe waits
+until that time before launching, while the credit block remains indefinite. Work
+selected on another harness or CI proceeds without reserving a probe or clearing
+the blocked account. Credit recovery controls require the harness's
+`CreditExhaustionDetection` capability; both production adapters keep it disabled
+until the native credit-signal binding in #83 is delivered.
+
+The reservation binds to one physical execution before launch. Native model
+completion establishes availability independently of task success, including
+valid blocked/failed task reports. Login, startup, session discovery, missing
+completion evidence and continued credit failure leave the block intact.
+Completion from an older probe cannot clear a newer restriction. Stop releases
+probe ownership once the owned processes have stopped; label failures cannot
+hold that reservation. A restart observes the original execution rather than
+launching it again. Reserved launches without process evidence require attention.
+
+Status, dashboard, CLI and durable events expose the credit wait, Retry eligibility,
+reserved/running probe and recovery history. Check availability is the separate
+#68 surface and takeover interaction is covered by the combined manual-control
+slice.

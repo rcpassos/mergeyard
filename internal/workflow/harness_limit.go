@@ -9,10 +9,15 @@ import (
 	"github.com/rcpassos/mergeyard/internal/events"
 )
 
-// HarnessLimit is the account-wide reset authority. Expired records remain so
-// runs with an earlier cooldown observation still follow a later reported reset.
+// HarnessLimit is the account-wide restriction authority. Expired timed records
+// remain so earlier cooldown observations still follow a later reported reset.
 // This component owns every harness_limits write and its availability events.
 type HarnessLimit struct {
+	Reason          string
+	RestrictionID   string
+	ProbeID         string
+	ProbeRunID      string
+	ProbeAttemptID  string
 	Harness         string
 	ResetAt         time.Time
 	ResetTimeSource string
@@ -23,12 +28,15 @@ type HarnessLimit struct {
 func LoadHarnessLimit(ctx context.Context, db queryer, harness string) (*HarnessLimit, error) {
 	v := HarnessLimit{Harness: harness}
 	var reset string
-	err := db.QueryRowContext(ctx, "SELECT limited_until,reset_time_source,signal_source,notified_until FROM harness_limits WHERE harness_type=?", harness).Scan(&reset, &v.ResetTimeSource, &v.Source, &v.notifiedUntil)
+	err := db.QueryRowContext(ctx, "SELECT COALESCE(limited_until,''),reset_time_source,signal_source,notified_until,reason,restriction_id,probe_id,COALESCE((SELECT run_id FROM credit_probes WHERE id=probe_id),''),COALESCE((SELECT attempt_id FROM credit_probes WHERE id=probe_id),'') FROM harness_limits WHERE harness_type=?", harness).Scan(&reset, &v.ResetTimeSource, &v.Source, &v.notifiedUntil, &v.Reason, &v.RestrictionID, &v.ProbeID, &v.ProbeRunID, &v.ProbeAttemptID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if reset == "" {
+		return &v, nil
 	}
 	v.ResetAt, err = time.Parse(time.RFC3339Nano, reset)
 	if err != nil {
@@ -49,6 +57,7 @@ func CurrentHarnessWait(ctx context.Context, db queryer, history []HarnessWait) 
 		return nil, err
 	}
 	if limit != nil {
+		v.Reason = limit.Reason
 		v.ResetAt, v.ResetTimeSource, v.Source = limit.ResetAt, limit.ResetTimeSource, limit.Source
 	}
 	return &v, nil
@@ -70,6 +79,10 @@ func saveHarnessLimit(ctx context.Context, tx *sql.Tx, v HarnessWait) (*events.D
 		}
 	}
 	reset := v.ResetAt.Format(time.RFC3339Nano)
+	if previous != nil && previous.Reason == "credits_exhausted" {
+		_, err = tx.ExecContext(ctx, `UPDATE harness_limits SET limited_until=?,reset_time_source=?,signal_source=? WHERE harness_type=?`, reset, v.ResetTimeSource, v.Source, v.Harness)
+		return &events.Draft{Type: "harness.usage_limited", Payload: v}, err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO harness_limits(harness_type,limited_until,reset_time_source,detected_at,phase_attempt_id,signal_source,notified_until) VALUES(?,?,?,?,?,?,?) ON CONFLICT(harness_type) DO UPDATE SET limited_until=excluded.limited_until,reset_time_source=excluded.reset_time_source,detected_at=excluded.detected_at,phase_attempt_id=excluded.phase_attempt_id,signal_source=excluded.signal_source,notified_until=excluded.notified_until`, v.Harness, reset, v.ResetTimeSource, v.DetectedAt.Format(time.RFC3339Nano), v.AttemptID, v.Source, reset)
 	if err != nil {
 		return nil, err
@@ -107,7 +120,7 @@ func (w *Workflow) ReconcileHarnessLimits(ctx context.Context, now time.Time) er
 				if err != nil {
 					return events.Draft{}, err
 				}
-				if current == nil {
+				if current == nil || current.Reason == "credits_exhausted" {
 					return events.Draft{}, errHarnessUnchanged
 				}
 				reset := current.ResetAt.Format(time.RFC3339Nano)

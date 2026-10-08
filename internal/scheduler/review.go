@@ -70,7 +70,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if next := explicitAttempt(run, workflow.Review, a.number); next > 0 {
 		return s.startReview(ctx, repo, run, issue, gitRun, next)
 	}
-	if a.status == "usage_limited" {
+	if a.status == "usage_limited" || a.status == "credits_exhausted" {
 		return s.startReview(ctx, repo, run, issue, gitRun, a.number+1)
 	}
 	if a.status == "failed" {
@@ -135,7 +135,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			lastMessage, cause = s.readLastMessage(ctx, a.ref.PhaseDir)
 		}
 		if cause == nil {
-			result, err := s.parseExecution(a.agent, harness.PhaseContext{Phase: workflow.Review, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+			result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Review, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 			cause = err
 			if err == nil {
 				report = &review.Report{SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Findings: result.Findings}
@@ -152,7 +152,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			}
 		}
 	}
-	if a.contaminated && !isTemporaryLimit(cause) {
+	if a.contaminated && !isHarnessLimit(cause) {
 		cause = &fault.Error{Code: "review.code_changed", Message: "Reviewer changed repository files, index, or commits; restored pre-review work and discarded verdict"}
 	}
 	// Fetch again after restoration and parsing. Never authorize a different head.
@@ -166,10 +166,13 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if !reviewHeadMatches(pr, repo, run, gitRun, a.target) {
 		cause = &fault.Error{Code: "review.head_changed", Message: "PR head changed during review; stale verdict discarded"}
 	}
-	if isTemporaryLimit(cause) {
+	if isHarnessLimit(cause) {
 		return s.limitExecution(ctx, repo, run, a.attempt, cause)
 	}
 	if cause != nil {
+		if err := s.workflow.FinishCreditProbe(ctx, run.ID, a.id, false, s.deps.Now().UTC()); err != nil {
+			return err
+		}
 		retry, retryErr := s.retryPhase(ctx, run, workflow.Review, a.attempt, cause, repo.Reviewer.MaxAttempts)
 		if retryErr != nil {
 			return retryErr
@@ -378,6 +381,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		if err != nil {
 			return events.Draft{}, err
 		}
+		if err := workflow.BindCreditProbe(ctx, tx, run.ID, repo.Reviewer.Agent, id, s.deps.Now().UTC()); err != nil {
+			return events.Draft{}, err
+		}
 		if warning != "" {
 			return reserveRecovery(ctx, tx, run, workflow.Review, previous.attempt, id, sessionID)
 		}
@@ -391,6 +397,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		return nil
 	}
 	if err != nil && ctx.Err() == nil {
+		if releaseErr := s.workflow.FinishCreditProbe(ctx, run.ID, id, false, s.deps.Now().UTC()); releaseErr != nil {
+			return releaseErr
+		}
 		a := reviewAttempt{attempt: attempt{id: id, agent: repo.Reviewer.Agent, number: number}, target: snapshot.Head, snapshot: snapshot}
 		if restoreErr := s.restoreReview(ctx, gitRun, &a); restoreErr != nil {
 			return fail(restoreErr)

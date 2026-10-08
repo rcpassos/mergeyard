@@ -407,7 +407,11 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 			return nil, err
 		}
 		runs[i].Stopping = runs[i].Stopping && runs[i].Merge == nil
-		runs[i].CanRetry = (runs[i].State == workflow.NeedsAttention || runs[i].State == workflow.Failed) && !runs[i].Stopping && runs[i].Merge == nil && runs[i].TakeoverStatus != workflow.TakeoverRequested
+		runs[i].CanRetry = d.Scheduler.RetryEligible(runs[i].Run) && !runs[i].Stopping && runs[i].Merge == nil && runs[i].TakeoverStatus != workflow.TakeoverRequested
+		runs[i].CreditProbes, err = workflow.LoadCreditProbes(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
 		runs[i].Handbacks, err = workflow.LoadHandbacks(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err

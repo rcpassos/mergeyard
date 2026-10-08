@@ -273,7 +273,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		err = json.Unmarshal(data, &result)
 		return result, err == nil, err
 	}
-	if a.status == "usage_limited" {
+	if a.status == "usage_limited" || a.status == "credits_exhausted" {
 		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, a.number+1)
 	}
 	if a.status == "failed" {
@@ -335,7 +335,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	}
 	var result harness.PhaseResult
 	if err == nil {
-		result, err = s.parseExecution(a.agent, harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, artifacts)
+		result, err = s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, artifacts)
 	}
 	if err == nil {
 		data, marshalErr := json.Marshal(result)
@@ -354,8 +354,13 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	if ctx.Err() != nil {
 		return result, false, ctx.Err()
 	}
-	if isTemporaryLimit(err) {
+	if isHarnessLimit(err) {
 		return result, false, s.limitExecution(ctx, repo, run, a, err)
+	}
+	if err != nil {
+		if releaseErr := s.workflow.FinishCreditProbe(ctx, run.ID, a.id, false, s.deps.Now().UTC()); releaseErr != nil {
+			return result, false, releaseErr
+		}
 	}
 	attemptStatus, event := "succeeded", "phase.completed"
 	if err != nil {
@@ -455,6 +460,9 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		if err != nil {
 			return events.Draft{}, err
 		}
+		if err := workflow.BindCreditProbe(ctx, tx, run.ID, repo.Implementer.Agent, id, s.deps.Now().UTC()); err != nil {
+			return events.Draft{}, err
+		}
 		if recovery {
 			return reserveRecovery(ctx, tx, run, workflow.Implement, previous, id, sessionID)
 		}
@@ -471,6 +479,9 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		return nil
 	}
 	if err != nil && ctx.Err() == nil {
+		if releaseErr := s.workflow.FinishCreditProbe(ctx, run.ID, id, false, s.deps.Now().UTC()); releaseErr != nil {
+			return releaseErr
+		}
 		if _, saveErr := s.db.ExecContext(ctx, `UPDATE phase_attempts SET status='failed',ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),error=? WHERE run_id=? AND phase='implement' AND attempt=?`, err.Error(), run.ID, number); saveErr != nil {
 			return saveErr
 		}

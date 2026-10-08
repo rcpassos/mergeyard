@@ -102,6 +102,7 @@ type RunMetadata struct {
 // Nil fields preserve their values; an empty ApprovedSHA clears approval.
 // IncrementReviewRound advances the persisted round within the transaction.
 type MetadataPatch struct {
+	CreditProbe          *CreditProbe
 	HarnessWait          *HarnessWait
 	Handback             *HandbackSnapshot
 	Retry                *RetrySnapshot
@@ -118,6 +119,8 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
+	RetryEligible      bool               `json:"retry_eligible,omitempty"`
+	CreditProbes       []CreditProbe      `json:"credit_probes,omitempty"`
 	HarnessWait        *HarnessWait       `json:"harness_wait,omitempty"`
 	HarnessWaitHistory []HarnessWait      `json:"harness_wait_history,omitempty"`
 	Handbacks          []HandbackSnapshot `json:"handbacks,omitempty"`
@@ -274,6 +277,22 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 				}
 			}
 		}
+		var probeEvent *events.Draft
+		if request.Metadata.CreditProbe != nil {
+			if request.Trigger != Retry {
+				return nil, invalid("Credit probe requires Retry")
+			}
+			if err := request.Metadata.CreditProbe.reserve(ctx, tx, id); err != nil {
+				return nil, err
+			}
+			probeEvent = &events.Draft{RunID: id, Type: "harness.probe_reserved", Payload: request.Metadata.CreditProbe}
+		}
+		if request.Trigger == Stop || request.Trigger == OperationFailed || request.Trigger == InternalFailure || request.Trigger == PRMerged || request.Trigger == TakeOver {
+			probeEvent, err = releaseCreditProbes(ctx, tx, id)
+			if err != nil {
+				return nil, err
+			}
+		}
 		var harnessEvent *events.Draft
 		if request.Metadata.HarnessWait != nil {
 			harnessEvent, err = request.Metadata.HarnessWait.save(ctx, tx, id)
@@ -292,6 +311,9 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		drafts := []events.Draft{{RunID: id, Type: eventType, Payload: payload}}
 		if harnessEvent != nil {
 			drafts = append(drafts, *harnessEvent)
+		}
+		if probeEvent != nil {
+			drafts = append(drafts, *probeEvent)
 		}
 		return drafts, nil
 	})
@@ -496,7 +518,7 @@ func destination(current Run, request Request) (Run, string, error) {
 				return next, "run.handed_back", nil
 			}
 		case Retry:
-			if current.State == NeedsAttention || current.State == Failed {
+			if current.State == NeedsAttention || current.State == Failed || (current.State == WaitingForHarness && current.HarnessWait != nil && current.HarnessWait.Reason == "credits_exhausted") {
 				if eventType, ok := reconciledEvents[request.NextState]; ok {
 					if request.NextPhase != "" && !validPhase(request.NextPhase) {
 						return Run{}, "", invalid("Reconciliation supplied an unknown phase")
@@ -562,6 +584,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, &fault.Error{Code: "internal.run_not_found", Message: "Run does not exist", Path: id, Err: err}
 	}
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.CreditProbes, err = LoadCreditProbes(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
 	}

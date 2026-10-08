@@ -20,7 +20,7 @@ type HarnessWait struct {
 	Attempt         int       `json:"attempt,omitempty"`
 	ExitCode        *int      `json:"exit_code,omitempty"`
 	DetectedAt      time.Time `json:"detected_at"`
-	ResetAt         time.Time `json:"reset_at"`
+	ResetAt         time.Time `json:"reset_at,omitzero"`
 	ResetTimeSource string    `json:"reset_time_source"`
 	Source          string    `json:"source"`
 	Consecutive     int       `json:"consecutive"`
@@ -57,7 +57,11 @@ func (v HarnessWait) save(ctx context.Context, tx *sql.Tx, id string) (*events.D
 	var attempt any
 	if v.AttemptID != "" {
 		attempt = v.AttemptID
-		result, err := tx.ExecContext(ctx, `UPDATE phase_attempts SET status='usage_limited',exit_code=?,ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),error='harness.temporary_limit: Execution interrupted by a temporary usage limit' WHERE id=? AND run_id=? AND phase=? AND round=? AND status='running'`, v.ExitCode, v.AttemptID, id, v.Phase, v.Round)
+		status, message := "usage_limited", "harness.temporary_limit: Execution interrupted by a temporary usage limit"
+		if v.Reason == "credits_exhausted" {
+			status, message = "usage_limited", "harness.credits_exhausted: Harness credits are exhausted; explicit recovery is required"
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE phase_attempts SET status=?,exit_code=?,ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),error=? WHERE id=? AND run_id=? AND phase=? AND round=? AND status='running'`, status, v.ExitCode, message, v.AttemptID, id, v.Phase, v.Round)
 		if err != nil {
 			return nil, err
 		}
@@ -74,6 +78,9 @@ func (v HarnessWait) save(ctx context.Context, tx *sql.Tx, id string) (*events.D
 		return nil, err
 	}
 	if v.AttemptID != "" {
+		if v.Reason == "credits_exhausted" {
+			return saveCreditBlock(ctx, tx, v)
+		}
 		return saveHarnessLimit(ctx, tx, v)
 	}
 	return nil, nil
