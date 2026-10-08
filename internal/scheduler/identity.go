@@ -40,9 +40,10 @@ func (s *Scheduler) discoverSession(ctx context.Context, id string, phase workfl
 	}
 
 	var otherIdentity string
-	otherRole := "reviewer"
-	if phase == workflow.Review {
-		otherRole = "implementer"
+	role := phase.Role()
+	otherRole := workflow.Review.Role()
+	if role == otherRole {
+		otherRole = workflow.Implement.Role()
 	}
 	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE("+otherRole+"_session_id,'') FROM runs WHERE id=?", id).Scan(&otherIdentity); err != nil {
 		return err
@@ -57,10 +58,9 @@ func (s *Scheduler) discoverSession(ctx context.Context, id string, phase workfl
 		return nil
 	}
 
-	role := "implementer"
 	table := ""
 	if phase == workflow.Review {
-		role, table = "reviewer", "review_attempts"
+		table = "review_attempts"
 	}
 	if phase == workflow.Fix {
 		table = "fix_attempts"

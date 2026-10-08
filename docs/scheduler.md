@@ -463,8 +463,8 @@ Retry grants exactly one additional wait, keeps all history, and honors the know
 reset. Repeated Retry while that selection is pending or waiting is idempotent.
 Each phase and review round has its own allowance; a review wait grant cannot
 extend the fix allowance or a later review round.
-Ordinary completion ends the consecutive streak. Status, run detail, settings,
-and events show the affected phase, round, role, harness gate, reset/cooldown source, interrupted executions,
-and explicit grants. Account gates before a phase's first execution display that
-no execution started rather than a zero wait budget. Credits recovery is handled
-by its separate implementation slice.
+Ordinary completion ends the consecutive streak. Status, run detail, and settings
+show the affected phase, round, role, harness gate, reset/cooldown source,
+interrupted executions, and explicit grants. Account gates before a phase's first
+execution display that no execution started rather than a zero wait budget.
+Credits recovery is handled by its separate implementation slice.

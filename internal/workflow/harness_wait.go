@@ -28,14 +28,6 @@ type HarnessWait struct {
 	Allowance       int       `json:"allowance"`
 }
 
-// Role follows the saved phase, including account gates without an execution.
-func (v HarnessWait) Role() string {
-	if v.Phase == Review {
-		return "reviewer"
-	}
-	return "implementer"
-}
-
 func LoadHarnessWaits(ctx context.Context, db queryer, id string) ([]HarnessWait, error) {
 	rows, err := db.QueryContext(ctx, "SELECT snapshot_json FROM harness_waits WHERE run_id=? ORDER BY id", id)
 	if err != nil {

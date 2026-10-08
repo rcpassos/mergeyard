@@ -289,7 +289,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 }
 
 func printHarnessWait(out io.Writer, v workflow.HarnessWait) {
-	fmt.Fprintf(out, "  Usage-limit wait: %s · %s · %s / round %d · %s · observed reset %s · %s · %s", terminalText(v.Harness), terminalText(v.Reason), terminalText(string(v.Phase)), v.Round, v.Role(), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source))
+	fmt.Fprintf(out, "  Usage-limit wait: %s · %s · %s / round %d · %s · observed reset %s · %s · %s", terminalText(v.Harness), terminalText(v.Reason), terminalText(string(v.Phase)), v.Round, v.Phase.Role(), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source))
 	if v.AttemptID == "" {
 		fmt.Fprintln(out, " · Account gate; no execution started.")
 		return
