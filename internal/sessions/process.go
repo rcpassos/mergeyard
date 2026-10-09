@@ -55,18 +55,52 @@ func (g processGroup) alive(ctx context.Context) (bool, error) {
 	if err != nil && !errors.Is(err, syscall.EPERM) {
 		return false, err
 	}
-	boot, err := processStarted(ctx, 1)
+	// Signal 0 also succeeds for a group containing only unreaped zombies.
+	// Observe identities and live members in one snapshot; exited processes
+	// cannot perform work and must not hide completed native evidence forever.
+	cmd := exec.CommandContext(ctx, "ps", "-axo", "pid=,pgid=,stat=,lstart=")
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
 	if err != nil {
 		return false, err
 	}
-	started, err := processStarted(ctx, g.PID)
-	if err != nil {
-		return false, err
+	var boot, started string
+	live := false
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return false, err
+		}
+		pgid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return false, err
+		}
+		identity := strings.Join(fields[3:], " ")
+		if pid == 1 {
+			boot = identity
+		}
+		if pid == g.PID {
+			started = identity
+		}
+		state := fields[2][0]
+		if pgid == g.PID && state != 'Z' && state != 'X' && state != 'x' {
+			live = true
+		}
 	}
-	if boot != strings.TrimSpace(g.Boot) || (started != "" && started != strings.TrimSpace(g.Started)) {
+	if boot == "" {
+		return false, errors.New("cannot establish boot identity; preserve work and inspect before stopping")
+	}
+	if boot != strings.Join(strings.Fields(g.Boot), " ") || (started != "" && started != strings.Join(strings.Fields(g.Started), " ")) {
 		return false, errors.New("process identity changed; preserve work and inspect before stopping")
 	}
-	return true, nil
+	return live, nil
 }
 
 // RequireProcessJournal records the execution format before a running attempt

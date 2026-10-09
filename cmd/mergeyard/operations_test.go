@@ -520,3 +520,43 @@ func TestCLIHandbackExplainsTimedAndCreditWaiting(t *testing.T) {
 		})
 	}
 }
+
+func TestCLIHarnessCheckUsesRuntimeProtections(t *testing.T) {
+	root := t.TempDir()
+	workspaceIdentity := root
+	calls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: workspaceIdentity, Token: "runtime-token"})
+	})
+	mux.HandleFunc("POST /harnesses/{harness}/check", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != "runtime-token" {
+			http.Error(w, "missing protection", 403)
+			return
+		}
+		calls++
+		json.NewEncoder(w).Encode(workflow.HarnessCheck{ID: "check-id", Harness: r.PathValue("harness"), Status: "running"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	path := filepath.Join(root, "config.yaml")
+	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, port)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []string{"claude", "codex"} {
+		code, out, errOut := runCLI("harness", "check", agent, "--config", path)
+		if code != 0 || !strings.Contains(out, "uses account quota") || !strings.Contains(out, "no engineering work") || !strings.Contains(out, "check-id") {
+			t.Fatalf("check %s: %d %s %s", agent, code, out, errOut)
+		}
+	}
+	code, _, errOut := runCLI("harness", "check", "../codex", "--config", path)
+	if code != 1 || calls != 2 || !strings.Contains(errOut, "requires claude or codex") {
+		t.Fatalf("invalid harness: %d %d %s", code, calls, errOut)
+	}
+	workspaceIdentity = t.TempDir()
+	code, _, errOut = runCLI("harness", "check", "claude", "--config", path)
+	if code != 1 || calls != 2 || !strings.Contains(errOut, "workspace.mismatch") {
+		t.Fatalf("workspace bypass: %d %d %s", code, calls, errOut)
+	}
+}

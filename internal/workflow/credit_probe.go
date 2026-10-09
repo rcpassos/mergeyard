@@ -89,43 +89,8 @@ func (w *Workflow) RecordCreditProof(ctx context.Context, runID, attemptID strin
 		if err != nil {
 			return events.Draft{}, err
 		}
-		status, event := "released", "harness.probe_released"
-		limit, err := LoadHarnessLimit(ctx, tx, p.Harness)
-		if err != nil {
-			return events.Draft{}, err
-		}
-		if limit != nil && limit.Reason == "credits_exhausted" && limit.RestrictionID == p.RestrictionID && limit.ProbeID == p.ID {
-			var result sql.Result
-			if limit.ResetAt.IsZero() {
-				result, err = tx.ExecContext(ctx, `DELETE FROM harness_limits WHERE harness_type=? AND restriction_id=? AND probe_id=?`, p.Harness, p.RestrictionID, p.ID)
-				event = "harness.available"
-			} else {
-				reset := limit.ResetAt.Format(time.RFC3339Nano)
-				marker := reset
-				event = "harness.credit_recovered"
-				if !now.Before(limit.ResetAt) {
-					marker = "available:" + reset
-					event = "harness.available"
-				}
-				result, err = tx.ExecContext(ctx, `UPDATE harness_limits SET reason='temporary_limit',restriction_id='',probe_id='',notified_until=? WHERE harness_type=? AND restriction_id=? AND probe_id=?`, marker, p.Harness, p.RestrictionID, p.ID)
-			}
-			if err != nil {
-				return events.Draft{}, err
-			}
-			n, err := result.RowsAffected()
-			if err != nil {
-				return events.Draft{}, err
-			}
-			if n == 1 {
-				status = "recovered"
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE harness_limits SET probe_id='' WHERE harness_type=? AND probe_id=?`, p.Harness, p.ID); err != nil {
-			return events.Draft{}, err
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE credit_probes SET status=?,ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, status, p.ID)
-		p.RunID, p.AttemptID, p.Status = runID, attemptID, status
-		return events.Draft{RunID: runID, Type: event, Payload: p}, err
+		p.RunID, p.AttemptID = runID, attemptID
+		return finishCreditProbe(ctx, tx, p, now, true)
 	})
 	if errors.Is(err, errHarnessUnchanged) {
 		return nil
@@ -199,4 +164,45 @@ func saveCreditBlock(ctx context.Context, tx *sql.Tx, v HarnessWait) (*events.Dr
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO harness_limits(harness_type,limited_until,reset_time_source,detected_at,phase_attempt_id,signal_source,reason,restriction_id) VALUES(?,NULL,'',?,?,?,'credits_exhausted',?) ON CONFLICT(harness_type) DO UPDATE SET detected_at=excluded.detected_at,phase_attempt_id=excluded.phase_attempt_id,signal_source=excluded.signal_source,reason='credits_exhausted',restriction_id=excluded.restriction_id,probe_id=CASE WHEN EXISTS(SELECT 1 FROM credit_probes WHERE id=harness_limits.probe_id AND status='running') THEN harness_limits.probe_id ELSE '' END,notified_until=''`, v.Harness, v.DetectedAt.Format(time.RFC3339Nano), v.AttemptID, v.Source, v.AttemptID)
 	return &events.Draft{Type: "harness.credits_exhausted", Payload: v}, err
+}
+
+// finishCreditProbe applies the same restriction-generation gate to run and standalone checks.
+func finishCreditProbe(ctx context.Context, tx *sql.Tx, p CreditProbe, now time.Time, proven bool) (events.Draft, error) {
+	status, event := "released", "harness.probe_released"
+	limit, err := LoadHarnessLimit(ctx, tx, p.Harness)
+	if err != nil {
+		return events.Draft{}, err
+	}
+	if proven && limit != nil && limit.Reason == "credits_exhausted" && limit.RestrictionID == p.RestrictionID && limit.ProbeID == p.ID {
+		var result sql.Result
+		if limit.ResetAt.IsZero() {
+			result, err = tx.ExecContext(ctx, `DELETE FROM harness_limits WHERE harness_type=? AND restriction_id=? AND probe_id=?`, p.Harness, p.RestrictionID, p.ID)
+			event = "harness.available"
+		} else {
+			reset := limit.ResetAt.Format(time.RFC3339Nano)
+			marker := reset
+			event = "harness.credit_recovered"
+			if !now.Before(limit.ResetAt) {
+				marker = "available:" + reset
+				event = "harness.available"
+			}
+			result, err = tx.ExecContext(ctx, `UPDATE harness_limits SET reason='temporary_limit',restriction_id='',probe_id='',notified_until=? WHERE harness_type=? AND restriction_id=? AND probe_id=?`, marker, p.Harness, p.RestrictionID, p.ID)
+		}
+		if err != nil {
+			return events.Draft{}, err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return events.Draft{}, err
+		}
+		if n == 1 {
+			status = "recovered"
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE harness_limits SET probe_id='' WHERE harness_type=? AND probe_id=?`, p.Harness, p.ID); err != nil {
+		return events.Draft{}, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE credit_probes SET status=?,ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, status, p.ID)
+	p.Status = status
+	return events.Draft{RunID: p.RunID, Type: event, Payload: p}, err
 }

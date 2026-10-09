@@ -42,6 +42,9 @@ func (s *Scheduler) Reconcile(ctx context.Context) (ReconcileReport, error) {
 }
 
 func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
+	if err := s.reconcileHarnessChecks(ctx); err != nil {
+		return ReconcileReport{}, err
+	}
 	if err := s.workflow.ReconcileHarnessLimits(ctx, s.deps.Now().UTC()); err != nil {
 		return ReconcileReport{}, err
 	}
@@ -349,7 +352,7 @@ func (s *Scheduler) orphanedArtifacts(ctx context.Context, report *ReconcileRepo
 	if err != nil {
 		return err
 	}
-	rows, err = s.db.QueryContext(ctx, "SELECT process_session FROM phase_attempts WHERE process_session IS NOT NULL")
+	rows, err = s.db.QueryContext(ctx, "SELECT process_session FROM phase_attempts WHERE process_session IS NOT NULL UNION SELECT process_session FROM harness_checks")
 	if err != nil {
 		return err
 	}

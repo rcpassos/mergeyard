@@ -81,12 +81,22 @@ func (c *runtimeClient) request(ctx context.Context, method, path string, result
 }
 
 func operate(ctx context.Context, path, action string, args []string, stdout, stderr io.Writer) error {
+	if action == "harness check" && args[0] != "claude" && args[0] != "codex" {
+		return fmt.Errorf("harness check requires claude or codex")
+	}
 	client, status, err := connect(ctx, path)
 	if err != nil {
 		return err
 	}
 	defer client.http.CloseIdleConnections()
 	switch action {
+	case "harness check":
+		fmt.Fprintln(stdout, "Check availability uses account quota for one minimal model request with no engineering work.")
+		var check workflow.HarnessCheck
+		if err := client.request(ctx, http.MethodPost, "/harnesses/"+args[0]+"/check", &check); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Harness %s: check %s · %s. Follow progress with mergeyard status.\n", terminalText(check.Harness), terminalText(check.ID), terminalText(check.Status))
 	case "status":
 		state := "running"
 		if status.Paused {
@@ -102,7 +112,12 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 					state += " · probe may run after temporary reset " + v.ResetAt.Format(time.RFC3339) + " (" + v.ResetTimeSource + ")"
 				}
 				if v.ProbeID != "" {
-					state += " · recovery probe " + v.ProbeID + " for run " + v.ProbeRunID
+					state += " · recovery probe " + v.ProbeID
+					if v.ProbeRunID != "" {
+						state += " for run " + v.ProbeRunID
+					} else {
+						state += " · independent availability check"
+					}
 					if v.ProbeAttemptID != "" {
 						state += " · running execution " + v.ProbeAttemptID
 					} else {
@@ -113,6 +128,12 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 				state = "waiting until " + v.ResetAt.Format(time.RFC3339) + " (" + v.ResetTimeSource + "; " + v.Source + ")"
 			}
 			fmt.Fprintf(stdout, "Harness %s: %s\n", terminalText(v.Harness), terminalText(state))
+			if v.Check != nil {
+				fmt.Fprintf(stdout, "  Availability check %s: %s · %s\n", terminalText(v.Check.ID), terminalText(v.Check.Status), terminalText(v.Check.Result))
+			}
+			if v.CheckEligible {
+				fmt.Fprintf(stdout, "  Check availability: mergeyard harness check %s (uses account quota; no engineering work)\n", terminalText(v.Harness))
+			}
 		}
 		for _, run := range status.Runs {
 			if run.State.Terminal() && run.State != workflow.Failed && !(run.Merge != nil && run.Merge.Pending()) {

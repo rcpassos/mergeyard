@@ -153,3 +153,15 @@ affected work waits until model completion proves availability. Stop releases
 that probe without clearing the credit block. These credit recovery controls are
 available only when the harness advertises exhausted-credit detection; both
 production adapters keep that capability disabled pending #83.
+
+`mergeyard harness check <claude|codex>` requests a minimal model response through
+the running control plane, even when every affected run is stopped. It discloses
+account quota use before requesting the check and performs no engineering work.
+Use `mergeyard status` to follow its progress and result. Check and Retry share
+one durable probe reservation per harness. Restart observes the existing request;
+only native model completion for the current restriction clears the credit block.
+A failed or incomplete check retains the block and gives recovery guidance. A
+future temporary reset must expire before another check can start. Recovery leaves
+stopped runs stopped. Check uses the same workspace and local request protections
+as other CLI controls and requires the exhausted-credit detection capability.
+Doctor never makes this request automatically.
