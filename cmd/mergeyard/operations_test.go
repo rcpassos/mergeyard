@@ -482,6 +482,45 @@ func TestCLIStatusShowsCreditWaitProbeAndCapabilityGatedRetry(t *testing.T) {
 	}
 }
 
+func TestCLIHandbackExplainsTimedAndCreditWaiting(t *testing.T) {
+	for _, reason := range []string{"temporary_limit", "credits_exhausted"} {
+		t.Run(reason, func(t *testing.T) {
+			root := t.TempDir()
+			wait := workflow.HarnessWait{Harness: "codex", Reason: reason, Phase: workflow.Review, Round: 2}
+			if reason == "temporary_limit" {
+				wait.ResetAt = time.Date(2026, 10, 9, 13, 0, 0, 0, time.UTC)
+				wait.ResetTimeSource = "reported"
+			}
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "runtime-token"})
+			})
+			mux.HandleFunc("POST /api/runs/manual/handback", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(workflow.Run{ID: "manual", State: workflow.WaitingForHarness, Phase: workflow.Review, HarnessWait: &wait, Handbacks: []workflow.HandbackSnapshot{{NextState: workflow.WaitingForHarness, NextPhase: workflow.Review, Round: 2, GrantedRound: 2}}})
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+			path := filepath.Join(root, "config.yaml")
+			if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, stderr := runCLI("--config", path, "handback", "manual")
+			if code != 0 {
+				t.Fatalf("handback %d %s", code, stderr)
+			}
+			expected := "automatic resumption"
+			if reason == "credits_exhausted" {
+				expected = "explicit recovery required"
+			}
+			for _, value := range []string{"WAITING_FOR_HARNESS/review", "Additional review round granted: 2", expected, "Manual conversation success does not clear the harness block"} {
+				if !strings.Contains(out, value) {
+					t.Fatalf("missing %q: %s", value, out)
+				}
+			}
+		})
+	}
+}
+
 func TestCLIHarnessCheckUsesRuntimeProtections(t *testing.T) {
 	root := t.TempDir()
 	workspaceIdentity := root

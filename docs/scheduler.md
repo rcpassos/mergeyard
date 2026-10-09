@@ -497,5 +497,9 @@ launching it again. Reserved launches without process evidence require attention
 
 Status, dashboard, CLI and durable events expose the credit wait, Retry eligibility,
 reserved/running probe and recovery history. Check availability is the separate
-#68 surface and takeover interaction is covered by the combined manual-control
-slice.
+#68 surface. Takeover also applies to timed/credit waiting and selected-run
+probes, under the existing worktree/session prerequisites. It proves process
+exit and finishes reviewer restoration before exposing manual control; ending
+the attempt releases probe ownership without clearing the block. Handback
+publishes normally and waits on the selected next phase's harness if blocked,
+preserving its phase, round, attempt window and any additional review grant.

@@ -277,8 +277,24 @@ func (s *Scheduler) resumeHandback(ctx context.Context, repo config.Repository, 
 	}
 	v.Pending = false
 	v.Error = ""
+	agent := repo.Implementer.Agent
+	if v.NextPhase == workflow.Review {
+		agent = repo.Reviewer.Agent
+	}
+	wait, err := s.harnessGate(ctx, agent)
+	if err != nil {
+		return err
+	}
+	v.NextState = workflow.Active
+	if wait != nil {
+		v.NextState = workflow.WaitingForHarness
+		wait.Phase = v.NextPhase
+		if v.NextPhase == workflow.Review {
+			wait.Round = v.Round
+		}
+	}
 	empty := ""
-	patch := workflow.MetadataPatch{Handback: &v, ReviewRound: &v.Round, ApprovedSHA: &empty}
+	patch := workflow.MetadataPatch{Handback: &v, HarnessWait: wait, ReviewRound: &v.Round, ApprovedSHA: &empty}
 	if v.PRNumber > 0 {
 		patch.PRNumber = &v.PRNumber
 	}

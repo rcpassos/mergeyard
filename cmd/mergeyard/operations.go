@@ -171,14 +171,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			if run.RetryEligible {
 				fmt.Fprintf(stdout, "  Retry: mergeyard retry %s (reconciles preserved work first)\n", terminalText(run.ID))
 			}
-			if run.State == workflow.WaitingForHarness && run.HarnessWait != nil {
-				v := run.HarnessWait
-				if v.Reason == "credits_exhausted" {
-					fmt.Fprintf(stdout, "  Waiting for credit recovery on %s; no scheduled reset\n", terminalText(v.Harness))
-				} else {
-					fmt.Fprintf(stdout, "  Waiting for harness %s until %s · %s · %s\n", terminalText(v.Harness), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source))
-				}
-			}
+			printWaitingRun(stdout, run)
 			for _, p := range run.CreditProbes {
 				fmt.Fprintf(stdout, "  Credit recovery probe: %s · %s · execution %s\n", terminalText(p.Harness), terminalText(p.Status), terminalText(p.AttemptID))
 			}
@@ -296,7 +289,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 		}
 	case "handback":
-		fmt.Fprintln(stdout, "Handback commits and pushes manual work. Exit the interactive harness first. If independent review exceeds the allowance, exactly one additional review round will be granted.")
+		fmt.Fprintln(stdout, "Handback commits and pushes manual work. Exit the interactive harness first. If independent review exceeds the allowance, exactly one additional review round will be granted. Manual conversation success does not clear the harness block.")
 		var run workflow.Run
 		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/handback", &run); err != nil {
 			return err
@@ -305,6 +298,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		if len(run.Handbacks) > 0 {
 			printHandback(stdout, run.Handbacks[len(run.Handbacks)-1])
 		}
+		printWaitingRun(stdout, run)
 	case "takeover":
 		return runner.RunInteractivePrepared(ctx, status.Workspace, args[0], func(ctx context.Context) (runner.ExecRequest, error) {
 			var command harness.InteractiveCommand
@@ -340,6 +334,18 @@ func printHarnessWait(out io.Writer, v workflow.HarnessWait) {
 		return
 	}
 	fmt.Fprintf(out, " · interrupted execution %s · consecutive %d / allowance %d\n", terminalText(v.AttemptID), v.Consecutive, v.Allowance)
+}
+
+func printWaitingRun(out io.Writer, run workflow.Run) {
+	if run.State != workflow.WaitingForHarness || run.HarnessWait == nil {
+		return
+	}
+	v := run.HarnessWait
+	if v.Reason == "credits_exhausted" {
+		fmt.Fprintf(out, "  Waiting for credit recovery on %s; no scheduled reset; explicit recovery required\n", terminalText(v.Harness))
+	} else {
+		fmt.Fprintf(out, "  Waiting for harness %s until %s · %s · %s; automatic resumption at reset\n", terminalText(v.Harness), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source))
+	}
 }
 
 func printHandback(out io.Writer, v workflow.HandbackSnapshot) {
