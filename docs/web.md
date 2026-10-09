@@ -191,3 +191,41 @@ The run snapshot and dashboard retain selected phase, pinned manual commit,
 pending publication/recovery errors and the additional round grant. Handback
 history and lifecycle events refresh over SSE. A pending handback cannot launch
 an interactive resume or automated phase; restart reconciles publication first.
+
+`POST /harnesses/{harness}/check` calls the shared `Scheduler.CheckHarness`
+operation. JSON clients receive the durable check snapshot; browser forms refresh
+the dashboard. Harness availability offers **Check availability** only for a
+credit block with supported detection, no owning probe, and no future timed wait.
+The form discloses account quota use and the minimal request's lack of engineering
+work. Check remains available with no eligible affected runs; recovery does not
+revive stopped runs. The endpoint retains Host, Origin, CSRF, and CLI workspace
+identity protections. Conflicting checks/Retry return `harness.probe_unavailable`;
+a future timed reset returns `harness.check_waiting`, both HTTP 409. Status JSON
+includes `check_eligible` and the latest check's ID, status, result, and timestamps.
+`harness.check_started` and `harness.check_completed` refresh pages over SSE.
+Checks run outside repository worktrees with skills disabled, use the shared
+native completion gate, and retain ownership until their execution ends. Startup,
+login, and session discovery alone cannot release paused work. Captures and
+execution journals are retained under `harness-checks/<check-id>` in the workspace.
+Automatic doctor diagnostics never perform availability requests.
+
+Availability-check preparation failures and unreadable output after a confirmed
+exit finish the check without proof, retain the credit restriction, and release
+unused probe ownership. Ambiguous process status retains ownership and records
+an actionable result via `harness.check_updated`. Per-check failures are logged
+without preventing unrelated checks, run reconciliation, or new claims.
+`harness.check_failed` returns HTTP 409 with the safe recovery guidance.
+
+Codex checks first perform a bounded, read-only `codex mcp list --json` inspection
+under the check's invocation settings. No servers are initialized and no model
+request is made by this inspection. The adapter explicitly disables every
+configured MCP server, including required servers and names containing dots, and
+the final invocation is persisted before launch. Inspection failures launch no
+model request. Authentication settings remain in the original account environment;
+inspection output and account environment values are not persisted or logged.
+An opt-in native configuration regression runs without credentials, model calls,
+or server startup:
+
+```sh
+MERGEYARD_CODEX_CONFIG_INTEGRATION=1 go test ./internal/harness -run '^TestCodexCheckDisablesInheritedMCPServers$' -count=1
+```

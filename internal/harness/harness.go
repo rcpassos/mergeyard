@@ -18,10 +18,18 @@ type HarnessAdapter interface {
 	ValidateConfig(RoleConfig) error
 	BuildInvocation(PhaseContext, RoleConfig) (Invocation, error)
 	BuildInteractiveInvocation(sessionID, worktree string) (InteractiveCommand, error)
+	BuildCheckInvocation(dir string, env map[string]string) (Invocation, error)
 	ParseResult(PhaseContext, PhaseArtifacts) (PhaseResult, error)
 	// NativeSucceeded is adapter-owned completion evidence, independent of the task report.
 	NativeSucceeded(PhaseArtifacts) bool
 	ClassifyFailure(PhaseArtifacts, time.Time) FailureClassification
+}
+
+// CheckConfigurator inspects effective local configuration without a model call.
+// The runner executes the inspection; adapters interpret it and disable tools.
+type CheckConfigurator interface {
+	CheckConfigurationInvocation(Invocation) Invocation
+	ConfigureCheckInvocation(Invocation, []byte) (Invocation, error)
 }
 
 // SessionDiscoverer reads early identity from complete records in a live stream.

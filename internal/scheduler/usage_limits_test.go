@@ -556,3 +556,13 @@ func TestUsageLimitResumeUsesExistingMissingSessionRecovery(t *testing.T) {
 		})
 	}
 }
+
+func (f *classifiedHarness) CheckConfigurationInvocation(command harness.Invocation) harness.Invocation {
+	if adapter, ok := f.HarnessAdapter.(harness.CheckConfigurator); ok {
+		return adapter.CheckConfigurationInvocation(command)
+	}
+	return harness.Invocation{}
+}
+func (f *classifiedHarness) ConfigureCheckInvocation(command harness.Invocation, data []byte) (harness.Invocation, error) {
+	return f.HarnessAdapter.(harness.CheckConfigurator).ConfigureCheckInvocation(command, data)
+}

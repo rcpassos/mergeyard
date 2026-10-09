@@ -26,6 +26,7 @@ type usageProcessInput struct {
 	Workspace, Socket, Agent, Boundary string
 	Now                                time.Time
 	Credits                            bool
+	Check                              bool
 	Phase                              workflow.Phase
 	PR                                 *github.PullRequest
 	Remote                             string
@@ -107,6 +108,34 @@ func TestUsageLimitControlPlaneProcess(t *testing.T) {
 	s, err := scheduler.New(input.Config, schedulerResources(runtime), scheduler.Dependencies{GitHub: gh, Git: g, Runner: r, Now: func() time.Time { return now }, Harnesses: map[string]harness.HarnessAdapter{input.Agent: h}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if input.Check {
+		if input.Boundary == "resuming" {
+			r = harnessCheckCrashRunner{r}
+		}
+		s, err = scheduler.New(input.Config, schedulerResources(runtime), scheduler.Dependencies{GitHub: gh, Git: g, Runner: r, Now: func() time.Time { return now }, Harnesses: map[string]harness.HarnessAdapter{input.Agent: h}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.CheckHarness(context.Background(), input.Agent); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			if _, err := s.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			states, err := s.HarnessAvailability(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, v := range states {
+				if v.Harness == input.Agent && v.Check != nil && v.Check.Status == "recovered" && input.Boundary == "after-proof" {
+					fmt.Println("review-control-plane-ready")
+					select {}
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 	for {
 		if err := s.Tick(context.Background()); err != nil {

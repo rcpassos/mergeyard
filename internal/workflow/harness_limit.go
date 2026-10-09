@@ -29,7 +29,7 @@ type HarnessLimit struct {
 func LoadHarnessLimit(ctx context.Context, db queryer, harness string) (*HarnessLimit, error) {
 	v := HarnessLimit{Harness: harness}
 	var reset string
-	err := db.QueryRowContext(ctx, "SELECT COALESCE(limited_until,''),reset_time_source,signal_source,notified_until,reason,restriction_id,probe_id,COALESCE((SELECT run_id FROM credit_probes WHERE id=probe_id),''),COALESCE((SELECT attempt_id FROM credit_probes WHERE id=probe_id),'') FROM harness_limits WHERE harness_type=?", harness).Scan(&reset, &v.ResetTimeSource, &v.Source, &v.notifiedUntil, &v.Reason, &v.RestrictionID, &v.ProbeID, &v.ProbeRunID, &v.ProbeAttemptID)
+	err := db.QueryRowContext(ctx, "SELECT COALESCE(limited_until,''),reset_time_source,signal_source,notified_until,reason,restriction_id,probe_id,COALESCE((SELECT run_id FROM credit_probes WHERE id=probe_id),''),COALESCE((SELECT COALESCE(attempt_id,check_id) FROM credit_probes WHERE id=probe_id),'') FROM harness_limits WHERE harness_type=?", harness).Scan(&reset, &v.ResetTimeSource, &v.Source, &v.notifiedUntil, &v.Reason, &v.RestrictionID, &v.ProbeID, &v.ProbeRunID, &v.ProbeAttemptID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
