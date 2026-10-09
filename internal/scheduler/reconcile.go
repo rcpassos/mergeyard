@@ -172,7 +172,10 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 		return s.stopRun(ctx, run)
 	}
 	if run.State == workflow.WaitingForHarness {
-		return s.resumeHarnessWait(ctx, run)
+		if err := s.resumeHarnessWait(ctx, run); err != nil {
+			return err
+		}
+		return s.retryProgressLabels(ctx, repo, run)
 	}
 	if run.State == workflow.WaitingForCI {
 		if err := s.waitCI(ctx, repo, run); err != nil {
