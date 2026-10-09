@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
@@ -28,11 +29,13 @@ type Operations interface {
 
 // Status is a snapshot from the process owning the configured workspace.
 type Status struct {
-	Harnesses []scheduler.HarnessAvailability `json:"harnesses,omitempty"`
-	Workspace string                          `json:"workspace"`
-	Paused    bool                            `json:"paused"`
-	Runs      []workflow.Run                  `json:"runs"`
-	Token     string                          `json:"csrf_token"`
+	ConfigPath string                          `json:"config_path,omitempty"`
+	Config     *config.Config                  `json:"effective_config,omitempty"`
+	Harnesses  []scheduler.HarnessAvailability `json:"harnesses,omitempty"`
+	Workspace  string                          `json:"workspace"`
+	Paused     bool                            `json:"paused"`
+	Runs       []workflow.Run                  `json:"runs"`
+	Token      string                          `json:"csrf_token"`
 }
 
 // NewWithOperations enables the CLI API on the same server as the dashboard.
@@ -59,7 +62,12 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.json(w, Status{Harnesses: availability, Workspace: s.workspace, Paused: s.scheduler.Paused(), Runs: runs, Token: s.token})
+	status := Status{Harnesses: availability, Workspace: s.workspace, Paused: s.scheduler.Paused(), Runs: runs, Token: s.token}
+	if s.dashboard != nil {
+		status.ConfigPath = s.dashboard.ConfigPath
+		status.Config = &s.dashboard.Config
+	}
+	s.json(w, status)
 }
 func (s *Server) stopRun(w http.ResponseWriter, r *http.Request) {
 	if err := s.operations.Stop(r.Context(), r.PathValue("id")); err != nil {

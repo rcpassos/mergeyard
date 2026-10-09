@@ -136,7 +136,7 @@ func TestHarnessPairingsNoChangeDispute(t *testing.T) {
 func replacePhaseScript(t *testing.T, cfg config.Config, phase workflow.Phase, script string) {
 	t.Helper()
 	executable, agent := cfg.Agents.Claude.Executable, cfg.Repositories[0].Reviewer.Agent
-	if phase == workflow.Fix {
+	if phase == workflow.Implement || phase == workflow.Fix {
 		agent = cfg.Repositories[0].Implementer.Agent
 	}
 	if agent == "codex" {

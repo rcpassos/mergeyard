@@ -103,6 +103,21 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			state = "paused"
 		}
 		fmt.Fprintf(stdout, "Scheduler: %s\n", state)
+		fmt.Fprintf(stdout, "Workspace: %s\n", terminalText(status.Workspace))
+		if status.Config != nil {
+			source := status.ConfigPath
+			if source == "" {
+				source = "No configuration file selected"
+			}
+			fmt.Fprintf(stdout, "Configuration: %s\n", terminalText(source))
+			cfg := status.Config
+			fmt.Fprintf(stdout, "Limits: global concurrency %d · review rounds %d · usage-limit waits %d · cooldown %s\n", cfg.Concurrency, cfg.MaxRounds, cfg.UsageLimits.MaxWaits, cfg.UsageLimits.Cooldown)
+			for _, repo := range cfg.Repositories {
+				fmt.Fprintf(stdout, "Repository %s: enabled=%t · repository concurrency %d\n", terminalText(repo.Repo), repo.Enabled, repo.Concurrency)
+				printRoleConfig(stdout, "implementer", repo.Implementer)
+				printRoleConfig(stdout, "reviewer", repo.Reviewer)
+			}
+		}
 		count := 0
 		for _, v := range status.Harnesses {
 			state := "available"
@@ -334,6 +349,10 @@ func printHarnessWait(out io.Writer, v workflow.HarnessWait) {
 		return
 	}
 	fmt.Fprintf(out, " · interrupted execution %s · consecutive %d / allowance %d\n", terminalText(v.AttemptID), v.Consecutive, v.Allowance)
+}
+
+func printRoleConfig(out io.Writer, name string, role config.Role) {
+	fmt.Fprintf(out, "  %s %s · model %s · effort %s · skills %s · max attempts %d\n", name, terminalText(role.Agent), terminalText(role.Model), terminalText(role.Effort), terminalText(strings.Join(role.Skills, ",")), role.MaxAttempts)
 }
 
 func printWaitingRun(out io.Writer, run workflow.Run) {

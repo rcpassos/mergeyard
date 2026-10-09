@@ -54,8 +54,19 @@ recovery allowance for its phase and round.
 
 Status includes failed runs, retry instructions and history, granted rounds,
 renewed CI deadlines, role settings/session identities, verdicts, findings,
-fix responses, CI evidence, and pending merge maintenance. Both Claude and Codex
+fix responses, CI evidence, and pending merge maintenance. Status also prints the
+owning control plane's configuration source, resolved workspace, global and
+repository caps, and configured role settings even before a role starts. These
+are its loaded values; changing the CLI's file does not reload the running
+process. Settings shows the same effective configuration and durable handback
+grants, including grants without a usage-limit wait. Both Claude and Codex
 are supported in either role. `open` remains reserved.
+
+Both production adapters currently disable temporary-limit and exhausted-credit
+detection. Usage limits and credit failures consume the ordinary attempt budget;
+they do not automatically enter the harness waiting/recovery flows described
+below. [M3 acceptance](m3-acceptance.md) records the evidence bindings still needed
+to enable each capability.
 
 `mergeyard reconcile` runs the same reconciliation without claiming new work.
 It acquires the configured workspace lock, so stop the control plane first if

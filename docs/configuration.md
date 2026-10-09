@@ -104,3 +104,15 @@ this package performs no external commands or GitHub calls.
 `ci_timeout` is a top-level positive duration, default `60m`. A run saves its
 first wait start and deadline with reviewer approval. Pending/unknown changes,
 restarts, and later configuration changes do not renew that deadline.
+
+`usage_limits.cooldown` (default `30m`) and `usage_limits.max_waits` (default `3`)
+apply only when a harness adapter classifies a temporary limit. Both production
+adapters currently have this detection disabled, so these settings do not turn
+native usage-limit failures into waits. Those failures consume the role's normal
+`max_attempts` budget. Credit detection is also disabled; Check availability and
+Retry-as-probe require its evidence-backed capability. See
+[M3 acceptance](m3-acceptance.md) for the gates and current evidence.
+
+`mergeyard status` and Settings report the configuration loaded by the running
+control plane, its selected source path, resolved workspace, and effective
+repository role overrides. Edit the selected file and restart to apply changes.
