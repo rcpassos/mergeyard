@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/harness"
+	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -287,13 +288,48 @@ func TestHarnessCheckBrowserControlsAndProtections(t *testing.T) {
 	})
 }
 
+// Delay the second harness until Check starts: tmux accepting a session does
+// not mean its process has opened the executable yet. Exercise that ordering.
+type delayedHarnessStartRunner struct {
+	runner.Runner
+	implementStarts int
+	gate            string
+}
+
+func (r *delayedHarnessStartRunner) StartSession(ctx context.Context, req runner.SessionRequest) (runner.SessionRef, error) {
+	if req.Phase == "implement" {
+		r.implementStarts++
+		if r.implementStarts == 2 {
+			original := req.Command
+			req.Command.Executable = "/bin/sh"
+			req.Command.Args = []string{"-c", `while [ ! -f "$1" ]; do sleep 0.01; done; shift; exec "$@"`, "delayed-harness", r.gate, original.Executable}
+			req.Command.Args = append(req.Command.Args, original.Args...)
+		}
+	}
+	if req.Phase == "harness-check" {
+		if err := os.WriteFile(r.gate, []byte("go"), 0600); err != nil {
+			return runner.SessionRef{}, err
+		}
+	}
+	return r.Runner.StartSession(ctx, req)
+}
+
 func TestHarnessCheckCompletionCannotClearNewRestriction(t *testing.T) {
 	for _, kind := range []harness.FailureKind{harness.CreditsExhausted, harness.TemporaryLimit} {
 		t.Run(string(kind), func(t *testing.T) {
 			marker := filepath.Join(t.TempDir(), "new-restriction")
 			proof := filepath.Join(t.TempDir(), "proof")
-			script := `case "$(git branch --show-current)" in mergeyard/issue-7) exit 1;; *) while [ ! -f '` + marker + `' ]; do sleep 0.02; done; exit 1;; esac`
+			script := `case "$PWD" in */harness-checks/*)
+ while [ ! -f '` + proof + `' ]; do sleep 0.02; done
+ printf '%s\n' '{"type":"result","is_error":false,"subtype":"success","result":"OK"}'
+ ;; *)
+ case "$(git branch --show-current)" in
+ mergeyard/issue-7) exit 1;;
+ *) while [ ! -f '` + marker + `' ]; do sleep 0.02; done; exit 1;;
+ esac
+ ;; esac`
 			_, rt, api, _, cfg, r := localFlow(t, script)
+			r = &delayedHarnessStartRunner{Runner: r, gate: filepath.Join(t.TempDir(), "second-launch")}
 			cfg.Concurrency = 2
 			cfg.Repositories[0].Concurrency = 2
 			api.issues["owner/repo"] = append(api.issues["owner/repo"], ready(8))
@@ -318,11 +354,6 @@ func TestHarnessCheckCompletionCannotClearNewRestriction(t *testing.T) {
 				}
 				return false
 			})
-			script = `while [ ! -f '` + proof + `' ]; do sleep 0.02; done
-printf '%s\n' '{"type":"result","is_error":false,"subtype":"success","result":"OK"}'`
-			if err := os.WriteFile(cfg.Agents.Claude.Executable, []byte("#!/bin/sh\n"+script), 0700); err != nil {
-				t.Fatal(err)
-			}
 			if _, err := s.CheckHarness(context.Background(), "claude"); err != nil {
 				t.Fatal(err)
 			}
@@ -333,7 +364,20 @@ printf '%s\n' '{"type":"result","is_error":false,"subtype":"success","result":"O
 				if _, err := s.Reconcile(context.Background()); err != nil {
 					t.Fatal(err)
 				}
-				return h.calls == 2
+				runs, err := s.Runs(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				state := workflow.NeedsAttention
+				if kind == harness.TemporaryLimit {
+					state = workflow.WaitingForHarness
+				}
+				for _, run := range runs {
+					if run.IssueNumber == 8 && run.State == state {
+						return true
+					}
+				}
+				return false
 			})
 			if _, err := s.CheckHarness(context.Background(), "claude"); err == nil {
 				t.Fatal("new restriction accepted a second live probe")
