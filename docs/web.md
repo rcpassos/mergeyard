@@ -191,3 +191,20 @@ The run snapshot and dashboard retain selected phase, pinned manual commit,
 pending publication/recovery errors and the additional round grant. Handback
 history and lifecycle events refresh over SSE. A pending handback cannot launch
 an interactive resume or automated phase; restart reconciles publication first.
+
+`POST /harnesses/{harness}/check` calls the shared `Scheduler.CheckHarness`
+operation. JSON clients receive the durable check snapshot; browser forms refresh
+the dashboard. Harness availability offers **Check availability** only for a
+credit block with supported detection, no owning probe, and no future timed wait.
+The form discloses account quota use and the minimal request's lack of engineering
+work. Check remains available with no eligible affected runs; recovery does not
+revive stopped runs. The endpoint retains Host, Origin, CSRF, and CLI workspace
+identity protections. Conflicting checks/Retry return `harness.probe_unavailable`;
+a future timed reset returns `harness.check_waiting`, both HTTP 409. Status JSON
+includes `check_eligible` and the latest check's ID, status, result, and timestamps.
+`harness.check_started` and `harness.check_completed` refresh pages over SSE.
+Checks run outside repository worktrees with skills disabled, use the shared
+native completion gate, and retain ownership until their execution ends. Startup,
+login, and session discovery alone cannot release paused work. Captures and
+execution journals are retained under `harness-checks/<check-id>` in the workspace.
+Automatic doctor diagnostics never perform availability requests.

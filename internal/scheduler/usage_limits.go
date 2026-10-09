@@ -122,17 +122,19 @@ func (s *Scheduler) limitExecution(ctx context.Context, repo config.Repository, 
 
 // HarnessAvailability is shared across repositories and survives restart.
 type HarnessAvailability struct {
-	Reason                    string    `json:"reason,omitempty"`
-	ProbeID                   string    `json:"probe_id,omitempty"`
-	ProbeRunID                string    `json:"probe_run_id,omitempty"`
-	ProbeAttemptID            string    `json:"probe_attempt_id,omitempty"`
-	Harness                   string    `json:"harness"`
-	Available                 bool      `json:"available"`
-	ResetAt                   time.Time `json:"reset_at,omitzero"`
-	ResetTimeSource           string    `json:"reset_time_source,omitempty"`
-	Source                    string    `json:"source,omitempty"`
-	TemporaryLimitDetection   bool      `json:"temporary_limit_detection"`
-	CreditExhaustionDetection bool      `json:"credit_exhaustion_detection"`
+	Check                     *workflow.HarnessCheck `json:"check,omitempty"`
+	CheckEligible             bool                   `json:"check_eligible"`
+	Reason                    string                 `json:"reason,omitempty"`
+	ProbeID                   string                 `json:"probe_id,omitempty"`
+	ProbeRunID                string                 `json:"probe_run_id,omitempty"`
+	ProbeAttemptID            string                 `json:"probe_attempt_id,omitempty"`
+	Harness                   string                 `json:"harness"`
+	Available                 bool                   `json:"available"`
+	ResetAt                   time.Time              `json:"reset_at,omitzero"`
+	ResetTimeSource           string                 `json:"reset_time_source,omitempty"`
+	Source                    string                 `json:"source,omitempty"`
+	TemporaryLimitDetection   bool                   `json:"temporary_limit_detection"`
+	CreditExhaustionDetection bool                   `json:"credit_exhaustion_detection"`
 }
 
 func (s *Scheduler) HarnessAvailability(ctx context.Context) ([]HarnessAvailability, error) {
@@ -152,6 +154,14 @@ func (s *Scheduler) HarnessAvailability(ctx context.Context) ([]HarnessAvailabil
 			}
 			v.Reason, v.ProbeID, v.ProbeRunID, v.ProbeAttemptID = limit.Reason, limit.ProbeID, limit.ProbeRunID, limit.ProbeAttemptID
 			v.Available = limit.Reason != "credits_exhausted" && !s.deps.Now().Before(limit.ResetAt)
+		}
+		v.CheckEligible = limit != nil && limit.Reason == "credits_exhausted" && limit.ProbeID == "" && !s.deps.Now().Before(limit.ResetAt) && caps.CreditExhaustionDetection
+		checks, err := workflow.LoadHarnessChecks(ctx, s.db, name, false)
+		if err != nil {
+			return nil, err
+		}
+		if len(checks) > 0 {
+			v.Check = &checks[len(checks)-1]
 		}
 		result = append(result, v)
 	}

@@ -39,6 +39,7 @@ var commands = []command{
 	{name: "init", summary: "interactive setup: writes config, checks tools"},
 	{name: "repo add", args: "<owner/repo>", summary: "add a repository to the config"},
 	{name: "status", summary: "show scheduler and run status"},
+	{name: "harness check", args: "<claude|codex>", summary: "use account quota for a minimal credit recovery check"},
 	{name: "doctor", summary: "check tools, auth, and config"},
 	{name: "open", summary: "open the dashboard in a browser"},
 	{name: "pause", summary: "stop claiming new issues"},
@@ -135,7 +136,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if cmd.name == "status" || cmd.name == "pause" || cmd.name == "resume" || cmd.name == "watch" || cmd.name == "stop" || cmd.name == "retry" || cmd.name == "takeover" || cmd.name == "handback" {
+	if cmd.name == "harness check" || cmd.name == "status" || cmd.name == "pause" || cmd.name == "resume" || cmd.name == "watch" || cmd.name == "stop" || cmd.name == "retry" || cmd.name == "takeover" || cmd.name == "handback" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := operate(ctx, opts.configPath, cmd.name, rest, stdout, stderr); err != nil {

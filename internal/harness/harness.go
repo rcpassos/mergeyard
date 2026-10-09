@@ -18,6 +18,7 @@ type HarnessAdapter interface {
 	ValidateConfig(RoleConfig) error
 	BuildInvocation(PhaseContext, RoleConfig) (Invocation, error)
 	BuildInteractiveInvocation(sessionID, worktree string) (InteractiveCommand, error)
+	BuildCheckInvocation(dir string, env map[string]string) (Invocation, error)
 	ParseResult(PhaseContext, PhaseArtifacts) (PhaseResult, error)
 	// NativeSucceeded is adapter-owned completion evidence, independent of the task report.
 	NativeSucceeded(PhaseArtifacts) bool

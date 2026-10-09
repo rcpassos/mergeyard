@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
@@ -112,7 +113,7 @@ func (s *Server) operationError(w http.ResponseWriter, r *http.Request, err erro
 	if errors.As(err, &failure) && errorCodePattern.MatchString(failure.Code) {
 		code = failure.Code
 		switch code {
-		case "harness.probe_unavailable", "harness.credit_detection_unavailable", "handback.unavailable", "handback.operation_pending", "handback.process_ambiguous", "handback.review_unrestored", "handback.context_missing", "handback.git_unsupported", "handback.pr_ambiguous", "handback.pr_closed", "handback.git_ambiguous", "handback.publication_pending", "takeover.interactive_running", "takeover.unavailable", "takeover.operation_pending", "takeover.worktree_missing", "takeover.session_missing", "takeover.session_invalid", "takeover.harness_unknown", "takeover.process_ambiguous":
+		case "harness.check_waiting", "harness.unknown", "harness.probe_unavailable", "harness.credit_detection_unavailable", "handback.unavailable", "handback.operation_pending", "handback.process_ambiguous", "handback.review_unrestored", "handback.context_missing", "handback.git_unsupported", "handback.pr_ambiguous", "handback.pr_closed", "handback.git_ambiguous", "handback.publication_pending", "takeover.interactive_running", "takeover.unavailable", "takeover.operation_pending", "takeover.worktree_missing", "takeover.session_missing", "takeover.session_invalid", "takeover.harness_unknown", "takeover.process_ambiguous":
 			status = http.StatusConflict
 			message = failure.Message
 		case "internal.run_not_found":
@@ -124,4 +125,29 @@ func (s *Server) operationError(w http.ResponseWriter, r *http.Request, err erro
 	slog.ErrorContext(r.Context(), "Run operation failed", "error_code", code, "action", r.URL.Path, "error", err)
 	w.Header().Set("X-Mergeyard-Error-Code", code)
 	http.Error(w, code+": "+message, status)
+}
+
+func (s *Server) checkHarness(w http.ResponseWriter, r *http.Request) {
+	provider, ok := s.operations.(interface {
+		CheckHarness(context.Context, string) (workflow.HarnessCheck, error)
+	})
+	if !ok {
+		s.operationError(w, r, &fault.Error{Code: "harness.credit_detection_unavailable", Message: "Availability checks are unavailable in this runtime"})
+		return
+	}
+	check, err := provider.CheckHarness(r.Context(), r.PathValue("harness"))
+	if err != nil {
+		s.operationError(w, r, err)
+		return
+	}
+	if r.Header.Get("HX-Request") == "true" && s.dashboard != nil {
+		r.URL.Path = "/"
+		s.page(w, r)
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		s.json(w, check)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }

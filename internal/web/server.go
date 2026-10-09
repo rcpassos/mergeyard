@@ -83,6 +83,7 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 	mux.HandleFunc("POST /scheduler/pause", s.control)
 	mux.HandleFunc("POST /scheduler/resume", s.control)
 	if operations != nil {
+		mux.HandleFunc("POST /harnesses/{harness}/check", s.checkHarness)
 		mux.HandleFunc("GET /api/status", s.status)
 		mux.HandleFunc("GET /api/runs/{id}/watch", s.watchRun)
 		mux.HandleFunc("POST /api/runs/{id}/stop", s.stopRun)

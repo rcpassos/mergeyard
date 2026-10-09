@@ -11,7 +11,7 @@ events.onopen = () => {
 };
 events.onerror = () => { status.textContent = 'Reconnecting to live updates…'; };
 for (const type of [
-  'scheduler.paused', 'scheduler.resumed', 'harness.usage_limited', 'harness.credits_exhausted', 'harness.credit_recovered', 'harness.probe_reserved', 'harness.probe_released', 'harness.available',
+  'scheduler.paused', 'scheduler.resumed', 'harness.usage_limited', 'harness.credits_exhausted', 'harness.credit_recovered', 'harness.probe_reserved', 'harness.probe_released', 'harness.available', 'harness.check_started', 'harness.check_completed',
   'run.claimed', 'run.preparing', 'run.needs_attention', 'run.stop_requested', 'run.stopped', 'run.failed',
   'run.takeover_requested', 'run.retry_requested', 'run.retry_rejected', 'review.approval_invalidated',
   'run.handback_requested', 'run.handback_inspected', 'run.handback_committed', 'run.handback_pending', 'run.completed', 'run.manual', 'run.handed_back', 'run.waiting_for_harness',
