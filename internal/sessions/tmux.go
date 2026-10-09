@@ -322,24 +322,26 @@ func (m *Manager) stopError(ctx context.Context, ref Ref, err error) error {
 }
 
 func (m *Manager) waitStopped(ctx context.Context, ref Ref, pid int) (bool, error) {
+	group, err := loadProcessGroup(ref)
+	if err != nil {
+		return false, failure("phase.process_identity", ref.Name, err)
+	}
+	if group.PID != pid {
+		return false, failure("phase.process_identity", ref.Name, errors.New("owned process identity changed while stopping"))
+	}
 	deadline := time.NewTimer(m.options.GracePeriod)
 	defer deadline.Stop()
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		// The wrapper can finish before its children. Keep escalating until the
-		// process group is gone, even if tmux has already removed the session.
-		groupErr := syscall.Kill(-pid, 0)
-		// EPERM from signal 0 still establishes that the group exists. Keep
-		// waiting; an actual signal failure is handled by Stop itself.
-		if groupErr != nil && !errors.Is(groupErr, syscall.ESRCH) && !errors.Is(groupErr, syscall.EPERM) {
-			return false, failure("phase.stop_failed", ref.Name, groupErr)
+		// Keep escalating for live children after the parent exits, but do not
+		// wait for an unrelated reaper to collect zombie-only group members.
+		live, err := group.alive(ctx)
+		if err != nil {
+			return false, failure("phase.process_identity", ref.Name, err)
 		}
-		if errors.Is(groupErr, syscall.ESRCH) {
-			exists, err := m.exists(ctx, ref.Name)
-			if err != nil || !exists {
-				return !exists, err
-			}
+		if !live {
+			return true, nil
 		}
 		select {
 		case <-ctx.Done():
