@@ -22,7 +22,8 @@ func TestFreshDatabaseSchemaAndRestart(t *testing.T) {
 	want := map[string][]string{
 		"runs":           {"id", "repository", "issue_number", "state", "current_phase", "review_round", "branch", "worktree_path", "pr_number", "implementer_agent", "implementer_session_id", "reviewer_agent", "reviewer_session_id", "approved_sha", "created_at", "updated_at", "completed_at", "last_error_code", "last_error_message", "stop_requested", "takeover_status"},
 		"phase_attempts": {"id", "run_id", "phase", "role", "round", "attempt", "agent", "model", "effort", "status", "resumed_session", "process_session", "input_path", "result_path", "log_path", "exit_code", "started_at", "ended_at", "error", "skills_json", "permissions", "session_id"},
-		"harness_limits": {"harness_type", "limited_until", "reset_time_source", "detected_at", "phase_attempt_id", "signal_source", "notified_until"},
+		"credit_probes":  {"id", "harness", "restriction_id", "run_id", "attempt_id", "status", "requested_at", "ended_at"},
+		"harness_limits": {"harness_type", "limited_until", "reset_time_source", "detected_at", "phase_attempt_id", "signal_source", "notified_until", "reason", "restriction_id", "probe_id"},
 		"harness_waits":  {"id", "run_id", "phase_attempt_id", "snapshot_json"},
 		"events":         {"id", "run_id", "type", "payload_json", "created_at"},
 	}

@@ -69,7 +69,7 @@ func (s *Scheduler) Handback(ctx context.Context, id string) (workflow.Run, erro
 		result, getErr = s.workflow.Get(ctx, id)
 		return errors.Join(err, getErr)
 	})
-	return result, err
+	return s.runSnapshot(result), err
 }
 
 func (s *Scheduler) saveHandback(ctx context.Context, run workflow.Run, v workflow.HandbackSnapshot, kind string) error {

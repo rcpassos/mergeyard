@@ -135,7 +135,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			lastMessage, cause = s.readLastMessage(ctx, a.ref.PhaseDir)
 		}
 		if cause == nil {
-			result, err := s.parseExecution(a.agent, harness.PhaseContext{Phase: workflow.Review, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+			result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Review, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 			cause = err
 			if err == nil {
 				report = &review.Report{SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Findings: result.Findings}
@@ -152,7 +152,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			}
 		}
 	}
-	if a.contaminated && !isTemporaryLimit(cause) {
+	if a.contaminated && !isHarnessLimit(cause) {
 		cause = &fault.Error{Code: "review.code_changed", Message: "Reviewer changed repository files, index, or commits; restored pre-review work and discarded verdict"}
 	}
 	// Fetch again after restoration and parsing. Never authorize a different head.
@@ -166,7 +166,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if !reviewHeadMatches(pr, repo, run, gitRun, a.target) {
 		cause = &fault.Error{Code: "review.head_changed", Message: "PR head changed during review; stale verdict discarded"}
 	}
-	if isTemporaryLimit(cause) {
+	if isHarnessLimit(cause) {
 		return s.limitExecution(ctx, repo, run, a.attempt, cause)
 	}
 	if cause != nil {
@@ -376,6 +376,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,?,?,?,?,?,?)`, id, snapshot.Head, diff, string(snapshotJSON), sessionID, permission, string(tools))
 		if err != nil {
+			return events.Draft{}, err
+		}
+		if err := workflow.BindCreditProbe(ctx, tx, run.ID, repo.Reviewer.Agent, id, s.deps.Now().UTC()); err != nil {
 			return events.Draft{}, err
 		}
 		if warning != "" {

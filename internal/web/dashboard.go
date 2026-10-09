@@ -313,7 +313,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 	query := `SELECT r.id,r.repository,r.issue_number,r.state,COALESCE(r.current_phase,''),r.review_round,r.created_at,r.updated_at,
  COALESCE(r.last_error_code,''),COALESCE(r.last_error_message,''),COALESCE(r.branch,''),COALESCE(r.worktree_path,''),
  CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_agent,'') ELSE COALESCE(r.implementer_agent,'') END,CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_session_id,'') ELSE COALESCE(r.implementer_session_id,'') END,COALESCE(s.issue_json,'{}'),COALESCE(s.pr_url,''),COALESCE(r.pr_number,0),
- COALESCE(a.attempt,0),COALESCE(a.round,0),COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.process_session,''),COALESCE(a.log_path,''),COALESCE(a.skills_json,''),r.stop_requested,r.takeover_status
+ COALESCE(a.attempt,0),COALESCE(a.round,0),COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.process_session,''),COALESCE(a.log_path,''),COALESCE(a.skills_json,''),r.stop_requested,r.takeover_status,COALESCE(r.approved_sha,'')
  FROM runs r LEFT JOIN scheduler_runs s ON s.run_id=r.id
  LEFT JOIN phase_attempts a ON a.id=(SELECT id FROM phase_attempts WHERE run_id=r.id AND phase=r.current_phase ORDER BY round DESC,attempt DESC LIMIT 1)`
 	var args []any
@@ -336,7 +336,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		var issueJSON, skillsJSON string
 		if err := rows.Scan(&run.ID, &run.Repository, &run.IssueNumber, &run.State, &run.Phase, &run.ReviewRound, &run.CreatedAt, &run.UpdatedAt,
 			&run.LastErrorCode, &run.LastErrorMessage, &run.Branch, &run.Worktree, &run.Agent, &run.SessionID, &issueJSON, &run.PRURL, &run.PRNumber,
-			&run.Attempt, &run.Round, &run.Model, &run.Effort, &run.ProcessSession, &run.LogPath, &skillsJSON, &run.Stopping, &run.TakeoverStatus); err != nil {
+			&run.Attempt, &run.Round, &run.Model, &run.Effort, &run.ProcessSession, &run.LogPath, &skillsJSON, &run.Stopping, &run.TakeoverStatus, &run.ApprovedSHA); err != nil {
 			return nil, err
 		}
 		var issue github.Issue
@@ -407,7 +407,10 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 			return nil, err
 		}
 		runs[i].Stopping = runs[i].Stopping && runs[i].Merge == nil
-		runs[i].CanRetry = (runs[i].State == workflow.NeedsAttention || runs[i].State == workflow.Failed) && !runs[i].Stopping && runs[i].Merge == nil && runs[i].TakeoverStatus != workflow.TakeoverRequested
+		runs[i].CreditProbes, err = workflow.LoadCreditProbes(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
 		runs[i].Handbacks, err = workflow.LoadHandbacks(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
@@ -445,6 +448,14 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(runs[i].FixHistory) > 0 {
+			runs[i].Fix = &runs[i].FixHistory[len(runs[i].FixHistory)-1]
+		}
+		runs[i].CanRetry, err = d.Scheduler.RetryEligible(ctx, runs[i].Run)
+		if err != nil {
+			return nil, err
+		}
+
 		// Use the implementer's identity even when a reviewer owns the phase.
 		if runs[i].State == workflow.Manual && runs[i].TakeoverStatus == workflow.TakeoverManual {
 			_, err := d.Scheduler.ManualCommand(ctx, runs[i].ID)

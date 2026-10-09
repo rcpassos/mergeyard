@@ -21,7 +21,9 @@ for `ACTIVE` or `WAITING_FOR_HARNESS`. Reconciliation may choose `CLAIMING`,
 `PREPARING`, `ACTIVE`, `WAITING_FOR_CI`, `WAITING_FOR_HARNESS`, `READY_TO_MERGE`,
 or `COMPLETED`. The caller must first verify the relevant GitHub, Git, harness,
 and CI facts as specified in PRD §22–23. Other triggers reject destination
-overrides. Retry accepts both `NEEDS_ATTENTION` (§21) and `FAILED` (§22).
+overrides. `Run.RetryAllowed` accepts `NEEDS_ATTENTION` (§21), `FAILED` (§22),
+and `WAITING_FOR_HARNESS` specifically for exhausted credits. Ordinary timed
+waiting cannot be bypassed by Retry.
 Stop, internal failure, and takeover apply only to non-terminal runs, so a
 completed run cannot be revived and a failed run keeps its error and retry path.
 They remain available for runs with malformed persisted phases; normal automated
@@ -37,7 +39,7 @@ errors remain compatible. Duplicate claims and conflicting failed-run retries
 return `internal.run_conflict` with "Issue already has an active run"; storage
 errors retain `internal.run_store` or `internal.event_store`.
 
-Each accepted transition records exactly one event in the same SQLite
+Each accepted transition records one lifecycle event in the same SQLite
 transaction as the run write. Its payload contains the prior state and phase,
 the trigger, and the resulting run snapshot. Event types use the core §25
 vocabulary. Reconciled retries emit the destination's event (for example,
@@ -45,16 +47,37 @@ vocabulary. Reconciled retries emit the destination's event (for example,
 The other retry destinations emit `run.claimed`, `run.preparing`, `ci.updated`,
 `run.waiting_for_harness`, or `pr.ready_for_review`. A run entering
 `WAITING_FOR_HARNESS` emits `run.waiting_for_harness`; resuming it emits
-`phase.started` because §21 starts a new attempt. `harness.usage_limited` and
-`harness.available` are application events without a run ID, published once per
-harness change by the workflow's harness-limit component, which owns every
-`harness_limits` mutation. Detection commits the run transition and harness event
+`phase.started` because §21 starts a new attempt. Harness restriction writes belong to the workflow's harness-limit and credit-probe
+components. Timed detection and expiration events are application-wide and omit
+`run_id`; credit recovery events can identify the selected run. In particular,
+`harness.available` carries a run ID when a recovery probe proves availability.
+
+| Event | Meaning | Run ID |
+| --- | --- | --- |
+| `harness.usage_limited` | Temporary reset/cooldown recorded | Omitted |
+| `harness.credits_exhausted` | Indefinite credit block recorded | Omitted |
+| `harness.probe_reserved` | Explicit Retry reserves one model execution | Selected run |
+| `harness.probe_released` | Execution ended without proof, selection became unused, or Stop cancelled it | Selected run |
+| `harness.credit_recovered` | Credits recovered while an independent timed restriction remains | Selected run |
+| `harness.available` | Timed restriction expired or a probe established unrestricted availability | Omitted for expiration; selected run for credit proof |
+
+Detection commits the run transition and harness event
 in one ordered event batch; expiry commits its acknowledgement and availability
 event together. Reported resets take precedence over estimated cooldowns. Expired
 records retain that reset authority so waiting runs cannot revive a superseded
 cooldown after restart. Rejected
 transitions and storage failures leave both the run and event history unchanged.
 Logging and in-process delivery happen only after commit.
+
+Retry reserves a credit probe only if the reconciled work starts an agent.
+Publication of a saved implementation and completion of a saved fix reserve
+nothing. Normal native completion records credit proof independently of task
+success. Workflow transitions and `WithRunOperation` reconcile ended attempts and
+unused selections centrally, including early session-discovery failures. The
+operation boundary reconciles again before another operation can reserve a probe,
+so interrupted cleanup is repaired after restart. A live attempt retains probe
+ownership even if its run requires attention; Stop must confirm interruption.
+
 
 `Request.Metadata` is a typed `MetadataPatch` applied by the workflow in the
 same transaction as the lifecycle write and event. Its optional `PRNumber`,

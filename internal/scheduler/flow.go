@@ -335,7 +335,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	}
 	var result harness.PhaseResult
 	if err == nil {
-		result, err = s.parseExecution(a.agent, harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, artifacts)
+		result, err = s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, artifacts)
 	}
 	if err == nil {
 		data, marshalErr := json.Marshal(result)
@@ -354,7 +354,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	if ctx.Err() != nil {
 		return result, false, ctx.Err()
 	}
-	if isTemporaryLimit(err) {
+	if isHarnessLimit(err) {
 		return result, false, s.limitExecution(ctx, repo, run, a, err)
 	}
 	attemptStatus, event := "succeeded", "phase.completed"
@@ -453,6 +453,9 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions,session_id)
  VALUES (?,?,'implement','implementer',0,?,?,?,?,'running',?,?,?,?,?,?,?,?)`, id, run.ID, number, repo.Implementer.Agent, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills), s.rolePermissions(repo.Implementer.Agent), sessionID)
 		if err != nil {
+			return events.Draft{}, err
+		}
+		if err := workflow.BindCreditProbe(ctx, tx, run.ID, repo.Implementer.Agent, id, s.deps.Now().UTC()); err != nil {
 			return events.Draft{}, err
 		}
 		if recovery {

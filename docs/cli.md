@@ -131,3 +131,15 @@ error and application log if publication cannot finish. Clearing or branching th
 interactive conversation does not replace Mergeyard's authoritative original
 session identity. The user is responsible for exiting any interactive harness
 started outside Mergeyard's ownership-aware launcher before handback.
+
+## Credit recovery
+
+`mergeyard status` distinguishes exhausted credits from a timed usage limit and
+shows probe progress and history. After restoring credits, `mergeyard retry
+<run-id>` can select an attention/failed run or a run waiting specifically for
+credit recovery. It reconciles preserved work first and may spend quota through
+that run's next safe model request. One probe per harness is allowed; other
+affected work waits until model completion proves availability. Stop releases
+that probe without clearing the credit block. These credit recovery controls are
+available only when the harness advertises exhausted-credit detection; both
+production adapters keep that capability disabled pending #83.

@@ -147,7 +147,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 				lastMessage, cause = s.readLastMessage(ctx, a.ref.PhaseDir)
 			}
 			if cause == nil {
-				result, err := s.parseExecution(a.agent, harness.PhaseContext{Phase: workflow.Fix, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+				result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Fix, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 				cause = err
 				if err == nil {
 					report = &review.FixReport{SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses}
@@ -263,7 +263,7 @@ func (s *Scheduler) finishFixAttempt(ctx context.Context, repo config.Repository
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if isTemporaryLimit(cause) {
+	if isHarnessLimit(cause) {
 		return s.limitExecution(ctx, repo, run, a.attempt, cause)
 	}
 	var data any
@@ -425,6 +425,9 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,ci_json) VALUES (?,?,?,?,?,?,?)`, id, sessionID, target, string(encoded), permission, string(tools), diagnostics)
 		if err != nil {
+			return events.Draft{}, err
+		}
+		if err := workflow.BindCreditProbe(ctx, tx, run.ID, repo.Implementer.Agent, id, s.deps.Now().UTC()); err != nil {
 			return events.Draft{}, err
 		}
 		if warning != "" {

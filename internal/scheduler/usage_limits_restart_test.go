@@ -25,6 +25,7 @@ type usageProcessInput struct {
 	Config                             config.Config
 	Workspace, Socket, Agent, Boundary string
 	Now                                time.Time
+	Credits                            bool
 	Phase                              workflow.Phase
 	PR                                 *github.PullRequest
 	Remote                             string
@@ -85,6 +86,13 @@ func TestUsageLimitControlPlaneProcess(t *testing.T) {
 	}
 	fake := &classifiedHarness{HarnessAdapter: adapter, outcome: harness.FailureClassification{Kind: harness.TemporaryLimit}}
 	var h harness.HarnessAdapter = fake
+	if input.Credits {
+		fake.outcome.Kind = harness.CreditsExhausted
+		h = &creditHarness{classifiedHarness: fake, detection: true}
+		if input.Boundary == "before-proof" {
+			h = proofCrashHarness{h}
+		}
+	}
 	if input.Boundary == "interruption" {
 		h = interruptionCrashHarness{fake}
 	}
@@ -107,6 +115,22 @@ func TestUsageLimitControlPlaneProcess(t *testing.T) {
 		runs, err := s.Runs(context.Background())
 		if err != nil {
 			t.Fatal(err)
+		}
+		if input.Credits && len(runs) == 1 {
+			run := runs[0]
+			if run.State == workflow.NeedsAttention && run.LastErrorCode == "harness.credits_exhausted" {
+				if _, err := s.Retry(context.Background(), run.ID); err != nil {
+					t.Fatal(err)
+				}
+				if input.Boundary == "probe-reserved" {
+					fmt.Println("review-control-plane-ready")
+					select {}
+				}
+			}
+			if input.Boundary == "after-proof" && run.State == workflow.Active && run.Phase == workflow.Review {
+				fmt.Println("review-control-plane-ready")
+				select {}
+			}
 		}
 		if len(runs) == 1 && runs[0].State == workflow.WaitingForHarness {
 			if input.Boundary == "waiting" {

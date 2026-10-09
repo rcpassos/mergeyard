@@ -108,7 +108,7 @@ distinguishes interrupted executions and explicit grants from account gates wher
 no execution started. Ready-to-merge runs release their slot and wait for the user's
 merge. Recent runs are limited to the latest 20 ended runs. The settings page
 displays resolved values, configuration/workspace paths, doctor results, and
-usage-limit recovery history; it has no configuration write endpoint.
+harness recovery history; it has no configuration write endpoint.
 
 `POST /runs/{id}/stop` uses the same `Scheduler.Stop` as the CLI. It coordinates
 with in-flight operations, stops running phase sessions, removes ready and
@@ -132,13 +132,33 @@ Settings. Shutdown cancels and joins scheduler, discovery, diagnostics, and
 browser workers before closing runtime storage.
 
 `POST /runs/{id}/retry` and `POST /api/runs/{id}/retry` both use
-`Scheduler.Retry`. Run detail offers Retry for `NEEDS_ATTENTION` and `FAILED`
-unless Stop or merge maintenance is pending. The API returns the actual run
+`Scheduler.Retry`. Run detail offers Retry for `NEEDS_ATTENTION`, `FAILED`, and
+credit-blocked `WAITING_FOR_HARNESS`. The scheduler supplies `retry_eligible` from
+the same policy used by the dashboard and CLI. Stop, takeover, merge maintenance,
+a probe already owned by the run, an unavailable credit-detection capability, or
+another run owning the required harness probe suppress the action. Saved
+implementation/fix publication and CI-only recovery can proceed without a model
+probe. Ordinary timed waiting never offers Retry. The API returns the actual run
 snapshot, including the next phase, pending/rejected retry intent, additional
 review round, or renewed CI deadline. Detail and CLI status retain retry history;
 `run.retry_requested`, `run.retry_rejected`, and approval invalidation refresh
 pages over SSE. Retry uses the existing Host, Origin, CSRF, workspace-identity,
-and safe error response boundaries. It preserves work and Stop behavior.
+and safe error response boundaries. `harness.probe_unavailable` and
+`harness.credit_detection_unavailable` return HTTP 409 with their safe human
+message in the body and code in `X-Mergeyard-Error-Code`. The dashboard displays
+the conflict message, including refresh/retry guidance, while underlying causes
+remain in structured logs. Repeated requests for an already selected probe remain
+idempotent even though the UI suppresses a new Retry action. It preserves work
+and Stop behavior.
+
+`harness.credits_exhausted`, `harness.probe_reserved`, `harness.probe_released`,
+`harness.credit_recovered`, and `harness.available` refresh credit availability,
+probe progress, Retry controls, and recovery history over SSE. Probe-related
+harness events can carry the selected run ID; see `docs/workflow.md` for the event
+contract. A credit block remains indefinite after a temporary reset expires.
+Expired resets remain in durable history but no longer display as a future probe
+launch delay. Current run JSON omits an expired credit-wait reset;
+`harness_wait_history` retains its observed timestamp and provenance.
 
 `POST /runs/{id}/takeover` and `POST /api/runs/{id}/takeover` share
 `Scheduler.Takeover`. Run detail offers Take over run when its prerequisites

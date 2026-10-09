@@ -173,7 +173,7 @@ func TestCLIRetrySendsProtectedRequestAndDisplaysSelection(t *testing.T) {
 	selected := workflow.Run{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Fix, Retries: []workflow.RetrySnapshot{{NextState: workflow.Active, NextPhase: workflow.Fix, Round: 1, GrantedRound: 2, Deadline: "2026-10-06T13:00:00Z"}}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: token, Runs: []workflow.Run{{ID: "run-1", State: workflow.Failed, LastErrorCode: "review.max_rounds_exceeded", LastErrorMessage: "Retry to continue"}}})
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: token, Runs: []workflow.Run{{ID: "run-1", State: workflow.Failed, RetryEligible: true, LastErrorCode: "review.max_rounds_exceeded", LastErrorMessage: "Retry to continue"}}})
 	})
 	mux.HandleFunc("POST /api/runs/run-1/retry", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {
@@ -448,6 +448,35 @@ func TestCLIStatusShowsHarnessAvailabilityAndWaitKinds(t *testing.T) {
 				}
 			} else if !strings.Contains(out, "consecutive 2 / allowance 3") || !strings.Contains(out, "interrupted-1") {
 				t.Fatalf("interrupted-execution diagnostics missing: %s", out)
+			}
+		})
+	}
+}
+
+func TestCLIStatusShowsCreditWaitProbeAndCapabilityGatedRetry(t *testing.T) {
+	for _, eligible := range []bool{false, true} {
+		t.Run(fmt.Sprint(eligible), func(t *testing.T) {
+			root := t.TempDir()
+			wait := workflow.HarnessWait{Harness: "claude", Reason: "credits_exhausted", Phase: workflow.Implement}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "runtime-token", Harnesses: []scheduler.HarnessAvailability{{Harness: "claude", Reason: "credits_exhausted", ProbeID: "probe", ProbeRunID: "selected-run", ProbeAttemptID: "execution"}}, Runs: []workflow.Run{{ID: "waiting-run", Repository: "owner/repo", IssueNumber: 7, State: workflow.WaitingForHarness, Phase: workflow.Implement, HarnessWait: &wait, HarnessWaitHistory: []workflow.HarnessWait{wait}, RetryEligible: eligible, CreditProbes: []workflow.CreditProbe{{Harness: "claude", Status: "released", AttemptID: "old-execution"}}}}})
+			}))
+			defer server.Close()
+			path := filepath.Join(root, "config.yaml")
+			if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, stderr := runCLI("status", "--config", path)
+			if code != 0 {
+				t.Fatalf("status %d %s", code, stderr)
+			}
+			for _, value := range []string{"credits exhausted; explicit recovery required", "recovery probe probe for run selected-run", "running execution execution", "no scheduled reset", "Credit recovery probe: claude · released · execution old-execution"} {
+				if !strings.Contains(out, value) {
+					t.Fatalf("missing %s: %s", value, out)
+				}
+			}
+			if strings.Contains(out, "Retry: mergeyard retry waiting-run") != eligible || strings.Contains(out, "0001-01-01") {
+				t.Fatalf("credit Retry eligibility: %s", out)
 			}
 		})
 	}

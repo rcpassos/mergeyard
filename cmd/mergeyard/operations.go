@@ -96,7 +96,20 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		count := 0
 		for _, v := range status.Harnesses {
 			state := "available"
-			if !v.Available {
+			if v.Reason == "credits_exhausted" {
+				state = "credits exhausted; explicit recovery required"
+				if !v.ResetAt.IsZero() {
+					state += " · probe may run after temporary reset " + v.ResetAt.Format(time.RFC3339) + " (" + v.ResetTimeSource + ")"
+				}
+				if v.ProbeID != "" {
+					state += " · recovery probe " + v.ProbeID + " for run " + v.ProbeRunID
+					if v.ProbeAttemptID != "" {
+						state += " · running execution " + v.ProbeAttemptID
+					} else {
+						state += " · reserved"
+					}
+				}
+			} else if !v.Available {
 				state = "waiting until " + v.ResetAt.Format(time.RFC3339) + " (" + v.ResetTimeSource + "; " + v.Source + ")"
 			}
 			fmt.Fprintf(stdout, "Harness %s: %s\n", terminalText(v.Harness), terminalText(state))
@@ -134,12 +147,19 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			if run.LastErrorCode != "" {
 				fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 			}
-			if run.State == workflow.NeedsAttention || run.State == workflow.Failed {
+			if run.RetryEligible {
 				fmt.Fprintf(stdout, "  Retry: mergeyard retry %s (reconciles preserved work first)\n", terminalText(run.ID))
 			}
 			if run.State == workflow.WaitingForHarness && run.HarnessWait != nil {
 				v := run.HarnessWait
-				fmt.Fprintf(stdout, "  Waiting for harness %s until %s · %s · %s\n", terminalText(v.Harness), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source))
+				if v.Reason == "credits_exhausted" {
+					fmt.Fprintf(stdout, "  Waiting for credit recovery on %s; no scheduled reset\n", terminalText(v.Harness))
+				} else {
+					fmt.Fprintf(stdout, "  Waiting for harness %s until %s · %s · %s\n", terminalText(v.Harness), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source))
+				}
+			}
+			for _, p := range run.CreditProbes {
+				fmt.Fprintf(stdout, "  Credit recovery probe: %s · %s · execution %s\n", terminalText(p.Harness), terminalText(p.Status), terminalText(p.AttemptID))
 			}
 			for _, v := range run.HarnessWaitHistory {
 				printHarnessWait(stdout, v)
@@ -289,6 +309,10 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 }
 
 func printHarnessWait(out io.Writer, v workflow.HarnessWait) {
+	if v.Reason == "credits_exhausted" {
+		fmt.Fprintf(out, "  Credit block: %s · %s / round %d · %s · explicit recovery required; no scheduled reset · %s\n", terminalText(v.Harness), terminalText(string(v.Phase)), v.Round, v.Phase.Role(), terminalText(v.Source))
+		return
+	}
 	fmt.Fprintf(out, "  Usage-limit wait: %s · %s · %s / round %d · %s · observed reset %s · %s · %s", terminalText(v.Harness), terminalText(v.Reason), terminalText(string(v.Phase)), v.Round, v.Phase.Role(), v.ResetAt.Format(time.RFC3339), terminalText(v.ResetTimeSource), terminalText(v.Source))
 	if v.AttemptID == "" {
 		fmt.Fprintln(out, " · Account gate; no execution started.")

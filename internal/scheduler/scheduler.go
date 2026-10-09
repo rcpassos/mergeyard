@@ -222,7 +222,11 @@ func (s *Scheduler) Runs(ctx context.Context) ([]workflow.Run, error) {
 		if err != nil {
 			return nil, err
 		}
-		runs = append(runs, run)
+		run.RetryEligible, err = s.RetryEligible(ctx, run)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, s.runSnapshot(run))
 	}
 	return runs, nil
 }
