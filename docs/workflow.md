@@ -46,7 +46,9 @@ vocabulary. Reconciled retries emit the destination's event (for example,
 `run.completed` or `phase.started`), with `retry` retained as the payload trigger.
 The other retry destinations emit `run.claimed`, `run.preparing`, `ci.updated`,
 `run.waiting_for_harness`, or `pr.ready_for_review`. A run entering
-`WAITING_FOR_HARNESS` emits `run.waiting_for_harness`; resuming it emits
+`WAITING_FOR_HARNESS` through limit detection or Retry emits
+`run.waiting_for_harness`. Handback emits `run.handed_back`, with its selected
+active or waiting state in the snapshot. Resuming a waiting run emits
 `phase.started` because §21 starts a new attempt. Harness restriction writes belong to the workflow's harness-limit and credit-probe
 components. Timed detection and expiration events are application-wide and omit
 `run_id`; credit recovery events can identify the selected run. In particular,
@@ -170,6 +172,13 @@ and persisting any absolute round grant with the new phase. A rejected operation
 records its error with the attention transition. Stop and observed merge cancel
 pending intent in their lifecycle transaction. Replay preserves commits, pushes
 and grants; only later ticks can start implementation or independent review.
+When the selected harness is blocked, that same lifecycle transaction enters
+`WAITING_FOR_HARNESS` and records an account gate for the selected phase/round.
+The gate does not count as an interrupted execution or spend a wait allowance.
+Availability is checked after publication on every replay, so a pending handback
+uses the current restriction. Timed waiting resumes at reset; credit waiting
+requires explicit recovery. The handback review grant remains durable in either
+case. Manual conversation success cannot establish control-plane credit proof.
 
 CLI takeover reserves interactive ownership before the preparation request,
 closing the gap between a successful response and interactive launch. Successful

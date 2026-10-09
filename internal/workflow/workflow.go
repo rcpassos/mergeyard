@@ -194,8 +194,8 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		if err != nil {
 			return nil, err
 		}
-		if request.Metadata.HarnessWait != nil && request.Trigger != HarnessLimited && request.Trigger != OperationFailed {
-			return nil, invalid("Harness wait requires a limit or attention transition")
+		if request.Metadata.HarnessWait != nil && request.Trigger != HarnessLimited && request.Trigger != OperationFailed && request.Trigger != HandBack {
+			return nil, invalid("Harness wait requires a limit, attention or handback transition")
 		}
 		if request.Metadata.Handback != nil && request.Trigger != HandBack && request.Trigger != OperationFailed {
 			return nil, invalid("Handback selection requires a handback or attention transition")
@@ -518,6 +518,9 @@ func destination(current Run, request Request) (Run, string, error) {
 		case HandBack:
 			if current.State == Manual && (request.NextPhase == Implement || request.NextPhase == Review) {
 				next.State, next.Phase = Active, request.NextPhase
+				if request.Metadata.HarnessWait != nil {
+					next.State = WaitingForHarness
+				}
 				return next, "run.handed_back", nil
 			}
 		case Retry:

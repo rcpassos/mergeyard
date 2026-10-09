@@ -72,6 +72,10 @@ a pending Stop or Retry must finish first. Missing prerequisites give an
 actionable error and never create a fresh conversation. Automated processes are
 interrupted and their exit verified; interrupted review changes are restored
 before the run enters `MANUAL`. Partial implementation and fix edits are retained.
+Timed and credit-waiting runs can be taken over with the same prerequisites.
+Taking over a selected-run credit probe stops its execution and releases its
+reservation without clearing the harness block. Another eligible run can be
+selected by an explicit recovery request.
 
 Claude resumes with `--resume SESSION_ID --permission-mode default`. Codex uses
 `resume -C WORKTREE -a on-request -s workspace-write -- SESSION_ID`, matching the
@@ -122,6 +126,12 @@ review round. Resuming an interrupted phase opens its configured attempt window
 without replenishing missing-session recovery. The CLI discloses the selected
 phase and grant, and status retains
 publication errors and history.
+
+If the selected implementer or reviewer harness is blocked, handback accepts the
+published work into `WAITING_FOR_HARNESS`, retaining its phase, round and grant.
+Timed waiting resumes automatically at reset. Credit waiting requires explicit
+recovery through capability-supported Retry or Check availability. Success in
+the manual conversation alone does not clear the control plane's harness block.
 
 Publication is journaled before external effects. An interrupted request remains
 manual while the scheduler reconciles it after restart; repeated handback resumes
