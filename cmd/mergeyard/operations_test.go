@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/rcpassos/mergeyard/internal/ci"
+	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/maintenance"
 	"github.com/rcpassos/mergeyard/internal/review"
@@ -123,6 +124,36 @@ func TestCLIReportsRuntimeUnavailable(t *testing.T) {
 	_, _, err := connect(context.Background(), path)
 	if err == nil || !strings.Contains(err.Error(), "internal.runtime_unavailable") {
 		t.Fatalf("offline runtime: %v", err)
+	}
+}
+
+func TestCLIStatusShowsOwningConfiguration(t *testing.T) {
+	root := t.TempDir()
+	// Runtime values must win over the CLI's connection-only configuration.
+	cfg, _, err := config.Parse([]byte("concurrency: 3\nrepositories:\n  - repo: owner/repo\n    concurrency: 2\n    implementer:\n      agent: codex\n      model: runtime-model\n      effort: medium\n      skills: [implement]\n    reviewer:\n      model: review-model\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"workspace": root, "config_path": "/runtime/config.yaml\x1b[2J", "effective_config": cfg, "runs": []workflow.Run{}})
+	}))
+	defer server.Close()
+	path := filepath.Join(root, "connection.yaml")
+	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, port)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("status", "--config", path)
+	if code != 0 {
+		t.Fatalf("status: %d %s", code, errOut)
+	}
+	for _, want := range []string{root, "/runtime/config.yaml\\x1b[2J", "global concurrency 3", "repository concurrency 2", "implementer codex", "runtime-model", "medium", "skills implement", "reviewer claude", "review-model"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b") || strings.Contains(out, "connection.yaml") {
+		t.Fatalf("unsafe or local configuration source: %q", out)
 	}
 }
 

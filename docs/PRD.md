@@ -499,7 +499,9 @@ Sessions created headlessly do not appear in either harness's interactive sessio
 
 ## 12. Usage Limits
 
-Subscription-backed harnesses enforce usage limits, such as rolling 5-hour or weekly windows. Hitting one is a temporary capacity condition, not a phase failure, and must not send the run to `NEEDS_ATTENTION` by itself.
+Subscription-backed harnesses enforce usage limits. With verified adapter detection, a temporary limit enters the waiting flow below without consuming the ordinary attempt budget.
+
+**Shipped capability status:** both production adapters disable temporary-limit and exhausted-credit detection. Their limit failures are ordinary phase failures and consume `max_attempts`. The recovery core is verified offline through normalized fake adapters; enabling native detection is deferred to [#81](https://github.com/rcpassos/mergeyard/issues/81), [#82](https://github.com/rcpassos/mergeyard/issues/82), and [#83](https://github.com/rcpassos/mergeyard/issues/83). M3 may ship with this documented restriction, as accepted in [#72](https://github.com/rcpassos/mergeyard/issues/72). See [M3 acceptance](m3-acceptance.md) for evidence and coverage.
 
 ### Detection
 
@@ -507,21 +509,11 @@ Subscription-backed harnesses enforce usage limits, such as rolling 5-hour or we
 - This classification applies only to failed exits. Phase completion is still determined by exit metadata and the structured result (section 13).
 - Detection patterns are adapter-specific and maintained with the adapter. Unrecognized failures follow the normal phase-failure path. An adapter without the `temporary_limit_detection` capability treats every failure as a normal phase failure.
 
-Adapter signals, preferring structured sources over message text:
-
-| | Claude Code | Codex |
-|---|---|---|
-| Structured | `rate_limit_event` with `status: "rejected"` and `resetsAt`; `api_error_status: 429` / `error: "rate_limit"` | exit code 1 plus, in the session's rollout file under `$CODEX_HOME/sessions/`, `codex_error_info: "usage_limit_exceeded"` and `rate_limits.*.resets_at` (epoch seconds) |
-| Message | `You've hit your <session\|weekly\|model> limit · resets <time>` | `turn.failed.error.message` containing `hit your usage limit` (match straight and curly apostrophes; never match the full string, which changes between versions) |
-| Reset text | `5pm`, `7:30pm`, optional weekday prefix, optional `(IANA time zone)` | `5:19 PM` (same day) or `Oct 3rd, 2026 6:23 PM` |
-
-Reset times in messages are often local wall-clock times without a date. Parse them as the next occurrence of that time in the stated time zone, or the machine's time zone when none is stated. When no reset time can be parsed, use the cooldown.
-
-The exact Claude Code headless output for a usage limit is not yet verified (research open question 1). The classifier must be confirmed with a live run before M3 ships.
+Native limit signals and reliable reset fields must come from preserved rejected-request evidence. Documentation, successful warnings, guessed message matching, and account metadata cannot establish that contract. When enabled, the adapter owns signal precedence and reset extraction; an unreliable reset falls back to the configured cooldown. The earlier prospective signal table is not a shipped classifier contract.
 
 ### Not time-bound limits
 
-Spend caps and exhausted credits (Claude `spend limit` / `credits_required`; Codex `out of credits` / `spend cap`) do not reset on a schedule. They move the run directly to `NEEDS_ATTENTION` with `harness.credits_exhausted` and block the harness pending explicitly requested recovery.
+Verified spend-cap and exhausted-credit limit signals do not reset on a schedule. Once credit detection is enabled for a harness, they move the run directly to `NEEDS_ATTENTION` with `harness.credits_exhausted` and block the harness pending explicitly requested recovery. Until then, credit failures remain ordinary failures and credit recovery controls are unavailable.
 
 Retry uses the selected affected run as a recovery probe. Other work needing that harness remains paused until the probe demonstrates that the harness is usable again. If credits remain unavailable, the harness stays blocked. This avoids launching failures across repositories when a retry happens before credits have actually been restored.
 
@@ -1657,7 +1649,7 @@ Stops after the draft PR is opened.
 The agreed implementation specification and ticket references are tracked in [M3 specification #60](https://github.com/rcpassos/mergeyard/issues/60). Domain vocabulary is defined in [CONTEXT.md](../CONTEXT.md).
 
 - multiple repositories with global and per-repository concurrency;
-- usage-limit detection, waiting, and resumption, after a live check of each harness's usage-limit output;
+- durable harness waiting and recovery, with native usage-limit and credit detection disabled until the per-harness evidence bindings land;
 - takeover and hand back;
 - orphaned-claim detection and reconciliation edge cases;
 - effective-config diagnostics.
@@ -1707,6 +1699,8 @@ After approval and passing CI, the PR is marked ready for review, the run stops 
 
 When a harness reports a usage limit during a phase:
 
+These waiting criteria apply to an adapter with verified temporary-limit detection. Both shipped adapters currently treat limit failures as ordinary failures. The normalized core is exercised offline; the native bindings remain post-M3 work.
+
 - the run moves to `WAITING_FOR_HARNESS`, not `NEEDS_ATTENTION`;
 - no new issue whose implementer uses that harness is claimed until the limit expires;
 - after the reported reset time, or the default cooldown when none is reported, the same phase restarts without consuming an attempt or round;
@@ -1716,6 +1710,8 @@ When a harness reports a usage limit during a phase:
 Waiting retains the run's concurrency slot. Explicit Retry after wait exhaustion grants exactly one additional wait and preserves previous history and the known reset time.
 
 ### Exhausted credits
+
+These recovery criteria apply only when the harness advertises verified exhausted-credit detection. Both shipped adapters currently disable it.
 
 - The originating run requires attention; other work needing that harness waits, and the other harness remains usable within concurrency limits.
 - Explicit Retry can select one affected run, including a run waiting on the credit block, as the recovery probe. Concurrent requests and restarts do not launch a second probe.
@@ -1762,7 +1758,7 @@ Fake executables simulate:
 - long-running process;
 - output streaming;
 - session resume success and failure;
-- usage-limit failure with and without a reported reset time.
+- normalized usage-limit outcomes with and without a reported reset time at the injected adapter boundary; native limit fixtures require captured evidence before detection is enabled.
 
 Normal CI must not require paid model calls.
 

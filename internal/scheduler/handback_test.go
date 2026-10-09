@@ -92,6 +92,15 @@ func TestHandbackExistingPRAlwaysGetsIndependentReviewAndOneDurableRound(t *test
 					if _, err := s.Handback(context.Background(), before.ID); err != nil {
 						t.Fatal(err)
 					}
+					server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg})
+					if err != nil {
+						t.Fatal(err)
+					}
+					response := httptest.NewRecorder()
+					server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/settings", nil))
+					if response.Code != 200 || !strings.Contains(response.Body.String(), "Additional review round granted: 2") {
+						t.Fatalf("settings lost the handback grant: %d %s", response.Code, response.Body.String())
+					}
 					root := runtime.Workspace.Root
 					if err := runtime.Close(); err != nil {
 						t.Fatal(err)

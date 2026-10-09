@@ -106,14 +106,24 @@ permission settings.
 | `mergeyard pause` / `mergeyard resume` | Disable or enable new claims |
 | `mergeyard watch <run-id>` | Attach read-only to the live tmux phase |
 | `mergeyard stop <run-id>` | Stop a run and keep its worktree, branch, and PR |
+| `mergeyard retry <run-id>` | Reconcile preserved work and explicitly continue an eligible run |
+| `mergeyard takeover <run-id>` | Stop automation and resume the exact implementer conversation interactively |
+| `mergeyard handback <run-id>` | Publish manual work and resume implementation or independent review |
 | `mergeyard doctor` | Check dependencies, authentication, and configuration |
 | `mergeyard reconcile` | Inspect persisted work with the control plane stopped |
 | `mergeyard --version` | Show the installed version |
 
 Status, pause, resume, watch, and stop connect to the running process. Use the
 same configuration for both. Ctrl-C shuts down the control plane; running tmux
-phases survive and are reconciled on the next startup. `takeover`, `handback`,
-`retry`, and `open` are reserved commands and are not implemented yet.
+phases survive and are reconciled on the next startup. Takeover requires a
+prepared worktree and a recorded implementer session. Exit the interactive
+harness before handback. `open` remains reserved.
+
+Both production harnesses currently have temporary-limit and exhausted-credit
+detection disabled. Limits follow the ordinary failure path and consume the
+attempt budget. Credit recovery controls stay unavailable until their native
+evidence bindings land. See [M3 acceptance and evidence](docs/m3-acceptance.md)
+for the verified recovery core, current capability gates, and offline checks.
 
 ## Configuration
 
