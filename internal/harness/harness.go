@@ -25,6 +25,13 @@ type HarnessAdapter interface {
 	ClassifyFailure(PhaseArtifacts, time.Time) FailureClassification
 }
 
+// CheckConfigurator inspects effective local configuration without a model call.
+// The runner executes the inspection; adapters interpret it and disable tools.
+type CheckConfigurator interface {
+	CheckConfigurationInvocation(Invocation) Invocation
+	ConfigureCheckInvocation(Invocation, []byte) (Invocation, error)
+}
+
 // SessionDiscoverer reads early identity from complete records in a live stream.
 type SessionDiscoverer interface {
 	DiscoverSession([]byte) (string, error)

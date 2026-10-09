@@ -56,6 +56,9 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"O
 					script = `printf 'request\n' >> '` + calls + `'
 printf '%s\n' '{"type":"turn.completed"}'`
 				}
+				if agent == "codex" {
+					script = `case "$*" in *"mcp list --json"*) printf '[]\n'; exit 0;; esac` + "\n" + script
+				}
 				if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script), 0700); err != nil {
 					t.Fatal(err)
 				}

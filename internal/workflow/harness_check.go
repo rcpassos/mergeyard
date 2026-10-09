@@ -85,7 +85,7 @@ func (w *Workflow) StartHarnessCheck(ctx context.Context, c HarnessCheck, now ti
 		if count != 1 {
 			return events.Draft{}, &fault.Error{Code: "harness.probe_unavailable", Message: "This availability execution has already been claimed; refresh status"}
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE harness_checks SET status='running' WHERE id=? AND status='reserved'`, c.ID)
+		_, err = tx.ExecContext(ctx, `UPDATE harness_checks SET status='running',request_json=? WHERE id=? AND status='reserved'`, c.RequestJSON, c.ID)
 		c.Status = "running"
 		return events.Draft{Type: "harness.check_started", Payload: c}, err
 	})
@@ -141,6 +141,29 @@ func (w *Workflow) CompleteHarnessCheck(ctx context.Context, c HarnessCheck, now
 		c.Status, c.Result = status, result
 		drafts = append(drafts, events.Draft{Type: "harness.check_completed", Payload: c})
 		return drafts, err
+	})
+	if errors.Is(err, errHarnessUnchanged) {
+		return nil
+	}
+	return err
+}
+
+// ReportHarnessCheckIssue preserves ownership when execution status is ambiguous.
+func (w *Workflow) ReportHarnessCheckIssue(ctx context.Context, c HarnessCheck, result string) error {
+	_, err := w.events.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+		updated, err := tx.ExecContext(ctx, `UPDATE harness_checks SET result=? WHERE id=? AND status IN ('reserved','running') AND result!=?`, result, c.ID, result)
+		if err != nil {
+			return events.Draft{}, err
+		}
+		count, err := updated.RowsAffected()
+		if err != nil {
+			return events.Draft{}, err
+		}
+		if count == 0 {
+			return events.Draft{}, errHarnessUnchanged
+		}
+		c.Result = result
+		return events.Draft{Type: "harness.check_updated", Payload: c}, nil
 	})
 	if errors.Is(err, errHarnessUnchanged) {
 		return nil

@@ -208,3 +208,24 @@ native completion gate, and retain ownership until their execution ends. Startup
 login, and session discovery alone cannot release paused work. Captures and
 execution journals are retained under `harness-checks/<check-id>` in the workspace.
 Automatic doctor diagnostics never perform availability requests.
+
+Availability-check preparation failures and unreadable output after a confirmed
+exit finish the check without proof, retain the credit restriction, and release
+unused probe ownership. Ambiguous process status retains ownership and records
+an actionable result via `harness.check_updated`. Per-check failures are logged
+without preventing unrelated checks, run reconciliation, or new claims.
+`harness.check_failed` returns HTTP 409 with the safe recovery guidance.
+
+Codex checks first perform a bounded, read-only `codex mcp list --json` inspection
+under the check's invocation settings. No servers are initialized and no model
+request is made by this inspection. The adapter explicitly disables every
+configured MCP server, including required servers and names containing dots, and
+the final invocation is persisted before launch. Inspection failures launch no
+model request. Authentication settings remain in the original account environment;
+inspection output and account environment values are not persisted or logged.
+An opt-in native configuration regression runs without credentials, model calls,
+or server startup:
+
+```sh
+MERGEYARD_CODEX_CONFIG_INTEGRATION=1 go test ./internal/harness -run '^TestCodexCheckDisablesInheritedMCPServers$' -count=1
+```

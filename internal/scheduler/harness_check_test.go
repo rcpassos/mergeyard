@@ -43,6 +43,7 @@ func TestHarnessCheckRecoversWithAllRunsStopped(t *testing.T) {
 			executable := cfg.Agents.Claude.Executable
 			if agent == "codex" {
 				executable = cfg.Agents.Codex.Executable
+				script = `case "$*" in *"mcp list --json"*) printf '[]\n'; exit 0;; esac` + "\n" + script
 			}
 			if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script), 0700); err != nil {
 				t.Fatal(err)

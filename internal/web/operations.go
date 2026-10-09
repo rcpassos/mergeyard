@@ -113,7 +113,7 @@ func (s *Server) operationError(w http.ResponseWriter, r *http.Request, err erro
 	if errors.As(err, &failure) && errorCodePattern.MatchString(failure.Code) {
 		code = failure.Code
 		switch code {
-		case "harness.check_waiting", "harness.unknown", "harness.probe_unavailable", "harness.credit_detection_unavailable", "handback.unavailable", "handback.operation_pending", "handback.process_ambiguous", "handback.review_unrestored", "handback.context_missing", "handback.git_unsupported", "handback.pr_ambiguous", "handback.pr_closed", "handback.git_ambiguous", "handback.publication_pending", "takeover.interactive_running", "takeover.unavailable", "takeover.operation_pending", "takeover.worktree_missing", "takeover.session_missing", "takeover.session_invalid", "takeover.harness_unknown", "takeover.process_ambiguous":
+		case "harness.check_failed", "harness.check_waiting", "harness.unknown", "harness.probe_unavailable", "harness.credit_detection_unavailable", "handback.unavailable", "handback.operation_pending", "handback.process_ambiguous", "handback.review_unrestored", "handback.context_missing", "handback.git_unsupported", "handback.pr_ambiguous", "handback.pr_closed", "handback.git_ambiguous", "handback.publication_pending", "takeover.interactive_running", "takeover.unavailable", "takeover.operation_pending", "takeover.worktree_missing", "takeover.session_missing", "takeover.session_invalid", "takeover.harness_unknown", "takeover.process_ambiguous":
 			status = http.StatusConflict
 			message = failure.Message
 		case "internal.run_not_found":
