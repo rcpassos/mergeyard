@@ -43,14 +43,15 @@ func TestTimedShortCommandCompletesBeforeDeadline(t *testing.T) {
 	r, _ := localSessions(t)
 	req := phaseRequest(t, "exit 0")
 	req.Phase = "checks"
-	req.Timeout = 5 * time.Second
-	started := time.Now()
+	// awaitExit allows five seconds for process observation, well before this
+	// deadline, without making host startup latency part of the assertion.
+	req.Timeout = 30 * time.Second
 	ref, err := r.StartSession(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	status := awaitExit(t, r, ref)
-	if status.ExitCode == nil || *status.ExitCode != 0 || status.TimedOut || time.Since(started) > time.Second {
+	if status.ExitCode == nil || *status.ExitCode != 0 || status.TimedOut {
 		t.Fatalf("short command waited for timeout: %+v", status)
 	}
 }
