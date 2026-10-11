@@ -28,7 +28,7 @@ func TestMinimalConfigUsesPRDDefaults(t *testing.T) {
 		},
 		Implementer: role, Reviewer: role, MaxRounds: 5, PRComments: true,
 		UsageLimits: config.UsageLimits{Cooldown: 30 * time.Minute, MaxWaits: 3},
-		Repositories: []config.Repository{{Repo: "rcpassos/mergeyard", CommandTimeout: 20 * time.Minute, Concurrency: 1, Enabled: true, Implementer: role, Reviewer: role,
+		Repositories: []config.Repository{{Repo: "rcpassos/mergeyard", CommandTimeout: 20 * time.Minute, CheckRetries: 1, Concurrency: 1, Enabled: true, Implementer: role, Reviewer: role,
 			Labels: config.Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"}}},
 	}
 	if !reflect.DeepEqual(got, want) {

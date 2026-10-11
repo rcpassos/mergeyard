@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -19,6 +20,7 @@ type ImplementInput struct {
 	IssueBody   string
 	IssueURL    string
 	BaseBranch  string
+	Checks      *workflow.SystemStepSnapshot
 	Constraints []string
 }
 
@@ -51,6 +53,13 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 	text.WriteString(implementSchema)
 	text.WriteString("\n```\n\n## Issue\n\n")
 	text.WriteString(input.IssueTitle + "\n\n" + input.IssueBody + "\n")
+	if input.Checks != nil {
+		data, err := json.MarshalIndent(input.Checks, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		text.WriteString("\n## Local checks\n\nRepair the failing configured command using this diagnostic. Mergeyard will commit and rerun checks before publication.\n\n" + string(data) + "\n")
+	}
 	if err := writer.WriteFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"), ImplementSchema(), 0600); err != nil {
 		return "", err
 	}

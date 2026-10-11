@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -25,6 +27,7 @@ import (
 // systemStepRequest supplies commands from repository configuration only.
 // TargetSHA pins a check invocation to its commit; setup leaves it empty.
 type systemStepRequest struct {
+	OwnerID   string
 	Step      string
 	Commands  []string
 	TargetSHA string
@@ -63,12 +66,19 @@ func (s *Scheduler) systemStep(ctx context.Context, repo config.Repository, run 
 	number := 1
 	for i := range steps {
 		v := &steps[i]
-		if v.Step == req.Step && v.Phase == run.Phase && v.Round == phaseRound(run, run.Phase) {
-			number = v.Attempt + 1
-			last = v
+		if v.Step == req.Step && v.Round == phaseRound(run, run.Phase) {
+			// The session name contains the system step and round, so handback
+			// and fix steps in that round share one physical number sequence.
+			if v.Attempt >= number {
+				number = v.Attempt + 1
+			}
+			if v.Phase == run.Phase {
+				last = v
+			}
 		}
 	}
-	if last == nil || last.WorktreeIdentity != identity || last.TargetSHA != req.TargetSHA || (req.Retry && last.Status != "running" && last.Status != "succeeded") {
+	commandsChanged := last != nil && req.Step == "checks" && !slices.Equal(last.Commands, req.Commands)
+	if last == nil || (commandsChanged && last.Status != "running") || last.WorktreeIdentity != identity || last.TargetSHA != req.TargetSHA || last.OwnerID != req.OwnerID || (req.Retry && last.Status != "running" && last.Status != "succeeded") {
 		return s.startSystemStep(ctx, repo, run, gitRun, req, number)
 	}
 	if last.Status != "running" {
@@ -111,8 +121,17 @@ func (s *Scheduler) systemStep(ctx context.Context, repo config.Repository, run 
 		output.Write(data)
 	}
 	last.Output = excerpt(output.String())
+	if last.Step == "checks" {
+		last.Results, err = s.checkResults(ctx, last)
+		if err != nil {
+			return nil, false, err
+		}
+	}
 	if err := s.saveSystemStep(ctx, run.ID, last); err != nil {
 		return nil, false, err
+	}
+	if commandsChanged {
+		return s.startSystemStep(ctx, repo, run, gitRun, req, number)
 	}
 	return last, true, nil
 }
@@ -145,11 +164,14 @@ func (s *Scheduler) startSystemStep(ctx context.Context, repo config.Repository,
 	// One login shell shares setup state between list entries; stop on the first
 	// failing command or pipeline. No command text is taken from issues or PRs.
 	script := "set -e\nset -o pipefail\n" + strings.Join(req.Commands, "\n") + "\n"
+	if req.Step == "checks" {
+		script = checksScript(dir, req.Commands)
+	}
 	if err := s.deps.Runner.WriteFile(ctx, input, []byte(script), 0600); err != nil {
 		return nil, false, err
 	}
 	session := runner.SessionRequest{Timeout: timeout, RunID: run.ID, Phase: req.Step, Round: phaseRound(run, run.Phase), Attempt: number, PhaseDir: dir, Command: runner.ExecRequest{Executable: "/bin/bash", Args: []string{"--login", input}, Dir: gitRun.Path, Env: s.deps.Env}}
-	v := &workflow.SystemStepSnapshot{ID: uuid.NewString(), Phase: run.Phase, Step: req.Step, Round: session.Round, Attempt: number, Commands: req.Commands, CommandTimeout: timeout.String(), TargetSHA: req.TargetSHA, WorktreeIdentity: identity, Status: "running", ProcessSession: sessions.Name(session), PhaseDir: dir}
+	v := &workflow.SystemStepSnapshot{OwnerID: req.OwnerID, ID: uuid.NewString(), Phase: run.Phase, Step: req.Step, Round: session.Round, Attempt: number, Commands: req.Commands, CommandTimeout: timeout.String(), TargetSHA: req.TargetSHA, WorktreeIdentity: identity, Status: "running", ProcessSession: sessions.Name(session), PhaseDir: dir}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return nil, false, err
@@ -176,6 +198,67 @@ func (s *Scheduler) startSystemStep(ctx context.Context, repo config.Repository,
 		return v, true, nil
 	}
 	return v, false, nil
+}
+
+// checksScript keeps all commands in one shell so variables and directory changes
+// carry forward. The EXIT trap closes the output pipe before waiting for tee, and
+// records explicit exits as well as set -e failures. Markers survive restarts.
+func checksScript(dir string, commands []string) string {
+	var script strings.Builder
+	script.WriteString(`set -e
+set -o pipefail
+exec 3>&1 4>&2
+_mergeyard_check_exit=''
+_mergeyard_check_tee=''
+trap '_mergeyard_check_status=$?; trap - EXIT; exec 1>&3 2>&4; if [ -n "$_mergeyard_check_tee" ]; then wait "$_mergeyard_check_tee" || :; fi; if [ -n "$_mergeyard_check_exit" ]; then printf "%s\\n" "$_mergeyard_check_status" > "$_mergeyard_check_exit"; fi; exit "$_mergeyard_check_status"' EXIT
+`)
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+	for i, command := range commands {
+		path := filepath.Join(dir, fmt.Sprintf("command-%d", i+1))
+		fmt.Fprintf(&script, "_mergeyard_check_exit=%s\n: > %s\n/usr/bin/mkfifo %s\n/usr/bin/tee %s < %s &\n_mergeyard_check_tee=$!\nexec > %s 2>&1\n", quote(path+".exit"), quote(path+".started"), quote(path+".pipe"), quote(path+".output"), quote(path+".pipe"), quote(path+".pipe"))
+		script.WriteString(command + "\n")
+		script.WriteString("exec 1>&3 2>&4\nwait \"$_mergeyard_check_tee\"\n_mergeyard_check_tee=''\nprintf '0\\n' > \"$_mergeyard_check_exit\"\n_mergeyard_check_exit=''\n")
+	}
+	return script.String()
+}
+
+func (s *Scheduler) checkResults(ctx context.Context, v *workflow.SystemStepSnapshot) ([]workflow.SystemCommandResult, error) {
+	results := make([]workflow.SystemCommandResult, 0, len(v.Commands))
+	for i, command := range v.Commands {
+		result := workflow.SystemCommandResult{Command: command, Status: "skipped"}
+		path := filepath.Join(v.PhaseDir, fmt.Sprintf("command-%d", i+1))
+		if _, err := s.deps.Runner.ReadFile(ctx, path+".started"); errors.Is(err, os.ErrNotExist) {
+			results = append(results, result)
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+		output, err := s.deps.Runner.ReadFile(ctx, path+".output")
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		result.Output = excerpt(string(output))
+		result.Status = "fail"
+		result.ExitCode = v.ExitCode
+		exit, err := s.deps.Runner.ReadFile(ctx, path+".exit")
+		if err == nil {
+			code, err := strconv.Atoi(strings.TrimSpace(string(exit)))
+			if err != nil {
+				return nil, fmt.Errorf("invalid exit marker for check command %d: %w", i+1, err)
+			}
+			result.ExitCode = &code
+			if code == 0 {
+				result.Status = "pass"
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		if result.Status == "fail" && v.TimedOut {
+			result.Output = excerpt(result.Output + "\nTimed out after " + v.CommandTimeout)
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }
 
 func (s *Scheduler) saveSystemStep(ctx context.Context, id string, v *workflow.SystemStepSnapshot) error {

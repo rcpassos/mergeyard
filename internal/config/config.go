@@ -72,6 +72,8 @@ type UsageLimits struct {
 
 type Repository struct {
 	Setup          []string      `yaml:"setup"`
+	Checks         []string      `yaml:"checks"`
+	CheckRetries   int           `yaml:"check_retries"`
 	CommandTimeout time.Duration `yaml:"command_timeout"`
 	Repo           string
 	BaseBranch     string `yaml:"base_branch"`
@@ -166,7 +168,7 @@ func Parse(data []byte) (Config, *Document, error) {
 		} else {
 			seenRepos := make(map[string]bool)
 			for i, node := range repos.Content {
-				r := Repository{Concurrency: cfg.Concurrency, Enabled: true, CommandTimeout: 20 * time.Minute,
+				r := Repository{Concurrency: cfg.Concurrency, Enabled: true, CommandTimeout: 20 * time.Minute, CheckRetries: 1,
 					Implementer: cloneRole(cfg.Implementer), Reviewer: cloneRole(cfg.Reviewer), Labels: cfg.Labels}
 				rm := newMapping(node, fmt.Sprintf("repositories[%d]", i), &err, &doc.Warnings)
 				rm.readRepo("repo", &r.Repo)
@@ -180,6 +182,17 @@ func Parse(data []byte) (Config, *Document, error) {
 				seenRepos[name] = true
 				rm.read("base_branch", &r.BaseBranch)
 				rm.read("setup", &r.Setup)
+				rm.read("checks", &r.Checks)
+				for _, command := range r.Checks {
+					if strings.TrimSpace(command) == "" || strings.ContainsRune(command, 0) {
+						rm.fail("config.invalid_checks", "checks", "commands must be nonempty and contain no NUL")
+					}
+				}
+				if n := rm.node("check_retries"); n != nil {
+					if n.Tag != "!!int" || n.Decode(&r.CheckRetries) != nil || r.CheckRetries < 0 {
+						rm.fail("config.invalid_check_retries", "check_retries", "expected a nonnegative finite integer")
+					}
+				}
 				rm.readDuration("command_timeout", &r.CommandTimeout)
 				rm.readPositiveInt("concurrency", &r.Concurrency, "config.invalid_concurrency")
 				rm.read("enabled", &r.Enabled)
