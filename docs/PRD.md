@@ -373,6 +373,12 @@ The base checkout is never used for agent edits. A dirty base checkout prevents 
 
 Each run receives exactly one worktree at `worktrees/<owner>-<repo>/<run-id>`.
 
+### Setup
+
+After workspace preparation, Mergeyard runs the repository's configured `setup` commands before starting the implementer. It runs setup again whenever it recreates the worktree; setup commands must be idempotent. An omitted or empty setup list leaves the existing flow unchanged.
+
+Setup runs as a system step inside `ACTIVE/implement`, recorded in phase metadata as `step: setup`. Commands come only from user configuration, never from issue or PR text. A failure or timeout moves the run to `NEEDS_ATTENTION` with `workspace.setup_failed` and an output excerpt; the agent is never started. Explicit Retry reruns setup before the agent phase.
+
 ### Branch naming
 
 Default: `mergeyard/issue-<number>`.
@@ -661,11 +667,11 @@ Success requires all of: exit code 0, the harness's completion event (Claude `re
 
 ## 14. Process Model
 
-The MVP uses **tmux** to host every phase attempt. This allows:
+The MVP uses **tmux** to host every phase attempt and configured system step. This allows:
 
-- the control plane to restart without killing agent processes;
-- the user to watch a live phase;
-- phase logs to remain associated with a stable session.
+- the control plane to restart without killing agent or setup processes;
+- the user to watch a live phase or system step;
+- logs to remain associated with a stable session.
 
 ### Session naming
 
@@ -673,7 +679,7 @@ The MVP uses **tmux** to host every phase attempt. This allows:
 mergeyard-<short-run-id>-<phase>-<round>-<attempt>
 ```
 
-Names are sanitized and kept below tmux limits.
+Names are sanitized and kept below tmux limits. System steps use the same naming scheme, replacing the phase component with the step name. Setup sessions are named `mergeyard-<short-run-id>-setup-<round>-<n>`, where `n` counts setup executions independently of agent attempts.
 
 ### Phase wrapper
 
@@ -687,6 +693,12 @@ Mergeyard starts a generated wrapper script inside tmux. The wrapper:
 6. exits when the harness exits.
 
 The adapter parses `events.jsonl`; the Codex adapter tails it during the run to capture the session ID. Mergeyard determines completion from exit metadata plus the structured result. It does not infer completion from terminal text.
+
+### System steps
+
+Configured command lists reuse the phase wrapper and process journal. A setup list runs as one `bash --login` script in the worktree with `set -e` and `set -o pipefail`, using only the explicitly configured environment. All commands share one shell and execution stops on the first failing command or pipeline. Output and exit metadata are saved with the system step; agent result validation does not apply to setup.
+
+The repository's `command_timeout` is a positive duration, defaulting to `20m`, for the entire script. The wrapper owns its timeout watchdog so the deadline remains enforced while the control plane is offline. Timeout and Stop end the whole owned process group, including descendants, while preserving the worktree.
 
 ### Control-plane shutdown
 
@@ -825,7 +837,7 @@ Automated phases run non-interactively, so attaching to their tmux session only 
 
 ### Watch
 
-`mergeyard watch <run-id>` attaches read-only to the live phase's tmux session. The dashboard shows the equivalent command.
+`mergeyard watch <run-id>` attaches read-only to the live phase or system step's tmux session, including setup. The dashboard shows the equivalent command.
 
 ### Take over
 
@@ -883,7 +895,7 @@ STOPPED
 COMPLETED
 ```
 
-`ACTIVE` is paired with a phase: `implement`, `review`, or `fix`.
+`ACTIVE` is paired with a phase: `implement`, `review`, or `fix`. A configured system step runs inside that phase without introducing a new run state. Setup is recorded as `step: setup` in the `implement` phase metadata; agent attempts start only after setup succeeds. System step executions do not consume agent attempts or review rounds.
 
 Terminal states: `FAILED`, `STOPPED`, `COMPLETED`. Terminal runs never progress automatically and accept no other transition, except that the user may retry a `FAILED` run (§22). `NEEDS_ATTENTION` is non-terminal because the user may retry.
 
@@ -893,7 +905,9 @@ Terminal states: `FAILED`, `STOPPED`, `COMPLETED`. Terminal runs never progress 
 |---|---|---|
 | none | eligible issue claimed | CLAIMING |
 | CLAIMING | GitHub claim succeeds | PREPARING |
-| PREPARING | worktree ready | ACTIVE/implement |
+| PREPARING | worktree ready; setup queued if configured | ACTIVE/implement |
+| ACTIVE/implement, step setup | setup succeeds | ACTIVE/implement, agent starts |
+| ACTIVE/implement, step setup | setup fails or times out | NEEDS_ATTENTION (`workspace.setup_failed`) |
 | ACTIVE/implement | success, PR opened | ACTIVE/review |
 | ACTIVE/review | approved | WAITING_FOR_CI |
 | ACTIVE/review | changes required, rounds remain | ACTIVE/fix |
@@ -927,8 +941,8 @@ Transitions are enforced centrally. UI and CLI actions must not mutate arbitrary
 
 `mergeyard stop <run-id>`:
 
-1. sends SIGINT to a running phase process;
-2. waits for a grace period, sends SIGTERM, then kills the tmux session if still active;
+1. sends SIGINT to the running phase or system step's owned process group;
+2. waits for a grace period, sends SIGTERM, then ends remaining owned processes and the tmux session if still active;
 3. preserves the worktree, branch, and PR;
 4. removes the `running` label;
 5. adds `needs-attention` unless no work was ever created;
@@ -945,6 +959,8 @@ Retry is allowed from `NEEDS_ATTENTION` and `FAILED`, and from `WAITING_FOR_HARN
 - does not reset user changes;
 - reconciles Git/PR/CI state first and determines the next safe phase;
 - grants one additional review round when the run stopped on `review.max_rounds_exceeded`.
+
+Retry after `workspace.setup_failed` reruns setup before starting the agent.
 
 Retry after exhausted credits follows the single-run recovery probe in section 12. Retry after usage-limit wait exhaustion grants one additional wait as specified there. Handback can also grant a review round under the conditions in section 20.
 
@@ -963,7 +979,7 @@ For every non-terminal run it verifies:
 - issue state and labels;
 - worktree and branch state;
 - PR state;
-- tmux process session state;
+- tmux process session state and system step metadata;
 - CI/merge state when applicable;
 - persisted harness limits.
 
@@ -971,6 +987,7 @@ Cases:
 
 - **Process still running:** restore the run as active and keep monitoring.
 - **Process finished while offline:** read exit metadata and the result, then continue.
+- **Setup in progress:** wait on a live setup session without starting another script. If it finished, read exit metadata and continue or report `workspace.setup_failed`. If the outcome is unknown, stop any remaining owned processes and rerun setup. The wrapper's timeout watchdog continues enforcing the original deadline while the control plane is offline.
 - **Harness limited:** keep the run in `WAITING_FOR_HARNESS` until the limit expires.
 - **PR merged while offline:** complete the run and clean up.
 - **Orphaned claim:** an issue with `agent-running` but no reconcilable local run is not dispatched. It is shown as an orphaned claim requiring manual action.
@@ -1200,6 +1217,8 @@ repositories:
     base_branch: main     # default: repository default branch
     concurrency: 1        # optional per-repository limit
     enabled: true
+    setup: []             # e.g. ["npm ci"]; commands must be idempotent
+    command_timeout: 20m  # positive duration for the whole system step
 
   - repo: company/frontend
     reviewer:             # per-repository role override
@@ -1464,6 +1483,7 @@ internal.*
 Examples:
 
 ```text
+workspace.setup_failed
 git.no_changes
 git.branch_conflict
 git.push_rejected

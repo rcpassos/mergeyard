@@ -240,6 +240,9 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 		return err
 	}
 	for _, ref := range refs {
+		if systemSession(run, ref.Name) {
+			continue
+		} // System steps own exit recovery and safe replay.
 		if run.Phase == workflow.Review {
 			continue
 		} // Review owns process recovery and restoration.

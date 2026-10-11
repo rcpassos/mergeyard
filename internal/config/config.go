@@ -71,13 +71,15 @@ type UsageLimits struct {
 }
 
 type Repository struct {
-	Repo        string
-	BaseBranch  string `yaml:"base_branch"`
-	Concurrency int
-	Enabled     bool
-	Implementer Role
-	Reviewer    Role
-	Labels      Labels
+	Setup          []string      `yaml:"setup"`
+	CommandTimeout time.Duration `yaml:"command_timeout"`
+	Repo           string
+	BaseBranch     string `yaml:"base_branch"`
+	Concurrency    int
+	Enabled        bool
+	Implementer    Role
+	Reviewer       Role
+	Labels         Labels
 }
 
 // Error retains the configuration API while sharing the runtime error shape.
@@ -164,7 +166,7 @@ func Parse(data []byte) (Config, *Document, error) {
 		} else {
 			seenRepos := make(map[string]bool)
 			for i, node := range repos.Content {
-				r := Repository{Concurrency: cfg.Concurrency, Enabled: true,
+				r := Repository{Concurrency: cfg.Concurrency, Enabled: true, CommandTimeout: 20 * time.Minute,
 					Implementer: cloneRole(cfg.Implementer), Reviewer: cloneRole(cfg.Reviewer), Labels: cfg.Labels}
 				rm := newMapping(node, fmt.Sprintf("repositories[%d]", i), &err, &doc.Warnings)
 				rm.readRepo("repo", &r.Repo)
@@ -177,6 +179,8 @@ func Parse(data []byte) (Config, *Document, error) {
 				}
 				seenRepos[name] = true
 				rm.read("base_branch", &r.BaseBranch)
+				rm.read("setup", &r.Setup)
+				rm.readDuration("command_timeout", &r.CommandTimeout)
 				rm.readPositiveInt("concurrency", &r.Concurrency, "config.invalid_concurrency")
 				rm.read("enabled", &r.Enabled)
 				readRole(rm.child("implementer"), &r.Implementer)

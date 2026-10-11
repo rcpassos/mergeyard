@@ -477,3 +477,37 @@ exec "$REAL_TMUX" "$@"
 	}
 	awaitExit(t, r, ref)
 }
+
+func TestSessionTimeoutSurvivesRestartAndStopsDescendants(t *testing.T) {
+	r, options := localSessions(t)
+	req := phaseRequest(t, `(/bin/sleep 1; printf survived > survivor) & /bin/sleep 10`)
+	req.Phase = "setup"
+	req.Timeout = 150 * time.Millisecond
+	ref, err := r.StartSession(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := runner.NewLocal(options)
+	status := awaitExit(t, restarted, ref)
+	if status.ExitCode == nil || *status.ExitCode != 124 || !status.TimedOut {
+		t.Fatalf("timeout outcome=%+v", status)
+	}
+	time.Sleep(time.Second)
+	if _, err := restarted.ReadFile(context.Background(), filepath.Join(req.Command.Dir, "survivor")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("descendant survived timeout: %v", err)
+	}
+}
+
+func TestSessionCompletionReapsItsTimeoutWatchdog(t *testing.T) {
+	r, _ := localSessions(t)
+	req := phaseRequest(t, "printf complete; exit 0")
+	req.Timeout = time.Minute
+	ref, err := r.StartSession(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := awaitExit(t, r, ref)
+	if status.ExitCode == nil || *status.ExitCode != 0 || status.TimedOut {
+		t.Fatalf("normal completion=%+v", status)
+	}
+}

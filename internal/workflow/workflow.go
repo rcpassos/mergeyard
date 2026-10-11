@@ -119,14 +119,15 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
-	RetryEligible      bool               `json:"retry_eligible,omitempty"`
-	CreditProbes       []CreditProbe      `json:"credit_probes,omitempty"`
-	HarnessWait        *HarnessWait       `json:"harness_wait,omitempty"`
-	HarnessWaitHistory []HarnessWait      `json:"harness_wait_history,omitempty"`
-	Handbacks          []HandbackSnapshot `json:"handbacks,omitempty"`
-	Retries            []RetrySnapshot    `json:"retries,omitempty"`
-	SessionRecoveries  []SessionRecovery  `json:"session_recoveries,omitempty"`
-	Implementer        *ImplementSnapshot `json:"implementer,omitempty"`
+	SystemSteps        []SystemStepSnapshot `json:"system_steps,omitempty"`
+	RetryEligible      bool                 `json:"retry_eligible,omitempty"`
+	CreditProbes       []CreditProbe        `json:"credit_probes,omitempty"`
+	HarnessWait        *HarnessWait         `json:"harness_wait,omitempty"`
+	HarnessWaitHistory []HarnessWait        `json:"harness_wait_history,omitempty"`
+	Handbacks          []HandbackSnapshot   `json:"handbacks,omitempty"`
+	Retries            []RetrySnapshot      `json:"retries,omitempty"`
+	SessionRecoveries  []SessionRecovery    `json:"session_recoveries,omitempty"`
+	Implementer        *ImplementSnapshot   `json:"implementer,omitempty"`
 	RunMetadata
 	Merge            *maintenance.Snapshot `json:"merge,omitempty"`
 	CI               *ci.Snapshot          `json:"ci,omitempty"`
@@ -622,6 +623,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 		return Run{}, storageError(err)
 	}
 	run.SessionRecoveries, err = LoadSessionRecoveries(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.SystemSteps, err = LoadSystemSteps(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
 	}

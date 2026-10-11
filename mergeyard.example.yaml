@@ -49,6 +49,8 @@ repositories:
     base_branch: main
     concurrency: 1 # optional per-repository limit; otherwise inherits global
     enabled: true
+    setup: [] # e.g. ["npm ci"]; run on every fresh/recreated worktree; keep idempotent
+    command_timeout: 20m # positive duration for the whole setup script
 
   - repo: company/frontend
     reviewer: # only supplied fields override the global reviewer

@@ -88,7 +88,7 @@ func (s *Scheduler) limitExecution(ctx context.Context, repo config.Repository, 
 		wait.ResetTimeSource = "reported"
 	}
 	var lastOrdinary int
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(max(attempt),0) FROM phase_attempts WHERE run_id=? AND phase=? AND round=? AND status NOT IN ('running','usage_limited')`, run.ID, run.Phase, wait.Round).Scan(&lastOrdinary); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(max(attempt),0) FROM phase_attempts WHERE run_id=? AND phase=? AND round=? AND step='' AND status NOT IN ('running','usage_limited')`, run.ID, run.Phase, wait.Round).Scan(&lastOrdinary); err != nil {
 		return err
 	}
 	wait.Sequence = lastOrdinary + 1

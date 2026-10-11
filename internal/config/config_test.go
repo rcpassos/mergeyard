@@ -28,7 +28,7 @@ func TestMinimalConfigUsesPRDDefaults(t *testing.T) {
 		},
 		Implementer: role, Reviewer: role, MaxRounds: 5, PRComments: true,
 		UsageLimits: config.UsageLimits{Cooldown: 30 * time.Minute, MaxWaits: 3},
-		Repositories: []config.Repository{{Repo: "rcpassos/mergeyard", Concurrency: 1, Enabled: true, Implementer: role, Reviewer: role,
+		Repositories: []config.Repository{{Repo: "rcpassos/mergeyard", CommandTimeout: 20 * time.Minute, Concurrency: 1, Enabled: true, Implementer: role, Reviewer: role,
 			Labels: config.Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"}}},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -482,5 +482,21 @@ func TestRepositoryOverridesOnlySuppliedFields(t *testing.T) {
 				t.Error("resolved roles share mutable skill slices")
 			}
 		})
+	}
+}
+
+func TestRepositorySetupCommandsAndTimeout(t *testing.T) {
+	cfg, doc, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n    setup: [\"npm ci\", \"printf ready\"]\n    command_timeout: 7m\n  - repo: owner/other\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Warnings) != 0 {
+		t.Fatalf("setup fields were ignored: %+v", doc.Warnings)
+	}
+	if got := cfg.Repositories[0]; len(got.Setup) != 2 || got.Setup[0] != "npm ci" || got.CommandTimeout != 7*time.Minute {
+		t.Fatalf("configured setup = %+v", got)
+	}
+	if got := cfg.Repositories[1]; len(got.Setup) != 0 || got.CommandTimeout != 20*time.Minute {
+		t.Fatalf("default setup = %+v", got)
 	}
 }

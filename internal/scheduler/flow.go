@@ -118,6 +118,11 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	if gitRun.ID == "" {
 		return s.attention(ctx, repo, run, &fault.Error{Code: "git.ownership_missing", Message: "Run has no persisted Git ownership"})
 	}
+	if ready, err := s.setup(ctx, repo, run, gitRun); err != nil {
+		return s.attention(ctx, repo, run, err)
+	} else if !ready {
+		return nil
+	}
 	result, done, err := s.implement(ctx, repo, run, issue, gitRun)
 	if err != nil {
 		return s.attention(ctx, repo, run, err)
@@ -241,7 +246,7 @@ func (s *Scheduler) lastAttempt(ctx context.Context, id string) (attempt, error)
 	var input string
 	var savedSession sql.NullString
 	err := s.db.QueryRowContext(ctx, `SELECT id,attempt,status,COALESCE(process_session,''),COALESCE(input_path,''),resumed_session,COALESCE(error,''),agent,session_id
- FROM phase_attempts WHERE run_id=? AND phase='implement' ORDER BY attempt DESC LIMIT 1`, id).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure, &a.agent, &savedSession)
+ FROM phase_attempts WHERE run_id=? AND phase='implement' AND step='' ORDER BY attempt DESC LIMIT 1`, id).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure, &a.agent, &savedSession)
 	if err != nil {
 		return a, err
 	}
