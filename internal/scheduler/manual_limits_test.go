@@ -240,7 +240,7 @@ func TestHandbackBlockedReviewerPreservesGrantAndMixedRoles(t *testing.T) {
 					if len(h.phases) != launches {
 						t.Fatal("blocked handback launched on restart")
 					}
-					replacePhaseScript(t, cfg, workflow.Review, reviewScript(approvedReview))
+					replacePhaseScript(t, cfg, workflow.Review, reviewScript(approvedAfterFixReview))
 					if kind == harness.TemporaryLimit {
 						now = selected.HarnessWait.ResetAt
 					} else {

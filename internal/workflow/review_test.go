@@ -23,7 +23,7 @@ func TestReviewCompletionIsAtomicAndRequiresRestoration(t *testing.T) {
 		t.Fatal(err)
 	}
 	sha := "pinned"
-	completion := workflow.ReviewCompletion{AttemptID: "a", Report: review.Report{SchemaVersion: 1, Status: "approved", Summary: "Clean", Findings: []review.Finding{}}}
+	completion := workflow.ReviewCompletion{AttemptID: "a", Report: review.Report{SchemaVersion: 2, Status: "approved", Summary: "Clean", Findings: []review.Finding{}, PriorFindings: []review.PriorFinding{}}}
 	req := workflow.Request{Trigger: workflow.ReviewApproved, Metadata: workflow.MetadataPatch{ApprovedSHA: &sha, Review: &completion}}
 	if _, err := w.Transition(ctx, "review-run", req); err == nil {
 		t.Fatal("accepted verdict before restoring")
@@ -35,6 +35,11 @@ func TestReviewCompletionIsAtomicAndRequiresRestoration(t *testing.T) {
 	if _, err := db.Exec("UPDATE review_attempts SET restored=1 WHERE attempt_id='a'"); err != nil {
 		t.Fatal(err)
 	}
+	completion.Report.PriorFindings = []review.PriorFinding{{FindingID: "unknown", Outcome: "fixed", Note: "Claimed fixed"}}
+	if _, err := w.Transition(ctx, "review-run", req); err == nil {
+		t.Fatal("workflow accepted unknown prior finding in round 1")
+	}
+	completion.Report.PriorFindings = []review.PriorFinding{}
 	// A failed event write rolls back the report, approval and attempt together.
 	if _, err := db.Exec(`CREATE TRIGGER reject_review BEFORE INSERT ON events WHEN NEW.type='review.completed' BEGIN SELECT RAISE(FAIL,'event blocked'); END`); err != nil {
 		t.Fatal(err)

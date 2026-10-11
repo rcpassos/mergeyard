@@ -88,7 +88,7 @@ func TestHarnessPairingsCompleteFixLoop(t *testing.T) {
 				if run.ReviewRound != 2 || run.Review.Agent != reviewer || run.Fix.Agent != implementer || run.Review.SessionID == run.Fix.SessionID || run.Fix.SessionID != run.Implementer.SessionID {
 					t.Fatalf("role ownership: %+v review=%+v fix=%+v", run, run.Review, run.Fix)
 				}
-				if run.Review.Model != "review-model" || run.Fix.Model != "implement-model" || !run.Review.Accepted || len(run.Fix.Report.Responses) != 2 {
+				if run.Review.Model != "review-model" || run.Fix.Model != "implement-model" || !run.Review.Accepted || len(run.Fix.Report.Responses) != 2 || len(run.Review.Report.PriorFindings) != 2 || run.Review.Report.PriorCounts().Fixed != 1 || run.Review.Report.PriorCounts().NoLongerApplies != 1 {
 					t.Fatal("lost role settings or reports")
 				}
 				if api.creations != 1 || gitCommand(t, remote, "rev-list", "--count", "main..mergeyard/issue-7") != "2" {
@@ -181,7 +181,7 @@ func TestHarnessPairingsStopAndRestart(t *testing.T) {
 					held := `while [ ! -f '` + gate + `' ]; do /bin/sleep 0.02; done; `
 					s, runtime, api, _, cfg, r := pairingFlow(t, implementer, reviewer, `printf fixed > feature.txt; `+fixedReport)
 					if phase == workflow.Review {
-						replacePhaseScript(t, cfg, phase, `case "$*" in *review-1-*) `+held+changesReview+`;; *review-*) `+approvedReview+`;; *fix-*) printf fixed > feature.txt; `+fixedReport+`;; *) `+successfulScript+`;; esac`)
+						replacePhaseScript(t, cfg, phase, `case "$*" in *review-1-*) `+held+changesReview+`;; *review-*) `+approvedAfterFixReview+`;; *fix-*) printf fixed > feature.txt; `+fixedReport+`;; *) `+successfulScript+`;; esac`)
 					} else {
 						replacePhaseScript(t, cfg, phase, loopScript(held+`printf fixed > feature.txt; `+fixedReport))
 					}
@@ -338,7 +338,7 @@ func TestCodexReviewAndFixRequireCompletionAndSchema(t *testing.T) {
 					report = changesReview
 				}
 				if kind == "schema" {
-					report = strings.ReplaceAll(report, `"schema_version":1,`, "")
+					report = strings.ReplaceAll(report, `"schema_version":2,`, "")
 				}
 				if kind == "provider failure" {
 					report = `echo 'Unsupported model' >&2; exit 1`

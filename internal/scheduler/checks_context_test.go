@@ -24,7 +24,7 @@ if ! /usr/bin/grep -Fq '## Local checks' "$phase_dir/input.md" ||
    ! /usr/bin/grep -Fq '"status": "pass"' "$phase_dir/input.md" ||
    ! /usr/bin/grep -Fq '"output": "tests-passed"' "$phase_dir/input.md" ||
    ! /usr/bin/grep -Fq '"output": "lint-passed"' "$phase_dir/input.md"; then
-  printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":1,"status":"failed","summary":"Reviewer missing local checks context","findings":[]}}'
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":2,"prior_findings":[],"status":"failed","summary":"Reviewer missing local checks context","findings":[]}}'
   exit 0
 fi
 ` + approvedReview

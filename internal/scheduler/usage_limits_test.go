@@ -167,7 +167,7 @@ func TestTemporaryLimitRestoresReviewerAndResumesSameRound(t *testing.T) {
 			adapter := harness.HarnessAdapter(harness.NewClaude(cfg.Agents.Claude))
 			if agent == "codex" {
 				executable := filepath.Join(t.TempDir(), "codex")
-				script = codexIdentity + "\n" + `case "$*" in *review-1-1*) printf contaminated > feature.txt; printf untracked > reviewer.txt; exit 1;; *) ` + codexStructuredResult(`{"schema_version":1,"status":"approved","summary":"Safe","findings":[]}`) + `;; esac`
+				script = codexIdentity + "\n" + `case "$*" in *review-1-1*) printf contaminated > feature.txt; printf untracked > reviewer.txt; exit 1;; *) ` + codexStructuredResult(`{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Safe","findings":[]}`) + `;; esac`
 				if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script), 0700); err != nil {
 					t.Fatal(err)
 				}
