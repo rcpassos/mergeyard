@@ -45,8 +45,9 @@ After preparing a fresh worktree, Mergeyard runs the setup list before starting
 the implementer. Setup also runs whenever Mergeyard recreates that worktree, so
 commands must be idempotent. The list runs in order as one `bash --login` script
 with `set -e` and `set -o pipefail`, using only the explicitly configured
-environment. Commands share the same shell; a failing command or pipeline stops
-the script.
+environment. Commands share one subshell which inherits login startup variables
+and functions; a failing command or pipeline stops the script. Logout hooks cannot
+replace the configured commands' exit status.
 
 `repositories[].command_timeout` is a positive Go duration, defaulting to `20m`.
 It bounds an entire setup or checks script, rather than each command in the list.
@@ -67,6 +68,10 @@ started. Explicit Retry reruns setup before the agent phase.
 After a control-plane restart, Mergeyard waits on a live setup session and reads
 exit metadata for a finished session. If the outcome is unknown, it stops any
 remaining owned processes and reruns the idempotent setup list.
+Removing the configured list does not bypass an already-started setup execution.
+Mergeyard observes its result and, when the outcome is unknown, reruns its saved
+commands with the originally captured timeout before starting the agent. New
+executions for later phases or newly prepared worktrees use current configuration.
 
 ## Repository checks
 
@@ -103,6 +108,10 @@ whole owned process group and preserves the worktree. On restart, Mergeyard wait
 on a live session or reads its saved results. An unknown outcome causes remaining
 owned processes to be stopped and checks to be rerun before publication; the
 wrapper's timeout watchdog keeps running while the control plane is offline.
+Clearing `checks` while a step is pending still requires that execution to finish
+and its result to be handled before publication. Unknown outcomes replay the saved
+configured commands with their captured timeout. Completed results remain in the
+review input after the list is removed; later phases use current configuration.
 
 `repositories[].check_retries` is a nonnegative integer, defaulting to `1`.
 `0` disables automatic fixes after failed checks. Within the remaining allowance,

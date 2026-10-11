@@ -270,7 +270,7 @@ func (s *Scheduler) resumeHandback(ctx context.Context, repo config.Repository, 
 			return err
 		}
 	}
-	if len(repo.Checks) > 0 {
+	if len(repo.Checks) > 0 || runningSystemStep(run, "checks") {
 		result, done, err := s.systemStep(ctx, repo, run, gitRun, systemStepRequest{Step: "checks", Commands: repo.Checks, TargetSHA: v.CommitSHA, OwnerID: fmt.Sprintf("handback:%d", v.ID)})
 		if err != nil {
 			return pending(err)

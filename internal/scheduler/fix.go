@@ -221,7 +221,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 		})
 		return err // Separate reconciliation steps make each crash boundary durable.
 	}
-	if !a.pushed && len(repo.Checks) > 0 {
+	if !a.pushed && (len(repo.Checks) > 0 || runningSystemStep(run, "checks")) {
 		v, done, err := s.systemStep(ctx, repo, run, gitRun, systemStepRequest{Step: "checks", Commands: repo.Checks, TargetSHA: a.commit, OwnerID: a.id, Retry: s.recheckRequested(run, a.id)})
 		if err != nil {
 			return fail(err)
