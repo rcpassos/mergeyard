@@ -350,7 +350,19 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 			repair = run.Fix.CI
 		}
 	}
-	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair})
+	var checks *workflow.SystemStepSnapshot
+	if len(repo.Checks) > 0 {
+		steps, err := workflow.LoadSystemSteps(ctx, s.db, run.ID)
+		if err != nil {
+			return err
+		}
+		for i := range steps {
+			if steps[i].Step == "checks" && steps[i].TargetSHA == snapshot.Head {
+				checks = &steps[i]
+			}
+		}
+	}
+	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair, Checks: checks})
 	if err != nil {
 		return fail(err)
 	}

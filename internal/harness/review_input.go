@@ -23,6 +23,7 @@ type ReviewInput struct {
 	PreviousFindings []review.Finding
 	FixReport        *review.FixReport
 	CI               *ci.Snapshot
+	Checks           *workflow.SystemStepSnapshot
 	Round            int
 }
 
@@ -45,6 +46,10 @@ func WriteReviewInput(ctx context.Context, writer FileWriter, phase PhaseContext
 		prior, _ := json.MarshalIndent(input.PreviousFindings, "", "  ")
 		fix, _ := json.MarshalIndent(input.FixReport, "", "  ")
 		text.WriteString("\n\n## Previous findings\n\n" + string(prior) + "\n\n## Implementer fix report\n\n" + string(fix) + "\n\nAdjudicate every dispute independently. Return the complete remaining blocking list for this target, including unresolved earlier findings. Warnings and notes do not prevent approval.\n")
+	}
+	if input.Checks != nil && input.Checks.TargetSHA == input.TargetSHA {
+		results, _ := json.MarshalIndent(input.Checks.Results, "", "  ")
+		text.WriteString("\n\n## Local checks\n\nMergeyard ran these configured commands against target commit " + input.Checks.TargetSHA + ":\n\n" + string(results) + "\n")
 	}
 	if input.CI != nil {
 		diagnostics, _ := json.MarshalIndent(input.CI, "", "  ")

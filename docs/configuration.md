@@ -49,8 +49,8 @@ environment. Commands share the same shell; a failing command or pipeline stops
 the script.
 
 `repositories[].command_timeout` is a positive Go duration, defaulting to `20m`.
-It bounds the entire setup script, rather than each command in the list. The
-phase wrapper owns the timeout watchdog, which continues running if the control
+It bounds an entire setup or checks script, rather than each command in the list.
+The phase wrapper owns the timeout watchdog, which continues running if the control
 plane restarts. Timeout and Stop end the whole owned process group. Stop preserves
 the worktree.
 
@@ -64,6 +64,62 @@ started. Explicit Retry reruns setup before the agent phase.
 After a control-plane restart, Mergeyard waits on a live setup session and reads
 exit metadata for a finished session. If the outcome is unknown, it stops any
 remaining owned processes and reruns the idempotent setup list.
+
+## Repository checks
+
+`repositories[].checks` is a list of shell commands, defaulting to `[]`. Omit it
+or leave it empty to keep the existing flow. Like setup, checks come only from
+repository configuration, never from issue or PR text. Commands must be nonempty
+and contain no NUL characters.
+
+```yaml
+repositories:
+  - repo: company/api
+    setup: ["npm ci"]
+    checks: ["npm test", "npm run lint"]
+    check_retries: 1
+    command_timeout: 20m
+```
+
+After every successful `implement` or `fix`, including a CI-repair fix, Mergeyard
+commits the changes, runs checks, then pushes and starts review. A failing commit
+is not pushed. Checks reuse setup's `bash --login` script, shared shell,
+`set -e`, `set -o pipefail`, configured environment, and process-group cleanup.
+`command_timeout` (default `20m`) bounds the entire check list on each execution.
+
+Checks are a system step inside the current `ACTIVE/implement` or `ACTIVE/fix`
+phase, recorded as `step: checks`. The tmux session is named
+`mergeyard-<short-run-id>-checks-<round>-<n>`, with executions counted separately
+from agent attempts. Watch attaches to the live check session. Stop ends its
+whole owned process group and preserves the worktree. On restart, Mergeyard waits
+on a live session or reads its saved results. An unknown outcome causes remaining
+owned processes to be stopped and checks to be rerun before publication; the
+wrapper's timeout watchdog keeps running while the control plane is offline.
+
+`repositories[].check_retries` is a nonnegative integer, defaulting to `1`.
+`0` disables automatic fixes after failed checks. Within the remaining allowance,
+each failure resumes the implementer's session in the same phase with the failing command and an output
+excerpt in its input file. These extra phase attempts consume only the check
+retry allowance, not `max_attempts` or review rounds. Usage-limit waits retain
+their usual handling and bounds. Restart preserves the check retry allowance and
+resumes an in-progress check-retry attempt without granting another retry.
+
+A failure or timeout with no retries remaining moves the run to
+`NEEDS_ATTENTION` with `checks.failed`. Explicit Retry grants exactly one more
+check/fix attempt, records the grant in run history, and reruns checks first so
+manual repairs can pass without another agent attempt. It preserves the previous
+check results and retry history rather than resetting the configured allowance.
+
+Handback commits manual changes and runs checks before pushing or reviewing.
+A failure requires attention with `checks.failed` immediately; Mergeyard does
+not automatically fix the user's changes. The latest check results (command,
+pass/fail, and output excerpt) are included in the review input. PR fix comments
+also report check retries.
+
+Current-base verification is tracked separately in
+[#96](https://github.com/rcpassos/mergeyard/issues/96). Its planned
+`verify_commands` setting defaults to `checks` when omitted; an explicit `[]`
+disables that verification. `verify_commands` is not yet a supported setting.
 
 ## Editing configuration
 
@@ -129,6 +185,8 @@ settings, including repositories with `enabled: false`.
 | `config.invalid_concurrency` | Concurrency must be a positive finite integer |
 | `config.invalid_max_rounds` | Round limit must be a positive finite integer |
 | `config.invalid_max_attempts` | Role attempt limit must be a positive finite integer |
+| `config.invalid_checks` | Check commands must be nonempty and contain no NUL |
+| `config.invalid_check_retries` | Check retry limit must be a nonnegative finite integer |
 | `config.invalid_max_waits` | Usage-limit wait bound must be a positive finite integer |
 | `config.invalid_duration` | CI timeout, repository command timeout, poll interval or cooldown must parse as a positive Go duration |
 | `config.invalid_permission_mode` | Claude permission mode must be `auto`, `acceptEdits`, or `bypassPermissions` |

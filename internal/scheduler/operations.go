@@ -135,7 +135,7 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 func (s *Scheduler) Watch(ctx context.Context, id string) (runner.SessionRef, error) {
 	var ref runner.SessionRef
 	err := s.workflow.WithRunOperation(ctx, id, func(ctx context.Context, run workflow.Run) error {
-		if run.State != workflow.Active {
+		if run.State != workflow.Active && run.PendingHandback() == nil {
 			return &fault.Error{Code: "phase.not_running", Message: "Run has no live automated phase"}
 		}
 		var input string

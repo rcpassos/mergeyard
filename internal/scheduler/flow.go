@@ -130,8 +130,18 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	if !done {
 		return nil
 	}
-	if _, err := s.deps.Git.CommitAndPush(ctx, gitRun, managedgit.Phase{Title: issue.Title, RequireChanges: true}); err != nil {
-		return s.attention(ctx, repo, run, err)
+	if len(repo.Checks) == 0 {
+		if _, err := s.deps.Git.CommitAndPush(ctx, gitRun, managedgit.Phase{Title: issue.Title, RequireChanges: true}); err != nil {
+			return s.attention(ctx, repo, run, err)
+		}
+	} else {
+		ready, err := s.checkImplementation(ctx, repo, run, issue, gitRun)
+		if err != nil {
+			return s.attention(ctx, repo, run, err)
+		}
+		if !ready {
+			return nil
+		}
 	}
 	pr, err := s.deps.GitHub.FindOpenPullRequest(ctx, repo.Repo, gitRun.Branch)
 	if err != nil {
@@ -231,22 +241,23 @@ func (s *Scheduler) context(ctx context.Context, run workflow.Run) (github.Issue
 }
 
 type attempt struct {
-	id        string
-	agent     string
-	number    int
-	status    string
-	ref       runner.SessionRef
-	sessionID string
-	resumed   bool
-	failure   string
+	id           string
+	agent        string
+	number       int
+	status       string
+	ref          runner.SessionRef
+	sessionID    string
+	resumed      bool
+	failure      string
+	checkRetryOf string
 }
 
 func (s *Scheduler) lastAttempt(ctx context.Context, id string) (attempt, error) {
 	var a attempt
 	var input string
 	var savedSession sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id,attempt,status,COALESCE(process_session,''),COALESCE(input_path,''),resumed_session,COALESCE(error,''),agent,session_id
- FROM phase_attempts WHERE run_id=? AND phase='implement' AND step='' ORDER BY attempt DESC LIMIT 1`, id).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure, &a.agent, &savedSession)
+	err := s.db.QueryRowContext(ctx, `SELECT id,attempt,status,COALESCE(process_session,''),COALESCE(input_path,''),resumed_session,COALESCE(error,''),agent,session_id,check_retry_of
+ FROM phase_attempts WHERE run_id=? AND phase='implement' AND step='' ORDER BY attempt DESC LIMIT 1`, id).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure, &a.agent, &savedSession, &a.checkRetryOf)
 	if err != nil {
 		return a, err
 	}
@@ -390,7 +401,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	return result, true, nil
 }
 
-func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, run workflow.Run, issue github.Issue, gitRun managedgit.Run, number int) error {
+func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, run workflow.Run, issue github.Issue, gitRun managedgit.Run, number int, checkRetry ...string) error {
 	if gated, err := s.gatePhase(ctx, run, repo.Implementer.Agent); gated || err != nil {
 		return err
 	}
@@ -431,11 +442,19 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	}
 	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
 	phase.Interruption = interruptionContext(previous, phase)
+	checkID := previous.checkRetryOf
+	if floor := attemptWindowStart(run, workflow.Implement); number == floor && number > previous.number {
+		checkID = ""
+	}
+	if len(checkRetry) > 0 {
+		checkID = checkRetry[0]
+	}
+	checkResult := s.checkResult(run, checkID)
 	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
 		return err
 	}
-	input, err := harness.WriteImplementInput(ctx, s.deps.Runner, phase, harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch})
+	input, err := harness.WriteImplementInput(ctx, s.deps.Runner, phase, harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch, Checks: checkResult})
 	if err != nil {
 		return err
 	}
@@ -455,8 +474,8 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		if _, err := tx.ExecContext(ctx, "UPDATE runs SET implementer_session_id=? WHERE id=?", sessionID, run.ID); err != nil {
 			return events.Draft{}, err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions,session_id)
- VALUES (?,?,'implement','implementer',0,?,?,?,?,'running',?,?,?,?,?,?,?,?)`, id, run.ID, number, repo.Implementer.Agent, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills), s.rolePermissions(repo.Implementer.Agent), sessionID)
+		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions,session_id,check_retry_of)
+ VALUES (?,?,'implement','implementer',0,?,?,?,?,'running',?,?,?,?,?,?,?,?,?)`, id, run.ID, number, repo.Implementer.Agent, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills), s.rolePermissions(repo.Implementer.Agent), sessionID, checkID)
 		if err != nil {
 			return events.Draft{}, err
 		}
@@ -467,7 +486,7 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 			return reserveRecovery(ctx, tx, run, workflow.Implement, previous, id, sessionID)
 		}
 		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{
-			"phase": workflow.Implement, "round": 0, "attempt": number,
+			"phase": workflow.Implement, "round": 0, "attempt": number, "check_retry_of": checkID, "resumed_session": resume,
 		}}, err
 	})
 	if err != nil {

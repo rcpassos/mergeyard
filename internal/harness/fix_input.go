@@ -19,6 +19,7 @@ type FixInput struct {
 	TargetSHA string
 	Round     int
 	Findings  []review.Finding
+	Checks    *workflow.SystemStepSnapshot
 	CI        *ci.Snapshot
 }
 
@@ -40,6 +41,13 @@ func WriteFixInput(ctx context.Context, writer FileWriter, phase PhaseContext, i
 		return "", err
 	}
 	text.Write(findings)
+	if input.Checks != nil {
+		data, err := json.MarshalIndent(input.Checks, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		text.WriteString("\n\n## Local checks\n\nRepair the failing configured command below, retaining responses for the supplied findings. Mergeyard will rerun checks before publication.\n\n" + string(data))
+	}
 	if input.CI != nil {
 		diagnostics, err := json.MarshalIndent(input.CI, "", "  ")
 		if err != nil {
