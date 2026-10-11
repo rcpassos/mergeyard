@@ -15,9 +15,10 @@ workspace package is responsible for expanding `~` when using them.
 
 Model and effort strings pass through to the selected harness without a catalog.
 `null` clears a model or effort override. An explicit empty `skills` list clears
-inherited skills. CI timeouts, poll intervals and usage-limit cooldowns must be positive
-durations. Resolved labels must be nonempty and distinct, and repositories may
-only be listed once; both comparisons ignore case.
+inherited skills. CI timeouts, repository command timeouts, poll intervals and
+usage-limit cooldowns must be positive durations. Resolved labels must be nonempty
+and distinct, and repositories may only be listed once; both comparisons ignore
+case.
 
 Unknown keys are tolerated and retained. `Document.Warnings` returns diagnostics
 with code `config.unknown_field`, a field path, and a message so callers such as
@@ -26,6 +27,43 @@ Warnings describe the last Parse/Load; reload after edits to refresh them.
 Known configuration
 sections must be mappings with unique string keys; YAML merge keys (`<<`) are
 rejected rather than silently ignored. Ordinary anchors and aliases can be read.
+
+## Repository setup commands
+
+`repositories[].setup` is a list of shell commands, defaulting to `[]`. Omit it or
+leave it empty to keep the existing workspace and agent flow. It is a repository
+setting; commands are never read from issue or PR text.
+
+```yaml
+repositories:
+  - repo: company/api
+    setup: ["npm ci"]
+    command_timeout: 20m
+```
+
+After preparing a fresh worktree, Mergeyard runs the setup list before starting
+the implementer. Setup also runs whenever Mergeyard recreates that worktree, so
+commands must be idempotent. The list runs in order as one `bash --login` script
+with `set -e` and `set -o pipefail`, using only the explicitly configured
+environment. Commands share the same shell; a failing command or pipeline stops
+the script.
+
+`repositories[].command_timeout` is a positive Go duration, defaulting to `20m`.
+It bounds the entire setup script, rather than each command in the list. The
+phase wrapper owns the timeout watchdog, which continues running if the control
+plane restarts. Timeout and Stop end the whole owned process group. Stop preserves
+the worktree.
+
+Setup is a system step within `ACTIVE/implement`, recorded in phase metadata as
+`step: setup`. Its tmux session is named
+`mergeyard-<short-run-id>-setup-<round>-<n>` and can be watched with
+`mergeyard watch <run-id>`. A failure or timeout moves the run to `NEEDS_ATTENTION`
+with `workspace.setup_failed` and an output excerpt; the implementer is never
+started. Explicit Retry reruns setup before the agent phase.
+
+After a control-plane restart, Mergeyard waits on a live setup session and reads
+exit metadata for a finished session. If the outcome is unknown, it stops any
+remaining owned processes and reruns the idempotent setup list.
 
 ## Editing configuration
 
@@ -92,7 +130,7 @@ settings, including repositories with `enabled: false`.
 | `config.invalid_max_rounds` | Round limit must be a positive finite integer |
 | `config.invalid_max_attempts` | Role attempt limit must be a positive finite integer |
 | `config.invalid_max_waits` | Usage-limit wait bound must be a positive finite integer |
-| `config.invalid_duration` | CI timeout, poll interval or cooldown must parse as a positive Go duration |
+| `config.invalid_duration` | CI timeout, repository command timeout, poll interval or cooldown must parse as a positive Go duration |
 | `config.invalid_permission_mode` | Claude permission mode must be `auto`, `acceptEdits`, or `bypassPermissions` |
 | `config.invalid_sandbox` | Codex sandbox must be `workspace-write` or `danger-full-access` |
 | `config.invalid_path` | Document edit path cannot be traversed |

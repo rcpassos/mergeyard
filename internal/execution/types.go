@@ -1,7 +1,10 @@
 // Package execution defines the transport-independent phase execution contract.
 package execution
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 // Command is an executable invocation. Env is the complete child environment;
 // it never augments the control plane's environment. Empty StdinPath means EOF.
@@ -25,6 +28,9 @@ func (c Command) Environment() []string {
 
 // SessionRequest identifies a single phase attempt and where its logs are kept.
 type SessionRequest struct {
+	// Timeout is enforced by the wrapper even while the control plane is offline.
+	// Zero leaves the session unbounded.
+	Timeout  time.Duration
 	RunID    string
 	Phase    string
 	Round    int
@@ -48,6 +54,7 @@ const (
 )
 
 type SessionStatus struct {
+	TimedOut bool
 	State    SessionState
 	ExitCode *int
 }

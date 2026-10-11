@@ -139,7 +139,7 @@ func (s *Scheduler) Watch(ctx context.Context, id string) (runner.SessionRef, er
 			return &fault.Error{Code: "phase.not_running", Message: "Run has no live automated phase"}
 		}
 		var input string
-		err := s.db.QueryRowContext(ctx, `SELECT process_session,input_path FROM phase_attempts WHERE run_id=? AND phase=? AND status='running' ORDER BY round DESC,attempt DESC LIMIT 1`, id, run.Phase).Scan(&ref.Name, &input)
+		err := s.db.QueryRowContext(ctx, `SELECT process_session,input_path FROM phase_attempts WHERE run_id=? AND phase=? AND status='running' ORDER BY started_at DESC,rowid DESC LIMIT 1`, id, run.Phase).Scan(&ref.Name, &input)
 		if errors.Is(err, sql.ErrNoRows) {
 			return &fault.Error{Code: "phase.not_running", Message: "Run has no live phase session"}
 		}
