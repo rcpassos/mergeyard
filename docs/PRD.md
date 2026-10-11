@@ -745,7 +745,7 @@ round 3: approved → CI passed → READY_TO_MERGE
 
 ### Prior finding accountability
 
-Review input lists the prior blocking IDs the reviewer must account for and the outcome rules from §13.2. The latest accepted review at or before the current round supplies those IDs, including after retries, restarts, CI repairs, and manual handback. A changed-head Retry retains its round number but must still account for that round's previously accepted blockers; failed or rejected attempts do not replace the accepted source. The implementer fix report supplies disputes for explicit adjudication. Warnings and notes do not require prior outcomes. An approved round followed by a CI repair therefore has an empty `prior_findings` array.
+Review input lists the prior blocking IDs the reviewer must account for and the outcome rules from §13.2. The latest accepted review at or before the current round supplies those IDs, including after retries, restarts, CI repairs, and manual handback. A changed-head Retry retains its round number but must still account for that round's previously accepted blockers; failed or rejected attempts do not replace the accepted source. Only fix attempts created after the selected accepted review and pinned to its target supply disputes for explicit adjudication. Older fix responses have already been adjudicated by that review and are excluded, including on a Retry that reviews the same commit again. Warnings and notes do not require prior outcomes. An approved round followed by a CI repair therefore has an empty `prior_findings` array.
 
 ### Review is read-only
 

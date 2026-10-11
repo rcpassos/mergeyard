@@ -76,20 +76,26 @@ func LoadPriorContext(ctx context.Context, db queryer, runID string, round int) 
 	}
 	var raw string
 	var priorRound int
-	err := db.QueryRowContext(ctx, `SELECT v.report_json,a.round FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.run_id=? AND a.round<=? AND v.accepted=1 ORDER BY a.round DESC,a.attempt DESC LIMIT 1`, runID, round).Scan(&raw, &priorRound)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var priorOrder int64
+	var priorTarget string
+	err := db.QueryRowContext(ctx, `SELECT v.report_json,a.round,a.rowid,v.target_sha FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.run_id=? AND a.round<=? AND v.accepted=1 ORDER BY a.round DESC,a.attempt DESC LIMIT 1`, runID, round).Scan(&raw, &priorRound, &priorOrder, &priorTarget)
+	if errors.Is(err, sql.ErrNoRows) {
+		return findings, nil, nil
+	}
+	if err != nil {
 		return nil, nil, err
 	}
-	if err == nil {
-		var report Report
-		if err := json.Unmarshal([]byte(raw), &report); err != nil {
-			return nil, nil, err
-		}
-		findings = report.Findings
+	var report Report
+	if err := json.Unmarshal([]byte(raw), &report); err != nil {
+		return nil, nil, err
 	}
+	findings = report.Findings
 	// A blocked/failed fix can still contain validated partial responses. Those
 	// disputes also need a ruling when manual handback advances the review.
-	err = db.QueryRowContext(ctx, `SELECT f.report_json FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=? AND a.round=? AND f.report_json IS NOT NULL ORDER BY a.attempt DESC LIMIT 1`, runID, priorRound).Scan(&raw)
+	// Fixes must follow the selected review and address its pinned target. Earlier
+	// fixes have already been adjudicated by that review, even on the same SHA.
+	// SQLite rowid supplies insertion order without timestamp precision ties.
+	err = db.QueryRowContext(ctx, `SELECT f.report_json FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=? AND a.round=? AND a.rowid>? AND f.target_sha=? AND f.report_json IS NOT NULL ORDER BY a.attempt DESC LIMIT 1`, runID, priorRound, priorOrder, priorTarget).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return findings, nil, nil
 	}
