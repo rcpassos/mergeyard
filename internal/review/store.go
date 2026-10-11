@@ -66,15 +66,17 @@ func scanReview(row interface{ Scan(...any) error }) (*Snapshot, error) {
 	return &v, nil
 }
 
-// LoadPriorContext uses the accepted review from the immediately preceding
-// round, even after a manual handback or retry that bypassed a fix.
+// LoadPriorContext uses the latest accepted review at or before this round.
+// A changed-head Retry can replace an accepted review within the same round;
+// failed attempts must not erase that accepted report or its fix responses.
 func LoadPriorContext(ctx context.Context, db queryer, runID string, round int) ([]Finding, *FixReport, error) {
 	findings := []Finding{}
-	if round <= 1 {
+	if round < 1 {
 		return findings, nil, nil
 	}
 	var raw string
-	err := db.QueryRowContext(ctx, `SELECT v.report_json FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.run_id=? AND a.round=? AND v.accepted=1 ORDER BY a.attempt DESC LIMIT 1`, runID, round-1).Scan(&raw)
+	var priorRound int
+	err := db.QueryRowContext(ctx, `SELECT v.report_json,a.round FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.run_id=? AND a.round<=? AND v.accepted=1 ORDER BY a.round DESC,a.attempt DESC LIMIT 1`, runID, round).Scan(&raw, &priorRound)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, err
 	}
@@ -87,7 +89,7 @@ func LoadPriorContext(ctx context.Context, db queryer, runID string, round int) 
 	}
 	// A blocked/failed fix can still contain validated partial responses. Those
 	// disputes also need a ruling when manual handback advances the review.
-	err = db.QueryRowContext(ctx, `SELECT f.report_json FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=? AND a.round=? AND f.report_json IS NOT NULL ORDER BY a.attempt DESC LIMIT 1`, runID, round-1).Scan(&raw)
+	err = db.QueryRowContext(ctx, `SELECT f.report_json FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=? AND a.round=? AND f.report_json IS NOT NULL ORDER BY a.attempt DESC LIMIT 1`, runID, priorRound).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return findings, nil, nil
 	}

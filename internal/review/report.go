@@ -194,7 +194,7 @@ func (r Report) ValidatePriorFindings(round int, previous []Finding, fix *FixRep
 		return nil
 	}
 	remaining := map[string]bool{}
-	if round > 1 {
+	if round > 1 || len(previous) > 0 {
 		for _, f := range previous {
 			if f.Severity == "blocking" {
 				remaining[f.ID] = true

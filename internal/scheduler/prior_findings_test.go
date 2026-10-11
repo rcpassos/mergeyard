@@ -125,3 +125,77 @@ func TestHarnessPairingsReconcileV1ReviewAfterUpgrade(t *testing.T) {
 		}
 	}
 }
+
+func TestChangedHeadRetryAccountsForAcceptedSameRoundBlockers(t *testing.T) {
+	for _, implementer := range []string{"claude", "codex"} {
+		for _, reviewer := range []string{"claude", "codex"} {
+			for _, complete := range []bool{false, true} {
+				name := "omitted"
+				report := approvedReview
+				if complete {
+					name = "accounted"
+					report = approvedAfterFixReview
+				}
+				t.Run(implementer+"/"+reviewer+"/"+name, func(t *testing.T) {
+					ctx := context.Background()
+					_, rt, api, _, cfg, r := pairingFlow(t, implementer, reviewer, disputedReport)
+					cfg.MaxRounds = 1
+					s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+					if err != nil {
+						t.Fatal(err)
+					}
+					before := finish(t, s, workflow.NeedsAttention, workflow.Review)
+					path := filepath.Join(rt.Workspace.Root, "worktrees", "owner-repo", before.ID)
+					if err := os.WriteFile(filepath.Join(path, "feature.txt"), []byte("published repair"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					gitCommand(t, path, "add", "feature.txt")
+					gitCommand(t, path, "commit", "-m", "published repair")
+					gitCommand(t, path, "push", "origin", "HEAD")
+					replacePhaseScript(t, cfg, workflow.Review, reviewScript(report))
+					selected, err := s.Retry(ctx, before.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if selected.ReviewRound != 1 {
+						t.Fatalf("retry unexpectedly changed round: %d", selected.ReviewRound)
+					}
+					// Reload the scheduler to verify the prior identity survives restart.
+					s, err = scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var after workflow.Run
+					waitFor(t, func() bool {
+						if err := s.Tick(ctx); err != nil {
+							t.Fatal(err)
+						}
+						after, err = rt.Workflow.Get(ctx, before.ID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						return after.State == workflow.NeedsAttention || after.State == workflow.WaitingForCI
+					})
+					input, err := os.ReadFile(filepath.Join(rt.Workspace.Root, "runs", before.ID, "phases", "review-1-2", "input.md"))
+					if err != nil || !strings.Contains(string(input), `Prior blocking IDs to account for:
+["F1","F2"]`) {
+						t.Fatalf("retry prompt lost blocker identities: %v", err)
+					}
+					if complete {
+						if after.State != workflow.WaitingForCI || !after.Review.Accepted || len(after.Review.Report.PriorFindings) != 2 {
+							t.Fatalf("accounted blockers not accepted: %s %s", after.State, after.LastErrorMessage)
+						}
+					} else if after.State != workflow.NeedsAttention || after.LastErrorCode != "phase.result_invalid" || after.Review.Accepted || after.ApprovedSHA != "" {
+						t.Fatalf("prior blockers disappeared: %s accepted=%v", after.State, after.Review.Accepted)
+					}
+					if !complete {
+						prior, _, err := review.LoadPriorContext(ctx, rt.DB, before.ID, after.ReviewRound)
+						if err != nil || len(prior) != 2 || prior[0].ID != "F1" || prior[1].ID != "F2" {
+							t.Fatalf("rejected retry replaced accepted blockers: %+v %v", prior, err)
+						}
+					}
+				})
+			}
+		}
+	}
+}

@@ -41,11 +41,15 @@ func TestNativeReviewContract(t *testing.T) {
 }
 
 func TestReviewInputStatesPriorOutcomeRulesAndRequiredIDs(t *testing.T) {
-	for _, round := range []int{1, 2} {
+	for _, round := range []int{0, 1, 2} {
 		ctx := phase(t)
 		ctx.Phase = workflow.Review
 		writer := runner.NewLocal(runner.Options{})
 		input := harness.ReviewInput{Round: round, PreviousFindings: []review.Finding{{ID: "R1-F1", Severity: "blocking"}, {ID: "R1-F2", Severity: "warning"}}}
+		if round == 0 {
+			input.Round = 1
+			input.PreviousFindings = nil
+		}
 		path, err := harness.WriteReviewInput(context.Background(), writer, ctx, input)
 		if err != nil {
 			t.Fatal(err)
@@ -55,10 +59,10 @@ func TestReviewInputStatesPriorOutcomeRulesAndRequiredIDs(t *testing.T) {
 			t.Fatal(err)
 		}
 		ids := "[]"
-		if round == 2 {
+		if round != 0 {
 			ids = `["R1-F1"]`
 		}
-		for _, want := range []string{"prior_findings: [] in round 1", "exactly one prior_findings entry", "same ID", "disputed fix response", "Prior blocking IDs to account for:\n" + ids, review.Schema} {
+		for _, want := range []string{"initial review in round 1", "changed-head Retry within the same round", "exactly one prior_findings entry", "same ID", "disputed fix response", "Prior blocking IDs to account for:\n" + ids, review.Schema} {
 			if !strings.Contains(string(data), want) {
 				t.Fatalf("missing rule %q: %s", want, data)
 			}

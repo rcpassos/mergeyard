@@ -56,6 +56,8 @@ func TestValidatePriorFindings(t *testing.T) {
 		fix      *review.FixReport
 		valid    bool
 	}{
+		{"same round retry accounted", 1, []review.PriorFinding{{"F1", "fixed", "Verified"}}, nil, nil, true},
+		{"same round retry omitted", 1, []review.PriorFinding{}, nil, nil, false},
 		{"first round", 1, []review.PriorFinding{}, nil, nil, true},
 		{"first round has outcome", 1, []review.PriorFinding{{"F1", "fixed", "Verified"}}, nil, nil, false},
 		{"omitted blocker", 2, []review.PriorFinding{}, nil, nil, false},
@@ -84,7 +86,11 @@ func TestValidatePriorFindings(t *testing.T) {
 				}
 			}
 			report := review.Report{SchemaVersion: 2, Status: status, Findings: findings, PriorFindings: tc.prior}
-			err := report.ValidatePriorFindings(tc.round, []review.Finding{blocker, warning}, tc.fix)
+			previous := []review.Finding{blocker, warning}
+			if tc.round == 1 && !strings.HasPrefix(tc.name, "same round") {
+				previous = nil
+			}
+			err := report.ValidatePriorFindings(tc.round, previous, tc.fix)
 			if (err == nil) != tc.valid {
 				t.Fatalf("valid=%v err=%v", tc.valid, err)
 			}

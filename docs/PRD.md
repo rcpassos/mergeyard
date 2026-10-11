@@ -636,7 +636,7 @@ Statuses: `approved`, `changes_required`, `blocked`, `failed`.
 
 Severities: `blocking`, `warning`, `note`. Only `blocking` findings prevent approval. On later rounds the reviewer returns the complete current list of blocking findings, not only new ones. `file` and `line` are `null` when a finding has no location.
 
-Review schema v2 requires `prior_findings`. Round 1 returns an empty array. Each later round returns exactly one outcome for every blocking finding from the preceding accepted review:
+Review schema v2 requires `prior_findings`. The initial review in round 1 returns an empty array. Each subsequent review returns exactly one outcome for every blocking finding from the latest accepted review, including a changed-head Retry within the same round:
 
 ```json
 "prior_findings": [
@@ -745,7 +745,7 @@ round 3: approved → CI passed → READY_TO_MERGE
 
 ### Prior finding accountability
 
-Review input lists the prior blocking IDs the reviewer must account for and the outcome rules from §13.2. The preceding accepted review supplies those IDs, including after retries, restarts, CI repairs, and manual handback. The implementer fix report supplies disputes for explicit adjudication. Warnings and notes do not require prior outcomes. An approved round followed by a CI repair therefore has an empty `prior_findings` array.
+Review input lists the prior blocking IDs the reviewer must account for and the outcome rules from §13.2. The latest accepted review at or before the current round supplies those IDs, including after retries, restarts, CI repairs, and manual handback. A changed-head Retry retains its round number but must still account for that round's previously accepted blockers; failed or rejected attempts do not replace the accepted source. The implementer fix report supplies disputes for explicit adjudication. Warnings and notes do not require prior outcomes. An approved round followed by a CI repair therefore has an empty `prior_findings` array.
 
 ### Review is read-only
 
