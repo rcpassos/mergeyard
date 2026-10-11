@@ -12,3 +12,8 @@ _Avoid_: Native limit format, limit error
 **Exhausted-credit block**: A restriction caused by exhausted credits or a spend cap, whose recovery requires an explicit user action rather than a scheduled reset.
 
 **Recovery probe**: A user-requested attempt to establish whether a harness blocked by exhausted credits is usable again. It can perform the next work for a selected run or make a minimal availability check without engineering work.
+
+**Role settings**: The harness, model, effort and skills one role (implementer or reviewer) uses throughout a run. They are resolved when the issue is claimed.
+
+**Harness override**: An issue label that selects which configured harness performs one role for that issue's run, in place of the repository's configured harness.
+_Avoid_: Agent label, harness label
