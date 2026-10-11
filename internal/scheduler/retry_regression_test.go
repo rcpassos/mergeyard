@@ -41,6 +41,9 @@ func TestRetryChangedHeadAfterFixUsesReconciledReviewTarget(t *testing.T) {
 	gitCommand(t, path, "commit", "-m", "human edit after round two")
 	gitCommand(t, path, "push", "origin", "HEAD")
 	target := gitCommand(t, path, "rev-parse", "HEAD")
+	// Round two already resolved F1/F2. This retry must account for the
+	// latest accepted review, whose only finding is nonblocking.
+	replacePhaseScript(t, cfg, workflow.Review, reviewScript(approvedReview))
 	selected, err := s.Retry(context.Background(), before.ID)
 	if err != nil || selected.State != workflow.Active || selected.Phase != workflow.Review || selected.ApprovedSHA != "" {
 		t.Fatalf("retry selection: %+v %v", selected, err)
@@ -55,6 +58,9 @@ func TestRetryChangedHeadAfterFixUsesReconciledReviewTarget(t *testing.T) {
 	after := finish(t, s, workflow.WaitingForCI, workflow.Review)
 	if after.ApprovedSHA != target || after.ReviewRound != 2 || after.Fix.CommitSHA != before.Fix.CommitSHA || len(after.FixHistory) != 1 {
 		t.Fatalf("changed-head retry lost review/fix history: %+v", after)
+	}
+	if len(after.Review.Report.PriorFindings) != 0 {
+		t.Fatal("retry accounted for already-resolved blockers instead of the latest accepted review")
 	}
 }
 

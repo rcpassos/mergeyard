@@ -33,14 +33,18 @@ func parseImplementResult(data []byte) (PhaseResult, error) {
 }
 
 // The same semantic contracts apply regardless of the native harness envelope.
-func parsePhaseResult(phase workflow.Phase, data []byte) (PhaseResult, error) {
-	switch phase {
+func parsePhaseResult(ctx PhaseContext, data []byte) (PhaseResult, error) {
+	switch ctx.Phase {
 	case workflow.Review:
-		report, err := review.Parse(data)
+		parse := review.Parse
+		if ctx.AllowLegacyReview {
+			parse = review.ParseLegacy
+		}
+		report, err := parse(data)
 		if err != nil {
 			return PhaseResult{}, phaseError("phase.result_invalid", "Invalid structured review report", err)
 		}
-		return PhaseResult{SchemaVersion: report.SchemaVersion, Status: report.Status, Summary: report.Summary, Findings: report.Findings}, nil
+		return PhaseResult{SchemaVersion: report.SchemaVersion, Status: report.Status, Summary: report.Summary, Findings: report.Findings, PriorFindings: report.PriorFindings}, nil
 	case workflow.Fix:
 		report, err := review.ParseFix(data)
 		if err != nil {

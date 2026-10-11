@@ -18,14 +18,22 @@ import (
 	"time"
 )
 
-const changesReview = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"changes_required","summary":"Fix bug","findings":[{"id":"F1","severity":"blocking","title":"Bug","details":"Broken","file":"feature.txt","line":1},{"id":"F2","severity":"blocking","title":"Disputable","details":"Explain","file":null,"line":null}]}}'`
+const changesReview = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"prior_findings":[],"status":"changes_required","summary":"Fix bug","findings":[{"id":"F1","severity":"blocking","title":"Bug","details":"Broken","file":"feature.txt","line":1},{"id":"F2","severity":"blocking","title":"Disputable","details":"Explain","file":null,"line":null}]}}'`
 const fixedReport = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"success","summary":"Fixed <script>bug</script>","responses":[{"finding_id":"F1","resolution":"fixed","note":"Changed source"},{"finding_id":"F2","resolution":"disputed","note":"Already safe"}]}}'`
 const disputedReport = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"success","summary":"Disputed","responses":[{"finding_id":"F1","resolution":"disputed","note":"Safe"},{"finding_id":"F2","resolution":"disputed","note":"Already safe"}]}}'`
 
+var approvedAfterFixReview = strings.Replace(approvedReview, `"prior_findings":[]`, `"prior_findings":[{"finding_id":"F1","outcome":"fixed","note":"Source repaired"},{"finding_id":"F2","outcome":"no_longer_applies","note":"Dispute accepted"}]`, 1)
+var approvedAfterDisputesReview = strings.Replace(approvedAfterFixReview, `"outcome":"fixed"`, `"outcome":"no_longer_applies"`, 1)
+
 func loopScript(fix string) string {
+	approved := approvedAfterDisputesReview
+	if strings.Contains(fix, `"resolution":"fixed"`) {
+		approved = approvedAfterFixReview
+	}
+
 	return `case "$*" in
  *review-1-*) ` + changesReview + `;;
- *review-*) ` + approvedReview + `;;
+ *review-*) ` + approved + `;;
  *fix-*) ` + fix + `;;
  *) ` + successfulScript + `;;
  esac`
@@ -151,7 +159,8 @@ func TestBoundedReviewLoopDoesNotLaunchUnreviewableFix(t *testing.T) {
 		for _, reviewer := range []string{"claude", "codex"} {
 			for _, max := range []int{1, 2} {
 				t.Run(implementer+"/"+reviewer+"/"+string(rune('0'+max)), func(t *testing.T) {
-					script := strings.ReplaceAll(loopScript(disputedReport), "*review-1-*", "*review-*")
+					remaining := strings.Replace(changesReview, `"prior_findings":[]`, `"prior_findings":[{"finding_id":"F1","outcome":"not_fixed","note":"Dispute rejected"},{"finding_id":"F2","outcome":"not_fixed","note":"Dispute rejected"}]`, 1)
+					script := strings.Replace(loopScript(disputedReport), approvedAfterDisputesReview, remaining, 1)
 					_, runtime, api, _, cfg, r := pairingFlow(t, implementer, reviewer, disputedReport)
 					replacePhaseScript(t, cfg, workflow.Review, script)
 					if implementer != reviewer {
@@ -238,7 +247,7 @@ func TestFixReportsVisibleInDetailStatusAndEvents(t *testing.T) {
 		}
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)
-		for _, want := range []string{"Implementer fix", "F1 · fixed", "F2 · disputed", "Changed source", "Already safe", "Fixed &lt;script&gt;bug&lt;/script&gt;", "fix.completed", run.Fix.CommitSHA} {
+		for _, want := range []string{"Implementer fix", "F1 · fixed", "F2 · disputed", "Changed source", "Already safe", "Fixed &lt;script&gt;bug&lt;/script&gt;", "fix.completed", run.Fix.CommitSHA, "Prior findings: 1 fixed / 0 not fixed / 1 no longer applies.", "F1 · fixed", "F2 · no_longer_applies", "Dispute accepted"} {
 			if response.Code != 200 || !strings.Contains(response.Body.String(), want) {
 				t.Fatalf("missing %s: %s", want, response.Body.String())
 			}
@@ -272,12 +281,12 @@ func TestFixReportsVisibleInDetailStatusAndEvents(t *testing.T) {
 }
 
 func TestReviewerAdjudicatesDisputesAndSuppliesRemainingBlockers(t *testing.T) {
-	remaining := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"changes_required","summary":"F1 dismissed, F2 remains","findings":[{"id":"F2","severity":"blocking","title":"Still broken","details":"Reviewer rejects dispute","file":null,"line":null}]}}'`
+	remaining := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"prior_findings":[{"finding_id":"F1","outcome":"no_longer_applies","note":"Dispute accepted"},{"finding_id":"F2","outcome":"not_fixed","note":"Dispute rejected"}],"status":"changes_required","summary":"F1 dismissed, F2 remains","findings":[{"id":"F2","severity":"blocking","title":"Still broken","details":"Reviewer rejects dispute","file":null,"line":null}]}}'`
 	lastFix := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"success","summary":"Explain F2","responses":[{"finding_id":"F2","resolution":"disputed","note":"More evidence"}]}}'`
 	script := `case "$*" in
  *review-1-*) ` + changesReview + `;;
  *review-2-*) ` + remaining + `;;
- *review-*) ` + approvedReview + `;;
+ *review-*) ` + strings.Replace(approvedReview, `"prior_findings":[]`, `"prior_findings":[{"finding_id":"F2","outcome":"no_longer_applies","note":"New evidence accepts dispute"}]`, 1) + `;;
  *fix-1-*) ` + disputedReport + `;;
  *fix-2-*) ` + lastFix + `;;
  *) ` + successfulScript + `;; esac`
