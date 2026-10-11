@@ -150,3 +150,13 @@ func (s *Scheduler) retryChecks(ctx context.Context, repo config.Repository, run
 	}
 	return s.retryLabels(ctx, repo, selected)
 }
+
+func checkRetryIdentity(run workflow.Run, phase workflow.Phase, previous attempt, number int, override []string) string {
+	if len(override) > 0 {
+		return override[0]
+	}
+	if floor := attemptWindowStart(run, phase); number == floor && number > previous.number {
+		return ""
+	}
+	return previous.checkRetryOf
+}

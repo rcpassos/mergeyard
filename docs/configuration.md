@@ -50,6 +50,9 @@ the script.
 
 `repositories[].command_timeout` is a positive Go duration, defaulting to `20m`.
 It bounds an entire setup or checks script, rather than each command in the list.
+When the foreground script finishes, Mergeyard stops any background processes
+still in its owned process group. Setup and checks must finish the work they need
+before returning; launching a background service does not keep it running.
 The phase wrapper owns the timeout watchdog, which continues running if the control
 plane restarts. Timeout and Stop end the whole owned process group. Stop preserves
 the worktree.
@@ -82,8 +85,13 @@ repositories:
 ```
 
 After every successful `implement` or `fix`, including a CI-repair fix, Mergeyard
-commits the changes, runs checks, then pushes and starts review. A failing commit
-is not pushed. Checks reuse setup's `bash --login` script, shared shell,
+commits the changes, runs checks, then pushes and starts review. Every configured
+check must have a durable passing result, and the worktree must match the clean
+pinned commit before and after checks. Early `exit` or `exec`
+cannot authorize skipped checks. Results obtained against a changed worktree
+are saved as failures and cannot be reused after restoring files or restarting.
+A failing commit is not pushed. Checks reuse setup's `bash --login` script, shared
+shell,
 `set -e`, `set -o pipefail`, configured environment, and process-group cleanup.
 `command_timeout` (default `20m`) bounds the entire check list on each execution.
 

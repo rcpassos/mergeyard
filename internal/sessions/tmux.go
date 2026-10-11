@@ -395,7 +395,14 @@ func wrapperTimeout(command Command, phaseDir string, timeout time.Duration) (st
 	// boot/runtime; lstart detects a reused group leader across reconciliation.
 	fmt.Fprintf(&b, "started=$(LC_ALL=C /bin/ps -p $$ -o lstart=) || exit 1\nboot=$(LC_ALL=C /bin/ps -p 1 -o lstart=) || exit 1\nprintf '{\"pid\":%%s,\"started\":\"%%s\",\"boot\":\"%%s\"}\\n' \"$$\" \"$started\" \"$boot\" >%s && /bin/mv -f %s %s || exit 1\n", quote(filepath.Join(phaseDir, "process-group.json.tmp")), quote(filepath.Join(phaseDir, "process-group.json.tmp")), quote(filepath.Join(phaseDir, "process-group.json")))
 
-	fmt.Fprintf(&b, "timer=\nfinish() {\n code=$1\n trap - EXIT\n if [ -n \"$timer\" ]; then kill -TERM \"$timer\" 2>/dev/null; wait \"$timer\" 2>/dev/null; fi\n printf '{\"exit_code\":%%s}\\n' \"$code\" >%s &&\n /bin/mv -f %s %s\n exit \"$code\"\n}\ntrap 'finish \"$?\"' EXIT\ntrap ':' INT TERM HUP\n", quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")))
+	completionCleanup := ""
+	if timeout > 0 {
+		// Bounded system commands own the full group. Once the foreground
+		// finishes, preserve its result and stop any descendants as the
+		// watchdog is retired; this also works with the control plane offline.
+		completionCleanup = " kill -KILL -$$ 2>/dev/null\n"
+	}
+	fmt.Fprintf(&b, "timer=\nfinish() {\n code=$1\n trap - EXIT\n if [ -n \"$timer\" ]; then kill -TERM \"$timer\" 2>/dev/null; wait \"$timer\" 2>/dev/null; fi\n printf '{\"exit_code\":%%s}\\n' \"$code\" >%s &&\n /bin/mv -f %s %s\n%s exit \"$code\"\n}\ntrap 'finish \"$?\"' EXIT\ntrap ':' INT TERM HUP\n", quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")), completionCleanup)
 	fmt.Fprintf(&b, "exec >%s 2>%s\n", quote(filepath.Join(phaseDir, "events.jsonl")), quote(filepath.Join(phaseDir, "stderr.log")))
 	if timeout > 0 {
 		// The watchdog belongs to the pane group and is stopped/reaped on normal

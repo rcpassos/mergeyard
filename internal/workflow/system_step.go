@@ -18,24 +18,25 @@ type SystemCommandResult struct {
 // SystemStepSnapshot records configured command execution within its owning phase.
 // Its physical attempt count is independent of the agent's attempt budget.
 type SystemStepSnapshot struct {
-	OwnerID          string                `json:"owner_id,omitempty"`
-	ID               string                `json:"id"`
-	Phase            Phase                 `json:"phase"`
-	Step             string                `json:"step"`
-	Round            int                   `json:"round"`
-	Attempt          int                   `json:"attempt"`
-	Commands         []string              `json:"commands"`
-	Results          []SystemCommandResult `json:"results,omitempty"`
-	CommandTimeout   string                `json:"command_timeout"`
-	WorktreeIdentity string                `json:"worktree_identity,omitempty"`
-	TargetSHA        string                `json:"target_sha,omitempty"`
-	Status           string                `json:"status"`
-	ProcessSession   string                `json:"process_session"`
-	PhaseDir         string                `json:"phase_dir"`
-	TimedOut         bool                  `json:"timed_out,omitempty"`
-	ExitCode         *int                  `json:"exit_code,omitempty"`
-	Output           string                `json:"output,omitempty"`
-	Error            string                `json:"error,omitempty"`
+	OwnerID            string                `json:"owner_id,omitempty"`
+	ID                 string                `json:"id"`
+	Phase              Phase                 `json:"phase"`
+	Step               string                `json:"step"`
+	Round              int                   `json:"round"`
+	Attempt            int                   `json:"attempt"`
+	Commands           []string              `json:"commands"`
+	Results            []SystemCommandResult `json:"results,omitempty"`
+	CommandTimeout     string                `json:"command_timeout"`
+	WorktreeIdentity   string                `json:"worktree_identity,omitempty"`
+	PinnedTreeVerified bool                  `json:"pinned_tree_verified,omitempty"`
+	TargetSHA          string                `json:"target_sha,omitempty"`
+	Status             string                `json:"status"`
+	ProcessSession     string                `json:"process_session"`
+	PhaseDir           string                `json:"phase_dir"`
+	TimedOut           bool                  `json:"timed_out,omitempty"`
+	ExitCode           *int                  `json:"exit_code,omitempty"`
+	Output             string                `json:"output,omitempty"`
+	Error              string                `json:"error,omitempty"`
 }
 
 func LoadSystemSteps(ctx context.Context, db queryer, id string) ([]SystemStepSnapshot, error) {

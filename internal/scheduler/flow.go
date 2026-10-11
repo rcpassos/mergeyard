@@ -442,13 +442,7 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	}
 	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
 	phase.Interruption = interruptionContext(previous, phase)
-	checkID := previous.checkRetryOf
-	if floor := attemptWindowStart(run, workflow.Implement); number == floor && number > previous.number {
-		checkID = ""
-	}
-	if len(checkRetry) > 0 {
-		checkID = checkRetry[0]
-	}
+	checkID := checkRetryIdentity(run, workflow.Implement, previous, number, checkRetry)
 	checkResult := s.checkResult(run, checkID)
 	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
 	if err != nil {
