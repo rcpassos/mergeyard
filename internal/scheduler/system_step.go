@@ -82,6 +82,24 @@ func (s *Scheduler) systemStep(ctx context.Context, repo config.Repository, run 
 		return s.startSystemStep(ctx, repo, run, gitRun, req, number)
 	}
 	if last.Status != "running" {
+		if last.Step == "checks" && last.Status == "succeeded" {
+			failure := checkEvidenceError(last)
+			if failure == "" && !last.PinnedTreeVerified {
+				failure = "Checked workspace has no durable pinned-tree verification"
+			}
+			if failure == "" {
+				if err := s.verifyCheckedTree(ctx, gitRun, last.TargetSHA); err != nil {
+					failure = "Checked workspace differs from pinned commit: " + err.Error()
+				}
+			}
+			if failure != "" {
+				last.PinnedTreeVerified = false
+				last.Status, last.Error = "failed", failure
+				if err := s.saveSystemStep(ctx, run.ID, last); err != nil {
+					return nil, false, err
+				}
+			}
+		}
 		return last, true, nil
 	}
 	ref := runner.SessionRef{Name: last.ProcessSession, PhaseDir: last.PhaseDir}
@@ -126,6 +144,17 @@ func (s *Scheduler) systemStep(ctx context.Context, repo config.Repository, run 
 		if err != nil {
 			return nil, false, err
 		}
+		if err := s.verifyCheckedTree(ctx, gitRun, last.TargetSHA); err != nil {
+			last.Status, last.Error = "failed", "Workspace changed while checks ran: "+err.Error()
+			last.PinnedTreeVerified = false
+		} else {
+			last.PinnedTreeVerified = true
+		}
+		if last.Status == "succeeded" {
+			if failure := checkEvidenceError(last); failure != "" {
+				last.Status, last.Error = "failed", failure
+			}
+		}
 	}
 	if err := s.saveSystemStep(ctx, run.ID, last); err != nil {
 		return nil, false, err
@@ -145,6 +174,11 @@ func excerpt(output string) string {
 }
 
 func (s *Scheduler) startSystemStep(ctx context.Context, repo config.Repository, run workflow.Run, gitRun managedgit.Run, req systemStepRequest, number int) (*workflow.SystemStepSnapshot, bool, error) {
+	if req.Step == "checks" {
+		if err := s.verifyCheckedTree(ctx, gitRun, req.TargetSHA); err != nil {
+			return nil, false, err
+		}
+	}
 	identity, err := worktreeIdentity(gitRun.Path)
 	if err != nil {
 		return nil, false, err
@@ -291,4 +325,30 @@ func worktreeIdentity(path string) (string, error) {
 	}
 	stat := info.Sys().(*syscall.Stat_t)
 	return fmt.Sprintf("%d:%d:%d", stat.Dev, stat.Ino, info.ModTime().UnixNano()), nil
+}
+
+// A zero shell exit alone cannot prove that every list entry ran: exit or exec
+// can bypass subsequent commands and the durable per-command exit markers.
+func checkEvidenceError(v *workflow.SystemStepSnapshot) string {
+	if len(v.Results) != len(v.Commands) {
+		return "Configured checks lack complete command evidence"
+	}
+	for i, result := range v.Results {
+		if result.Command != v.Commands[i] || result.Status != "pass" || result.ExitCode == nil || *result.ExitCode != 0 {
+			return "Configured check lacks passing evidence: " + v.Commands[i]
+		}
+	}
+	return ""
+}
+
+// Setup may change the workspace, while checks must test a clean pinned commit.
+// The same guard serves implement, fix, handback, and cached evidence on restart.
+func (s *Scheduler) verifyCheckedTree(ctx context.Context, gitRun managedgit.Run, target string) error {
+	g, ok := s.deps.Git.(interface {
+		InspectFixTarget(context.Context, managedgit.Run, string) error
+	})
+	if !ok {
+		return &fault.Error{Code: "git.checks_unsupported", Message: "Git adapter cannot verify the pinned checked workspace"}
+	}
+	return g.InspectFixTarget(ctx, gitRun, target)
 }

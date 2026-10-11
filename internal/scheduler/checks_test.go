@@ -205,7 +205,7 @@ func TestChecksAndCheckRepairSurviveControlPlaneRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			var before workflow.Run
-			waitFor(t, func() bool {
+			waitForWithin(t, 15*time.Second, func() bool {
 				if err := s.Tick(context.Background()); err != nil {
 					t.Fatal(err)
 				}
