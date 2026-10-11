@@ -62,13 +62,15 @@ type Invocation = execution.Command
 // before launching a preassigned session. Env is the complete child environment.
 // PhaseDir is an existing attempt directory outside the worktree.
 type PhaseContext struct {
-	Interruption string
-	Phase        workflow.Phase
-	WorktreePath string
-	PhaseDir     string
-	SessionID    string
-	Resume       bool
-	Env          map[string]string
+	// AllowLegacyReview is set only when reconciling an attempt's v1 schema.
+	AllowLegacyReview bool
+	Interruption      string
+	Phase             workflow.Phase
+	WorktreePath      string
+	PhaseDir          string
+	SessionID         string
+	Resume            bool
+	Env               map[string]string
 }
 
 // PhaseArtifacts is a completed attempt's captured stream and process exit.
@@ -84,11 +86,12 @@ type PhaseArtifacts struct {
 // PhaseResult is the schema-validated report. Blocked and failed reports are
 // valid results; the workflow decides their lifecycle consequences.
 type PhaseResult struct {
-	SchemaVersion int               `json:"schema_version"`
-	Status        string            `json:"status"`
-	Summary       string            `json:"summary"`
-	Responses     []review.Response `json:"responses,omitempty"`
-	Findings      []review.Finding  `json:"findings,omitempty"`
+	SchemaVersion int                   `json:"schema_version"`
+	Status        string                `json:"status"`
+	Summary       string                `json:"summary"`
+	Responses     []review.Response     `json:"responses,omitempty"`
+	Findings      []review.Finding      `json:"findings,omitempty"`
+	PriorFindings []review.PriorFinding `json:"prior_findings,omitempty"`
 }
 
 // ImplementSchema returns a fresh copy of the common OpenAI strict schema.

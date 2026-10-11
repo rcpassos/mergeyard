@@ -161,7 +161,7 @@ func TestCLIStatusEscapesUntrustedReviewText(t *testing.T) {
 	root := t.TempDir()
 	attack := "\x1b[2J\x1b[H\r\nScheduler: paused\b\t\a\u009b2J\u202e"
 	file := "src/file" + attack + ".go"
-	raw, err := json.Marshal(review.Report{SchemaVersion: 1, Status: "approved", Summary: "Reviewed café " + attack, Findings: []review.Finding{{ID: "R1-F1" + attack, Severity: "note", Title: "Optional " + attack, Details: "Details " + attack, File: &file}}})
+	raw, err := json.Marshal(review.Report{SchemaVersion: 2, Status: "approved", Summary: "Reviewed café " + attack, PriorFindings: []review.PriorFinding{}, Findings: []review.Finding{{ID: "R1-F1" + attack, Severity: "note", Title: "Optional " + attack, Details: "Details " + attack, File: &file}}})
 	if err != nil {
 		t.Fatal(err)
 	}

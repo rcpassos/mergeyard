@@ -76,7 +76,7 @@ func TestReportPublicationEnabledDisabledAndFailureDoesNotBlockLoop(t *testing.T
 				if len(publisher.bodies) != 3 {
 					t.Fatalf("reports=%d want 3", len(publisher.bodies))
 				}
-				for _, want := range []string{"Review report · round 1", "changes_required", "Broken", "Fix report · round 1", "finding_id", "disputed", "Already safe", "Review report · round 2", "approved"} {
+				for _, want := range []string{"Review report · round 1", "changes_required", "Broken", "Fix report · round 1", "finding_id", "disputed", "Already safe", "Review report · round 2", "approved", "Prior findings: 0 fixed / 0 not fixed / 2 no longer applies.", "prior_findings", "no_longer_applies", "Dispute accepted"} {
 					if !strings.Contains(strings.Join(publisher.bodies, "\n"), want) {
 						t.Fatalf("missing report field %s", want)
 					}

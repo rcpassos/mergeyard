@@ -41,7 +41,18 @@ func WriteReviewInput(ctx context.Context, writer FileWriter, phase PhaseContext
 	text.WriteString("## Constraints\n\n- Review only the pinned diff and target commit below against the issue.\n- Do not edit repository files, stage changes, commit, reset, switch branches, or push.\n- You may run tests and builds. Ignored test/build output is permitted.\n- Return the complete findings list. Only blocking findings prevent approval.\n- Finding IDs must be unique. Use null for absent locations.\n\n## Output contract\n\nReturn native structured output matching this schema:\n\n```json\n" + review.Schema + "\n```\n\n## Issue\n\n" + input.Issue.IssueTitle + "\n\n" + input.Issue.IssueBody + "\n\n## Pinned diff\n\n")
 	text.WriteString(input.Diff)
 	text.WriteString("\n\n## Current PR\n\n" + input.PRBody)
-	if input.PreviousFindings != nil {
+	text.WriteString("\n\n## Prior finding outcomes\n\nReturn prior_findings: [] in round 1. In later rounds, return exactly one prior_findings entry for each previous blocking finding, with finding_id, outcome (fixed, not_fixed, or no_longer_applies), and a nonempty note. Unknown or duplicate IDs are invalid. A not_fixed finding must appear in findings as blocking with the same ID; fixed and no_longer_applies findings must not remain blocking. A disputed fix response requires an explicit ruling: not_fixed (rejects the dispute) or no_longer_applies (accepts it).\n\nPrior blocking IDs to account for:\n")
+	blockingIDs := []string{}
+	if input.Round > 1 {
+		for _, f := range input.PreviousFindings {
+			if f.Severity == "blocking" {
+				blockingIDs = append(blockingIDs, f.ID)
+			}
+		}
+	}
+	ids, _ := json.Marshal(blockingIDs)
+	text.WriteString(string(ids) + "\n")
+	if input.Round > 1 {
 		prior, _ := json.MarshalIndent(input.PreviousFindings, "", "  ")
 		fix, _ := json.MarshalIndent(input.FixReport, "", "  ")
 		text.WriteString("\n\n## Previous findings\n\n" + string(prior) + "\n\n## Implementer fix report\n\n" + string(fix) + "\n\nAdjudicate every dispute independently. Return the complete remaining blocking list for this target, including unresolved earlier findings. Warnings and notes do not prevent approval.\n")

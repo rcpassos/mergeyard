@@ -615,9 +615,10 @@ Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safel
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "status": "changes_required",
-  "summary": "Two blocking findings",
+  "summary": "One blocking finding",
+  "prior_findings": [],
   "findings": [
     {
       "id": "R1-F1",
@@ -634,6 +635,20 @@ Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safel
 Statuses: `approved`, `changes_required`, `blocked`, `failed`.
 
 Severities: `blocking`, `warning`, `note`. Only `blocking` findings prevent approval. On later rounds the reviewer returns the complete current list of blocking findings, not only new ones. `file` and `line` are `null` when a finding has no location.
+
+Review schema v2 requires `prior_findings`. Round 1 returns an empty array. Each later round returns exactly one outcome for every blocking finding from the preceding accepted review:
+
+```json
+"prior_findings": [
+  { "finding_id": "R1-F1", "outcome": "fixed", "note": "Verified the validation change." },
+  { "finding_id": "R1-F2", "outcome": "not_fixed", "note": "The invalid input still passes." },
+  { "finding_id": "R1-F3", "outcome": "no_longer_applies", "note": "Accepts the implementer's dispute." }
+]
+```
+
+Outcome notes must be nonempty. Unknown, duplicate, or omitted prior blocking IDs are invalid. `not_fixed` findings must remain in `findings` as blocking with the same ID; resolved findings cannot remain blocking. A `disputed` fix response requires the reviewer to rule `not_fixed` or `no_longer_applies`. Violations follow the invalid-result path in §13.3, including phase retry limits.
+
+Schema versions are phase-specific: implement and fix remain at v1. Issue #98 owns the review v1 → v2 transition. The acceptance-criteria (#97) and `human_action` (#99) changes must build on this contract and bump each affected phase's schema version; they must not reuse review v2 for a different shape. Persisted v1 reviews load with an empty `prior_findings` list. Attempts already launched with a persisted v1 schema keep that contract when reconciled after upgrade; newly launched reviews require v2 and must account for blockers even when the preceding review was v1.
 
 #### Fix result
 
@@ -728,6 +743,10 @@ round 2: approved → CI failed → fix → round 3
 round 3: approved → CI passed → READY_TO_MERGE
 ```
 
+### Prior finding accountability
+
+Review input lists the prior blocking IDs the reviewer must account for and the outcome rules from §13.2. The preceding accepted review supplies those IDs, including after retries, restarts, CI repairs, and manual handback. The implementer fix report supplies disputes for explicit adjudication. Warnings and notes do not require prior outcomes. An approved round followed by a CI repair therefore has an empty `prior_findings` array.
+
 ### Review is read-only
 
 Mergeyard records the worktree Git state before a review. Repository changes made by the reviewer are discarded: Mergeyard restores the pre-review state and records a warning. This restore is the guarantee.
@@ -738,10 +757,10 @@ Where the harness supports it without blocking test runs, the reviewer also runs
 
 By default (`pr_comments: true`), Mergeyard posts the loop to the pull request so it is visible on GitHub:
 
-- after each review: one comment with the round number, verdict, and findings;
+- after each review: one comment with the round number, verdict, findings, and prior finding outcomes with counts (`fixed / not fixed / no longer applies`);
 - after each fix: one comment with the implementer's summary and per-finding responses.
 
-Mergeyard posts these comments from the structured results; agents do not need GitHub write access. Findings are always stored locally and shown in the dashboard.
+Mergeyard posts these comments from the structured results; agents do not need GitHub write access. Findings and prior finding outcomes are always stored locally. The dashboard shows each review round, outcome counts, and each prior finding's outcome and note.
 
 ---
 

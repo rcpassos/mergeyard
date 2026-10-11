@@ -175,7 +175,7 @@ func (*Codex) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseResu
 	if !completed || len(bytes.TrimSpace(artifacts.LastMessage)) == 0 {
 		return PhaseResult{}, phaseError("phase.result_missing", "Codex did not emit native completion and a final structured message", nil)
 	}
-	return parsePhaseResult(ctx.Phase, artifacts.LastMessage)
+	return parsePhaseResult(ctx, artifacts.LastMessage)
 }
 
 var _ HarnessAdapter = (*Codex)(nil)

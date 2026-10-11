@@ -174,7 +174,7 @@ func (*Claude) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseRes
 	if len(event.Output) == 0 || bytes.Equal(event.Output, []byte("null")) {
 		return PhaseResult{}, phaseError("phase.result_missing", "Harness did not provide structured output", nil)
 	}
-	return parsePhaseResult(ctx.Phase, event.Output)
+	return parsePhaseResult(ctx, event.Output)
 }
 
 func phaseError(code, message string, cause error) *fault.Error {

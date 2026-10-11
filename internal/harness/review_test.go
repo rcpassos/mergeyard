@@ -1,12 +1,15 @@
 package harness_test
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/harness"
+	"github.com/rcpassos/mergeyard/internal/review"
+	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -15,17 +18,17 @@ func TestNativeReviewContract(t *testing.T) {
 		name, report string
 		valid        bool
 	}{
-		{"approved with note", `{"schema_version":1,"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"Optional","details":"Consider later","file":null,"line":null}]}`, true},
-		{"blocking", `{"schema_version":1,"status":"changes_required","summary":"Fix","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Fails","file":"app.go","line":3}]}`, true},
-		{"contradictory approval", `{"schema_version":1,"status":"approved","summary":"Fix","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Fails","file":null,"line":null}]}`, false},
-		{"changes without blockers", `{"schema_version":1,"status":"changes_required","summary":"Fix","findings":[]}`, false},
-		{"missing findings", `{"schema_version":1,"status":"approved","summary":"Clean"}`, false},
-		{"null findings", `{"schema_version":1,"status":"approved","summary":"Clean","findings":null}`, false},
-		{"missing location", `{"schema_version":1,"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"N","details":"D"}]}`, false},
-		{"duplicate ids", `{"schema_version":1,"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"N","details":"D","file":null,"line":null},{"id":"R1-F1","severity":"warning","title":"N","details":"D","file":null,"line":null}]}`, false},
-		{"fractional version", `{"schema_version":1.00000000000000001,"status":"approved","summary":"Clean","findings":[]}`, false},
-		{"blocked", `{"schema_version":1,"status":"blocked","summary":"Need input","findings":[]}`, true},
-		{"failed", `{"schema_version":1,"status":"failed","summary":"Could not run tests","findings":[]}`, true},
+		{"approved with note", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"Optional","details":"Consider later","file":null,"line":null}]}`, true},
+		{"blocking", `{"schema_version":2,"prior_findings":[],"status":"changes_required","summary":"Fix","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Fails","file":"app.go","line":3}]}`, true},
+		{"contradictory approval", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Fix","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Fails","file":null,"line":null}]}`, false},
+		{"changes without blockers", `{"schema_version":2,"prior_findings":[],"status":"changes_required","summary":"Fix","findings":[]}`, false},
+		{"missing findings", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Clean"}`, false},
+		{"null findings", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Clean","findings":null}`, false},
+		{"missing location", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"N","details":"D"}]}`, false},
+		{"duplicate ids", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"N","details":"D","file":null,"line":null},{"id":"R1-F1","severity":"warning","title":"N","details":"D","file":null,"line":null}]}`, false},
+		{"fractional version", `{"schema_version":2.00000000000000001,"prior_findings":[],"status":"approved","summary":"Clean","findings":[]}`, false},
+		{"blocked", `{"schema_version":2,"prior_findings":[],"status":"blocked","summary":"Need input","findings":[]}`, true},
+		{"failed", `{"schema_version":2,"prior_findings":[],"status":"failed","summary":"Could not run tests","findings":[]}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			output := json.RawMessage(`{"type":"result","is_error":false,"subtype":"success","structured_output":` + tc.report + `}`)
@@ -34,6 +37,32 @@ func TestNativeReviewContract(t *testing.T) {
 				t.Fatalf("result=%+v err=%v valid=%v", result, err, tc.valid)
 			}
 		})
+	}
+}
+
+func TestReviewInputStatesPriorOutcomeRulesAndRequiredIDs(t *testing.T) {
+	for _, round := range []int{1, 2} {
+		ctx := phase(t)
+		ctx.Phase = workflow.Review
+		writer := runner.NewLocal(runner.Options{})
+		input := harness.ReviewInput{Round: round, PreviousFindings: []review.Finding{{ID: "R1-F1", Severity: "blocking"}, {ID: "R1-F2", Severity: "warning"}}}
+		path, err := harness.WriteReviewInput(context.Background(), writer, ctx, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := writer.ReadFile(context.Background(), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := "[]"
+		if round == 2 {
+			ids = `["R1-F1"]`
+		}
+		for _, want := range []string{"prior_findings: [] in round 1", "exactly one prior_findings entry", "same ID", "disputed fix response", "Prior blocking IDs to account for:\n" + ids, review.Schema} {
+			if !strings.Contains(string(data), want) {
+				t.Fatalf("missing rule %q: %s", want, data)
+			}
+		}
 	}
 }
 

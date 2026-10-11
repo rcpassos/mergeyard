@@ -13,6 +13,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/review"
 )
 
 // ReportPublisher performs inspect-before-create, including after ambiguous writes.
@@ -68,11 +69,21 @@ ORDER BY a.run_id,a.round,CASE a.phase WHEN 'review' THEN 0 ELSE 1 END,a.attempt
 			return err
 		}
 		title := "Review"
+		outcomes := ""
+		if p.phase == "review" {
+			var r review.Report
+			if err := json.Unmarshal([]byte(raw), &r); err != nil {
+				rows.Close()
+				return err
+			}
+			counts := r.PriorCounts()
+			outcomes = fmt.Sprintf("\n\nPrior findings: %d fixed / %d not fixed / %d no longer applies.", counts.Fixed, counts.NotFixed, counts.NoLongerApplies)
+		}
 		if p.phase == "fix" {
 			title = "Fix"
 		}
 		identity := sha256.Sum256([]byte(p.runID + "\x00" + p.phase + "\x00" + p.id))
-		p.body = fmt.Sprintf("<!-- mergeyard:report:%x -->\n## %s report · round %d, attempt %d\n\n```json\n%s\n```", identity, title, p.round, p.attempt, strings.ReplaceAll(string(encoded), "`", `\u0060`))
+		p.body = fmt.Sprintf("<!-- mergeyard:report:%x -->\n## %s report · round %d, attempt %d%s\n\n```json\n%s\n```", identity, title, p.round, p.attempt, outcomes, strings.ReplaceAll(string(encoded), "`", `\u0060`))
 		reports = append(reports, p)
 	}
 	err = rows.Err()

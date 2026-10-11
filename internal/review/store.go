@@ -59,6 +59,44 @@ func scanReview(row interface{ Scan(...any) error }) (*Snapshot, error) {
 		if err := json.Unmarshal([]byte(report.String), v.Report); err != nil {
 			return nil, err
 		}
+		if v.Report.SchemaVersion == 1 {
+			v.Report.PriorFindings = []PriorFinding{}
+		}
 	}
 	return &v, nil
+}
+
+// LoadPriorContext uses the accepted review from the immediately preceding
+// round, even after a manual handback or retry that bypassed a fix.
+func LoadPriorContext(ctx context.Context, db queryer, runID string, round int) ([]Finding, *FixReport, error) {
+	findings := []Finding{}
+	if round <= 1 {
+		return findings, nil, nil
+	}
+	var raw string
+	err := db.QueryRowContext(ctx, `SELECT v.report_json FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.run_id=? AND a.round=? AND v.accepted=1 ORDER BY a.attempt DESC LIMIT 1`, runID, round-1).Scan(&raw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, err
+	}
+	if err == nil {
+		var report Report
+		if err := json.Unmarshal([]byte(raw), &report); err != nil {
+			return nil, nil, err
+		}
+		findings = report.Findings
+	}
+	// A blocked/failed fix can still contain validated partial responses. Those
+	// disputes also need a ruling when manual handback advances the review.
+	err = db.QueryRowContext(ctx, `SELECT f.report_json FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=? AND a.round=? AND f.report_json IS NOT NULL ORDER BY a.attempt DESC LIMIT 1`, runID, round-1).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return findings, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	var fix FixReport
+	if err := json.Unmarshal([]byte(raw), &fix); err != nil {
+		return nil, nil, err
+	}
+	return findings, &fix, nil
 }
