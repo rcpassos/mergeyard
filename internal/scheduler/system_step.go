@@ -27,15 +27,16 @@ import (
 // systemStepRequest supplies commands from repository configuration only.
 // TargetSHA pins a check invocation to its commit; setup leaves it empty.
 type systemStepRequest struct {
-	OwnerID   string
-	Step      string
-	Commands  []string
-	TargetSHA string
-	Retry     bool
+	OwnerID        string
+	Step           string
+	Commands       []string
+	TargetSHA      string
+	Retry          bool
+	CommandTimeout time.Duration
 }
 
 func (s *Scheduler) setup(ctx context.Context, repo config.Repository, run workflow.Run, gitRun managedgit.Run) (bool, error) {
-	if len(repo.Setup) == 0 {
+	if len(repo.Setup) == 0 && !runningSystemStep(run, "setup") {
 		return true, nil
 	}
 	v, done, err := s.systemStep(ctx, repo, run, gitRun, systemStepRequest{Step: "setup", Commands: repo.Setup, Retry: true})
@@ -75,6 +76,17 @@ func (s *Scheduler) systemStep(ctx context.Context, repo config.Repository, run 
 			if v.Phase == run.Phase {
 				last = v
 			}
+		}
+	}
+	// Clearing a list cannot erase a durable execution which still needs
+	// observation. Its saved commands and timeout remain the obligation until
+	// that execution finishes; later phases use the current configuration.
+	if last != nil && last.Status == "running" && len(req.Commands) == 0 {
+		req.Commands = last.Commands
+		var err error
+		req.CommandTimeout, err = storedCommandTimeout(last)
+		if err != nil {
+			return nil, false, err
 		}
 	}
 	commandsChanged := last != nil && req.Step == "checks" && !slices.Equal(last.Commands, req.Commands)
@@ -118,6 +130,13 @@ func (s *Scheduler) systemStep(ctx context.Context, repo config.Repository, run 
 		}
 		last.Status, last.Error = "failed", "Unknown outcome; commands will run again"
 		if err := s.saveSystemStep(ctx, run.ID, last); err != nil {
+			return nil, false, err
+		}
+		// Unknown outcomes replay the original configured execution before a
+		// replacement list can run, including when the current list is empty.
+		req.Commands = last.Commands
+		req.CommandTimeout, err = storedCommandTimeout(last)
+		if err != nil {
 			return nil, false, err
 		}
 		return s.startSystemStep(ctx, repo, run, gitRun, req, number)
@@ -183,7 +202,10 @@ func (s *Scheduler) startSystemStep(ctx context.Context, repo config.Repository,
 	if err != nil {
 		return nil, false, err
 	}
-	timeout := repo.CommandTimeout
+	timeout := req.CommandTimeout
+	if timeout <= 0 {
+		timeout = repo.CommandTimeout
+	}
 	if timeout <= 0 {
 		timeout = 20 * time.Minute
 	}
@@ -201,6 +223,10 @@ func (s *Scheduler) startSystemStep(ctx context.Context, repo config.Repository,
 	if req.Step == "checks" {
 		script = checksScript(dir, req.Commands)
 	}
+	// Keep login startup state, but contain explicit exits and the check EXIT
+	// recorder in one shared subshell. The outer login shell finishes at EOF,
+	// so logout hooks cannot overwrite the configured commands' exit status.
+	script = "(\n" + script + ")\n"
 	if err := s.deps.Runner.WriteFile(ctx, input, []byte(script), 0600); err != nil {
 		return nil, false, err
 	}
@@ -351,4 +377,21 @@ func (s *Scheduler) verifyCheckedTree(ctx context.Context, gitRun managedgit.Run
 		return &fault.Error{Code: "git.checks_unsupported", Message: "Git adapter cannot verify the pinned checked workspace"}
 	}
 	return g.InspectFixTarget(ctx, gitRun, target)
+}
+
+func runningSystemStep(run workflow.Run, step string) bool {
+	for _, v := range run.SystemSteps {
+		if v.Step == step && v.Phase == run.Phase && v.Round == phaseRound(run, run.Phase) && v.Status == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+func storedCommandTimeout(v *workflow.SystemStepSnapshot) (time.Duration, error) {
+	timeout, err := time.ParseDuration(v.CommandTimeout)
+	if err != nil || timeout <= 0 {
+		return 0, &fault.Error{Code: "phase.result_invalid", Message: "Stored system-step timeout is invalid", Err: err}
+	}
+	return timeout, nil
 }

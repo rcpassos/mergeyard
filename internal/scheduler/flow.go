@@ -130,7 +130,7 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	if !done {
 		return nil
 	}
-	if len(repo.Checks) == 0 {
+	if len(repo.Checks) == 0 && !runningSystemStep(run, "checks") {
 		if _, err := s.deps.Git.CommitAndPush(ctx, gitRun, managedgit.Phase{Title: issue.Title, RequireChanges: true}); err != nil {
 			return s.attention(ctx, repo, run, err)
 		}

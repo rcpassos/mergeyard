@@ -698,11 +698,13 @@ The adapter parses `events.jsonl`; the Codex adapter tails it during the run to 
 
 ### System steps
 
-Configured command lists reuse the phase wrapper and process journal. Each setup or checks list runs as one `bash --login` script in the worktree with `set -e` and `set -o pipefail`, using only the explicitly configured environment. All commands share one shell and execution stops on the first failing command or pipeline. Output and exit metadata are saved with the system step; agent result validation does not apply to system steps.
+Configured command lists reuse the phase wrapper and process journal. Each setup or checks list runs as one `bash --login` script in the worktree with `set -e` and `set -o pipefail`, using only the explicitly configured environment. All commands share one subshell which inherits login startup variables and functions, and execution stops on the first failing command or pipeline. The outer login shell ends at EOF, so logout hooks cannot replace configured command exit codes. Output and exit metadata are saved with the system step; agent result validation does not apply to system steps.
 
 The repository's `command_timeout` is a positive duration, defaulting to `20m`, for the entire script. The wrapper owns its timeout watchdog so the deadline remains enforced while the control plane is offline. Timeout and Stop end the whole owned process group, including descendants, while preserving the worktree. On foreground completion, the wrapper records the result and stops any remaining background processes in that bounded system step's owned group. Scripts must finish required work before returning; they cannot leave a background service running. Untimed agent invocations retain their existing process behavior.
 
 Checks require durable passing evidence for every configured command and a clean worktree matching the pinned commit before and after execution. Missing or skipped command evidence and results obtained against a changed tree are saved as failures. Cached passing evidence is accepted only after confirming its recorded pinned-tree verification and the current clean pinned tree.
+
+Removing a configured setup/check list does not erase a pending execution. Reconciliation still observes its result before starting an agent or publishing. An unknown outcome replays the originally configured commands with the captured timeout. Failed results retain the existing setup/check error and retry-budget handling. New executions in later phases or newly prepared worktrees use current configuration, while saved target-matched results remain available to the reviewer after configuration removal.
 
 ### Control-plane shutdown
 
