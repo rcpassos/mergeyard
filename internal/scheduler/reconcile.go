@@ -84,6 +84,9 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 	if err := s.publishAttention(ctx); err != nil {
 		failures = append(failures, err)
 	}
+	if err := s.publishVerification(ctx); err != nil {
+		failures = append(failures, err)
+	}
 	if err := s.publishReports(ctx); err != nil {
 		failures = append(failures, err)
 	}

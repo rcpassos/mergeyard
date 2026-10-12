@@ -11,10 +11,13 @@ import (
 	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/review"
+	"github.com/rcpassos/mergeyard/internal/verification"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
 type ReviewInput struct {
+	// Latest command evidence is independent of whether fix responses need adjudication.
+	Verification     []verification.Entry
 	ImplementReport  *PhaseResult
 	Issue            ImplementInput
 	PRNumber         int
@@ -49,6 +52,13 @@ func WriteReviewInput(ctx context.Context, writer FileWriter, phase PhaseContext
 	if input.ImplementReport != nil {
 		report, _ := json.MarshalIndent(input.ImplementReport, "", "  ")
 		text.WriteString("\n## Implementer report\n\nTreat this evidence as claims to verify independently.\n\n" + string(report) + "\n")
+	}
+	text.WriteString("\n\n## Latest verification evidence\n\nThis is the latest agent-reported command evidence, independent of prior finding outcomes. You may rerun or challenge it; rerunning these commands is not mandatory.\n\n")
+	if len(input.Verification) == 0 {
+		text.WriteString("no verification reported\n")
+	} else {
+		evidence, _ := json.MarshalIndent(input.Verification, "", "  ")
+		text.WriteString(string(evidence) + "\n")
 	}
 	text.WriteString("\n\n## Pinned diff\n\n" + input.Diff)
 	text.WriteString("\n\n## Current PR\n\n" + input.PRBody)
