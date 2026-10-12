@@ -111,11 +111,11 @@ func inspectFixTarget(ctx context.Context, run Run, target string) error {
 	if err != nil {
 		return err
 	}
-	dirty, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all")
+	dirty, err := worktreeDirty(ctx, run)
 	if err != nil {
 		return err
 	}
-	if head != target || dirty != "" {
+	if head != target || dirty {
 		return failure("review.head_changed", run.Path, errors.New("workspace changed after fix commit was pinned"))
 	}
 	return nil

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/pathspec"
 	"github.com/rcpassos/mergeyard/internal/repository"
 	"github.com/rcpassos/mergeyard/internal/workspace"
 	"go.yaml.in/yaml/v3"
@@ -72,6 +73,7 @@ type UsageLimits struct {
 }
 
 type Repository struct {
+	Exclude         []string      `yaml:"exclude"`
 	TrustedLabelers []string      `yaml:"trusted_labelers"`
 	Setup           []string      `yaml:"setup"`
 	Checks          []string      `yaml:"checks"`
@@ -186,6 +188,7 @@ func Parse(data []byte) (Config, *Document, error) {
 				seenRepos[name] = true
 				rm.read("base_branch", &r.BaseBranch)
 				rm.read("setup", &r.Setup)
+				readExclude(rm, &r.Exclude)
 				rm.read("checks", &r.Checks)
 				for _, command := range r.Checks {
 					if strings.TrimSpace(command) == "" || strings.ContainsRune(command, 0) {
@@ -219,6 +222,29 @@ func Parse(data []byte) (Config, *Document, error) {
 func cloneRole(r Role) Role {
 	r.Skills = slices.Clone(r.Skills)
 	return r
+}
+
+func readExclude(m mapping, target *[]string) {
+	n := m.node("exclude")
+	if n == nil {
+		return
+	}
+	if n.Kind != yaml.SequenceNode {
+		m.fail("config.invalid_exclude", "exclude", "expected a list of Git glob patterns")
+		return
+	}
+	for _, item := range n.Content {
+		item = dereference(item)
+		if item.Tag != "!!str" {
+			m.fail("config.invalid_exclude", "exclude", "expected string Git glob patterns")
+			return
+		}
+		if err := pathspec.Validate(item.Value); err != nil {
+			m.fail("config.invalid_exclude", "exclude", fmt.Sprintf("invalid pattern %q: %v", item.Value, err))
+			return
+		}
+		*target = append(*target, item.Value)
+	}
 }
 
 func readTrustedLabelers(m mapping, target *[]string) {

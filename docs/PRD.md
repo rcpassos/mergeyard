@@ -889,11 +889,26 @@ Every run starts from the fetched remote base branch.
 Mergeyard owns all commits. Agent prompts instruct harnesses not to commit: Codex's sandbox protects `.git`, and in a linked worktree the Git metadata lives outside the writable area, so agent commits would likely fail. If an agent commits anyway, the commits are kept. After each `implement` or `fix`:
 
 - if there are staged/unstaged tracked changes, Mergeyard creates a commit;
-- only non-ignored untracked files are included;
+- only non-ignored untracked files not matching repository `exclude` patterns are included;
 - if `implement` produced no diff from the base branch, the run moves to `NEEDS_ATTENTION` (`git.no_changes`);
 - if `fix` produced no changes and disputed every finding, the next review proceeds after configured checks pass.
 
 Configured local checks run against the committed head before it is pushed or reviewed. Every check-retry implement/fix attempt follows the same commit-and-check order. A failed check preserves the local commit and worktree for repair; no push or review starts until checks pass.
+
+Repository `exclude` defaults to `[]` and uses repository-relative Git glob
+pathspec semantics (`:(exclude,glob)`), not `.gitignore` syntax. `*` and `?`
+do not cross `/`; `**` occupies a whole path component and supports recursive
+matching. A trailing `/` excludes the directory subtree. Empty or invalid
+patterns fail configuration validation. Mergeyard applies exclusions only in
+its own staging, including unstaging excluded new files already in the index;
+it never rewrites Git configuration, shared `info/exclude`, or repository files.
+Matching tracked edits/deletions are still committed with a `git.exclude_tracked`
+warning. Excluded leftovers are listed in phase `staging.json` diagnostics and
+run events (`git.excluded_untracked`); they remain available to checks, do not
+count as dirty work for pinned checks or retry, and are removed with the worktree
+on completed-run cleanup. Other dirty work still prevents cleanup. An implement
+phase whose only changes are excluded files returns `git.no_changes` and retains
+its diagnostics and worktree for attention. Agent commits are kept as above.
 
 Default commit message: `mergeyard: #<issue> <issue title>`. The commit uses the machine's Git identity.
 
