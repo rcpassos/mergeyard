@@ -119,14 +119,15 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
-	RetryEligible      bool               `json:"retry_eligible,omitempty"`
-	CreditProbes       []CreditProbe      `json:"credit_probes,omitempty"`
-	HarnessWait        *HarnessWait       `json:"harness_wait,omitempty"`
-	HarnessWaitHistory []HarnessWait      `json:"harness_wait_history,omitempty"`
-	Handbacks          []HandbackSnapshot `json:"handbacks,omitempty"`
-	Retries            []RetrySnapshot    `json:"retries,omitempty"`
-	SessionRecoveries  []SessionRecovery  `json:"session_recoveries,omitempty"`
-	Implementer        *ImplementSnapshot `json:"implementer,omitempty"`
+	SystemSteps        []SystemStepSnapshot `json:"system_steps,omitempty"`
+	RetryEligible      bool                 `json:"retry_eligible,omitempty"`
+	CreditProbes       []CreditProbe        `json:"credit_probes,omitempty"`
+	HarnessWait        *HarnessWait         `json:"harness_wait,omitempty"`
+	HarnessWaitHistory []HarnessWait        `json:"harness_wait_history,omitempty"`
+	Handbacks          []HandbackSnapshot   `json:"handbacks,omitempty"`
+	Retries            []RetrySnapshot      `json:"retries,omitempty"`
+	SessionRecoveries  []SessionRecovery    `json:"session_recoveries,omitempty"`
+	Implementer        *ImplementSnapshot   `json:"implementer,omitempty"`
 	RunMetadata
 	Merge            *maintenance.Snapshot `json:"merge,omitempty"`
 	CI               *ci.Snapshot          `json:"ci,omitempty"`
@@ -265,6 +266,10 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 				}
 				if current.TakeoverStatus != "" {
 					status = TakeoverCancelled
+				}
+			case Retry:
+				if next.State == Manual {
+					status = TakeoverManual
 				}
 			case OperationFailed:
 				if current.TakeoverStatus == TakeoverRequested || current.TakeoverStatus == TakeoverManual {
@@ -473,6 +478,7 @@ var rules = []rule{
 // Reconciliation emits the destination's lifecycle event; the payload retains
 // Trigger=Retry so consumers can distinguish recovery from normal progression.
 var reconciledEvents = map[State]string{
+	Manual:            "run.manual",
 	Claiming:          "run.claimed",
 	Preparing:         "run.preparing",
 	Active:            "phase.started",
@@ -524,6 +530,9 @@ func destination(current Run, request Request) (Run, string, error) {
 				return next, "run.handed_back", nil
 			}
 		case Retry:
+			if request.NextState == Manual && (request.Metadata.Retry == nil || request.Metadata.Retry.ResumeHandback == nil) {
+				return Run{}, "", invalid("Manual retry requires a reconciled handback intent")
+			}
 			if current.RetryAllowed() {
 				if eventType, ok := reconciledEvents[request.NextState]; ok {
 					if request.NextPhase != "" && !validPhase(request.NextPhase) {
@@ -622,6 +631,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 		return Run{}, storageError(err)
 	}
 	run.SessionRecoveries, err = LoadSessionRecoveries(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.SystemSteps, err = LoadSystemSteps(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
 	}

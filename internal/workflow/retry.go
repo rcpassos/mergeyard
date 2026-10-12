@@ -10,20 +10,24 @@ import (
 // opens a configured attempt window without changing physical attempt identities.
 // GrantedRound is an absolute ceiling, so replay cannot add another round.
 type RetrySnapshot struct {
-	ID           int64  `json:"id"`
-	Pending      bool   `json:"pending"`
-	RequestedAt  string `json:"requested_at"`
-	Cause        string `json:"cause"`
-	NextState    State  `json:"next_state,omitempty"`
-	NextPhase    Phase  `json:"next_phase,omitempty"`
-	Round        int    `json:"round"`
-	AttemptFrom  int    `json:"attempt_from,omitempty"`
-	GrantedWait  int    `json:"granted_wait,omitempty"`
-	WaitSequence int    `json:"wait_sequence,omitempty"`
-	GrantedRound int    `json:"granted_round,omitempty"`
-	TargetSHA    string `json:"target_sha,omitempty"`
-	Deadline     string `json:"deadline,omitempty"`
-	Error        string `json:"error,omitempty"`
+	ID             int64             `json:"id"`
+	Pending        bool              `json:"pending"`
+	RequestedAt    string            `json:"requested_at"`
+	Cause          string            `json:"cause"`
+	NextState      State             `json:"next_state,omitempty"`
+	NextPhase      Phase             `json:"next_phase,omitempty"`
+	Round          int               `json:"round"`
+	AttemptFrom    int               `json:"attempt_from,omitempty"`
+	GrantedCheck   int               `json:"granted_check,omitempty"`
+	ResumeHandback *HandbackSnapshot `json:"resume_handback,omitempty"`
+	RecheckOwnerID string            `json:"recheck_owner_id,omitempty"`
+	CheckFrom      string            `json:"check_from,omitempty"`
+	GrantedWait    int               `json:"granted_wait,omitempty"`
+	WaitSequence   int               `json:"wait_sequence,omitempty"`
+	GrantedRound   int               `json:"granted_round,omitempty"`
+	TargetSHA      string            `json:"target_sha,omitempty"`
+	Deadline       string            `json:"deadline,omitempty"`
+	Error          string            `json:"error,omitempty"`
 }
 
 func LoadRetries(ctx context.Context, db queryer, id string) ([]RetrySnapshot, error) {
@@ -62,6 +66,23 @@ func (v RetrySnapshot) Save(ctx context.Context, tx *sql.Tx, runID string) error
 	count, err := result.RowsAffected()
 	if err != nil {
 		return err
+	}
+	if !v.Pending && v.Error == "" && v.ResumeHandback != nil {
+		data, err := json.Marshal(v.ResumeHandback)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO run_handbacks(run_id,pending,snapshot_json) VALUES(?,1,?)", runID, string(data)); err != nil {
+			return err
+		}
+	}
+	if !v.Pending && v.Error == "" && v.RecheckOwnerID != "" {
+		if _, err := tx.ExecContext(ctx, "UPDATE phase_attempts SET commit_sha=NULL WHERE id=? AND run_id=?", v.RecheckOwnerID, runID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE fix_attempts SET commit_sha=NULL WHERE attempt_id=?", v.RecheckOwnerID); err != nil {
+			return err
+		}
 	}
 	if count != 1 {
 		return invalid("Retry intent is no longer pending or belongs to another run")

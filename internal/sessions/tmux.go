@@ -145,7 +145,10 @@ func (m *Manager) Start(ctx context.Context, req Request) (Ref, error) {
 	if err != nil {
 		return Ref{}, failure("phase.invalid_request", executable, err)
 	}
-	script, err := wrapper(req.Command, phaseDir)
+	if req.Timeout < 0 {
+		return Ref{}, failure("phase.invalid_request", "", errors.New("timeout must be nonnegative"))
+	}
+	script, err := wrapperTimeout(req.Command, phaseDir, req.Timeout)
 	if err != nil {
 		return Ref{}, err
 	}
@@ -213,6 +216,7 @@ func (m *Manager) Status(ctx context.Context, ref Ref) (Status, error) {
 	if err == nil {
 		var metadata struct {
 			ExitCode *int `json:"exit_code"`
+			TimedOut bool `json:"timed_out"`
 		}
 		if err := json.Unmarshal(data, &metadata); err != nil {
 			return Status{}, failure("phase.exit_invalid", filepath.Join(ref.PhaseDir, "exit.json"), err)
@@ -220,7 +224,7 @@ func (m *Manager) Status(ctx context.Context, ref Ref) (Status, error) {
 		if metadata.ExitCode == nil {
 			return Status{}, failure("phase.exit_invalid", filepath.Join(ref.PhaseDir, "exit.json"), errors.New("exit metadata has no exit_code"))
 		}
-		return Status{State: Exited, ExitCode: metadata.ExitCode}, nil
+		return Status{State: Exited, ExitCode: metadata.ExitCode, TimedOut: metadata.TimedOut}, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return Status{}, failure("phase.exit_read_failed", filepath.Join(ref.PhaseDir, "exit.json"), err)
@@ -356,6 +360,10 @@ func (m *Manager) waitStopped(ctx context.Context, ref Ref, pid int) (bool, erro
 func quote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 
 func wrapper(command Command, phaseDir string) (string, error) {
+	return wrapperTimeout(command, phaseDir, 0)
+}
+
+func wrapperTimeout(command Command, phaseDir string, timeout time.Duration) (string, error) {
 	// env consumes operands containing '=' as assignments, even after '--'.
 	if strings.Contains(command.Executable, "=") {
 		return "", failure("phase.invalid_request", command.Executable, errors.New("executable path cannot contain '='"))
@@ -387,8 +395,22 @@ func wrapper(command Command, phaseDir string) (string, error) {
 	// boot/runtime; lstart detects a reused group leader across reconciliation.
 	fmt.Fprintf(&b, "started=$(LC_ALL=C /bin/ps -p $$ -o lstart=) || exit 1\nboot=$(LC_ALL=C /bin/ps -p 1 -o lstart=) || exit 1\nprintf '{\"pid\":%%s,\"started\":\"%%s\",\"boot\":\"%%s\"}\\n' \"$$\" \"$started\" \"$boot\" >%s && /bin/mv -f %s %s || exit 1\n", quote(filepath.Join(phaseDir, "process-group.json.tmp")), quote(filepath.Join(phaseDir, "process-group.json.tmp")), quote(filepath.Join(phaseDir, "process-group.json")))
 
-	fmt.Fprintf(&b, "finish() {\n code=$1\n trap - EXIT\n printf '{\"exit_code\":%%s}\\n' \"$code\" >%s &&\n /bin/mv -f %s %s\n exit \"$code\"\n}\ntrap 'finish \"$?\"' EXIT\ntrap ':' INT TERM HUP\n", quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")))
+	completionCleanup := ""
+	if timeout > 0 {
+		// Bounded system commands own the full group. Once the foreground
+		// finishes, preserve its result and stop any descendants as the
+		// watchdog is retired; this also works with the control plane offline.
+		completionCleanup = " kill -KILL -$$ 2>/dev/null\n"
+	}
+	fmt.Fprintf(&b, "timer=\nfinish() {\n code=$1\n trap - EXIT\n if [ -n \"$timer\" ]; then kill -TERM \"$timer\" 2>/dev/null; wait \"$timer\" 2>/dev/null; fi\n printf '{\"exit_code\":%%s}\\n' \"$code\" >%s &&\n /bin/mv -f %s %s\n%s exit \"$code\"\n}\ntrap 'finish \"$?\"' EXIT\ntrap ':' INT TERM HUP\n", quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")), completionCleanup)
 	fmt.Fprintf(&b, "exec >%s 2>%s\n", quote(filepath.Join(phaseDir, "events.jsonl")), quote(filepath.Join(phaseDir, "stderr.log")))
+	if timeout > 0 {
+		// The watchdog belongs to the pane group and is stopped/reaped on normal
+		// completion. Its child sleep is also reaped so Status never sees a timer
+		// as leftover command work. Timeout metadata precedes the group-wide kill.
+		fmt.Fprintf(&b, "(\n sleeper=\n trap 'if [ -n \"$sleeper\" ]; then kill -TERM \"$sleeper\" 2>/dev/null; wait \"$sleeper\" 2>/dev/null; fi; exit 0' INT TERM HUP\n /bin/sleep %s &\n sleeper=$!\n wait \"$sleeper\" || exit 0\n printf '{\"exit_code\":124,\"timed_out\":true}\\n' >%s && /bin/mv -f %s %s\n kill -KILL -$$\n) &\ntimer=$!\n", strconv.FormatFloat(timeout.Seconds(), 'f', 9, 64), quote(filepath.Join(phaseDir, "timeout.json.tmp")), quote(filepath.Join(phaseDir, "timeout.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")))
+	}
+
 	fmt.Fprintf(&b, "cd %s || exit 1\n/usr/bin/env -i", quote(command.Dir))
 	for _, value := range command.Environment() {
 		fmt.Fprintf(&b, " %s", quote(value))

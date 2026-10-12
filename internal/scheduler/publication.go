@@ -22,14 +22,14 @@ type ReportPublisher interface {
 }
 
 type pendingReport struct {
-	id, runID, repository, phase, body, warning string
-	pr, round, attempt                          int
+	id, runID, repository, phase, body, warning, checkRetryOf string
+	pr, round, attempt                                        int
 }
 
 // queueReports reconstructs missing publication intents from locally saved
 // reports, including terminal runs. Frozen bodies are never regenerated on replay.
 func (s *Scheduler) queueReports(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.run_id,r.repository,r.pr_number,a.phase,a.round,a.attempt,COALESCE(v.report_json,f.report_json),COALESCE(v.accepted,0)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.run_id,r.repository,r.pr_number,a.phase,a.round,a.attempt,COALESCE(v.report_json,f.report_json),COALESCE(v.accepted,0),a.check_retry_of
 FROM phase_attempts a JOIN runs r ON r.id=a.run_id
 LEFT JOIN review_attempts v ON v.attempt_id=a.id LEFT JOIN fix_attempts f ON f.attempt_id=a.id
 LEFT JOIN report_publications p ON p.attempt_id=a.id
@@ -43,7 +43,7 @@ ORDER BY a.run_id,a.round,CASE a.phase WHEN 'review' THEN 0 ELSE 1 END,a.attempt
 		var p pendingReport
 		var raw string
 		var accepted bool
-		if err := rows.Scan(&p.id, &p.runID, &p.repository, &p.pr, &p.phase, &p.round, &p.attempt, &raw, &accepted); err != nil {
+		if err := rows.Scan(&p.id, &p.runID, &p.repository, &p.pr, &p.phase, &p.round, &p.attempt, &raw, &accepted, &p.checkRetryOf); err != nil {
 			rows.Close()
 			return err
 		}
@@ -59,11 +59,12 @@ ORDER BY a.run_id,a.round,CASE a.phase WHEN 'review' THEN 0 ELSE 1 END,a.attempt
 			acceptedReview = &accepted
 		}
 		encoded, err := json.MarshalIndent(struct {
-			RunID     string `json:"run_id"`
-			AttemptID string `json:"report_id"`
-			Accepted  *bool  `json:"accepted,omitempty"`
-			Report    any    `json:"report"`
-		}{p.runID, p.id, acceptedReview, report}, "", "  ")
+			RunID        string `json:"run_id"`
+			AttemptID    string `json:"report_id"`
+			Accepted     *bool  `json:"accepted,omitempty"`
+			CheckRetryOf string `json:"check_retry_of,omitempty"`
+			Report       any    `json:"report"`
+		}{p.runID, p.id, acceptedReview, p.checkRetryOf, report}, "", "  ")
 		if err != nil {
 			rows.Close()
 			return err
@@ -82,8 +83,12 @@ ORDER BY a.run_id,a.round,CASE a.phase WHEN 'review' THEN 0 ELSE 1 END,a.attempt
 		if p.phase == "fix" {
 			title = "Fix"
 		}
+		annotation := ""
+		if p.phase == "fix" && p.checkRetryOf != "" {
+			annotation = "\n\nCheck retry after failed local checks."
+		}
 		identity := sha256.Sum256([]byte(p.runID + "\x00" + p.phase + "\x00" + p.id))
-		p.body = fmt.Sprintf("<!-- mergeyard:report:%x -->\n## %s report · round %d, attempt %d%s\n\n```json\n%s\n```", identity, title, p.round, p.attempt, outcomes, strings.ReplaceAll(string(encoded), "`", `\u0060`))
+		p.body = fmt.Sprintf("<!-- mergeyard:report:%x -->\n## %s report · round %d, attempt %d%s\n\n```json\n%s\n```", identity, title, p.round, p.attempt, annotation+outcomes, strings.ReplaceAll(string(encoded), "`", `\u0060`))
 		reports = append(reports, p)
 	}
 	err = rows.Err()

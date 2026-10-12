@@ -374,7 +374,15 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 			repair = run.Fix.CI
 		}
 	}
-	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair})
+	var checks *workflow.SystemStepSnapshot
+	// Completed execution evidence remains relevant after its configured list
+	// is removed. The fresh run snapshot already contains the saved results.
+	for i := range run.SystemSteps {
+		if run.SystemSteps[i].Step == "checks" && run.SystemSteps[i].TargetSHA == snapshot.Head {
+			checks = &run.SystemSteps[i]
+		}
+	}
+	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair, Checks: checks})
 	if err != nil {
 		return fail(err)
 	}

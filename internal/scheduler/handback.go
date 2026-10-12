@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -154,6 +155,15 @@ func (s *Scheduler) resumeHandback(ctx context.Context, repo config.Repository, 
 		return err
 	}
 	for _, ref := range refs {
+		ownedChecks := false
+		for _, step := range run.SystemSteps {
+			if step.Step == "checks" && step.OwnerID == fmt.Sprintf("handback:%d", v.ID) && step.ProcessSession == ref.Name {
+				ownedChecks = true
+			}
+		}
+		if ownedChecks {
+			continue
+		}
 		status, err := s.deps.Runner.SessionStatus(ctx, ref)
 		if err != nil {
 			return pending(err)
@@ -258,6 +268,23 @@ func (s *Scheduler) resumeHandback(ctx context.Context, repo config.Repository, 
 		v.Error = ""
 		if err := s.saveHandback(ctx, run, v, "run.handback_committed"); err != nil {
 			return err
+		}
+	}
+	if len(repo.Checks) > 0 || runningSystemStep(run, "checks") {
+		result, done, err := s.systemStep(ctx, repo, run, gitRun, systemStepRequest{Step: "checks", Commands: repo.Checks, TargetSHA: v.CommitSHA, OwnerID: fmt.Sprintf("handback:%d", v.ID)})
+		if err != nil {
+			return pending(err)
+		}
+		if !done {
+			return nil
+		}
+		if result.Status != "succeeded" {
+			cause := checksFailure(result).(*fault.Error)
+			v.Pending, v.Error = false, cause.Error()
+			if _, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.OperationFailed, Failure: cause, Metadata: workflow.MetadataPatch{Handback: &v}}); err != nil {
+				return err
+			}
+			return s.attentionLabels(ctx, repo, run)
 		}
 	}
 	if err := g.PushHandback(ctx, gitRun, v.PreviousSHA, v.CommitSHA); err != nil {

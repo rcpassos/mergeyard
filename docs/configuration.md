@@ -15,9 +15,10 @@ workspace package is responsible for expanding `~` when using them.
 
 Model and effort strings pass through to the selected harness without a catalog.
 `null` clears a model or effort override. An explicit empty `skills` list clears
-inherited skills. CI timeouts, poll intervals and usage-limit cooldowns must be positive
-durations. Resolved labels must be nonempty and distinct, and repositories may
-only be listed once; both comparisons ignore case.
+inherited skills. CI timeouts, repository command timeouts, poll intervals and
+usage-limit cooldowns must be positive durations. Resolved labels must be nonempty
+and distinct, and repositories may only be listed once; both comparisons ignore
+case.
 
 Unknown keys are tolerated and retained. `Document.Warnings` returns diagnostics
 with code `config.unknown_field`, a field path, and a message so callers such as
@@ -26,6 +27,116 @@ Warnings describe the last Parse/Load; reload after edits to refresh them.
 Known configuration
 sections must be mappings with unique string keys; YAML merge keys (`<<`) are
 rejected rather than silently ignored. Ordinary anchors and aliases can be read.
+
+## Repository setup commands
+
+`repositories[].setup` is a list of shell commands, defaulting to `[]`. Omit it or
+leave it empty to keep the existing workspace and agent flow. It is a repository
+setting; commands are never read from issue or PR text.
+
+```yaml
+repositories:
+  - repo: company/api
+    setup: ["npm ci"]
+    command_timeout: 20m
+```
+
+After preparing a fresh worktree, Mergeyard runs the setup list before starting
+the implementer. Setup also runs whenever Mergeyard recreates that worktree, so
+commands must be idempotent. The list runs in order as one `bash --login` script
+with `set -e` and `set -o pipefail`, using only the explicitly configured
+environment. Commands share one subshell which inherits login startup variables
+and functions; a failing command or pipeline stops the script. Logout hooks cannot
+replace the configured commands' exit status.
+
+`repositories[].command_timeout` is a positive Go duration, defaulting to `20m`.
+It bounds an entire setup or checks script, rather than each command in the list.
+When the foreground script finishes, Mergeyard stops any background processes
+still in its owned process group. Setup and checks must finish the work they need
+before returning; launching a background service does not keep it running.
+The phase wrapper owns the timeout watchdog, which continues running if the control
+plane restarts. Timeout and Stop end the whole owned process group. Stop preserves
+the worktree.
+
+Setup is a system step within `ACTIVE/implement`, recorded in phase metadata as
+`step: setup`. Its tmux session is named
+`mergeyard-<short-run-id>-setup-<round>-<n>` and can be watched with
+`mergeyard watch <run-id>`. A failure or timeout moves the run to `NEEDS_ATTENTION`
+with `workspace.setup_failed` and an output excerpt; the implementer is never
+started. Explicit Retry reruns setup before the agent phase.
+
+After a control-plane restart, Mergeyard waits on a live setup session and reads
+exit metadata for a finished session. If the outcome is unknown, it stops any
+remaining owned processes and reruns the idempotent setup list.
+Removing the configured list does not bypass an already-started setup execution.
+Mergeyard observes its result and, when the outcome is unknown, reruns its saved
+commands with the originally captured timeout before starting the agent. New
+executions for later phases or newly prepared worktrees use current configuration.
+
+## Repository checks
+
+`repositories[].checks` is a list of shell commands, defaulting to `[]`. Omit it
+or leave it empty to keep the existing flow. Like setup, checks come only from
+repository configuration, never from issue or PR text. Commands must be nonempty
+and contain no NUL characters.
+
+```yaml
+repositories:
+  - repo: company/api
+    setup: ["npm ci"]
+    checks: ["npm test", "npm run lint"]
+    check_retries: 1
+    command_timeout: 20m
+```
+
+After every successful `implement` or `fix`, including a CI-repair fix, Mergeyard
+commits the changes, runs checks, then pushes and starts review. Every configured
+check must have a durable passing result, and the worktree must match the clean
+pinned commit before and after checks. Early `exit` or `exec`
+cannot authorize skipped checks. Results obtained against a changed worktree
+are saved as failures and cannot be reused after restoring files or restarting.
+A failing commit is not pushed. Checks reuse setup's `bash --login` script, shared
+shell,
+`set -e`, `set -o pipefail`, configured environment, and process-group cleanup.
+`command_timeout` (default `20m`) bounds the entire check list on each execution.
+
+Checks are a system step inside the current `ACTIVE/implement` or `ACTIVE/fix`
+phase, recorded as `step: checks`. The tmux session is named
+`mergeyard-<short-run-id>-checks-<round>-<n>`, with executions counted separately
+from agent attempts. Watch attaches to the live check session. Stop ends its
+whole owned process group and preserves the worktree. On restart, Mergeyard waits
+on a live session or reads its saved results. An unknown outcome causes remaining
+owned processes to be stopped and checks to be rerun before publication; the
+wrapper's timeout watchdog keeps running while the control plane is offline.
+Clearing `checks` while a step is pending still requires that execution to finish
+and its result to be handled before publication. Unknown outcomes replay the saved
+configured commands with their captured timeout. Completed results remain in the
+review input after the list is removed; later phases use current configuration.
+
+`repositories[].check_retries` is a nonnegative integer, defaulting to `1`.
+`0` disables automatic fixes after failed checks. Within the remaining allowance,
+each failure resumes the implementer's session in the same phase with the failing command and an output
+excerpt in its input file. These extra phase attempts consume only the check
+retry allowance, not `max_attempts` or review rounds. Usage-limit waits retain
+their usual handling and bounds. Restart preserves the check retry allowance and
+resumes an in-progress check-retry attempt without granting another retry.
+
+A failure or timeout with no retries remaining moves the run to
+`NEEDS_ATTENTION` with `checks.failed`. Explicit Retry grants exactly one more
+check/fix attempt, records the grant in run history, and reruns checks first so
+manual repairs can pass without another agent attempt. It preserves the previous
+check results and retry history rather than resetting the configured allowance.
+
+Handback commits manual changes and runs checks before pushing or reviewing.
+A failure requires attention with `checks.failed` immediately; Mergeyard does
+not automatically fix the user's changes. The latest check results (command,
+pass/fail, and output excerpt) are included in the review input. PR fix comments
+also report check retries.
+
+Current-base verification is tracked separately in
+[#96](https://github.com/rcpassos/mergeyard/issues/96). Its planned
+`verify_commands` setting defaults to `checks` when omitted; an explicit `[]`
+disables that verification. `verify_commands` is not yet a supported setting.
 
 ## Editing configuration
 
@@ -91,8 +202,10 @@ settings, including repositories with `enabled: false`.
 | `config.invalid_concurrency` | Concurrency must be a positive finite integer |
 | `config.invalid_max_rounds` | Round limit must be a positive finite integer |
 | `config.invalid_max_attempts` | Role attempt limit must be a positive finite integer |
+| `config.invalid_checks` | Check commands must be nonempty and contain no NUL |
+| `config.invalid_check_retries` | Check retry limit must be a nonnegative finite integer |
 | `config.invalid_max_waits` | Usage-limit wait bound must be a positive finite integer |
-| `config.invalid_duration` | CI timeout, poll interval or cooldown must parse as a positive Go duration |
+| `config.invalid_duration` | CI timeout, repository command timeout, poll interval or cooldown must parse as a positive Go duration |
 | `config.invalid_permission_mode` | Claude permission mode must be `auto`, `acceptEdits`, or `bypassPermissions` |
 | `config.invalid_sandbox` | Codex sandbox must be `workspace-write` or `danger-full-access` |
 | `config.invalid_path` | Document edit path cannot be traversed |

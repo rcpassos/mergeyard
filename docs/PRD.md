@@ -373,6 +373,12 @@ The base checkout is never used for agent edits. A dirty base checkout prevents 
 
 Each run receives exactly one worktree at `worktrees/<owner>-<repo>/<run-id>`.
 
+### Setup
+
+After workspace preparation, Mergeyard runs the repository's configured `setup` commands before starting the implementer. It runs setup again whenever it recreates the worktree; setup commands must be idempotent. An omitted or empty setup list leaves the existing flow unchanged.
+
+Setup runs as a system step inside `ACTIVE/implement`, recorded in phase metadata as `step: setup`. Commands come only from user configuration, never from issue or PR text. A failure or timeout moves the run to `NEEDS_ATTENTION` with `workspace.setup_failed` and an output excerpt; the agent is never started. Explicit Retry reruns setup before the agent phase.
+
 ### Branch naming
 
 Default: `mergeyard/issue-<number>`.
@@ -574,8 +580,10 @@ The harness prompt is a fixed Mergeyard template that contains only Mergeyard-ge
 | Phase | Input contains |
 |---|---|
 | `implement` | repository, issue number/title/body/URL, base branch, worktree path, constraints, output contract |
-| `review` | the above plus PR number/URL, the diff range to review, and on later rounds: previous findings and the implementer's fix report |
+| `review` | the above plus PR number/URL, the diff range to review, latest local check results (command, pass/fail, excerpt), and on later rounds: previous findings and the implementer's fix report |
 | `fix` | the above plus the latest blocking review findings and/or failing CI checks with failure excerpts |
+
+A check-retry attempt stays in the current `implement` or `fix` phase and adds the failing command and output excerpt to that phase's full input file.
 
 Issue, PR, review, and CI text must be written to files or passed through stdin. It must never be interpolated into shell command strings.
 
@@ -676,11 +684,11 @@ Success requires all of: exit code 0, the harness's completion event (Claude `re
 
 ## 14. Process Model
 
-The MVP uses **tmux** to host every phase attempt. This allows:
+The MVP uses **tmux** to host every phase attempt and configured system step. This allows:
 
-- the control plane to restart without killing agent processes;
-- the user to watch a live phase;
-- phase logs to remain associated with a stable session.
+- the control plane to restart without killing agent, setup, or check processes;
+- the user to watch a live phase or system step;
+- logs to remain associated with a stable session.
 
 ### Session naming
 
@@ -688,7 +696,7 @@ The MVP uses **tmux** to host every phase attempt. This allows:
 mergeyard-<short-run-id>-<phase>-<round>-<attempt>
 ```
 
-Names are sanitized and kept below tmux limits.
+Names are sanitized and kept below tmux limits. System steps use the same naming scheme, replacing the phase component with the step name. Setup and checks sessions are named `mergeyard-<short-run-id>-setup-<round>-<n>` and `mergeyard-<short-run-id>-checks-<round>-<n>`, where `n` counts executions of that step independently of agent attempts.
 
 ### Phase wrapper
 
@@ -703,6 +711,16 @@ Mergeyard starts a generated wrapper script inside tmux. The wrapper:
 
 The adapter parses `events.jsonl`; the Codex adapter tails it during the run to capture the session ID. Mergeyard determines completion from exit metadata plus the structured result. It does not infer completion from terminal text.
 
+### System steps
+
+Configured command lists reuse the phase wrapper and process journal. Each setup or checks list runs as one `bash --login` script in the worktree with `set -e` and `set -o pipefail`, using only the explicitly configured environment. All commands share one subshell which inherits login startup variables and functions, and execution stops on the first failing command or pipeline. The outer login shell ends at EOF, so logout hooks cannot replace configured command exit codes. Output and exit metadata are saved with the system step; agent result validation does not apply to system steps.
+
+The repository's `command_timeout` is a positive duration, defaulting to `20m`, for the entire script. The wrapper owns its timeout watchdog so the deadline remains enforced while the control plane is offline. Timeout and Stop end the whole owned process group, including descendants, while preserving the worktree. On foreground completion, the wrapper records the result and stops any remaining background processes in that bounded system step's owned group. Scripts must finish required work before returning; they cannot leave a background service running. Untimed agent invocations retain their existing process behavior.
+
+Checks require durable passing evidence for every configured command and a clean worktree matching the pinned commit before and after execution. Missing or skipped command evidence and results obtained against a changed tree are saved as failures. Cached passing evidence is accepted only after confirming its recorded pinned-tree verification and the current clean pinned tree.
+
+Removing a configured setup/check list does not erase a pending execution. Reconciliation still observes its result before starting an agent or publishing. An unknown outcome replays the originally configured commands with the captured timeout. Failed results retain the existing setup/check error and retry-budget handling. New executions in later phases or newly prepared worktrees use current configuration, while saved target-matched results remain available to the reviewer after configuration removal.
+
 ### Control-plane shutdown
 
 Stopping Mergeyard does not stop running tmux sessions. On restart, Mergeyard reconciles stored sessions against tmux and GitHub state.
@@ -716,11 +734,11 @@ The MVP is **not** a generic workflow engine. Every run follows one fixed lifecy
 ```text
 IMPLEMENT (implementer)
    ↓
-COMMIT + PUSH + OPEN DRAFT PR
+COMMIT → CHECKS → PUSH + OPEN DRAFT PR
    ↓
-REVIEW round N (reviewer) ──changes_required──▶ FIX (implementer) ──▶ push ──▶ REVIEW round N+1
+REVIEW round N (reviewer) ──changes_required──▶ FIX (implementer) ──▶ commit → checks → push ──▶ REVIEW round N+1
    ↓ approved
-WAIT FOR CI ──failed──▶ FIX (implementer, CI failures) ──▶ push ──▶ REVIEW round N+1
+WAIT FOR CI ──failed──▶ FIX (implementer, CI failures) ──▶ commit → checks → push ──▶ REVIEW round N+1
    ↓ passed
 READY TO MERGE (PR marked ready for review)
    ↓ user merges on GitHub
@@ -729,7 +747,7 @@ CLEANUP → COMPLETED
 
 Agent-backed phases: `implement`, `review`, `fix`.
 
-System steps: workspace preparation, Git operations, PR creation/update, PR comments, CI monitoring, merge detection, cleanup.
+System steps: workspace preparation, setup, local checks, Git operations, PR creation/update, PR comments, CI monitoring, merge detection, cleanup.
 
 ### Rounds and the bound
 
@@ -742,6 +760,14 @@ round 1: changes_required → fix → round 2
 round 2: approved → CI failed → fix → round 3
 round 3: approved → CI passed → READY_TO_MERGE
 ```
+
+### Local checks and their retry bound
+
+An omitted or empty repository `checks` list preserves the existing workflow. With checks configured, every successful implement or fix, including a CI-repair fix, follows `agent → commit → checks → push → review`. Checks run as `step: checks` inside the current implement/fix phase; failing code is not pushed.
+
+A failed check resumes the implementer's same session in the same phase with the failing command and an output excerpt in its input file. These extra phase attempts are bounded only by `check_retries` (default `1`, allowing `0`) and consume neither `max_attempts` nor review rounds. Usage-limit waits follow section 12 as usual and do not spend a check retry. Each resumed attempt is committed and checked again before publication.
+
+Failure or timeout after the allowance is exhausted moves the run to `NEEDS_ATTENTION` with `checks.failed`. Explicit Retry grants one additional check/fix attempt, records it in history, and reruns checks first. Previous results and retry history are retained. The latest check results (command, pass/fail, excerpt) accompany the review input.
 
 ### Prior finding accountability
 
@@ -758,7 +784,7 @@ Where the harness supports it without blocking test runs, the reviewer also runs
 By default (`pr_comments: true`), Mergeyard posts the loop to the pull request so it is visible on GitHub:
 
 - after each review: one comment with the round number, verdict, findings, and prior finding outcomes with counts (`fixed / not fixed / no longer applies`);
-- after each fix: one comment with the implementer's summary and per-finding responses.
+- after each fix: one comment with the implementer's summary, per-finding responses, and any check retries.
 
 Mergeyard posts these comments from the structured results; agents do not need GitHub write access. Findings and prior finding outcomes are always stored locally. The dashboard shows each review round, outcome counts, and each prior finding's outcome and note.
 
@@ -773,7 +799,9 @@ Mergeyard owns all commits. Agent prompts instruct harnesses not to commit: Code
 - if there are staged/unstaged tracked changes, Mergeyard creates a commit;
 - only non-ignored untracked files are included;
 - if `implement` produced no diff from the base branch, the run moves to `NEEDS_ATTENTION` (`git.no_changes`);
-- if `fix` produced no changes and disputed every finding, the next review proceeds normally.
+- if `fix` produced no changes and disputed every finding, the next review proceeds after configured checks pass.
+
+Configured local checks run against the committed head before it is pushed or reviewed. Every check-retry implement/fix attempt follows the same commit-and-check order. A failed check preserves the local commit and worktree for repair; no push or review starts until checks pass.
 
 Default commit message: `mergeyard: #<issue> <issue title>`. The commit uses the machine's Git identity.
 
@@ -783,7 +811,7 @@ Mergeyard never force-pushes. If the remote branch diverges unexpectedly, the ru
 
 ## 17. Pull Request Contract
 
-After a successful `implement`:
+After a successful `implement` and passing configured local checks:
 
 1. push the run branch;
 2. discover an existing open PR for that branch or create one as a **draft**;
@@ -844,7 +872,7 @@ Automated phases run non-interactively, so attaching to their tmux session only 
 
 ### Watch
 
-`mergeyard watch <run-id>` attaches read-only to the live phase's tmux session. The dashboard shows the equivalent command.
+`mergeyard watch <run-id>` attaches read-only to the live phase or system step's tmux session, including setup and checks. The dashboard shows the equivalent command.
 
 ### Take over
 
@@ -869,14 +897,16 @@ No automated phase starts while the run is `MANUAL`.
 
 The user selects `Hand back` (or runs `mergeyard handback <run-id>`). Mergeyard then:
 
-1. verifies no Mergeyard-owned phase process is running;
+1. verifies no Mergeyard-owned phase or system-step process is running;
 2. inspects the worktree, branch, and PR state;
-3. commits and pushes any manual changes;
-4. starts the next required step: `implement` if no PR exists yet, otherwise a review round.
+3. commits manual changes and runs configured checks;
+4. after checks pass, pushes changes and starts the next required step: `implement` if no PR exists yet, otherwise a review round.
+
+Handback check failure or timeout moves directly to `NEEDS_ATTENTION` with `checks.failed`, without an automatic implementer retry. Mergeyard preserves the user's changes and check results. The handback origin is persisted so restart cannot turn a failed manual check into an automatic fix.
 
 If the required review would exceed the run's review-round allowance, handback explicitly grants one additional round. The action description shows this consequence, and the grant is recorded in run history. This lets manually repaired work receive independent review without requiring a separate Retry action.
 
-Handback succeeds into `WAITING_FOR_HARNESS` when the next phase needs a blocked harness, after the normal inspection and commit/push of manual changes. Temporary limits resume on schedule; exhausted credits require an explicit recovery action. The UI distinguishes these waiting reasons.
+Handback succeeds into `WAITING_FOR_HARNESS` when the next phase needs a blocked harness, after the normal inspection, commit, checks, and push of manual changes. Temporary limits resume on schedule; exhausted credits require an explicit recovery action. The UI distinguishes these waiting reasons.
 
 The implementer's later fixes resume the same agent session, including the user's manual conversation. If the user clears or branches the conversation during takeover, the harness creates a new session ID; Mergeyard keeps resuming the original ID. The user is responsible for exiting the interactive harness before handing back.
 
@@ -902,7 +932,7 @@ STOPPED
 COMPLETED
 ```
 
-`ACTIVE` is paired with a phase: `implement`, `review`, or `fix`.
+`ACTIVE` is paired with a phase: `implement`, `review`, or `fix`. A configured system step runs inside that phase without introducing a new run state. Setup is recorded as `step: setup` in the `implement` phase metadata; agent attempts start only after setup succeeds. Checks are recorded as `step: checks` in the current implement/fix phase metadata and must pass before publication. System step executions and check-retry attempts do not consume ordinary agent attempts or review rounds.
 
 Terminal states: `FAILED`, `STOPPED`, `COMPLETED`. Terminal runs never progress automatically and accept no other transition, except that the user may retry a `FAILED` run (§22). `NEEDS_ATTENTION` is non-terminal because the user may retry.
 
@@ -912,12 +942,18 @@ Terminal states: `FAILED`, `STOPPED`, `COMPLETED`. Terminal runs never progress 
 |---|---|---|
 | none | eligible issue claimed | CLAIMING |
 | CLAIMING | GitHub claim succeeds | PREPARING |
-| PREPARING | worktree ready | ACTIVE/implement |
-| ACTIVE/implement | success, PR opened | ACTIVE/review |
+| PREPARING | worktree ready; setup queued if configured | ACTIVE/implement |
+| ACTIVE/implement, step setup | setup succeeds | ACTIVE/implement, agent starts |
+| ACTIVE/implement, step setup | setup fails or times out | NEEDS_ATTENTION (`workspace.setup_failed`) |
+| ACTIVE/implement | success, committed; checks configured | ACTIVE/implement, step checks |
+| ACTIVE/implement | success, checks pass or absent, PR opened | ACTIVE/review |
+| ACTIVE/implement or ACTIVE/fix, step checks | checks fail or time out, check retries remain | ACTIVE/same phase, implementer resumes |
+| ACTIVE/implement or ACTIVE/fix, step checks | checks fail or time out, no retries remain or handback origin | NEEDS_ATTENTION (`checks.failed`) |
 | ACTIVE/review | approved | WAITING_FOR_CI |
 | ACTIVE/review | changes required, rounds remain | ACTIVE/fix |
 | ACTIVE/review | changes required, no rounds remain | NEEDS_ATTENTION |
-| ACTIVE/fix | success, pushed | ACTIVE/review |
+| ACTIVE/fix | success, committed; checks configured | ACTIVE/fix, step checks |
+| ACTIVE/fix | success, checks pass or absent, pushed | ACTIVE/review |
 | WAITING_FOR_CI | CI passes | READY_TO_MERGE |
 | WAITING_FOR_CI | CI fails, rounds remain | ACTIVE/fix |
 | WAITING_FOR_CI | CI fails, no rounds remain | NEEDS_ATTENTION |
@@ -946,8 +982,8 @@ Transitions are enforced centrally. UI and CLI actions must not mutate arbitrary
 
 `mergeyard stop <run-id>`:
 
-1. sends SIGINT to a running phase process;
-2. waits for a grace period, sends SIGTERM, then kills the tmux session if still active;
+1. sends SIGINT to the running phase or system step's owned process group;
+2. waits for a grace period, sends SIGTERM, then ends remaining owned processes and the tmux session if still active;
 3. preserves the worktree, branch, and PR;
 4. removes the `running` label;
 5. adds `needs-attention` unless no work was ever created;
@@ -964,6 +1000,8 @@ Retry is allowed from `NEEDS_ATTENTION` and `FAILED`, and from `WAITING_FOR_HARN
 - does not reset user changes;
 - reconciles Git/PR/CI state first and determines the next safe phase;
 - grants one additional review round when the run stopped on `review.max_rounds_exceeded`.
+
+Retry after `workspace.setup_failed` reruns setup before starting the agent. Retry after `checks.failed` reruns checks before any agent attempt or publication and grants exactly one additional check/fix attempt, with the grant and prior retry history persisted.
 
 Retry after exhausted credits follows the single-run recovery probe in section 12. Retry after usage-limit wait exhaustion grants one additional wait as specified there. Handback can also grant a review round under the conditions in section 20.
 
@@ -982,7 +1020,7 @@ For every non-terminal run it verifies:
 - issue state and labels;
 - worktree and branch state;
 - PR state;
-- tmux process session state;
+- tmux process session state and system step metadata;
 - CI/merge state when applicable;
 - persisted harness limits.
 
@@ -990,6 +1028,8 @@ Cases:
 
 - **Process still running:** restore the run as active and keep monitoring.
 - **Process finished while offline:** read exit metadata and the result, then continue.
+- **Setup in progress:** wait on a live setup session without starting another script. If it finished, read exit metadata and continue or report `workspace.setup_failed`. If the outcome is unknown, stop any remaining owned processes and rerun setup. The wrapper's timeout watchdog continues enforcing the original deadline while the control plane is offline.
+- **Checks in progress:** reconcile like setup: wait on a live session or consume its saved result; stop remaining owned processes and rerun checks if the outcome is unknown. A result authorizes publication only for the committed head it checked. Preserve retry counts, explicit grants, and handback origin. An in-progress check-retry implement/fix attempt is reconciled like any agent attempt, without consuming ordinary attempts or granting a fresh check budget.
 - **Harness limited:** keep the run in `WAITING_FOR_HARNESS` until the limit expires.
 - **PR merged while offline:** complete the run and clean up.
 - **Orphaned claim:** an issue with `agent-running` but no reconcilable local run is not dispatched. It is shown as an orphaned claim requiring manual action.
@@ -1219,6 +1259,10 @@ repositories:
     base_branch: main     # default: repository default branch
     concurrency: 1        # optional per-repository limit
     enabled: true
+    setup: []             # e.g. ["npm ci"]; commands must be idempotent
+    checks: []            # e.g. ["npm test", "npm run lint"]; before push/review
+    check_retries: 1      # nonnegative; 0 disables automatic check fixes
+    command_timeout: 20m  # positive duration for each whole setup/checks script
 
   - repo: company/frontend
     reviewer:             # per-repository role override
@@ -1227,6 +1271,8 @@ repositories:
 ```
 
 A repository-level `implementer` or `reviewer` block overrides only the fields it sets.
+
+Repository `checks` defaults to `[]`, `check_retries` to `1`, and `command_timeout` to `20m`. Setup and checks share the timeout and system-step process behavior in section 14. Current-base verification remains future work in [#96](https://github.com/rcpassos/mergeyard/issues/96): its planned `verify_commands` defaults to `checks` when omitted, while an explicit `[]` disables verification.
 
 Model identifiers and effort levels are passed through to the harness. Mergeyard does not maintain a model catalog.
 
@@ -1474,6 +1520,7 @@ git.*
 harness.*
 phase.*
 review.*
+checks.*
 ci.*
 pr.*
 reconcile.*
@@ -1483,6 +1530,8 @@ internal.*
 Examples:
 
 ```text
+workspace.setup_failed
+checks.failed
 git.no_changes
 git.branch_conflict
 git.push_rejected
@@ -1509,7 +1558,8 @@ Every `NEEDS_ATTENTION`/`FAILED` run exposes a human-readable message and a stab
 
 Mergeyard must enforce:
 
-- no unbounded loops: review rounds, phase attempts, and usage-limit waits are bounded;
+- no unbounded loops: review rounds, phase attempts, check retries, and usage-limit waits are bounded;
+- no push or review of a committed head before its configured local checks pass;
 - no duplicate active run for one repository + issue;
 - no shared agent session between implementer and reviewer;
 - no reviewer changes accepted into the branch;
@@ -1706,6 +1756,14 @@ Repeated scheduler ticks and restarts do not create a second active run, branch,
 - With `pr_comments: true`, each review and fix appears as a PR comment.
 - When a session cannot be resumed, the phase continues in a fresh session with a recorded warning.
 
+### Local checks
+
+- Empty checks preserve the existing flow; configured checks run after the commit and before push after implement and every fix, including CI repair.
+- Failed checks resume the same implementer session and phase within `check_retries`, without spending ordinary attempts or review rounds. Exhaustion reports `checks.failed`.
+- Explicit Retry rechecks first and records exactly one additional check/fix grant without resetting history. Handback checks fail directly to attention without automatic fixes.
+- Review input includes the latest command results; fix comments mention check retries.
+- Check sessions survive restart, can be watched, and Stop or timeout ends the whole owned process group. Restart preserves retry counts and the manual handback origin.
+
 ### CI
 
 A CI failure after approval triggers a fix and another review round when rounds remain; otherwise `NEEDS_ATTENTION`.
@@ -1742,11 +1800,11 @@ These recovery criteria apply only when the harness advertises verified exhauste
 
 `takeover` stops automation, moves the run to `MANUAL`, and opens the implementer's session interactively in the worktree. Mergeyard does not progress the run until `handback`.
 
-Takeover requires a prepared worktree and known implementer session. Interrupted review changes are restored before interactive control is offered. Handback reconciles and commits/pushes manual changes, grants one additional review round when required by an exhausted allowance, and enters `WAITING_FOR_HARNESS` when the next phase needs a blocked harness. The UI distinguishes scheduled resumption from required credit recovery.
+Takeover requires a prepared worktree and known implementer session. Interrupted review changes are restored before interactive control is offered. Handback reconciles and commits manual changes, runs checks before pushing, requires attention on check failure without an automatic fix, grants one additional review round when required by an exhausted allowance, and enters `WAITING_FOR_HARNESS` when the next phase needs a blocked harness. The UI distinguishes scheduled resumption from required credit recovery.
 
 ### Recovery
 
-A restart during implement, review, fix, CI wait, harness wait, or ready-to-merge reconstructs the correct state from SQLite + tmux + GitHub without duplicating work.
+A restart during setup, local checks, a check-retry attempt, implement, review, fix, CI wait, harness wait, or ready-to-merge reconstructs the correct state from SQLite + tmux + GitHub without duplicating work.
 
 ---
 
@@ -1759,6 +1817,7 @@ A restart during implement, review, fix, CI wait, harness wait, or ready-to-merg
 - concurrency accounting, including the `READY_TO_MERGE` slot release;
 - state-transition guards;
 - round counting and the CI-failure path;
+- check retry bounds, explicit grants, handback provenance, and checks before publication;
 - usage-limit wait counting;
 - explicit additional-wait and handback review-round grants;
 - credit recovery evidence, single-probe ownership, interruption and restart;
@@ -1783,7 +1842,7 @@ Normal CI must not require paid model calls.
 
 ### Integration tests
 
-Real Git repository, worktrees, tmux, wrapper scripts, and process restart/reconciliation.
+Real Git repository, worktrees, tmux, wrapper scripts, system-step timeout and descendant cleanup, and process restart/reconciliation including checks and check-retry attempts.
 
 ### GitHub integration tests
 
@@ -1885,8 +1944,8 @@ These decisions are locked for the MVP and must not be reinterpreted without cha
 6. Each role keeps one agent session per run, resumed across its phases; implementer and reviewer never share a session. A failed resume falls back to a fresh session.
 7. Every phase attempt runs as a new non-interactive process inside tmux.
 8. Every phase returns a normalized structured result through the harness's native structured output, using OpenAI-strict schemas. There is no agent-written result file.
-9. The workflow is fixed: implement → draft PR → review ↔ fix → CI → ready to merge.
-10. Every fix, including CI fixes, is followed by a review. Reviews per run are bounded by `max_rounds`.
+9. The workflow is fixed: implement → commit → checks → push/draft PR → review ↔ fix/commit/checks/push → CI → ready to merge. Empty checks preserve the existing flow.
+10. Every fix, including CI fixes, passes configured local checks before push and review. Reviews per run are bounded by `max_rounds`; local check retries have their own `check_retries` bound and consume neither ordinary attempts nor rounds.
 11. Review and fix reports are posted as PR comments by default.
 12. Mergeyard never merges. It marks the PR ready for review and waits for the user.
 13. `READY_TO_MERGE` runs do not consume a concurrency slot.

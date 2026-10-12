@@ -49,6 +49,10 @@ repositories:
     base_branch: main
     concurrency: 1 # optional per-repository limit; otherwise inherits global
     enabled: true
+    setup: [] # e.g. ["npm ci"]; run on every fresh/recreated worktree; keep idempotent
+    checks: [] # e.g. ["npm test", "npm run lint"]; after commit, before push/review
+    check_retries: 1 # extra implementer attempts after failed checks; 0 disables
+    command_timeout: 20m # positive duration for each whole setup/checks script
 
   - repo: company/frontend
     reviewer: # only supplied fields override the global reviewer

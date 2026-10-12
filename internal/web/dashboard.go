@@ -315,7 +315,7 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
  CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_agent,'') ELSE COALESCE(r.implementer_agent,'') END,CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_session_id,'') ELSE COALESCE(r.implementer_session_id,'') END,COALESCE(s.issue_json,'{}'),COALESCE(s.pr_url,''),COALESCE(r.pr_number,0),
  COALESCE(a.attempt,0),COALESCE(a.round,0),COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.process_session,''),COALESCE(a.log_path,''),COALESCE(a.skills_json,''),r.stop_requested,r.takeover_status,COALESCE(r.approved_sha,'')
  FROM runs r LEFT JOIN scheduler_runs s ON s.run_id=r.id
- LEFT JOIN phase_attempts a ON a.id=(SELECT id FROM phase_attempts WHERE run_id=r.id AND phase=r.current_phase ORDER BY round DESC,attempt DESC LIMIT 1)`
+ LEFT JOIN phase_attempts a ON a.id=(SELECT id FROM phase_attempts WHERE run_id=r.id AND phase=r.current_phase ORDER BY started_at DESC,rowid DESC, round DESC,attempt DESC LIMIT 1)`
 	var args []any
 	if id != "" {
 		query += " WHERE r.id=?"

@@ -88,7 +88,7 @@ func (s *Scheduler) limitExecution(ctx context.Context, repo config.Repository, 
 		wait.ResetTimeSource = "reported"
 	}
 	var lastOrdinary int
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(max(attempt),0) FROM phase_attempts WHERE run_id=? AND phase=? AND round=? AND status NOT IN ('running','usage_limited')`, run.ID, run.Phase, wait.Round).Scan(&lastOrdinary); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(max(attempt),0) FROM phase_attempts WHERE run_id=? AND phase=? AND round=? AND step='' AND status NOT IN ('running','usage_limited')`, run.ID, run.Phase, wait.Round).Scan(&lastOrdinary); err != nil {
 		return err
 	}
 	wait.Sequence = lastOrdinary + 1
@@ -291,6 +291,11 @@ func (s *Scheduler) RetryEligible(ctx context.Context, run workflow.Run) (bool, 
 	if !ok {
 		return false, nil
 	}
+	// Retry of failed checks observes commands before needing a harness; manual
+	// corrections may pass even while the implementer's account stays blocked.
+	if run.LastErrorCode == "checks.failed" {
+		return true, nil
+	}
 	phase := run.Phase
 	state := workflow.Active
 	if run.PRNumber > 0 {
@@ -355,6 +360,13 @@ func (s *Scheduler) retryStartsAgent(ctx context.Context, run workflow.Run, v wo
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return true, nil
+	}
+	if err == nil && a.status == "succeeded" {
+		if repo, ok := s.repository(run.Repository); ok && len(repo.Checks) > 0 {
+			if checks := latestChecks(run); checks != nil && checks.Status == "failed" && checks.OwnerID == a.id {
+				return true, nil
+			}
+		}
 	}
 	return a.status != "succeeded", err
 }

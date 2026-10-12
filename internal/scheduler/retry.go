@@ -205,6 +205,9 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 		// Explicit retry cannot distinguish reviewer changes from later user edits.
 		return fail("retry.review_unrestored", "Review restoration is unfinished; inspect preserved work before retrying")
 	}
+	if v.Cause == "checks.failed" {
+		return s.retryChecks(ctx, repo, run, gitRun, pr, v)
+	}
 	if v.Cause == waitsExhausted {
 		wait := run.HarnessWait
 		if wait == nil || wait.AttemptID == "" || wait.Phase != run.Phase || wait.Round != phaseRound(run, run.Phase) {

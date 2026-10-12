@@ -135,11 +135,11 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 func (s *Scheduler) Watch(ctx context.Context, id string) (runner.SessionRef, error) {
 	var ref runner.SessionRef
 	err := s.workflow.WithRunOperation(ctx, id, func(ctx context.Context, run workflow.Run) error {
-		if run.State != workflow.Active {
+		if run.State != workflow.Active && run.PendingHandback() == nil {
 			return &fault.Error{Code: "phase.not_running", Message: "Run has no live automated phase"}
 		}
 		var input string
-		err := s.db.QueryRowContext(ctx, `SELECT process_session,input_path FROM phase_attempts WHERE run_id=? AND phase=? AND status='running' ORDER BY round DESC,attempt DESC LIMIT 1`, id, run.Phase).Scan(&ref.Name, &input)
+		err := s.db.QueryRowContext(ctx, `SELECT process_session,input_path FROM phase_attempts WHERE run_id=? AND phase=? AND status='running' ORDER BY started_at DESC,rowid DESC LIMIT 1`, id, run.Phase).Scan(&ref.Name, &input)
 		if errors.Is(err, sql.ErrNoRows) {
 			return &fault.Error{Code: "phase.not_running", Message: "Run has no live phase session"}
 		}
