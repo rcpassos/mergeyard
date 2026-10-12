@@ -128,7 +128,7 @@ func TestCreditProbeRequiresModelCompletionAndHonorsCapability(t *testing.T) {
 				}
 				return
 			}
-			script := `printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":1,"status":"` + response + `","summary":"Task needs attention"}}'`
+			script := `printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"` + response + `","summary":"Task needs attention"}}'`
 			if response == "incomplete" {
 				script = `printf '%s\n' '{"type":"system","subtype":"init","session_id":"login-only"}'; exit 1`
 				h.outcome.Kind = harness.Ordinary

@@ -46,7 +46,7 @@ func TestCodexInvocation(t *testing.T) {
 }
 
 const codexSuccess = `{"type":"thread.started","thread_id":"7f9e8221-470e-43e0-adc7-41798c5c193e"}
-{"type":"item.completed","item":{"type":"agent_message","text":"{\"schema_version\":1,\"status\":\"success\",\"summary\":\"Added feature\"}"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"{\"schema_version\":2,\"human_action\":null,\"status\":\"success\",\"summary\":\"Added feature\"}"}}
 {"type":"turn.completed"}
 `
 
@@ -54,7 +54,7 @@ func TestCodexRequiresNativeCompletionAndStrictResult(t *testing.T) {
 	adapter := harness.NewCodex(config.Codex{})
 	ctx := phase(t)
 	ctx.SessionID = ""
-	result, err := adapter.ParseResult(ctx, harness.PhaseArtifacts{Stdout: []byte(codexSuccess), LastMessage: []byte(`{"schema_version":1,"status":"success","summary":"Added feature"}`)})
+	result, err := adapter.ParseResult(ctx, harness.PhaseArtifacts{Stdout: []byte(codexSuccess), LastMessage: []byte(`{"schema_version":2,"human_action":null,"status":"success","summary":"Added feature"}`)})
 	if err != nil || result.Status != "success" || result.Summary != "Added feature" {
 		t.Fatalf("result %+v: %v", result, err)
 	}
@@ -64,7 +64,7 @@ func TestCodexRequiresNativeCompletionAndStrictResult(t *testing.T) {
 	}{
 		{"incomplete", strings.ReplaceAll(codexSuccess, `{"type":"turn.completed"}`, ""), "", "phase.result_missing", 0},
 		{"interrupted", codexSuccess, "Terminated", "phase.execution_failed", 143},
-		{"invalid", strings.ReplaceAll(codexSuccess, `\"schema_version\":1,`, ""), "", "phase.result_invalid", 0},
+		{"invalid", strings.ReplaceAll(codexSuccess, `\"schema_version\":2,\"human_action\":null,`, ""), "", "phase.result_invalid", 0},
 		{"failed turn", codexSuccess + "{\"type\":\"turn.failed\",\"error\":{\"message\":\"Unsupported model\"}}\n", "", "phase.execution_failed", 0},
 		{"truncated", codexSuccess + `{"type":`, "", "phase.result_invalid", 0},
 		{"startup", "", "invalid configuration", "phase.execution_failed", 1},
@@ -73,7 +73,7 @@ func TestCodexRequiresNativeCompletionAndStrictResult(t *testing.T) {
 		{"missing session", "", "Error: thread/resume: thread/resume failed: no rollout found for thread id " + sessionID + " (code -32600)", "harness.session_resume_failed", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			message := []byte(`{"schema_version":1,"status":"success","summary":"Added feature"}`)
+			message := []byte(`{"schema_version":2,"human_action":null,"status":"success","summary":"Added feature"}`)
 			if tc.name == "missing-message" {
 				message = nil
 			}

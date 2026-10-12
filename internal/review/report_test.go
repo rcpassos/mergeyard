@@ -8,7 +8,7 @@ import (
 )
 
 func TestPriorFindingContract(t *testing.T) {
-	base := `{"schema_version":2,"status":"approved","summary":"Clean","findings":[],"prior_findings":[]}`
+	base := `{"schema_version":3,"human_action":null,"status":"approved","summary":"Clean","findings":[],"prior_findings":[]}`
 	for _, tc := range []struct {
 		name, prior string
 		valid       bool

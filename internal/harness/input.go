@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -40,6 +41,7 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 		return "", err
 	}
 	var text strings.Builder
+	text.WriteString(fault.HumanActionInstruction + "\n\n")
 	if phase.Interruption != "" {
 		text.WriteString("## Interruption context\n\n" + phase.Interruption + "\n\n")
 	}

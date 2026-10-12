@@ -135,26 +135,10 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			lastMessage, cause = s.readLastMessage(ctx, a.ref.PhaseDir)
 		}
 		if cause == nil {
-			// An in-flight attempt keeps the schema it was launched with across
-			// upgrades. New attempts always require the current v2 contract.
-			schema, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.ref.PhaseDir, "schema.json"))
-			if err != nil {
-				return err
-			}
-			var contract struct {
-				Properties struct {
-					SchemaVersion struct {
-						Const int `json:"const"`
-					} `json:"schema_version"`
-				} `json:"properties"`
-			}
-			if err := json.Unmarshal(schema, &contract); err != nil {
-				return err
-			}
-			result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Review, SessionID: a.sessionID, Resume: a.resumed, AllowLegacyReview: contract.Properties.SchemaVersion.Const == 1}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+			result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Review, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 			cause = err
 			if err == nil {
-				report = &review.Report{SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Findings: result.Findings, PriorFindings: result.PriorFindings}
+				report = &review.Report{HumanAction: result.HumanAction, SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Findings: result.Findings, PriorFindings: result.PriorFindings}
 				previous, fix, err := review.LoadPriorContext(ctx, s.db, run.ID, run.ReviewRound)
 				if err != nil {
 					return err
@@ -167,7 +151,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 					return err
 				}
 				if cause == nil && (report.Status == "blocked" || report.Status == "failed") {
-					cause = &fault.Error{Code: "phase." + report.Status, Message: report.Summary}
+					cause = &fault.Error{Code: "phase." + report.Status, Message: report.Summary, HumanAction: report.HumanAction}
 					if report.Summary == "" {
 						cause = &fault.Error{Code: "phase." + report.Status, Message: "Reviewer reported " + report.Status}
 					}

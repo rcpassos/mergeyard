@@ -178,6 +178,7 @@ func (s *Scheduler) recordAttention(ctx context.Context, repo config.Repository,
 	failure := &fault.Error{Code: "internal.scheduler", Message: cause.Error(), Err: cause}
 	var coded *fault.Error
 	if errors.As(cause, &coded) {
+		failure.HumanAction = fault.Action(cause)
 		failure.Code = coded.Code
 		if coded.Message != "" {
 			failure.Message = coded.Message
@@ -362,7 +363,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 			return result, false, err
 		}
 		if result.Status == "blocked" {
-			err = &fault.Error{Code: "phase.blocked", Message: result.Summary}
+			err = &fault.Error{Code: "phase.blocked", Message: result.Summary, HumanAction: result.HumanAction}
 		} else if result.Status == "failed" {
 			err = &fault.Error{Code: "phase.failed", Message: result.Summary}
 		}

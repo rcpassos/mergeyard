@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/ci"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -35,6 +36,7 @@ func WriteReviewInput(ctx context.Context, writer FileWriter, phase PhaseContext
 		return "", err
 	}
 	var text strings.Builder
+	text.WriteString(fault.HumanActionInstruction + "\n\n")
 	if phase.Interruption != "" {
 		text.WriteString("## Interruption context\n\n" + phase.Interruption + "\n\n")
 	}

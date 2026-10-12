@@ -19,7 +19,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
-const ciFixedReport = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"success","summary":"Repaired failing CI","responses":[]}}'`
+const ciFixedReport = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Repaired failing CI","responses":[]}}'`
 
 func ciFixScript(fix string) string {
 	return `case "$*" in
@@ -238,7 +238,7 @@ func TestCIFixInvalidOutputObeysImplementerAttemptLimit(t *testing.T) {
 		attempts        int
 	}{
 		{"invented findings", fixedReport, "phase.result_invalid", 2},
-		{"invalid output", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":1,"status":"success","summary":"Missing"}}'`, "phase.result_invalid", 2},
+		{"invalid output", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Missing"}}'`, "phase.result_invalid", 2},
 		{"no code changes", ciFixedReport, "phase.result_invalid", 2},
 		{"blocked", strings.Replace(ciFixedReport, `"status":"success"`, `"status":"blocked"`, 1), "phase.blocked", 1},
 		{"failed", "exit 1", "phase.retries_exhausted", 2},

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -119,6 +120,7 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
+	HumanAction        *fault.HumanAction   `json:"human_action,omitempty"`
 	SystemSteps        []SystemStepSnapshot `json:"system_steps,omitempty"`
 	RetryEligible      bool                 `json:"retry_eligible,omitempty"`
 	CreditProbes       []CreditProbe        `json:"credit_probes,omitempty"`
@@ -228,12 +230,23 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 			_, err = tx.ExecContext(ctx, `INSERT INTO runs (id, repository, issue_number, state) VALUES (?, ?, ?, ?)`,
 				id, request.Repository, request.IssueNumber, next.State)
 		} else {
-			var code, message any
+			var code, message, humanAction any
 			if next.State == NeedsAttention || next.State == Failed {
 				if request.Failure == nil || strings.TrimSpace(request.Failure.Code) == "" || strings.TrimSpace(request.Failure.Message) == "" {
 					return nil, invalid("Attention and failed runs require an error code and human message")
 				}
 				code, message = request.Failure.Code, request.Failure.Message
+				if next.State == NeedsAttention {
+					action := attentionAction(current, request)
+					if err := action.Validate("blocked"); err != nil {
+						return nil, invalid(err.Error())
+					}
+					data, err := json.Marshal(action)
+					if err != nil {
+						return nil, err
+					}
+					humanAction = string(data)
+				}
 			}
 			var phase any
 			if next.Phase != "" {
@@ -242,8 +255,8 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 			_, err = tx.ExecContext(ctx, `UPDATE runs SET state = ?, current_phase = ?,
 				updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
 				completed_at = CASE WHEN ? IN ('FAILED', 'STOPPED', 'COMPLETED') THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END,
-				last_error_code = ?, last_error_message = ? WHERE id = ?`,
-				next.State, phase, next.State, code, message, id)
+				last_error_code = ?, last_error_message = ?, human_action_json = ? WHERE id = ?`,
+				next.State, phase, next.State, code, message, humanAction, id)
 		}
 		if err != nil {
 			return nil, storageError(err)
@@ -590,16 +603,20 @@ type queryer interface {
 
 func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	var run Run
+	var humanAction string
 	err := db.QueryRowContext(ctx, `SELECT id, repository, issue_number, state, COALESCE(current_phase, ''),
 		created_at, updated_at, COALESCE(completed_at, ''), COALESCE(last_error_code, ''), COALESCE(last_error_message, ''),
-		COALESCE(pr_number, 0), review_round, COALESCE(approved_sha, ''), takeover_status
+		COALESCE(pr_number, 0), review_round, COALESCE(approved_sha, ''), takeover_status, COALESCE(human_action_json, 'null')
 		FROM runs WHERE id = ?`, id).Scan(&run.ID, &run.Repository, &run.IssueNumber, &run.State, &run.Phase,
 		&run.CreatedAt, &run.UpdatedAt, &run.CompletedAt, &run.LastErrorCode, &run.LastErrorMessage,
-		&run.PRNumber, &run.ReviewRound, &run.ApprovedSHA, &run.TakeoverStatus)
+		&run.PRNumber, &run.ReviewRound, &run.ApprovedSHA, &run.TakeoverStatus, &humanAction)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, &fault.Error{Code: "internal.run_not_found", Message: "Run does not exist", Path: id, Err: err}
 	}
 	if err != nil {
+		return Run{}, storageError(err)
+	}
+	if err := json.Unmarshal([]byte(humanAction), &run.HumanAction); err != nil {
 		return Run{}, storageError(err)
 	}
 	run.CreditProbes, err = LoadCreditProbes(ctx, db, id)

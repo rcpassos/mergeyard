@@ -338,7 +338,7 @@ func TestCodexReviewAndFixRequireCompletionAndSchema(t *testing.T) {
 					report = changesReview
 				}
 				if kind == "schema" {
-					report = strings.ReplaceAll(report, `"schema_version":2,`, "")
+					report = strings.ReplaceAll(report, `"schema_version":3,"human_action":null,`, "")
 				}
 				if kind == "provider failure" {
 					report = `echo 'Unsupported model' >&2; exit 1`

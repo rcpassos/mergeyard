@@ -18,17 +18,17 @@ func TestNativeReviewContract(t *testing.T) {
 		name, report string
 		valid        bool
 	}{
-		{"approved with note", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"Optional","details":"Consider later","file":null,"line":null}]}`, true},
-		{"blocking", `{"schema_version":2,"prior_findings":[],"status":"changes_required","summary":"Fix","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Fails","file":"app.go","line":3}]}`, true},
-		{"contradictory approval", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Fix","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Fails","file":null,"line":null}]}`, false},
-		{"changes without blockers", `{"schema_version":2,"prior_findings":[],"status":"changes_required","summary":"Fix","findings":[]}`, false},
-		{"missing findings", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Clean"}`, false},
-		{"null findings", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Clean","findings":null}`, false},
-		{"missing location", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"N","details":"D"}]}`, false},
-		{"duplicate ids", `{"schema_version":2,"prior_findings":[],"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"N","details":"D","file":null,"line":null},{"id":"R1-F1","severity":"warning","title":"N","details":"D","file":null,"line":null}]}`, false},
+		{"approved with note", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"Optional","details":"Consider later","file":null,"line":null}]}`, true},
+		{"blocking", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"changes_required","summary":"Fix","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Fails","file":"app.go","line":3}]}`, true},
+		{"contradictory approval", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"approved","summary":"Fix","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Fails","file":null,"line":null}]}`, false},
+		{"changes without blockers", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"changes_required","summary":"Fix","findings":[]}`, false},
+		{"missing findings", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"approved","summary":"Clean"}`, false},
+		{"null findings", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"approved","summary":"Clean","findings":null}`, false},
+		{"missing location", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"N","details":"D"}]}`, false},
+		{"duplicate ids", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"approved","summary":"Clean","findings":[{"id":"R1-F1","severity":"note","title":"N","details":"D","file":null,"line":null},{"id":"R1-F1","severity":"warning","title":"N","details":"D","file":null,"line":null}]}`, false},
 		{"fractional version", `{"schema_version":2.00000000000000001,"prior_findings":[],"status":"approved","summary":"Clean","findings":[]}`, false},
-		{"blocked", `{"schema_version":2,"prior_findings":[],"status":"blocked","summary":"Need input","findings":[]}`, true},
-		{"failed", `{"schema_version":2,"prior_findings":[],"status":"failed","summary":"Could not run tests","findings":[]}`, true},
+		{"blocked", `{"schema_version":3,"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"prior_findings":[],"status":"blocked","summary":"Need input","findings":[]}`, true},
+		{"failed", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"failed","summary":"Could not run tests","findings":[]}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			output := json.RawMessage(`{"type":"result","is_error":false,"subtype":"success","structured_output":` + tc.report + `}`)

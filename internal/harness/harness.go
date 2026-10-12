@@ -7,6 +7,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/execution"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -62,7 +63,9 @@ type Invocation = execution.Command
 // before launching a preassigned session. Env is the complete child environment.
 // PhaseDir is an existing attempt directory outside the worktree.
 type PhaseContext struct {
-	// AllowLegacyReview is set only when reconciling an attempt's v1 schema.
+	// ResultSchemaVersion comes from the attempt's persisted schema on restart.
+	ResultSchemaVersion int
+	// AllowLegacyReview preserves the original v1 review restart contract.
 	AllowLegacyReview bool
 	Interruption      string
 	Phase             workflow.Phase
@@ -86,6 +89,7 @@ type PhaseArtifacts struct {
 // PhaseResult is the schema-validated report. Blocked and failed reports are
 // valid results; the workflow decides their lifecycle consequences.
 type PhaseResult struct {
+	HumanAction   *fault.HumanAction    `json:"human_action"`
 	SchemaVersion int                   `json:"schema_version"`
 	Status        string                `json:"status"`
 	Summary       string                `json:"summary"`
@@ -97,4 +101,4 @@ type PhaseResult struct {
 // ImplementSchema returns a fresh copy of the common OpenAI strict schema.
 func ImplementSchema() json.RawMessage { return json.RawMessage(implementSchema) }
 
-const implementSchema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":1},"status":{"type":"string","enum":["success","blocked","failed"]},"summary":{"type":"string"}},"required":["schema_version","status","summary"],"additionalProperties":false}`
+const implementSchema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":2},"status":{"type":"string","enum":["success","blocked","failed"]},"summary":{"type":"string"},"human_action":` + fault.HumanActionSchema + `},"required":["schema_version","status","summary","human_action"],"additionalProperties":false}`

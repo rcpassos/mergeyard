@@ -244,6 +244,9 @@ For any situation needing human action, including failures without a usable work
 - remove `running`;
 - add `agent-needs-attention`;
 - preserve the worktree, branch, and diagnostics;
+- persist a nonempty `human_action` decision with repository-relative `files` and `options` arrays alongside the fault;
+- show the action prominently on the dashboard attention card, run detail, and `mergeyard status`;
+- post the action and fault in a durable attention comment on the PR, or on the issue when no PR exists (`pr_comments: true`). Frozen comments retry after restart or GitHub failure without blocking the run or duplicating an ambiguous write;
 - do not re-add `ready` automatically.
 
 Retry is always an explicit user action after this transition.
@@ -609,11 +612,24 @@ Common fields:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "status": "success",
-  "summary": "Short phase summary"
+  "summary": "Short phase summary",
+  "human_action": null
 }
 ```
+
+Every current phase result requires `human_action`. For `blocked` it must be non-null with a nonempty decision; for every other status it must be `null`. All three object fields are required, `files` contains repository-relative paths, and `options` may be empty:
+
+```json
+"human_action": {
+  "decision": "Should the importer reject duplicate records or overwrite them?",
+  "files": ["internal/importer/import.go"],
+  "options": ["Reject duplicates", "Overwrite existing records"]
+}
+```
+
+A missing action, null/blank decision for `blocked`, or a non-null action for another status follows §13.3. These conditional rules are enforced semantically while the schemas remain strict-mode compatible.
 
 #### Implement result
 
@@ -623,9 +639,10 @@ Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safel
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "status": "changes_required",
   "summary": "One blocking finding",
+  "human_action": null,
   "prior_findings": [],
   "findings": [
     {
@@ -656,15 +673,16 @@ Review schema v2 requires `prior_findings`. The initial review in round 1 return
 
 Outcome notes must be nonempty. Unknown, duplicate, or omitted prior blocking IDs are invalid. `not_fixed` findings must remain in `findings` as blocking with the same ID; resolved findings cannot remain blocking. A `disputed` fix response requires the reviewer to rule `not_fixed` or `no_longer_applies`. Violations follow the invalid-result path in §13.3, including phase retry limits.
 
-Schema versions are phase-specific: implement and fix remain at v1. Issue #98 owns the review v1 → v2 transition. The acceptance-criteria (#97) and `human_action` (#99) changes must build on this contract and bump each affected phase's schema version; they must not reuse review v2 for a different shape. Persisted v1 reviews load with an empty `prior_findings` list. Attempts already launched with a persisted v1 schema keep that contract when reconciled after upgrade; newly launched reviews require v2 and must account for blockers even when the preceding review was v1.
+Schema versions are phase-specific. Issue #98 introduced review v2 with `prior_findings`. Issue #99 adds required nullable `human_action`: implement and fix use v2; review uses v3. The acceptance-criteria change (#97) must build on these shapes and bump the affected version again. Persisted v1 reviews load with an empty `prior_findings` list. All attempts already launched with older persisted schemas keep their original contract when reconciled after upgrade, including implement/fix v1 and review v1/v2. Newly launched attempts require the current versions; reviews account for blockers even when the preceding review was v1.
 
 #### Fix result
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "status": "success",
   "summary": "Fixed R1-F1; disputed R1-F2",
+  "human_action": null,
   "responses": [
     { "finding_id": "R1-F1", "resolution": "fixed", "note": "Added VAT format check." },
     { "finding_id": "R1-F2", "resolution": "disputed", "note": "Covered by middleware in api/validate.ts." }
@@ -974,6 +992,8 @@ Terminal states: `FAILED`, `STOPPED`, `COMPLETED`. Terminal runs never progress 
 
 Transitions are enforced centrally. UI and CLI actions must not mutate arbitrary states.
 
+Every transition to `NEEDS_ATTENTION` persists a nonempty `human_action` with the fault. A validated blocked result supplies the agent's exact decision. Mergeyard-originated faults generate the action deterministically: exhausted review rounds list the current blocking finding IDs and files and offer takeover or an explicit round grant; no changes asks whether the issue is already satisfied; conflicts ask the user to resolve the preserved worktree before retrying. Other fault codes state the reported condition and the explicit retry command. Upgraded attention runs receive an action from their saved diagnostics. The next successful transition clears the action atomically with the existing fault; historical attention events and comments retain it.
+
 ---
 
 ## 22. Stop, Retry, and Recovery
@@ -1064,6 +1084,7 @@ updated_at
 completed_at
 last_error_code
 last_error_message
+human_action_json   -- nullable decision/files/options, cleared with the fault
 ```
 
 Invariant: at most one non-terminal run per repository + issue.

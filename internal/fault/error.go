@@ -6,10 +6,11 @@ import "fmt"
 // Error exposes a stable code, a human message, a field or filesystem path, and the underlying
 // cause. Callers can inspect it with errors.As and the cause with errors.Is.
 type Error struct {
-	Code    string
-	Message string
-	Path    string
-	Err     error
+	HumanAction *HumanAction
+	Code        string
+	Message     string
+	Path        string
+	Err         error
 }
 
 func (e *Error) Error() string {
