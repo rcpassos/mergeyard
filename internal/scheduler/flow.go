@@ -460,7 +460,12 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	checkResult := s.checkResult(run, checkID)
 	// The persisted claim snapshot is the authorized executable intent.
 	// Live issue reads elsewhere observe lifecycle state only.
-	input, err := harness.WriteImplementInput(ctx, s.deps.Runner, phase, harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch, Checks: checkResult})
+	issueInput, err := s.phaseIssueInput(ctx, repo, run.ID, issue, gitRun.BaseBranch, &phase)
+	if err != nil {
+		return err
+	}
+	issueInput.Checks = checkResult
+	input, err := harness.WriteImplementInput(ctx, s.deps.Runner, phase, issueInput)
 	if err != nil {
 		return err
 	}

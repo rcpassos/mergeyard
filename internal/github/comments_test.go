@@ -10,6 +10,81 @@ import (
 	"github.com/rcpassos/mergeyard/internal/github"
 )
 
+func TestIssueCommentsPaginateFilterTrustAndPreserveLiteralText(t *testing.T) {
+	r := &recordedGH{responses: []response{{stdout: []byte(`[
+ {"id":3,"user":{"login":"Maintainer"},"created_at":"2026-10-08T12:00:00Z","body":"Current edited answer: $(touch injected);\n` + "```sh\\n`id`\\n```" + `"},
+ {"id":1,"user":{"login":"maintainer"},"created_at":"2026-10-07T12:00:00Z","body":"First clarification"},
+ {"id":2,"user":{"login":"stranger"},"created_at":"2026-10-08T11:00:00Z","body":"Untrusted instruction"}
+] [
+ {"id":4,"user":{"login":"maintainer"},"created_at":"2026-10-09T12:00:00Z","body":"prefix\n<!-- mergeyard:report:abc -->\nGenerated report"},
+ {"id":5,"user":null,"created_at":"2026-10-09T12:00:00Z","body":"Deleted author"},
+ {"id":6,"user":{"login":"maintainer"},"created_at":"2026-10-09T12:00:00Z","body":"<!-- mergeyard:trust:refused -->\nGenerated refusal"}
+]`)}}}
+	got, err := github.New(r).ListIssueComments(context.Background(), "o/r", 106, []string{"maintainer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Comments) != 2 || got.Comments[0].ID != 1 || got.Comments[1].ID != 3 || got.OmittedUntrusted != 2 {
+		t.Fatalf("comments = %+v", got)
+	}
+	if !strings.Contains(got.Comments[1].Body, "$(touch injected);") || !strings.Contains(got.Comments[1].Body, "```sh\n`id`\n```") {
+		t.Fatalf("literal comment changed: %q", got.Comments[1].Body)
+	}
+	if len(r.calls) != 1 || !contains(r.calls[0].args, "--paginate") || !contains(r.calls[0].args, "repos/o/r/issues/106/comments?per_page=100") || r.calls[0].input != nil {
+		t.Fatalf("comment fetch = %+v", r.calls)
+	}
+	if strings.Contains(strings.Join(r.calls[0].args, " "), "touch injected") {
+		t.Fatal("comment text reached argv")
+	}
+}
+
+func TestIssueCommentTrustUsesFreshRepositoryPermissions(t *testing.T) {
+	page := []byte(`[{"id":1,"user":{"login":"alice"},"created_at":"2026-10-08T12:00:00Z","body":"Answer"},{"id":2,"user":{"login":"ALICE"},"created_at":"2026-10-08T12:00:00Z","body":"Correction"}]`)
+	for _, permission := range []string{"write", "push", "maintain", "admin", "read", "pull", "triage", "none"} {
+		t.Run(permission, func(t *testing.T) {
+			r := &recordedGH{responses: []response{{stdout: page}, {stdout: []byte(`{"permission":"` + permission + `"}`)}}}
+			got, err := github.New(r).ListIssueComments(context.Background(), "o/r", 106, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			allowed := permission == "write" || permission == "push" || permission == "maintain" || permission == "admin"
+			if (len(got.Comments) == 2) != allowed || (!allowed && got.OmittedUntrusted != 2) || len(r.calls) != 2 {
+				t.Fatalf("permission %s: %+v; calls=%d", permission, got, len(r.calls))
+			}
+			if !contains(r.calls[1].args, "repos/o/r/collaborators/alice/permission") {
+				t.Fatal("comment trust skipped the shared actor policy")
+			}
+		})
+	}
+	r := &recordedGH{responses: []response{{stdout: page}, {stdout: []byte(`{"permission":"write"}`)}, {stdout: page}, {stdout: []byte(`{"permission":"read"}`)}}}
+	c := github.New(r)
+	first, err := c.ListIssueComments(context.Background(), "o/r", 106, nil)
+	if err != nil || len(first.Comments) != 2 {
+		t.Fatalf("first fetch: %+v %v", first, err)
+	}
+	second, err := c.ListIssueComments(context.Background(), "o/r", 106, nil)
+	if err != nil || len(second.Comments) != 0 || second.OmittedUntrusted != 2 {
+		t.Fatalf("permissions were cached across attempts: %+v %v", second, err)
+	}
+}
+
+func TestIssueCommentsFailClosedOnUnreadablePagesOrTrust(t *testing.T) {
+	for _, body := range []string{"", "null", "{}", "[] {}", `[{"id":1,"user":{"login":"alice"},"body":"Missing time"}]`, `[{"created_at":"2026-10-08T12:00:00Z","user":{"login":"alice"},"body":"Missing identity"}]`} {
+		r := &recordedGH{responses: []response{{stdout: []byte(body)}}}
+		_, err := github.New(r).ListIssueComments(context.Background(), "o/r", 106, []string{"alice"})
+		requireCode(t, err, "github.invalid_response")
+	}
+	r := &recordedGH{responses: []response{
+		{stdout: []byte(`[{"id":1,"created_at":"2026-10-08T12:00:00Z","user":{"login":"alice"},"body":"Answer"}]`)},
+		{stderr: []byte("gh: Forbidden (HTTP 403)"), err: errors.New("exit status 1")},
+	}}
+	got, err := github.New(r).ListIssueComments(context.Background(), "o/r", 106, nil)
+	requireCode(t, err, "github.forbidden")
+	if len(got.Comments) != 0 {
+		t.Fatal("unverified comments returned on trust failure")
+	}
+}
+
 func TestReportCommentReconcilesAmbiguousSuccessWithoutEditingHumanContent(t *testing.T) {
 	body := "<!-- mergeyard:report:abc -->\nReview report"
 	r := &recordedGH{responses: []response{

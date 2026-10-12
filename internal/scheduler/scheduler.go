@@ -32,6 +32,7 @@ type GitHub interface {
 	EnsureTrustRefusalComment(context.Context, string, int, string) error
 	ListOpenIssues(context.Context, string) ([]github.Issue, error)
 	GetIssue(context.Context, string, int) (github.Issue, error)
+	ListIssueComments(context.Context, string, int, []string) (github.IssueComments, error)
 	GetPullRequest(context.Context, string, int) (*github.PullRequest, error)
 	UnresolvedBlockers(context.Context, string, int) ([]github.Issue, error)
 	AddLabel(context.Context, string, int, string) error
