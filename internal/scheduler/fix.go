@@ -344,7 +344,7 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	var repair *ci.Snapshot
 	if run.Review.Report.Status == "approved" && run.CI != nil && run.CI.SHA == run.Review.TargetSHA && run.CI.QueryError == "" {
 		_, cause := run.CI.Evidence.Gate()
-		if (cause == "ci.check_failed" || cause == "ci.check_timed_out") && run.CI.RepairCause == cause {
+		if ((cause == "ci.check_failed" || cause == "ci.check_timed_out") && run.CI.RepairCause == cause) || (baseRepairCause(*run.CI) != "" && baseRepairCause(*run.CI) == run.CI.RepairCause) {
 			repair = run.CI
 		}
 	}

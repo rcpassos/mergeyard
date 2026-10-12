@@ -327,7 +327,7 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 			return s.rejectRetry(ctx, run, v, err)
 		}
 	}
-	if v.Cause == "review.max_rounds_exceeded" && v.NextState == workflow.Active {
+	if (v.Cause == "review.max_rounds_exceeded" || v.Cause == "git.base_conflict" || v.Cause == "git.base_verification_failed") && v.NextState == workflow.Active {
 		v.GrantedRound = run.ReviewRound + 1
 	}
 	if v.NextState == workflow.WaitingForCI {
@@ -342,7 +342,7 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 		patch.CI = &wait
 		v.Deadline = wait.Deadline.Format(time.RFC3339Nano)
 		// Exhausted CI repair needs a subsequent independently reviewed round.
-		if v.Cause == "review.max_rounds_exceeded" {
+		if v.Cause == "review.max_rounds_exceeded" || v.Cause == "git.base_conflict" || v.Cause == "git.base_verification_failed" {
 			v.GrantedRound = run.ReviewRound + 1
 		}
 	} else if v.NextState == workflow.Active {
@@ -420,6 +420,11 @@ func (s *Scheduler) observeRetryCI(ctx context.Context, repo config.Repository, 
 	wait.SHA, wait.CurrentHead = pr.Head.SHA, pr.Head.SHA
 	wait.StartedAt, wait.Deadline = now, now.Add(s.cfg.CITimeout)
 	wait.ReadyStarted = false
+	// Explicit retry rechecks a completed base failure against current inputs.
+	if wait.Base != nil && wait.Base.Cleaned {
+		wait.Base = nil
+	}
+	wait.BaseWarning = ""
 	wait.Warning, wait.RepairCause, wait.QueryError = "", "", ""
 	api, ok := s.deps.GitHub.(CIGitHub)
 	if !ok {

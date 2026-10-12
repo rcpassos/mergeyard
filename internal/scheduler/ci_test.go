@@ -407,7 +407,7 @@ func TestCIReadinessAfterMergedImplementerFlows(t *testing.T) {
 func TestTestMergeEvidenceRacesPreserveApprovalAndDeadline(t *testing.T) {
 	for _, mode := range []string{"test merge changed during query", "base changed during query", "merge generation pending", "stale merge evidence", "test merge changed during readiness"} {
 		t.Run(mode, func(t *testing.T) {
-			_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+			_, runtime, base, remote, cfg, r := localFlow(t, successfulScript)
 			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 			api := &ciGitHub{fakeGitHub: base, applyReady: true, evidence: ci.Evidence{MergeSHA: "merge-1", Checks: []ci.Check{{Name: "head", Source: "check", Status: "completed", Conclusion: "success"}, {Name: "merge", SHA: "merge-1", Source: "check", Status: "completed", Conclusion: "success"}}}}
 			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r, Now: func() time.Time { return now }})
@@ -419,7 +419,7 @@ func TestTestMergeEvidenceRacesPreserveApprovalAndDeadline(t *testing.T) {
 			yes := true
 			pr.Mergeable = &yes
 			pr.MergeCommitSHA = "merge-1"
-			pr.Base.SHA = "base-1"
+			pr.Base.SHA = gitCommand(t, remote, "rev-parse", "main")
 			switch mode {
 			case "test merge changed during query":
 				api.afterEvidence = func() { pr.MergeCommitSHA = "merge-2" }

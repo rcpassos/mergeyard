@@ -56,7 +56,7 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 	var failures []error
 	reconcilable := map[string]bool{}
 	for _, run := range runs {
-		if run.PendingRetry() == nil && run.State.Terminal() && !(run.State == workflow.Completed && run.Merge != nil && run.Merge.Pending()) {
+		if run.PendingRetry() == nil && run.State.Terminal() && !pendingBaseScratch(run) && !(run.State == workflow.Completed && run.Merge != nil && run.Merge.Pending()) {
 			continue
 		}
 		repo, ok := s.runRepository(run)
@@ -126,6 +126,17 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 }
 
 func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, run workflow.Run) error {
+	if run.State != workflow.WaitingForCI && pendingBaseScratch(run) {
+		_, gitRun, err := s.context(ctx, run)
+		if err != nil {
+			return err
+		}
+		v := *run.CI
+		if err := s.removeBaseScratch(ctx, run, gitRun, &v); err != nil {
+			return err
+		}
+		run.CI = &v
+	}
 	if run.PendingHandback() != nil {
 		var stopping bool
 		if err := s.db.QueryRowContext(ctx, "SELECT stop_requested FROM runs WHERE id=?", run.ID).Scan(&stopping); err != nil {
@@ -377,6 +388,19 @@ func (s *Scheduler) orphanedArtifacts(ctx context.Context, report *ReconcileRepo
 	rows.Close()
 	if err != nil {
 		return err
+	}
+	runs, err := s.Runs(ctx)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if pendingBaseScratch(run) {
+			path := run.CI.Base.ScratchPath
+			knownPaths[path] = true
+			if relative, err := filepath.Rel(s.workspace.Root, path); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				knownPaths[filepath.Join(physicalRoot, relative)] = true
+			}
+		}
 	}
 	paths, pathErr := s.deps.Git.ListWorktrees(ctx)
 	for _, path := range paths {

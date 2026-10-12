@@ -43,6 +43,7 @@
 <a class="issue-title" href="/runs/{{.ID}}">{{.Repository}} #{{.IssueNumber}} · {{if .Title}}{{.Title}}{{else}}View run{{end}}</a>
 <p class="row-meta">{{if and (eq .State "WAITING_FOR_HARNESS") .HarnessWait}}{{if eq .HarnessWait.Reason "credits_exhausted"}}Waiting for credit recovery · {{.HarnessWait.Harness}} · explicit Retry required{{else}}Usage limit · {{.HarnessWait.Harness}} · reset {{.HarnessWait.ResetAt}} · {{.HarnessWait.ResetTimeSource}}{{end}} · {{.HarnessWait.Source}} · {{end}}{{if .Merge}}{{if .Merge.Pending}}Merged — cleanup pending{{else}}Merged — cleanup complete{{end}}{{else if eq .State "READY_TO_MERGE"}}Waiting for your merge{{else if .ReviewPending}}Draft PR created. Review pending.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
 {{with .Merge}}{{if .Early}}<p class="row-meta">Early merge before readiness</p>{{end}}{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}{{if .Pending}}<ul class="row-meta">{{range .Remaining}}<li>{{.}}</li>{{end}}</ul>{{end}}{{end}}
+{{with .CI}}{{if .Warning}}<p class="notice">{{.Warning}}</p>{{end}}{{if .BaseWarning}}<p class="notice">{{.BaseWarning}}</p>{{end}}{{end}}
 {{template "human-action" .HumanAction}}{{if .LastErrorCode}}<p class="error-code">{{.LastErrorCode}}: {{.LastErrorMessage}}</p>{{end}}</div>
 {{if .PRURL}}<a class="row-note" href="{{.PRURL}}" target="_blank" rel="noreferrer">Open PR</a>{{else}}<time class="row-note">{{.UpdatedAt}}</time>{{end}}</article>{{end}}
 
@@ -126,6 +127,8 @@
 {{if .Evidence.MergeSHA}}<div><dt>Verified test merge commit</dt><dd><code>{{.Evidence.MergeSHA}}</code></dd></div>{{end}}
 <div><dt>Approved wait commit</dt><dd><code>{{.SHA}}</code></dd></div><div><dt>Current PR head</dt><dd>{{if .CurrentHead}}<code>{{.CurrentHead}}</code>{{if eq .SHA .CurrentHead}} · matches approved commit{{else}} · differs from approved commit{{end}}{{else}}Unknown{{end}}</dd></div></dl>
 {{if .QueryError}}<p class="notice">CI evidence unknown: {{.QueryError}}</p>{{end}}{{if .Warning}}<p class="notice">{{.Warning}}</p>{{end}}
+{{if .BaseWarning}}<p class="notice">{{.BaseWarning}}</p>{{end}}
+{{with .Base}}<h3>Current-base verification · {{.Status}}</h3><p>Base <code>{{.BaseBranch}}</code> at <code>{{.BaseSHA}}</code> + approved head <code>{{.HeadSHA}}</code></p>{{if .Conflicts}}<p>Conflicting paths: {{range .Conflicts}}<code>{{.}}</code> {{end}}</p>{{end}}{{if .Error}}<p class="notice">{{.Error}}</p>{{end}}{{if .Output}}<pre>{{.Output}}</pre>{{end}}{{end}}
 {{if .RepairCause}}<p>CI repair cause: <code>{{.RepairCause}}</code></p>{{end}}
 {{if .ReadyStarted}}<p>Mark-ready intent recorded. GitHub draft state is reconciled before progression.</p>{{end}}
 {{range .Evidence.Checks}}<article class="notice"><h3>{{.Name}} · {{if .State}}{{.State}}{{else}}unknown{{end}}</h3><p>{{.Source}} · {{.Status}} · {{.Conclusion}}{{if .AppID}} · app {{.AppID}}{{end}} · commit <code>{{.SHA}}</code></p>{{if .Excerpt}}<pre>{{.Excerpt}}</pre>{{end}}{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer">Check details</a>{{end}}</article>{{else}}<p>No reported checks in the latest observation.</p>{{end}}

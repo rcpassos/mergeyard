@@ -92,7 +92,7 @@ and functions; a failing command or pipeline stops the script. Logout hooks cann
 replace the configured commands' exit status.
 
 `repositories[].command_timeout` is a positive Go duration, defaulting to `20m`.
-It bounds an entire setup or checks script, rather than each command in the list.
+It bounds an entire setup, checks, or verification script, rather than each command in the list.
 When the foreground script finishes, Mergeyard stops any background processes
 still in its owned process group. Setup and checks must finish the work they need
 before returning; launching a background service does not keep it running.
@@ -175,10 +175,45 @@ not automatically fix the user's changes. The latest check results (command,
 pass/fail, and output excerpt) are included in the review input. PR fix comments
 also report check retries.
 
-Current-base verification is tracked separately in
-[#96](https://github.com/rcpassos/mergeyard/issues/96). Its planned
-`verify_commands` setting defaults to `checks` when omitted; an explicit `[]`
-disables that verification. `verify_commands` is not yet a supported setting.
+## Current-base verification
+
+After approval and before readiness, Mergeyard fetches the PR's current base and
+runs `git merge-tree --write-tree` against the approved head. A conflict starts a
+fix with the conflicting paths if another review round remains; otherwise the
+run requires attention with `git.base_conflict`.
+
+`repositories[].verify_commands` runs on the combined base + approved head in a
+separate detached scratch worktree. Omission defaults to the repository's
+`checks`; an explicit `[]` disables command verification while retaining the
+merge-conflict gate. Commands must be nonempty strings without NUL.
+
+```yaml
+repositories:
+  - repo: company/api
+    checks: ["npm test", "npm run lint"]
+    # Omit verify_commands to run those checks on the combined tree too.
+    verify_commands: ["npm ci", "npm test", "npm run lint"]
+    command_timeout: 20m
+```
+
+Verification starts from a fresh checkout; run-worktree dependencies and setup
+output are not copied. Include dependency preparation in `verify_commands` when
+needed. The commands share one login shell, stop at the first failure, and use
+`command_timeout` for the whole list. A timeout or command failure follows the
+CI-repair path within `max_rounds`; exhaustion requires attention with
+`git.base_verification_failed`. Fix input includes the failed command and output
+excerpt. Verification never changes the run worktree or pushes commits.
+
+The `verify` system step journals its commands, base/head pair, process session,
+output and exit status. Restart observes a live command or consumes its result;
+an unknown outcome stops owned processes before replay. A moved base requires
+verification of the new combination. Scratch ownership is recorded before
+creation and cleanup resumes after interruption, including stopped and merged
+runs. Verification worktrees and generated output are disposable.
+
+In `READY_TO_MERGE`, base movement only triggers another merge-tree check. The
+dashboard shows `stale vs base` or `conflicts with base`; Mergeyard does not run
+verification commands, re-review, or fix automatically.
 
 ## Editing configuration
 
@@ -244,6 +279,7 @@ settings, including repositories with `enabled: false`.
 | `config.invalid_concurrency` | Concurrency must be a positive finite integer |
 | `config.invalid_max_rounds` | Round limit must be a positive finite integer |
 | `config.invalid_max_attempts` | Role attempt limit must be a positive finite integer |
+| `config.invalid_verify_commands` | Verification must be a command list; entries must be nonempty and contain no NUL |
 | `config.invalid_checks` | Check commands must be nonempty and contain no NUL |
 | `config.invalid_check_retries` | Check retry limit must be a nonnegative finite integer |
 | `config.invalid_max_waits` | Usage-limit wait bound must be a positive finite integer |

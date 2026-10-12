@@ -95,6 +95,17 @@ func (s *Scheduler) mergeFailure(ctx context.Context, run workflow.Run, v mainte
 	return s.saveMerge(ctx, run, v, "merge.cleanup_updated")
 }
 func (s *Scheduler) cleanupMerge(ctx context.Context, run workflow.Run) error {
+	if pendingBaseScratch(run) {
+		_, gitRun, err := s.context(ctx, run)
+		if err != nil {
+			return err
+		}
+		wait := *run.CI
+		if err := s.removeBaseScratch(ctx, run, gitRun, &wait); err != nil {
+			return err
+		}
+		run.CI = &wait
+	}
 	v := *run.Merge
 	if !v.Pending() {
 		return nil

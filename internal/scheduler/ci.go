@@ -10,6 +10,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/workflow"
+	"strings"
 	"time"
 )
 
@@ -33,6 +34,15 @@ func (s *Scheduler) saveCI(ctx context.Context, run workflow.Run, wait ci.Snapsh
 	return err
 }
 func (s *Scheduler) ciAttention(ctx context.Context, repo config.Repository, run workflow.Run, wait ci.Snapshot, code, message string) error {
+	if wait.Base != nil && !wait.Base.Cleaned && wait.Base.ScratchPath != "" {
+		_, gitRun, err := s.context(ctx, run)
+		if err != nil {
+			return err
+		}
+		if err := s.removeBaseScratch(ctx, run, gitRun, &wait); err != nil {
+			return err
+		}
+	}
 	approved := run.ApprovedSHA
 	if code == "ci.head_changed" || code == "ci.approval_invalid" {
 		approved = ""
@@ -106,6 +116,23 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 	}
 	if base == "" {
 		return unknown(&fault.Error{Code: "github.invalid_response", Message: "PR base branch is missing; requirements remain unknown"})
+	}
+	if !s.deps.Now().UTC().Before(v.Deadline) {
+		return fail("ci.wait_timeout", "CI wait deadline expired before current-base verification")
+	}
+	basePassed, err := s.verifyBase(ctx, repo, run, gitRun, target, &v)
+	if err != nil {
+		return unknown(err)
+	}
+	if !basePassed {
+		v.QueryError = ""
+		if baseRepairCause(v) != "" {
+			if !s.deps.Now().UTC().Before(v.Deadline) {
+				return fail("ci.wait_timeout", "CI wait deadline expired before current-base repair authorization")
+			}
+			return s.repairBase(ctx, repo, run, gitRun, target, v)
+		}
+		return s.saveCI(ctx, run, v, "ci.updated")
 	}
 	evidence, err := api.PullRequestEvidence(ctx, repo.Repo, target)
 	v.Evidence = evidence
@@ -183,6 +210,13 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 	if !s.deps.Now().UTC().Before(v.Deadline) {
 		return fail("ci.wait_timeout", "CI wait deadline expired before readiness; no code fix was launched")
 	}
+	basePassed, err = s.verifyBase(ctx, repo, run, gitRun, *fresh, &v)
+	if err != nil {
+		return unknown(err)
+	}
+	if !basePassed {
+		return s.saveCI(ctx, run, v, "ci.updated")
+	}
 	if fresh.Draft {
 		if v.ReadyStarted {
 			return fail("ci.readiness_ambiguous", "A prior mark-ready write has uncertain outcome and PR is still draft. Inspect GitHub before explicit retry; write was not replayed")
@@ -245,6 +279,28 @@ func (s *Scheduler) observeReady(ctx context.Context, repo config.Repository, ru
 	}
 	if pr.Head.SHA != run.ApprovedSHA {
 		v.Warning = "changed-after-approval: PR head changed after readiness; inspect it before merging"
+	}
+	if v.Base == nil || pr.Base.Ref != v.Base.BaseBranch || pr.Base.SHA == "" || pr.Base.SHA != v.Base.BaseSHA {
+		_, gitRun, err := s.context(ctx, run)
+		if err != nil {
+			return err
+		}
+		g, ok := s.deps.Git.(BaseGit)
+		if !ok {
+			return &fault.Error{Code: "git.base_check_unsupported", Message: "Git adapter cannot observe base movement"}
+		}
+		merged, err := g.CheckBase(ctx, gitRun, pr.Base.Ref, run.ApprovedSHA)
+		if err != nil {
+			v.BaseWarning = "Current base check unknown: " + err.Error()
+		} else if len(merged.Conflicts) > 0 {
+			v.BaseWarning = "conflicts with base: " + strings.Join(merged.Conflicts, ", ")
+		} else if v.Base == nil || merged.BaseSHA != v.Base.BaseSHA || merged.BaseBranch != v.Base.BaseBranch {
+			v.BaseWarning = "stale vs base: base advanced after readiness; inspect it before merging"
+		} else {
+			v.BaseWarning = ""
+		}
+	} else {
+		v.BaseWarning = ""
 	}
 	return s.saveCI(ctx, run, v, "ci.updated")
 }

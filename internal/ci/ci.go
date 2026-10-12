@@ -33,15 +33,35 @@ type Evidence struct {
 	AllowSkippedNeutral bool          `json:"allow_skipped_neutral"`
 }
 type Snapshot struct {
-	SHA          string    `json:"sha"`
-	StartedAt    time.Time `json:"started_at"`
-	Deadline     time.Time `json:"deadline"`
-	CurrentHead  string    `json:"current_head,omitempty"`
-	Evidence     Evidence  `json:"evidence"`
-	QueryError   string    `json:"query_error,omitempty"`
-	ReadyStarted bool      `json:"ready_started"`
-	Warning      string    `json:"warning,omitempty"`
-	RepairCause  string    `json:"repair_cause,omitempty"`
+	SHA          string            `json:"sha"`
+	StartedAt    time.Time         `json:"started_at"`
+	Deadline     time.Time         `json:"deadline"`
+	CurrentHead  string            `json:"current_head,omitempty"`
+	Evidence     Evidence          `json:"evidence"`
+	QueryError   string            `json:"query_error,omitempty"`
+	ReadyStarted bool              `json:"ready_started"`
+	Warning      string            `json:"warning,omitempty"`
+	RepairCause  string            `json:"repair_cause,omitempty"`
+	Base         *BaseVerification `json:"base,omitempty"`
+	BaseWarning  string            `json:"base_warning,omitempty"`
+}
+
+// BaseVerification journals the exact base/head combination and ownership of
+// its disposable worktree before creation. Results remain after cleanup.
+type BaseVerification struct {
+	ID          string   `json:"id"`
+	BaseBranch  string   `json:"base_branch"`
+	BaseSHA     string   `json:"base_sha"`
+	HeadSHA     string   `json:"head_sha"`
+	TreeSHA     string   `json:"tree_sha"`
+	Conflicts   []string `json:"conflicts,omitempty"`
+	CommitSHA   string   `json:"commit_sha,omitempty"`
+	ScratchPath string   `json:"scratch_path,omitempty"`
+	Cleaned     bool     `json:"cleaned"`
+	Status      string   `json:"status"`
+	Error       string   `json:"error,omitempty"`
+	Output      string   `json:"output,omitempty"`
+	Commands    []string `json:"commands"`
 }
 
 // Normalize retains native outcomes; unrecognized or stale evidence never passes.
