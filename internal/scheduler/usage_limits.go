@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
@@ -54,6 +55,19 @@ func (s *Scheduler) parseExecution(ctx context.Context, runID, attemptID, agent 
 		phase.ResultSchemaVersion = contract.Properties.SchemaVersion.Const
 	}
 	result, err := s.harnesses[agent].ParseResult(phase, artifacts)
+	if err == nil && phase.PhaseDir != "" && ((phase.Phase == workflow.Review && result.SchemaVersion >= 4) || (phase.Phase != workflow.Review && result.SchemaVersion >= 3)) {
+		raw, readErr := s.deps.Runner.ReadFile(ctx, filepath.Join(phase.PhaseDir, "criteria.json"))
+		if readErr != nil {
+			return result, readErr
+		}
+		var criteria []acceptance.Criterion
+		if decodeErr := json.Unmarshal(raw, &criteria); decodeErr != nil {
+			return result, decodeErr
+		}
+		if validationErr := acceptance.ValidateIDs(result.Criteria, criteria); validationErr != nil {
+			err = &fault.Error{Code: "phase.result_invalid", Message: "Result does not match acceptance criteria", Err: validationErr}
+		}
+	}
 	completed := s.harnesses[agent].NativeSucceeded(artifacts)
 	if completed {
 		if proofErr := s.workflow.RecordCreditProof(ctx, runID, attemptID, s.deps.Now().UTC()); proofErr != nil {

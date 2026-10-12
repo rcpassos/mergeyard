@@ -129,6 +129,7 @@ type Run struct {
 	Handbacks          []HandbackSnapshot   `json:"handbacks,omitempty"`
 	Retries            []RetrySnapshot      `json:"retries,omitempty"`
 	SessionRecoveries  []SessionRecovery    `json:"session_recoveries,omitempty"`
+	ImplementHistory   []ImplementSnapshot  `json:"implement_history,omitempty"`
 	Implementer        *ImplementSnapshot   `json:"implementer,omitempty"`
 	RunMetadata
 	Merge            *maintenance.Snapshot `json:"merge,omitempty"`
@@ -659,6 +660,11 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	if err != nil {
 		return Run{}, storageError(err)
 	}
+	run.ImplementHistory, err = LoadImplementHistory(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+
 	run.FixHistory, err = review.LoadFixHistory(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)

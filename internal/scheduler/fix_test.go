@@ -18,9 +18,9 @@ import (
 	"time"
 )
 
-const changesReview = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"human_action":null,"prior_findings":[],"status":"changes_required","summary":"Fix bug","findings":[{"id":"F1","severity":"blocking","title":"Bug","details":"Broken","file":"feature.txt","line":1},{"id":"F2","severity":"blocking","title":"Disputable","details":"Explain","file":null,"line":null}]}}'`
-const fixedReport = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Fixed <script>bug</script>","responses":[{"finding_id":"F1","resolution":"fixed","note":"Changed source"},{"finding_id":"F2","resolution":"disputed","note":"Already safe"}]}}'`
-const disputedReport = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Disputed","responses":[{"finding_id":"F1","resolution":"disputed","note":"Safe"},{"finding_id":"F2","resolution":"disputed","note":"Already safe"}]}}'`
+const changesReview = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"human_action":null,"prior_findings":[],"status":"changes_required","summary":"Fix bug","findings":[{"id":"F1","severity":"blocking","title":"Bug","details":"Broken","file":"feature.txt","line":1},{"id":"F2","severity":"blocking","title":"Disputable","details":"Explain","file":null,"line":null}]}}'`
+const fixedReport = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Fixed <script>bug</script>","responses":[{"finding_id":"F1","resolution":"fixed","note":"Changed source"},{"finding_id":"F2","resolution":"disputed","note":"Already safe"}]}}'`
+const disputedReport = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Disputed","responses":[{"finding_id":"F1","resolution":"disputed","note":"Safe"},{"finding_id":"F2","resolution":"disputed","note":"Already safe"}]}}'`
 
 var approvedAfterFixReview = strings.Replace(approvedReview, `"prior_findings":[]`, `"prior_findings":[{"finding_id":"F1","outcome":"fixed","note":"Source repaired"},{"finding_id":"F2","outcome":"no_longer_applies","note":"Dispute accepted"}]`, 1)
 var approvedAfterDisputesReview = strings.Replace(approvedAfterFixReview, `"outcome":"fixed"`, `"outcome":"no_longer_applies"`, 1)
@@ -102,11 +102,11 @@ func TestFixFailuresAndAttemptsStayWithinRound(t *testing.T) {
 		name, fix, code string
 		attempts        int
 	}{
-		{"invalid schema", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Missing"}}'`, "phase.result_invalid", 2},
+		{"invalid schema", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Missing"}}'`, "phase.result_invalid", 2},
 		{"unknown finding", strings.ReplaceAll(fixedReport, `"F1"`, `"unknown"`), "phase.result_invalid", 2},
-		{"missing response", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Incomplete","responses":[]}}'`, "phase.result_invalid", 2},
+		{"missing response", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Incomplete","responses":[]}}'`, "phase.result_invalid", 2},
 		{"fixed without changes", fixedReport, "phase.result_invalid", 2},
-		{"blocked", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"status":"blocked","summary":"Need human input","responses":[]}}'`, "phase.blocked", 1},
+		{"blocked", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"status":"blocked","summary":"Need human input","responses":[]}}'`, "phase.blocked", 1},
 		{"failed", `exit 1`, "phase.retries_exhausted", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -281,8 +281,8 @@ func TestFixReportsVisibleInDetailStatusAndEvents(t *testing.T) {
 }
 
 func TestReviewerAdjudicatesDisputesAndSuppliesRemainingBlockers(t *testing.T) {
-	remaining := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"human_action":null,"prior_findings":[{"finding_id":"F1","outcome":"no_longer_applies","note":"Dispute accepted"},{"finding_id":"F2","outcome":"not_fixed","note":"Dispute rejected"}],"status":"changes_required","summary":"F1 dismissed, F2 remains","findings":[{"id":"F2","severity":"blocking","title":"Still broken","details":"Reviewer rejects dispute","file":null,"line":null}]}}'`
-	lastFix := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Explain F2","responses":[{"finding_id":"F2","resolution":"disputed","note":"More evidence"}]}}'`
+	remaining := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"human_action":null,"prior_findings":[{"finding_id":"F1","outcome":"no_longer_applies","note":"Dispute accepted"},{"finding_id":"F2","outcome":"not_fixed","note":"Dispute rejected"}],"status":"changes_required","summary":"F1 dismissed, F2 remains","findings":[{"id":"F2","severity":"blocking","title":"Still broken","details":"Reviewer rejects dispute","file":null,"line":null}]}}'`
+	lastFix := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Explain F2","responses":[{"finding_id":"F2","resolution":"disputed","note":"More evidence"}]}}'`
 	script := `case "$*" in
  *review-1-*) ` + changesReview + `;;
  *review-2-*) ` + remaining + `;;

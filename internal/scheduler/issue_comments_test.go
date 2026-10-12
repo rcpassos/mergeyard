@@ -31,6 +31,12 @@ func TestEveryPhaseAttemptFetchesIssueComments(t *testing.T) {
 		if err != nil || !strings.Contains(string(data), fmt.Sprintf("Clarification for attempt %d", i+1)) || !strings.Contains(string(data), "2 untrusted comments omitted") {
 			t.Fatalf("%s did not receive fresh comments: %s %v", phase, data, err)
 		}
+		if !strings.Contains(string(data), "no acceptance criteria found") {
+			t.Fatalf("%s lost the criteria contract while refreshing comments", phase)
+		}
+		if (i == 1 || i == 3) && (!strings.Contains(string(data), "## Implementer report") || !strings.Contains(string(data), "Added feature")) {
+			t.Fatalf("%s lost implementer evidence while refreshing comments", phase)
+		}
 		if i > 1 && !strings.Contains(string(data), "New trusted issue comments since the previous input: 1") {
 			t.Fatalf("%s did not notify resumed role of newly fetched comments", phase)
 		}
@@ -49,11 +55,11 @@ func TestRetryAfterBlockedRefreshesCommentsAcrossPhasesAndHarnesses(t *testing.T
 				script := loopScript(fix)
 				switch p {
 				case workflow.Implement:
-					script = strings.Replace(script, successfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"status":"blocked","summary":"Need an answer",`+blockedAction+`}}'`, 1)
+					script = strings.Replace(script, successfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"status":"blocked","summary":"Need an answer",`+blockedAction+`}}'`, 1)
 				case workflow.Review:
-					script = strings.Replace(script, changesReview, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"status":"blocked","summary":"Need an answer",`+blockedAction+`,"findings":[],"prior_findings":[]}}'`, 1)
+					script = strings.Replace(script, changesReview, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"status":"blocked","summary":"Need an answer",`+blockedAction+`,"findings":[],"prior_findings":[]}}'`, 1)
 				case workflow.Fix:
-					script = loopScript(`printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"status":"blocked","summary":"Need an answer",` + blockedAction + `,"responses":[]}}'`)
+					script = loopScript(`printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"status":"blocked","summary":"Need an answer",` + blockedAction + `,"responses":[]}}'`)
 				}
 				replacePhaseScript(t, cfg, p, script)
 				cfg.Repositories[0].TrustedLabelers = []string{"maintainer"}

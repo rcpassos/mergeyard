@@ -15,7 +15,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
-const approvedReview = `printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":3,"human_action":null,"prior_findings":[],"status":"approved","summary":"Safe <script>review</script>","findings":[{"id":"R1-F1","severity":"warning","title":"Optional","details":"Later","file":null,"line":null}]}}'`
+const approvedReview = `printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"human_action":null,"prior_findings":[],"status":"approved","summary":"Safe <script>review</script>","findings":[{"id":"R1-F1","severity":"warning","title":"Optional","details":"Later","file":null,"line":null}]}}'`
 
 func reviewScript(review string) string {
 	return `case "$*" in *review-*)
@@ -68,7 +68,7 @@ func TestFirstReviewApprovesPinnedHeadWithIndependentSettings(t *testing.T) {
 }
 
 func TestReviewChangesRequiredPreparesFix(t *testing.T) {
-	report := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"human_action":null,"prior_findings":[],"status":"changes_required","summary":"Fix bug","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Broken","file":"feature.txt","line":1}]}}'`
+	report := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"human_action":null,"prior_findings":[],"status":"changes_required","summary":"Fix bug","findings":[{"id":"R1-F1","severity":"blocking","title":"Bug","details":"Broken","file":"feature.txt","line":1}]}}'`
 	s, runtime, api, _, _, _ := localFlow(t, reviewScript(report))
 	run := finish(t, s, workflow.Active, workflow.Fix)
 	var attempts int
@@ -124,9 +124,9 @@ func TestInvalidAndFailedReviewAttemptsAreBoundedAndBlockedDoesNotRetry(t *testi
 		name, report, code string
 		attempts           int
 	}{
-		{"invalid", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"approved","summary":"Missing findings"}`, "phase.result_invalid", 2},
-		{"failed", `{"schema_version":3,"human_action":null,"prior_findings":[],"status":"failed","summary":"Failure","findings":[]}`, "phase.failed", 2},
-		{"blocked", `{"schema_version":3,"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"prior_findings":[],"status":"blocked","summary":"Need input","findings":[]}`, "phase.blocked", 1},
+		{"invalid", `{"schema_version":4,"criteria":[],"human_action":null,"prior_findings":[],"status":"approved","summary":"Missing findings"}`, "phase.result_invalid", 2},
+		{"failed", `{"schema_version":4,"criteria":[],"human_action":null,"prior_findings":[],"status":"failed","summary":"Failure","findings":[]}`, "phase.failed", 2},
+		{"blocked", `{"schema_version":4,"criteria":[],"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"prior_findings":[],"status":"blocked","summary":"Need input","findings":[]}`, "phase.blocked", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, runtime, api, _, cfg, r := localFlow(t, reviewScript(`printf '%s\n' '{"type":"result","is_error":false,"structured_output":`+tc.report+`}'`))
@@ -284,7 +284,7 @@ func TestReviewPreservesPreexistingWorkAndPermitsIgnoredBuildOutput(t *testing.T
 
 func TestReviewerResumeFailureStartsFreshIndependentSession(t *testing.T) {
 	script := `case "$*" in
- *review-1-1*) printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"human_action":null,"prior_findings":[],"status":"failed","summary":"Try again","findings":[]}}';;
+ *review-1-1*) printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"human_action":null,"prior_findings":[],"status":"failed","summary":"Try again","findings":[]}}';;
  *review-1-2*) printf 'No conversation found with session ID: %s\n' "$3" >&2; exit 1;;
  *) case "$*" in *--resume*) exit 2;; esac
 ` + approvedReview + `
@@ -319,7 +319,7 @@ func TestReviewerResumeFailureStartsFreshIndependentSession(t *testing.T) {
 }
 
 func TestBlockedReviewAndAttentionRollBackTogether(t *testing.T) {
-	report := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"prior_findings":[],"status":"blocked","summary":"Need human input","findings":[]}}'`
+	report := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"prior_findings":[],"status":"blocked","summary":"Need human input","findings":[]}}'`
 	s, runtime, _, _, _, _ := localFlow(t, reviewScript(report))
 	run := finish(t, s, workflow.Active, workflow.Review)
 	if err := s.Tick(context.Background()); err != nil {

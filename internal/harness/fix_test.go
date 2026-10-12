@@ -27,15 +27,15 @@ func TestNativeFixContractAndResumedInvocation(t *testing.T) {
 		report string
 		valid  bool
 	}{
-		{`{"schema_version":2,"human_action":null,"status":"success","summary":"Fixed","responses":[{"finding_id":"F1","resolution":"fixed","note":"Added test"}]}`, true},
-		{`{"schema_version":2,"human_action":null,"status":"success","summary":"Disagree","responses":[{"finding_id":"F1","resolution":"disputed","note":"Already correct"}]}`, true},
-		{`{"schema_version":2,"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"status":"blocked","summary":"Need input","responses":[]}`, true},
-		{`{"schema_version":2,"human_action":null,"status":"success","summary":"Repaired failed CI","responses":[]}`, true},
-		{`{"schema_version":2,"human_action":null,"status":"success","summary":"Done"}`, false},
-		{`{"schema_version":2,"human_action":null,"status":"success","summary":"Done","responses":null}`, false},
-		{`{"schema_version":2,"human_action":null,"status":"success","summary":"Done","responses":[{"finding_id":"F1","resolution":"approved","note":"Fine"}]}`, false},
-		{`{"schema_version":2,"human_action":null,"status":"success","summary":"Done","responses":[{"finding_id":"F1","resolution":"fixed","note":""}]}`, false},
-		{`{"schema_version":2,"human_action":null,"status":"success","summary":"Done","responses":[{"finding_id":"F1","resolution":"fixed","note":"Done","extra":true}]}`, false},
+		{`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Fixed","responses":[{"finding_id":"F1","resolution":"fixed","note":"Added test"}]}`, true},
+		{`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Disagree","responses":[{"finding_id":"F1","resolution":"disputed","note":"Already correct"}]}`, true},
+		{`{"schema_version":3,"criteria":[],"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"status":"blocked","summary":"Need input","responses":[]}`, true},
+		{`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Repaired failed CI","responses":[]}`, true},
+		{`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done"}`, false},
+		{`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done","responses":null}`, false},
+		{`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done","responses":[{"finding_id":"F1","resolution":"approved","note":"Fine"}]}`, false},
+		{`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done","responses":[{"finding_id":"F1","resolution":"fixed","note":""}]}`, false},
+		{`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done","responses":[{"finding_id":"F1","resolution":"fixed","note":"Done","extra":true}]}`, false},
 	} {
 		result, err := c.ParseResult(ctx, harness.PhaseArtifacts{Stdout: []byte(`{"type":"result","is_error":false,"subtype":"success","structured_output":` + tc.report + `}`)})
 		if (err == nil) != tc.valid {
