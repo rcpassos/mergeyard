@@ -9,6 +9,16 @@ ci_timeout: 60m
 concurrency: 1 # global active runs
 trusted_labelers: [] # optional logins; empty trusts write/maintain/admin permission
 
+# Advisory flags for READY_TO_MERGE; these never block readiness or merging.
+escalation:
+  max_changed_lines: 400 # additions + deletions; 0 disables size flag
+  paths:
+    ".github/**": ci/deploy
+    "**/Dockerfile*": ci/deploy
+    "**/*.tf": ci/deploy
+    "**/migrations/**": migration
+  new_dependencies: true # manifest changes count; lockfiles alone do not
+
 labels:
   ready: ready-for-agent
   running: agent-running
@@ -57,6 +67,9 @@ repositories:
     command_timeout: 20m # positive duration for each whole setup/checks script
 
   - repo: company/frontend
+    # Supplied fields override global escalation settings; paths replaces the map.
+    # escalation:
+    #   paths: {"**/auth/**": auth, "**/payments/**": money}
     reviewer: # only supplied fields override the global reviewer
       agent: codex
       effort: high

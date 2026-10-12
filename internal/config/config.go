@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/repository"
 	"github.com/rcpassos/mergeyard/internal/workspace"
@@ -17,6 +19,7 @@ import (
 // Config is the effective configuration. Repository settings are fully resolved;
 // an empty BaseBranch is intentionally left for runtime GitHub discovery.
 type Config struct {
+	Escalation      escalation.Rules
 	Version         int
 	Port            int
 	OpenBrowser     bool `yaml:"open_browser"`
@@ -72,6 +75,7 @@ type UsageLimits struct {
 }
 
 type Repository struct {
+	Escalation      escalation.Rules
 	TrustedLabelers []string      `yaml:"trusted_labelers"`
 	Setup           []string      `yaml:"setup"`
 	Checks          []string      `yaml:"checks"`
@@ -92,7 +96,8 @@ type Error = fault.Error
 func defaults() Config {
 	role := Role{Agent: "claude", Skills: []string{}, MaxAttempts: 1}
 	return Config{
-		Version: 1, Port: 7331, OpenBrowser: true, Workspace: workspace.DefaultPath,
+		Escalation: escalation.Defaults(),
+		Version:    1, Port: 7331, OpenBrowser: true, Workspace: workspace.DefaultPath,
 		PollInterval: 30 * time.Second, CITimeout: time.Hour, Concurrency: 1,
 		Labels:          Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
 		TrustedLabelers: []string{},
@@ -145,6 +150,7 @@ func Parse(data []byte) (Config, *Document, error) {
 	m.readPositiveInt("concurrency", &cfg.Concurrency, "config.invalid_concurrency")
 	readLabels(m.child("labels"), &cfg.Labels)
 	readTrustedLabelers(m, &cfg.TrustedLabelers)
+	readEscalation(m.child("escalation"), &cfg.Escalation)
 	agents := m.child("agents")
 	claude := agents.child("claude")
 	claude.read("executable", &cfg.Agents.Claude.Executable)
@@ -173,6 +179,7 @@ func Parse(data []byte) (Config, *Document, error) {
 			seenRepos := make(map[string]bool)
 			for i, node := range repos.Content {
 				r := Repository{Concurrency: cfg.Concurrency, Enabled: true, CommandTimeout: 20 * time.Minute, CheckRetries: 1,
+					Escalation:  escalation.Rules{MaxChangedLines: cfg.Escalation.MaxChangedLines, NewDependencies: cfg.Escalation.NewDependencies, Paths: maps.Clone(cfg.Escalation.Paths)},
 					Implementer: cloneRole(cfg.Implementer), Reviewer: cloneRole(cfg.Reviewer), Labels: cfg.Labels, TrustedLabelers: slices.Clone(cfg.TrustedLabelers)}
 				rm := newMapping(node, fmt.Sprintf("repositories[%d]", i), &err, &doc.Warnings)
 				rm.readRepo("repo", &r.Repo)
@@ -201,6 +208,7 @@ func Parse(data []byte) (Config, *Document, error) {
 				rm.readPositiveInt("concurrency", &r.Concurrency, "config.invalid_concurrency")
 				rm.read("enabled", &r.Enabled)
 				readTrustedLabelers(rm, &r.TrustedLabelers)
+				readEscalation(rm.child("escalation"), &r.Escalation)
 				readRole(rm.child("implementer"), &r.Implementer)
 				readRole(rm.child("reviewer"), &r.Reviewer)
 				readLabels(rm.child("labels"), &r.Labels)

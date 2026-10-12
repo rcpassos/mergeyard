@@ -221,8 +221,14 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 	if !s.deps.Now().UTC().Before(v.Deadline) {
 		return fail("ci.wait_timeout", "CI wait deadline expired before readiness acknowledgement; inspect GitHub and saved evidence")
 	}
+	if err := s.evaluateEscalation(ctx, repo, &run); err != nil {
+		return err
+	}
 	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.CIPassed, Metadata: workflow.MetadataPatch{CI: &v}})
-	return err
+	if err != nil {
+		return err
+	}
+	return s.publishEscalation(ctx, &run)
 }
 func (s *Scheduler) observeReady(ctx context.Context, repo config.Repository, run workflow.Run) error {
 	pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
@@ -246,7 +252,13 @@ func (s *Scheduler) observeReady(ctx context.Context, repo config.Repository, ru
 	if pr.Head.SHA != run.ApprovedSHA {
 		v.Warning = "changed-after-approval: PR head changed after readiness; inspect it before merging"
 	}
-	return s.saveCI(ctx, run, v, "ci.updated")
+	if err := s.saveCI(ctx, run, v, "ci.updated"); err != nil {
+		return err
+	}
+	if err := s.evaluateEscalation(ctx, repo, &run); err != nil {
+		return err
+	}
+	return s.publishEscalation(ctx, &run)
 }
 
 // The reviewed head stays approved when the base advances, but CI on the

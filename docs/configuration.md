@@ -28,6 +28,69 @@ Known configuration
 sections must be mappings with unique string keys; YAML merge keys (`<<`) are
 rejected rather than silently ignored. Ordinary anchors and aliases can be read.
 
+## Advisory escalation rules
+
+`escalation` flags ready-to-merge runs that need careful human review. Rules are
+deterministic and use no LLM. A flag never blocks `READY_TO_MERGE` or starts
+another agent. The default rules are:
+
+```yaml
+escalation:
+  max_changed_lines: 400
+  paths:
+    ".github/**": ci/deploy
+    "**/Dockerfile*": ci/deploy
+    "**/*.tf": ci/deploy
+    "**/migrations/**": migration
+  new_dependencies: true
+```
+
+The size rule triggers when additions plus deletions exceed the threshold across
+the entire diff. `0` disables it. Binary files count as zero lines, but still
+match path rules. Paths are relative to the repository root: `*`, `?` and character
+classes match within one path segment; `**` as a complete segment matches zero or
+more directories. Thus `**/migrations/**` includes root and nested migrations.
+Both old and new paths of renames are evaluated. Overlapping rules with the same
+reason are grouped, with unique files and reasons sorted for deterministic output.
+
+`new_dependencies` flags changes to `go.mod`, `package.json`, `pyproject.toml`,
+`Cargo.toml` and `Gemfile`, including nested manifests. Any manifest edit counts;
+this rule does not parse whether an individual dependency was added. Lockfile-only
+changes do not count. There are no built-in auth or payment path rules; add the
+paths appropriate to your repository.
+
+Each repository inherits global settings and overrides supplied fields. A supplied
+`paths` mapping **replaces** the inherited mapping, so include default paths you
+want to retain. `{}` clears paths; `new_dependencies: false` disables manifest
+flags. To disable all rules, set all three fields:
+
+```yaml
+repositories:
+  - repo: company/api
+    escalation:
+      max_changed_lines: 0
+      paths: {}
+      new_dependencies: false
+```
+
+Mergeyard evaluates `git diff <saved-run-base>...<approved-head>` as CI readiness
+completes. The run stores the base, approved head and `{reason, files}` list in
+SQLite. Restarts retain that result; a different approved head causes evaluation
+again with the current effective repository settings. Configuration changes alone
+do not change flags already saved for an approved head. Advancing the PR head
+without reviewer approval retains the existing changed-after-approval warning and
+does not relabel the new commit as approved.
+
+Flagged runs show a **Needs careful review** badge with reasons and files on the
+dashboard and in `mergeyard status`. The PR body gets an owned escalation section
+with the same reasons, files and approved commit. It preserves the generated
+summary and user-written content, removes stale flags on a subsequent unflagged
+approval, and is independent of `pr_comments`. Unflagged runs show no badge.
+Diff evaluation or PR body publication failures produce advisory warnings and
+retry on subsequent readiness observations, including after restart. They do not
+prevent readiness. Incomplete or ambiguous PR ownership markers are left intact
+for human repair.
+
 ## Per-issue harness overrides
 
 An issue can select a role's harness with `mergeyard:implementer=claude`,
@@ -246,6 +309,7 @@ settings, including repositories with `enabled: false`.
 | `config.invalid_max_attempts` | Role attempt limit must be a positive finite integer |
 | `config.invalid_checks` | Check commands must be nonempty and contain no NUL |
 | `config.invalid_check_retries` | Check retry limit must be a nonnegative finite integer |
+| `config.invalid_escalation` | Size threshold must be nonnegative; path globs and single-line reasons must be valid |
 | `config.invalid_max_waits` | Usage-limit wait bound must be a positive finite integer |
 | `config.invalid_duration` | CI timeout, repository command timeout, poll interval or cooldown must parse as a positive Go duration |
 | `config.invalid_permission_mode` | Claude permission mode must be `auto`, `acceptEdits`, or `bypassPermissions` |

@@ -11,6 +11,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/maintenance"
@@ -121,6 +122,7 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
+	Escalation         *escalation.Snapshot    `json:"escalation,omitempty"`
 	RoleSettings       *config.RunRoleSettings `json:"role_settings,omitempty"`
 	HumanAction        *fault.HumanAction      `json:"human_action,omitempty"`
 	SystemSteps        []SystemStepSnapshot    `json:"system_steps,omitempty"`
@@ -663,6 +665,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 		return Run{}, storageError(err)
 	}
 	run.CI, err = ci.Load(ctx, db, id)
+	if err != nil {
+		return Run{}, storageError(err)
+	}
+	run.Escalation, err = escalation.Load(ctx, db, id)
 	if err != nil {
 		return Run{}, storageError(err)
 	}

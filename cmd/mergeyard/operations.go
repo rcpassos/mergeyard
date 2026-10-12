@@ -208,6 +208,19 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			}
 			if run.State == workflow.ReadyToMerge {
 				fmt.Fprintln(stdout, "  Waiting for your merge")
+				if v := run.Escalation; v != nil {
+					if len(v.Reasons) > 0 {
+						fmt.Fprintln(stdout, "  Needs careful review")
+						for _, flag := range v.Reasons {
+							fmt.Fprintf(stdout, "    %s: %s\n", terminalText(flag.Reason), terminalText(strings.Join(flag.Files, ", ")))
+						}
+					}
+					for _, warning := range []string{v.EvaluationWarning, v.PublicationWarning} {
+						if warning != "" {
+							fmt.Fprintf(stdout, "  %s\n", terminalText(warning))
+						}
+					}
+				}
 			}
 			if v := run.CI; v != nil {
 				fmt.Fprintf(stdout, "  CI wait %s → %s · approved %s · current head %s\n", v.StartedAt.Format(time.RFC3339), v.Deadline.Format(time.RFC3339), terminalText(v.SHA), terminalText(v.CurrentHead))

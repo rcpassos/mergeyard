@@ -15,6 +15,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/doctor"
+	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
@@ -429,6 +430,10 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 			return nil, err
 		}
 		runs[i].CI, err = ci.Load(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		runs[i].Escalation, err = escalation.Load(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
 		}
