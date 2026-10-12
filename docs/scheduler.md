@@ -36,7 +36,15 @@ dependency. Global and repository limits count all nonterminal runs except
 harness gates withhold new claims and phase launches using the limited harness;
 eligible other-harness work and CI observation continue within capacity.
 
-Claims first persist `CLAIMING`, then add running, remove ready, persist
+Each issue resolves its implementer and reviewer through
+`config.ResolveRoleSettings`: fixed, case-insensitive
+`mergeyard:implementer=<agent>` and `mergeyard:reviewer=<agent>` labels override
+the repository harness. The implementer account gate runs per issue; restricted
+issues are skipped without preventing later issues in the repository from being
+considered. A restricted reviewer waits at its phase gate.
+
+Claims first persist `CLAIMING` with both resolved roles and their harness
+sources (`label` or `config`), then add running, remove ready, persist
 `PREPARING`, and prepare the managed base/worktree. Label failure aborts the
 flow. Git ownership and issue context are retained in `scheduler_runs`; the
 branch/worktree and implementer session UUID are also retained on the run. Each
@@ -61,10 +69,11 @@ show its effective network permission as `true`. Full issue context and schema l
 exit 0, `turn.completed`, and a valid native `last-message.json` from the unique
 attempt can succeed. A verified missing rollout allows one fresh conversation
 per role, phase, and round without spending a normal attempt. Its prior UUID and
-diagnostic remain in the recovery journal. Changing either role's harness on
-restart requires attention before
-that role can launch another attempt, so a retained UUID cannot be sent to the
-other harness.
+diagnostic remain in the recovery journal. Stored role settings are fixed for
+the run, including after restart, Retry, usage-limit resume, recovery probes,
+takeover and handback. Configuration or override-label changes apply to later
+claims. Legacy runs without stored settings still read configuration and require
+attention if a configured harness no longer owns the retained session.
 
 Implementer snapshots retain the harness, UUID, model, effort, skills, permissions,
 attempt and process identity in dashboard and status output, including during review. Supply `Dependencies.Env` explicitly with

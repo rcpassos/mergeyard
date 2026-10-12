@@ -38,7 +38,7 @@ func (s *Scheduler) Takeover(ctx context.Context, id string) (harness.Interactiv
 				err = s.deps.Git.Inspect(ctx, gitRun)
 			}
 			if err != nil {
-				repo, _ := s.repository(run.Repository)
+				repo, _ := s.runRepository(run)
 				return errors.Join(err, s.recordAttention(ctx, repo, run, err))
 			}
 			return nil
@@ -60,7 +60,7 @@ func (s *Scheduler) Takeover(ctx context.Context, id string) (harness.Interactiv
 }
 
 func (s *Scheduler) interactiveCommand(ctx context.Context, run workflow.Run) (harness.InteractiveCommand, error) {
-	if _, ok := s.repository(run.Repository); !ok {
+	if _, ok := s.runRepository(run); !ok {
 		return harness.InteractiveCommand{}, &fault.Error{Code: "config.repository_missing", Message: "Restore the run's repository configuration before takeover"}
 	}
 	_, gitRun, err := s.context(ctx, run)
@@ -101,7 +101,7 @@ func (s *Scheduler) ManualCommand(ctx context.Context, id string) (harness.Inter
 }
 
 func (s *Scheduler) prepareTakeover(ctx context.Context, run workflow.Run) error {
-	repo, ok := s.repository(run.Repository)
+	repo, ok := s.runRepository(run)
 	if !ok {
 		return &fault.Error{Code: "config.repository_missing", Message: "Restore the run's repository configuration before takeover"}
 	}

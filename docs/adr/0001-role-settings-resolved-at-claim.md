@@ -1,6 +1,6 @@
 # Role settings are resolved at claim and fixed for the run
 
-Per-issue harness overrides (#102) mean a run's role settings can no longer be read from repository configuration at each phase. Each role's harness, model, effort and skills are therefore resolved once, when the issue is claimed, stored on the run, and used by every later phase, restart and resume of that run. Configuration changes apply only to runs claimed afterwards. Runs created before this decision, which have no stored role settings, keep reading repository configuration.
+Per-issue harness overrides (#117, the first slice of #102) mean a run's role settings can no longer be read from repository configuration at each phase. Each role's harness, model, effort and skills are therefore resolved once, when the issue is claimed, stored on the run, and used by every later phase, restart and resume of that run. Configuration changes apply only to runs claimed afterwards. Runs created before this decision, which have no stored role settings, keep reading repository configuration.
 
 ## Considered Options
 

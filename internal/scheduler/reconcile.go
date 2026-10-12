@@ -59,7 +59,7 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 		if run.PendingRetry() == nil && run.State.Terminal() && !(run.State == workflow.Completed && run.Merge != nil && run.Merge.Pending()) {
 			continue
 		}
-		repo, ok := s.repository(run.Repository)
+		repo, ok := s.runRepository(run)
 		if !ok && run.Merge != nil {
 			repo = config.Repository{Repo: run.Repository}
 			ok = true

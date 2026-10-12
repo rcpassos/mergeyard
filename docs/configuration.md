@@ -28,6 +28,48 @@ Known configuration
 sections must be mappings with unique string keys; YAML merge keys (`<<`) are
 rejected rather than silently ignored. Ordinary anchors and aliases can be read.
 
+## Per-issue harness overrides
+
+An issue can select a role's harness with `mergeyard:implementer=claude`,
+`mergeyard:implementer=codex`, `mergeyard:reviewer=claude`, or
+`mergeyard:reviewer=codex`. Label names and values are matched case-insensitively;
+the format is fixed. Each role falls back to its repository configuration when
+there is no override.
+
+Mergeyard resolves both roles when it claims the issue. The configured model and
+effort apply only when the selected harness equals the configured role's agent;
+otherwise both are unset and the selected harness uses its defaults. Skills
+always come from the repository's role configuration. For example, a Claude role
+with a configured model and skills, overridden to Codex, keeps those skills and
+uses Codex's default model and effort.
+
+The run stores each role's agent, model, effort, skills and harness source
+(`label` or `config`). All later phases, CI repair, restarts, usage-limit resumes,
+recovery probes, takeover, handback and Retry use that selection. Changing labels
+or role configuration affects only subsequent claims. Runs created before this
+feature have no stored selection and continue reading configuration. Harness
+permissions, executables and execution policy remain configuration settings.
+Run detail and `mergeyard status` show the stored selection.
+
+Before claiming, Mergeyard validates both resolved roles against their selected
+harnesses, including supported capabilities and skill syntax. For example,
+Claude's namespaced skills such as `plugin:check` cannot be used by Codex. An
+incompatible selection remains unclaimed, receives needs-attention and an
+explanation, and can be corrected through role configuration or override labels.
+Skills are preserved rather than silently discarded. Remove needs-attention
+after correcting the selection to allow another claim.
+
+Unknown agents or labels selecting different harnesses for the same role prevent
+the claim. Mergeyard applies the repository's `needs_attention` label and posts
+one comment naming the invalid labels and valid values. Fix the override labels
+and remove the needs-attention label to make the issue eligible again. Repeated
+labels selecting the same harness are allowed.
+
+The claim gate checks each issue's resolved implementer harness for a usage limit
+or exhausted-credit block. A restricted issue is skipped while later issues in
+the repository are still considered, preserving their normal order. A restricted
+reviewer permits the claim and waits at the review phase gate.
+
 ## Repository setup commands
 
 `repositories[].setup` is a list of shell commands, defaulting to `[]`. Omit it or

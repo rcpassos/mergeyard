@@ -47,7 +47,7 @@ func (s *Scheduler) Retry(ctx context.Context, id string) (workflow.Run, error) 
 				}
 			}
 		}
-		repo, ok := s.repository(run.Repository)
+		repo, ok := s.runRepository(run)
 		if !ok {
 			return &fault.Error{Code: "config.repository_missing", Message: "Run repository is no longer configured"}
 		}
