@@ -229,10 +229,14 @@ ready-label and harness override actors. It reads GraphQL `lastEditedAt`, `edito
 and paginated `userContentEdits` to reject any body edit at or after approval by
 an untrusted actor. Missing or unreadable authorization/edit history fails closed.
 The body observed through GraphQL must match the snapshot that will be executed.
+That persisted issue snapshot is used for every implementation, review, fix and
+resumed attempt. Live lifecycle observations never replace executable issue text.
 
 An untrusted or unverifiable issue is never claimed. Mergeyard persists its
 refusal reason, ensures one marker comment (`<!-- mergeyard:trust:refused -->`),
 then removes the ready label. Failed side effects are retried after restart.
+Only explanatory comments authored by the authenticated Mergeyard account match
+the refusal marker; copies posted by other accounts do not suppress publication.
 The dashboard lists refused issues and their reasons even without the ready label.
 After reviewing the body and override labels, a trusted maintainer can reapply
 the ready label; a trusted decision clears the refusal without duplicating the

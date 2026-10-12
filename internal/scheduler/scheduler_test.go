@@ -23,6 +23,7 @@ import (
 )
 
 type fakeGitHub struct {
+	getIssue      func(string, int) (github.Issue, error)
 	trust         func(github.Issue) (github.TrustDecision, error)
 	trustComments map[int]string
 	issues        map[string][]github.Issue
@@ -56,6 +57,9 @@ func (f *fakeGitHub) ListOpenIssues(_ context.Context, repo string) ([]github.Is
 	return f.issues[repo], nil
 }
 func (f *fakeGitHub) GetIssue(_ context.Context, repo string, n int) (github.Issue, error) {
+	if f.getIssue != nil {
+		return f.getIssue(repo, n)
+	}
 	for _, issue := range f.issues[repo] {
 		if issue.Number == n {
 			return issue, nil

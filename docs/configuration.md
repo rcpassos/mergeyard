@@ -270,6 +270,12 @@ A trusted maintainer should review the body and override labels, remove or
 reapply any untrusted overrides, then reapply the ready label. The historical
 comment is retained, and a newly trusted decision clears the dashboard refusal.
 
+The issue title, body and URL saved at claim remain the input for implementation,
+review, fix and resumed attempts. Later issue edits do not replace this authorized
+snapshot. Lifecycle polling still reads current issue state and labels. Refusal
+comments must be authored by Mergeyard's authenticated GitHub account and contain
+its explanation; copied markers from other accounts are ignored.
+
 Authorization decisions are cached for the observed issue, label-event identity
 and body-edit state during the client lifetime. The issue-list `updated_at`,
 content and labels invalidate the snapshot, so a quiet poll adds no trust API

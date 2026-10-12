@@ -26,13 +26,13 @@ type trustCacheEntry struct {
 	decision    TrustDecision
 }
 
-type actor struct {
+type Actor struct {
 	Login string `json:"login"`
 }
 type labelEvent struct {
 	ID        int64     `json:"id"`
 	Event     string    `json:"event"`
-	Actor     *actor    `json:"actor"`
+	Actor     *Actor    `json:"actor"`
 	Label     Label     `json:"label"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -148,7 +148,7 @@ func (c *Client) verifyIssueTrust(ctx context.Context, repo string, issue Issue,
 				continue
 			}
 			name := strings.ToLower(event.Label.Name)
-			if (strings.EqualFold(event.Label.Name, ready) || strings.HasPrefix(name, "mergeyard:implementer=") || strings.HasPrefix(name, "mergeyard:reviewer=")) && (event.ID <= 0 || event.CreatedAt.IsZero()) {
+			if (strings.EqualFold(event.Label.Name, ready) || isHarnessOverrideLabel(name)) && (event.ID <= 0 || event.CreatedAt.IsZero()) {
 				return refuse("Cannot verify label history: missing label event identity or time.")
 			}
 			previous := latest[name]
@@ -163,7 +163,7 @@ func (c *Client) verifyIssueTrust(ctx context.Context, repo string, issue Issue,
 	labels := []string{ready}
 	for _, label := range issue.Labels {
 		name := strings.ToLower(label.Name)
-		if strings.HasPrefix(name, "mergeyard:implementer=") || strings.HasPrefix(name, "mergeyard:reviewer=") {
+		if isHarnessOverrideLabel(name) {
 			labels = append(labels, label.Name)
 		}
 	}
@@ -218,11 +218,11 @@ func (c *Client) verifyIssueTrust(ctx context.Context, repo string, issue Issue,
 					Issue *struct {
 						Body         *string    `json:"body"`
 						LastEditedAt *time.Time `json:"lastEditedAt"`
-						Editor       *actor     `json:"editor"`
+						Editor       *Actor     `json:"editor"`
 						Edits        *struct {
 							Nodes []struct {
 								EditedAt time.Time `json:"editedAt"`
-								Editor   *actor    `json:"editor"`
+								Editor   *Actor    `json:"editor"`
 							} `json:"nodes"`
 							PageInfo *struct {
 								HasNextPage *bool  `json:"hasNextPage"`
@@ -300,11 +300,46 @@ func sameEditTime(a, b *time.Time) bool {
 	return a.Equal(*b)
 }
 
+func isHarnessOverrideLabel(name string) bool {
+	return strings.HasPrefix(name, "mergeyard:implementer=") || strings.HasPrefix(name, "mergeyard:reviewer=")
+}
+
 const TrustRefusalMarker = "<!-- mergeyard:trust:refused -->"
 
 // EnsureTrustRefusalComment posts once per issue, including after ambiguous
 // writes and restarts, using the same paginated read-before-create contract.
 func (c *Client) EnsureTrustRefusalComment(ctx context.Context, repo string, number int, reason string) error {
-	_, err := c.ensureComment(ctx, repo, number, TrustRefusalMarker+"\nMergeyard refused to claim this issue: "+reason+"\n\nA trusted maintainer must review the issue and its harness override labels, then reapply the ready label.")
+	if number <= 0 {
+		return codedError("github.invalid_input", "expected a positive issue number", nil)
+	}
+	if _, err := issuePath(repo, number); err != nil {
+		return err
+	}
+	login, err := c.authenticatedLogin(ctx)
+	if err != nil {
+		return err
+	}
+	prefix := TrustRefusalMarker + "\nMergeyard refused to claim this issue: "
+	_, err = c.ensureComment(ctx, repo, number, prefix+reason+"\n\nA trusted maintainer must review the issue and its harness override labels, then reapply the ready label.", func(comment Comment) bool {
+		return comment.User != nil && strings.EqualFold(comment.User.Login, login) && strings.HasPrefix(comment.Body, prefix)
+	})
 	return err
+}
+
+func (c *Client) authenticatedLogin(ctx context.Context) (string, error) {
+	c.trustMu.Lock()
+	defer c.trustMu.Unlock()
+	if c.login != "" {
+		return c.login, nil
+	}
+	data, err := c.request(ctx, nil, "GET", "user", false)
+	if err != nil {
+		return "", err
+	}
+	var user Actor
+	if json.Unmarshal(data, &user) != nil || user.Login == "" {
+		return "", codedError("github.invalid_response", "missing authenticated GitHub login", nil)
+	}
+	c.login = user.Login
+	return c.login, nil
 }

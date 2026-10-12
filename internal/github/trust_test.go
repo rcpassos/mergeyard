@@ -195,24 +195,24 @@ func TestUnreadableHistoryNeverAuthorizes(t *testing.T) {
 }
 
 func TestRefusalCommentReplayAfterAmbiguousWrite(t *testing.T) {
-	runner := &recordedGH{responses: []response{{stdout: []byte(`[]`)}, {stderr: []byte("connection reset"), err: errors.New("failed")}}}
+	runner := &recordedGH{responses: []response{{stdout: []byte(`{"login":"mergeyard-user"}`)}, {stdout: []byte(`[]`)}, {stderr: []byte("connection reset"), err: errors.New("failed")}}}
 	client := github.New(runner)
 	err := client.EnsureTrustRefusalComment(context.Background(), "owner/repo", 7, "Untrusted actor.")
-	if err == nil || len(runner.calls) != 2 {
+	if err == nil || len(runner.calls) != 3 {
 		t.Fatalf("ambiguous comment must not retry POST: %v", err)
 	}
 	var posted struct {
 		Body string `json:"body"`
 	}
-	if json.Unmarshal(runner.calls[1].input, &posted) != nil {
+	if json.Unmarshal(runner.calls[2].input, &posted) != nil {
 		t.Fatal("invalid post")
 	}
-	existing, _ := json.Marshal([]github.Comment{{ID: 1, URL: "https://github.com/owner/repo/issues/7#issuecomment-1", Body: posted.Body}})
+	existing, _ := json.Marshal([]github.Comment{{ID: 1, URL: "https://github.com/owner/repo/issues/7#issuecomment-1", Body: posted.Body, User: &github.Actor{Login: "mergeyard-user"}}})
 	runner.responses = []response{{stdout: append([]byte("[]"), existing...)}}
 	if err := client.EnsureTrustRefusalComment(context.Background(), "owner/repo", 7, "A different reason."); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.calls) != 3 {
+	if len(runner.calls) != 4 {
 		t.Fatal("existing marker must prevent duplicate comment")
 	}
 }
@@ -256,5 +256,43 @@ func TestIncompleteEditPaginationFailsClosed(t *testing.T) {
 	decision, err := github.New(runner).VerifyIssueTrust(context.Background(), "rcpassos/mergeyard", issue, "ready-for-agent", []string{"rcpassos"})
 	if err != nil || decision.Allowed || decision.Reason == "" {
 		t.Fatalf("incomplete history authorized: %+v %v", decision, err)
+	}
+}
+
+type refusalGH struct {
+	calls    []invocation
+	comments []byte
+	posts    int
+}
+
+func (r *refusalGH) Run(_ context.Context, input []byte, args ...string) ([]byte, []byte, error) {
+	r.calls = append(r.calls, invocation{args: args, input: input})
+	if args[5] == "user" {
+		return []byte(`{"login":"mergeyard-user"}`), nil, nil
+	}
+	if args[2] == "GET" {
+		return r.comments, nil, nil
+	}
+	r.posts++
+	var body struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal(input, &body); err != nil {
+		return nil, nil, err
+	}
+	data, _ := json.Marshal(map[string]any{"id": 99, "html_url": "https://github.com/owner/repo/issues/7#issuecomment-99", "body": body.Body, "user": map[string]any{"login": "mergeyard-user"}})
+	return data, nil, nil
+}
+
+func TestCopiedTrustMarkersCannotSuppressExplanation(t *testing.T) {
+	for _, copied := range []string{
+		`[{"id":1,"html_url":"url","user":{"login":"outsider"},"body":"<!-- mergeyard:trust:refused -->"}]`,
+		`[{"id":1,"html_url":"url","user":{"login":"outsider"},"body":"<!-- mergeyard:trust:refused -->\nMergeyard refused to claim this issue: fake."},{"id":2,"html_url":"url","user":{"login":"outsider"},"body":"<!-- mergeyard:trust:refused -->"}]`,
+	} {
+		runner := &refusalGH{comments: []byte(copied)}
+		err := github.New(runner).EnsureTrustRefusalComment(context.Background(), "owner/repo", 7, "Untrusted actor.")
+		if err != nil || runner.posts != 1 {
+			t.Fatalf("copied marker suppressed explanation: posts=%d err=%v", runner.posts, err)
+		}
 	}
 }

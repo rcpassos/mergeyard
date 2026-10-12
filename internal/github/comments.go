@@ -13,6 +13,7 @@ type Comment struct {
 	ID   int64  `json:"id"`
 	URL  string `json:"html_url"`
 	Body string `json:"body"`
+	User *Actor `json:"user"`
 }
 
 var reportMarker = regexp.MustCompile(`^<!-- mergeyard:report:[a-zA-Z0-9]+ -->$`)
@@ -25,10 +26,10 @@ func (c *Client) EnsureReportComment(ctx context.Context, repo string, number in
 	if number <= 0 || !ok || !reportMarker.MatchString(marker) {
 		return nil, codedError("github.invalid_input", "expected a report marker and positive PR number", nil)
 	}
-	return c.ensureComment(ctx, repo, number, body)
+	return c.ensureComment(ctx, repo, number, body, nil)
 }
 
-func (c *Client) ensureComment(ctx context.Context, repo string, number int, body string) (*Comment, error) {
+func (c *Client) ensureComment(ctx context.Context, repo string, number int, body string, match func(Comment) bool) (*Comment, error) {
 	marker, _, _ := strings.Cut(body, "\n")
 	if number <= 0 {
 		return nil, codedError("github.invalid_input", "expected a positive issue number", nil)
@@ -59,7 +60,7 @@ func (c *Client) ensureComment(ctx context.Context, repo string, number int, bod
 			if comment.ID <= 0 || comment.URL == "" {
 				return nil, codedError("github.invalid_response", "missing comment identity", nil)
 			}
-			if comment.Body == marker || strings.HasPrefix(comment.Body, marker+"\n") {
+			if (comment.Body == marker || strings.HasPrefix(comment.Body, marker+"\n")) && (match == nil || match(comment)) {
 				if found != nil {
 					return nil, codedError("publication.multiple_matches", "more than one comment has the report identity", nil)
 				}
@@ -88,7 +89,7 @@ func (c *Client) ensureComment(ctx context.Context, repo string, number int, bod
 	if err := json.Unmarshal(data, &comment); err != nil {
 		return nil, codedError("github.invalid_response", "expected a comment", err)
 	}
-	if comment.ID <= 0 || comment.URL == "" || comment.Body != body {
+	if comment.ID <= 0 || comment.URL == "" || comment.Body != body || (match != nil && !match(comment)) {
 		return nil, codedError("github.invalid_response", "created comment identity or body is invalid", nil)
 	}
 	return &comment, nil

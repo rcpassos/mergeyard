@@ -201,7 +201,7 @@ diagnostic, and run detail/status show the warning and active identity.
 ## Fix and re-review
 
 A changes-required verdict resumes the original implementer's conversation with
-fresh issue/PR context and the accepted blocking findings. Invocation settings are
+the authorized issue snapshot, fresh PR context and the accepted blocking findings. Invocation settings are
 reapplied. The strict fix report includes success/blocked/failed, a summary, and
 per-finding responses (`finding_id`, fixed/disputed `resolution`, and a `note`).
 Successful reports account for every supplied blocker exactly once. Unknown,
@@ -267,7 +267,7 @@ Mergeyard never automatically reruns checks.
 
 CI repairs retain the approved target, check names, native outcomes, available
 check output/status descriptions, URLs, and wait timestamps. The implementer
-receives this context alongside the current issue and PR. A CI-only success
+receives this context alongside the authorized issue snapshot and current PR. A CI-only success
 report uses `responses: []`; invented finding responses and success without
 code changes are invalid. Fix attempts use `implementer.max_attempts`, and the
 next independent review uses `reviewer.max_attempts`. Neither retry spends an

@@ -70,6 +70,7 @@ type Client struct {
 	runner     CommandRunner
 	trustMu    sync.Mutex
 	trustCache map[string]trustCacheEntry
+	login      string // authenticated comment author; protected by trustMu
 }
 
 // New uses the installed gh executable when runner is nil.

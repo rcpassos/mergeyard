@@ -100,5 +100,7 @@ Ready-label authorization is enforced by default. Actors with only `triage` or
 Use a global or per-repository allowlist to explicitly authorize other actors.
 Untrusted harness override labels and untrusted body edits after approval also
 prevent claim. Refusals remove the ready label and appear in the dashboard.
+All run phases retain the authorized issue snapshot; later edits no longer
+silently refresh implementation, review, fix or resumed inputs.
 The upgrade adds schema version 22 for durable refusal diagnostics; preserve a
 workspace backup before downgrading to a binary supporting only older schemas.
