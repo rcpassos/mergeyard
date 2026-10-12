@@ -30,6 +30,43 @@ func TestSetupFailureNeverStartsImplementer(t *testing.T) {
 	}
 }
 
+type failFirstImplementLaunch struct {
+	runner.Runner
+	failed bool
+}
+
+func (r *failFirstImplementLaunch) StartSession(ctx context.Context, req runner.SessionRequest) (runner.SessionRef, error) {
+	if req.Phase == "implement" && !r.failed {
+		r.failed = true
+		return runner.SessionRef{}, errors.New("implementer executable unavailable")
+	}
+	return r.Runner.StartSession(ctx, req)
+}
+
+func TestImplementerLaunchFailurePreservesSuccessfulSetupOnRetry(t *testing.T) {
+	_, rt, api, _, cfg, r := localFlow(t, "[ -f setup-ready ] || exit 9\n"+successfulScript)
+	cfg.Repositories[0].Setup = []string{`if [ -f setup-ready ]; then printf 'setup ran twice\n' >&2; exit 7; fi; printf ready > setup-ready`}
+	cfg.Repositories[0].Implementer.MaxAttempts = 1
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: api, Runner: &failFirstImplementLaunch{Runner: r}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := finish(t, s, workflow.NeedsAttention, workflow.Implement)
+	if failed.Implementer == nil || failed.Implementer.Status != "failed" || failed.LastErrorCode != "phase.retries_exhausted" {
+		t.Fatalf("launch failure = %+v", failed)
+	}
+	if len(failed.SystemSteps) != 1 || failed.SystemSteps[0].Status != "succeeded" {
+		t.Fatalf("agent launch failure corrupted setup history: %+v", failed.SystemSteps)
+	}
+	if _, err := s.Retry(context.Background(), failed.ID); err != nil {
+		t.Fatal(err)
+	}
+	completed := finish(t, s, workflow.Active, workflow.Review)
+	if len(completed.SystemSteps) != 1 || completed.SystemSteps[0].Status != "succeeded" {
+		t.Fatalf("Retry reran successful setup: %+v", completed.SystemSteps)
+	}
+}
+
 func TestSetupRestartObservesLiveFinishedAndUnknownOutcomes(t *testing.T) {
 	for _, outcome := range []string{"live", "finished", "unknown"} {
 		t.Run(outcome, func(t *testing.T) {

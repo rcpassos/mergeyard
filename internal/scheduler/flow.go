@@ -492,7 +492,7 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		return nil
 	}
 	if err != nil && ctx.Err() == nil {
-		if _, saveErr := s.db.ExecContext(ctx, `UPDATE phase_attempts SET status='failed',ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),error=? WHERE run_id=? AND phase='implement' AND attempt=?`, err.Error(), run.ID, number); saveErr != nil {
+		if _, saveErr := s.db.ExecContext(ctx, `UPDATE phase_attempts SET status='failed',ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),error=? WHERE id=?`, err.Error(), id); saveErr != nil {
 			return saveErr
 		}
 		retry, retryErr := s.retryPhase(ctx, run, workflow.Implement, attempt{id: id, number: number, resumed: resume}, err, repo.Implementer.MaxAttempts)
