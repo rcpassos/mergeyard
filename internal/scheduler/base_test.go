@@ -412,3 +412,36 @@ func TestBaseConflictRepairCanPreserveFilesWhileMergingBaseAncestry(t *testing.T
 	}
 	gitCommand(t, remote, "merge-base", "--is-ancestor", baseSHA, ready.ApprovedSHA)
 }
+
+func TestBaseRepairCannotStartIfPRReadCrossesDeadline(t *testing.T) {
+	_, rt, base, remote, cfg, r := localFlow(t, successfulScript)
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	reads := 0
+	delayed := false
+	api := passingBaseAPI(base)
+	boundary := ciDeadlineGitHub{ciGitHub: api, beforeRead: func() {
+		if delayed {
+			reads++
+			if reads == 3 {
+				now = now.Add(time.Hour)
+			}
+		}
+	}}
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: boundary, Runner: r, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	advanceBase(t, remote, "feature.txt", "conflicting base\n")
+	delayed = true
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := rt.Workflow.Get(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.State != workflow.NeedsAttention || saved.LastErrorCode != "ci.wait_timeout" || len(saved.FixHistory) != 0 || saved.ApprovedSHA != run.ApprovedSHA {
+		t.Fatalf("late repair authorized: %+v", saved)
+	}
+}

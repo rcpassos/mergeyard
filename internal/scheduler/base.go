@@ -218,6 +218,9 @@ func (s *Scheduler) repairBase(ctx context.Context, repo config.Repository, run 
 	if !sameCITarget(target, *fresh) {
 		return s.saveCI(ctx, run, v, "ci.updated")
 	}
+	if !s.deps.Now().UTC().Before(v.Deadline) {
+		return s.ciAttention(ctx, repo, run, v, "ci.wait_timeout", "CI wait deadline expired during current-base repair reconciliation; no code fix was launched")
+	}
 	approved := ""
 	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.CIFailed, Metadata: workflow.MetadataPatch{CI: &v, ApprovedSHA: &approved}})
 	return err
