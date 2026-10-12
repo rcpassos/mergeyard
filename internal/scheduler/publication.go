@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
@@ -135,52 +134,30 @@ func (s *Scheduler) publishReports(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Bound optional network work so unavailable GitHub cannot starve phases.
-	publicationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+	deliveries := make([]commentDelivery, 0, len(pending))
 	for _, p := range pending {
-		if publicationCtx.Err() != nil {
-			break
-		}
-		// Persist evidence of an attempted write before entering the adapter.
-		if _, err := s.db.ExecContext(ctx, `UPDATE report_publications SET attempts=attempts+1,last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE attempt_id=?`, p.id); err != nil {
-			return err
-		}
-		var comment *github.Comment
-		var cause error
-		publisher, ok := s.deps.GitHub.(ReportPublisher)
-		if !ok {
-			cause = &fault.Error{Code: "publication.unsupported"}
-		} else {
-			comment, cause = publisher.EnsureReportComment(publicationCtx, p.repository, p.pr, p.body)
-		}
-		if cause == nil && (comment == nil || comment.ID <= 0 || comment.URL == "") {
-			cause = &fault.Error{Code: "github.invalid_response"}
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if cause != nil {
-			code := publicationCode(cause)
-			warning := "Report is saved locally. PR comment publication will retry without stopping work."
-			if p.warning == code {
-				continue
-			}
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				_, err := tx.ExecContext(ctx, `UPDATE report_publications SET warning_code=?,warning=? WHERE attempt_id=?`, code, warning, p.id)
-				return events.Draft{RunID: p.runID, Type: "publication.warning", Payload: map[string]any{"report_id": p.id, "code": code, "message": warning}}, err
-			})
-		} else {
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				_, err := tx.ExecContext(ctx, `UPDATE report_publications SET state='published',comment_id=?,comment_url=?,warning_code='',warning='' WHERE attempt_id=?`, comment.ID, comment.URL, p.id)
-				return events.Draft{RunID: p.runID, Type: "publication.published", Payload: map[string]any{"report_id": p.id, "comment_id": comment.ID, "comment_url": comment.URL}}, err
-			})
-		}
-		if err != nil {
-			return err
-		}
+		deliveries = append(deliveries, p.delivery(s))
 	}
-	return nil
+	return s.publishComments(ctx, deliveries)
+}
+
+func (p pendingReport) delivery(s *Scheduler) commentDelivery {
+	warning := "Report is saved locally. PR comment publication will retry without stopping work."
+	return commentDelivery{
+		repository: p.repository, number: p.pr, body: p.body, warningCode: p.warning,
+		startAttempt: func(ctx context.Context) error {
+			_, err := s.db.ExecContext(ctx, `UPDATE report_publications SET attempts=attempts+1,last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE attempt_id=?`, p.id)
+			return err
+		},
+		saveWarning: func(ctx context.Context, tx *sql.Tx, code string) (events.Draft, error) {
+			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET warning_code=?,warning=? WHERE attempt_id=?`, code, warning, p.id)
+			return events.Draft{RunID: p.runID, Type: "publication.warning", Payload: map[string]any{"report_id": p.id, "code": code, "message": warning}}, err
+		},
+		saveReceipt: func(ctx context.Context, tx *sql.Tx, comment *github.Comment) (events.Draft, error) {
+			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET state='published',comment_id=?,comment_url=?,warning_code='',warning='' WHERE attempt_id=?`, comment.ID, comment.URL, p.id)
+			return events.Draft{RunID: p.runID, Type: "publication.published", Payload: map[string]any{"report_id": p.id, "comment_id": comment.ID, "comment_url": comment.URL}}, err
+		},
+	}
 }
 
 // Only known, fixed codes cross into events/UI; gh stderr may contain secrets.

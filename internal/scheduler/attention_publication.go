@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
@@ -96,47 +95,27 @@ func (s *Scheduler) publishAttention(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	publicationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+	deliveries := make([]commentDelivery, 0, len(pending))
 	for _, p := range pending {
-		if publicationCtx.Err() != nil {
-			break
-		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE attention_publications SET attempts=attempts+1,last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_id=?`, p.eventID); err != nil {
-			return err
-		}
-		var comment *github.Comment
-		var cause error
-		publisher, ok := s.deps.GitHub.(ReportPublisher)
-		if !ok {
-			cause = &fault.Error{Code: "publication.unsupported"}
-		} else {
-			comment, cause = publisher.EnsureReportComment(publicationCtx, p.repository, p.number, p.body)
-		}
-		if cause == nil && (comment == nil || comment.ID <= 0 || comment.URL == "") {
-			cause = &fault.Error{Code: "github.invalid_response"}
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if cause != nil {
-			code := publicationCode(cause)
-			if code == p.warning {
-				continue
-			}
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				_, err := tx.ExecContext(ctx, `UPDATE attention_publications SET warning_code=? WHERE event_id=?`, code, p.eventID)
-				return events.Draft{RunID: p.runID, Type: "publication.warning", Payload: map[string]any{"attention_event_id": p.eventID, "code": code, "message": "Human action is saved locally. Attention comment publication will retry."}}, err
-			})
-		} else {
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				_, err := tx.ExecContext(ctx, `UPDATE attention_publications SET state='published',comment_id=?,comment_url=?,warning_code='' WHERE event_id=?`, comment.ID, comment.URL, p.eventID)
-				return events.Draft{RunID: p.runID, Type: "publication.published", Payload: map[string]any{"attention_event_id": p.eventID, "comment_id": comment.ID, "comment_url": comment.URL}}, err
-			})
-		}
-		if err != nil {
-			return err
-		}
+		deliveries = append(deliveries, p.delivery(s))
 	}
-	return nil
+	return s.publishComments(ctx, deliveries)
+}
+
+func (p attentionPublication) delivery(s *Scheduler) commentDelivery {
+	return commentDelivery{
+		repository: p.repository, number: p.number, body: p.body, warningCode: p.warning,
+		startAttempt: func(ctx context.Context) error {
+			_, err := s.db.ExecContext(ctx, `UPDATE attention_publications SET attempts=attempts+1,last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_id=?`, p.eventID)
+			return err
+		},
+		saveWarning: func(ctx context.Context, tx *sql.Tx, code string) (events.Draft, error) {
+			_, err := tx.ExecContext(ctx, `UPDATE attention_publications SET warning_code=? WHERE event_id=?`, code, p.eventID)
+			return events.Draft{RunID: p.runID, Type: "publication.warning", Payload: map[string]any{"attention_event_id": p.eventID, "code": code, "message": "Human action is saved locally. Attention comment publication will retry."}}, err
+		},
+		saveReceipt: func(ctx context.Context, tx *sql.Tx, comment *github.Comment) (events.Draft, error) {
+			_, err := tx.ExecContext(ctx, `UPDATE attention_publications SET state='published',comment_id=?,comment_url=?,warning_code='' WHERE event_id=?`, comment.ID, comment.URL, p.eventID)
+			return events.Draft{RunID: p.runID, Type: "publication.published", Payload: map[string]any{"attention_event_id": p.eventID, "comment_id": comment.ID, "comment_url": comment.URL}}, err
+		},
+	}
 }
