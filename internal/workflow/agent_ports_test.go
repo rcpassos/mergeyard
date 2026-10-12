@@ -167,11 +167,31 @@ func TestFailedRunRetryAllocatesAroundReusedAgentPorts(t *testing.T) {
 	if _, err := w.Transition(ctx, "new-run", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 6, AgentPorts: &ports}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: workflow.Active, NextPhase: workflow.Implement}); err != nil {
+	if _, err := w.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: workflow.Active, NextPhase: workflow.Implement, AgentPorts: &ports}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := w.EnsureAgentPorts(ctx, run.ID, ports)
 	if err != nil || got.Base != 5110 {
 		t.Fatalf("retry collided with reused ports: %+v %v", got, err)
+	}
+}
+
+func TestAgentPortExhaustionDoesNotPartiallyCommitRetry(t *testing.T) {
+	w, _, _ := newWorkflow(t)
+	ctx := context.Background()
+	ports := config.AgentPorts{Base: 65534, Size: 2}
+	failed := seed(t, w, workflow.Active, workflow.Implement)
+	if _, err := w.Transition(ctx, failed.ID, workflow.Request{Trigger: workflow.InternalFailure, Failure: &fault.Error{Code: "test.failed", Message: "Test failure"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Transition(ctx, "holder", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 6, AgentPorts: &ports}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Transition(ctx, failed.ID, workflow.Request{Trigger: workflow.Retry, NextState: workflow.Active, NextPhase: workflow.Implement, AgentPorts: &ports}); err == nil {
+		t.Fatal("Retry succeeded without available ports")
+	}
+	run, err := w.Get(ctx, failed.ID)
+	if err != nil || run.State != workflow.Failed || run.AgentPorts != nil {
+		t.Fatalf("partially committed Retry: %+v %v", run, err)
 	}
 }

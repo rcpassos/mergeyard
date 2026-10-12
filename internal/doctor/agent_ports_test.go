@@ -13,7 +13,7 @@ func TestDoctorWarnsWhenAgentPortBlocksOverlapDashboard(t *testing.T) {
 		offset, concurrency int
 		overlap             bool
 	}{
-		{0, 1, true}, {-11, 2, true}, {-11, 1, false},
+		{0, 1, true}, {-11, 2, true}, {-11, 1, true}, {1, 1, false},
 	} {
 		path, _, opts := repositorySetup(t, "")
 		cfg, _, err := config.Load(path)

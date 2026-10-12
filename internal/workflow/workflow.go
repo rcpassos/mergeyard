@@ -157,7 +157,7 @@ type Run struct {
 
 // Request supplies trigger-specific information, not an arbitrary new state.
 type Request struct {
-	// AgentPorts reserves a block atomically with a new claim.
+	// AgentPorts reserves a block atomically with a new claim or explicit Retry.
 	AgentPorts *config.AgentPorts
 	// RoleSettings is accepted only at claim; legacy callers may omit it.
 	RoleSettings *config.RunRoleSettings
@@ -205,8 +205,8 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 			return nil, invalid("Role settings can only be stored at claim")
 		}
 		if request.AgentPorts != nil {
-			if request.Trigger != IssueClaimed {
-				return nil, invalid("Agent ports can only be supplied at claim")
+			if request.Trigger != IssueClaimed && request.Trigger != Retry {
+				return nil, invalid("Agent ports can only be supplied at claim or Retry")
 			}
 			if err := request.AgentPorts.Validate(); err != nil {
 				return nil, err

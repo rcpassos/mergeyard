@@ -2,10 +2,17 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
+
+func agentPortsExhausted(err error) bool {
+	var coded *fault.Error
+	return errors.As(err, &coded) && coded.Code == "agent_ports.exhausted"
+}
 
 // phaseEnvironment extends the explicit environment; caller maps are never
 // mutated and reserved isolation variables cannot be overridden by them.

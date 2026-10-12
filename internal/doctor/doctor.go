@@ -99,8 +99,9 @@ func Check(ctx context.Context, path string, options Options) Report {
 	for _, warning := range doc.Warnings {
 		report.add(Warning, warning.Code, warning.Path, warning.Message)
 	}
-	if cfg.Port >= cfg.AgentPorts.Base && (cfg.Port-cfg.AgentPorts.Base)/cfg.AgentPorts.Size < cfg.Concurrency {
-		report.add(Warning, "agent_ports.dashboard_overlap", "agent_ports", "Agent port blocks for configured concurrency overlap the dashboard port; choose another agent_ports.base or dashboard port")
+	portEnd := cfg.AgentPorts.Base + ((65536-cfg.AgentPorts.Base)/cfg.AgentPorts.Size)*cfg.AgentPorts.Size
+	if cfg.Port >= cfg.AgentPorts.Base && cfg.Port < portEnd {
+		report.add(Warning, "agent_ports.dashboard_overlap", "agent_ports", "Allocatable agent port blocks overlap the dashboard port; retained merge-ready runs can use additional blocks beyond concurrency. Choose another agent_ports.base or dashboard port")
 	}
 	if options.Executor == nil {
 		options.Executor = runner.NewLocal(runner.Options{})

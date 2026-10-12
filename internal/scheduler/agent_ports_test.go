@@ -2,12 +2,14 @@ package scheduler_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -52,5 +54,53 @@ func TestAgentPortEnvironmentReachesImplementReviewAndFixWrappers(t *testing.T) 
 	}
 	if env["MERGEYARD_PORT_BASE"] != "untrusted" {
 		t.Fatal("scheduler changed caller environment")
+	}
+}
+
+func TestAgentPortExhaustionKeepsRetryFailedAndReconcilesStop(t *testing.T) {
+	_, runtime, api, _, cfg, r := localFlow(t, successfulScript)
+	cfg.AgentPorts = config.AgentPorts{Base: 65534, Size: 2}
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	if _, err := runtime.Workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.InternalFailure, Failure: &fault.Error{Code: "test.failed", Message: "Test failure"}}); err != nil {
+		t.Fatal(err)
+	}
+	api.issues["owner/repo"] = append(api.issues["owner/repo"], ready(8), ready(9))
+	if _, err := runtime.Workflow.Transition(ctx, "holder", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 8, AgentPorts: &cfg.AgentPorts}); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := s.Retry(ctx, run.ID)
+	var coded *fault.Error
+	if !errors.As(err, &coded) || coded.Code != "agent_ports.exhausted" || selected.State != workflow.Failed || selected.PendingRetry() != nil {
+		t.Fatalf("exhausted Retry: %+v %v", selected, err)
+	}
+	// An upgrade can also encounter an unassigned nonterminal run. It must not
+	// prevent a durable stop from releasing the sole occupied block.
+	if _, err := runtime.Workflow.Transition(ctx, "legacy", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 9}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Workflow.Transition(ctx, "legacy", workflow.Request{Trigger: workflow.TakeOver}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.DB.ExecContext(ctx, "UPDATE runs SET stop_requested=1 WHERE id='holder'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := runtime.Workflow.Get(ctx, "holder")
+	if err != nil || holder.State != workflow.Stopped || holder.AgentPorts != nil {
+		t.Fatalf("stop did not release lease: %+v %v", holder, err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := runtime.Workflow.Get(ctx, "legacy")
+	if err != nil || legacy.AgentPorts == nil || legacy.AgentPorts.Base != 65534 {
+		t.Fatalf("legacy run did not reuse released block: %+v %v", legacy.AgentPorts, err)
 	}
 }

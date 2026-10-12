@@ -46,7 +46,9 @@ handback and fixes can reuse it. Only `FAILED`, `STOPPED`, and `COMPLETED` relea
 the block; Retry from `FAILED` receives an available block before agent launch.
 Since merge-ready runs release an execution slot while retaining their ports,
 port slots can grow beyond `concurrency`. If all complete blocks up to 65535 are
-reserved, new claims fail atomically with `agent_ports.exhausted`.
+reserved, new claims and explicit Retry fail atomically with
+`agent_ports.exhausted`. Lifecycle observation continues so other runs can finish
+and release their blocks.
 
 The phase wrapper adds these variables to the explicitly supplied harness
 environment, overriding any caller-supplied values with the same names:
@@ -65,9 +67,12 @@ Mergeyard does not start or stop those services or reserve sockets at OS level;
 agents must verify service ownership and clean up their own services/sessions.
 Independent Mergeyard workspaces on the same machine should use separate bases.
 
-`mergeyard doctor` warns with `agent_ports.dashboard_overlap` when the initial
-blocks for configured concurrency overlap the dashboard `port`. Allow additional
-space for retained merge-ready runs when selecting ports for other services.
+`mergeyard doctor` warns with `agent_ports.dashboard_overlap` when any complete
+allocatable block through 65535 overlaps the dashboard `port`, including blocks
+beyond `concurrency` that retained merge-ready runs can occupy. The default base
+5100 is below the default dashboard port 7331 and therefore warns; choose a base
+above the dashboard to avoid this overlap. Ports in an incomplete final block
+are never allocated.
 
 ## Per-issue harness overrides
 

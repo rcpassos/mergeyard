@@ -11,6 +11,8 @@ import (
 
 // ReconcileAgentPorts fills missing leases for legacy or revived runs before
 // dispatch. Existing leases retain their original geometry after config edits.
+// Exhausted runs remain unassigned so lifecycle observation can release leases;
+// EnsureAgentPorts prevents an unassigned run from launching an agent.
 func (w *Workflow) ReconcileAgentPorts(ctx context.Context, ports config.AgentPorts) error {
 	if err := ports.Validate(); err != nil {
 		return err
@@ -41,6 +43,10 @@ func (w *Workflow) ReconcileAgentPorts(ctx context.Context, ports config.AgentPo
 	}
 	for _, id := range ids {
 		if _, err := allocateAgentPorts(ctx, tx, id, ports); err != nil {
+			var coded *fault.Error
+			if errors.As(err, &coded) && coded.Code == "agent_ports.exhausted" {
+				continue
+			}
 			return err
 		}
 	}
