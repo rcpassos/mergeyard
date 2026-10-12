@@ -22,7 +22,7 @@ func (c *checker) api(endpoint string, paginate bool) ([]byte, error) {
 }
 
 func (c *checker) repository(repo config.Repository) {
-	pushAllowed := c.pushPermission(repo.Repo)
+	pushAllowed := c.pushPermission(repo)
 	c.labels(repo)
 	files := c.repositoryFiles(repo, pushAllowed)
 	c.skills(repo.Implementer, repo.Repo+" implementer", files)
@@ -45,7 +45,8 @@ func (c *checker) repository(repo config.Repository) {
 	}
 }
 
-func (c *checker) pushPermission(repo string) bool {
+func (c *checker) pushPermission(repository config.Repository) bool {
+	repo := repository.Repo
 	if !c.tools["gh"] {
 		c.report.add(Unverifiable, "github.push_unverifiable", repo, "GitHub push permission cannot be checked without gh")
 		return true // Still probe Git transport when possible.
@@ -56,6 +57,7 @@ func (c *checker) pushPermission(repo string) bool {
 		return true
 	}
 	var metadata *struct {
+		Private     *bool `json:"private"`
 		Permissions *struct {
 			Push *bool `json:"push"`
 		} `json:"permissions"`
@@ -63,6 +65,9 @@ func (c *checker) pushPermission(repo string) bool {
 	if json.Unmarshal(data, &metadata) != nil || metadata == nil {
 		c.report.add(Error, "github.invalid_response", repo, "expected repository metadata from GitHub")
 		return true
+	}
+	if metadata.Private != nil && !*metadata.Private && len(repository.TrustedLabelers) == 0 {
+		c.report.add(Warning, "github.public_without_trusted_labelers", repo, "public repository has no trusted_labelers; write, maintain, and admin permission can authorize local agent execution. Configure an explicit list to narrow trust")
 	}
 	if metadata.Permissions == nil || metadata.Permissions.Push == nil {
 		c.report.add(Unverifiable, "github.push_unverifiable", repo, "GitHub did not report permissions.push for the authenticated account")

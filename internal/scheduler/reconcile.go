@@ -195,7 +195,7 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 	} // An unavailable external service never revokes a run.
 	_, gitRun, contextErr := s.context(ctx, run)
 	if errors.Is(contextErr, sql.ErrNoRows) && run.State == workflow.Claiming {
-		contextErr = s.saveIssue(ctx, run.ID, issue)
+		contextErr = s.recoverIssueSnapshot(ctx, repo, run.ID, issue)
 	}
 	// Check PR even when the issue has closed; it may have closed through merge.
 	var pr *github.PullRequest

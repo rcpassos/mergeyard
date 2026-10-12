@@ -21,14 +21,15 @@ func TestMinimalConfigUsesPRDDefaults(t *testing.T) {
 	want := config.Config{
 		Version: 1, Port: 7331, OpenBrowser: true, Workspace: "~/.mergeyard",
 		PollInterval: 30 * time.Second, CITimeout: time.Hour, Concurrency: 1,
-		Labels: config.Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
+		Labels:          config.Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
+		TrustedLabelers: []string{},
 		Agents: config.Agents{
 			Claude: config.Claude{Executable: "claude", PermissionMode: "bypassPermissions", AllowedTools: []string{}},
 			Codex:  config.Codex{Executable: "codex", Sandbox: "workspace-write", NetworkAccess: true},
 		},
 		Implementer: role, Reviewer: role, MaxRounds: 5, PRComments: true,
 		UsageLimits: config.UsageLimits{Cooldown: 30 * time.Minute, MaxWaits: 3},
-		Repositories: []config.Repository{{Repo: "rcpassos/mergeyard", CommandTimeout: 20 * time.Minute, CheckRetries: 1, Concurrency: 1, Enabled: true, Implementer: role, Reviewer: role,
+		Repositories: []config.Repository{{TrustedLabelers: []string{}, Repo: "rcpassos/mergeyard", CommandTimeout: 20 * time.Minute, CheckRetries: 1, Concurrency: 1, Enabled: true, Implementer: role, Reviewer: role,
 			Labels: config.Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"}}},
 	}
 	if !reflect.DeepEqual(got, want) {
