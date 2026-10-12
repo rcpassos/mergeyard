@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/github"
@@ -60,12 +61,23 @@ ORDER BY e.id`)
 	if err != nil {
 		return err
 	}
+	// Share a short budget across the batch so optional GitHub writes cannot
+	// starve reconciliation. Persist warnings and receipts with the caller context.
+	publicationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	for _, p := range pending {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if _, err := s.deps.GitHub.UpdatePullRequest(ctx, p.repo, p.pr, p.content); err != nil {
-			code := publicationCode(err)
+		if publicationCtx.Err() != nil {
+			break
+		}
+		_, cause := s.deps.GitHub.UpdatePullRequest(publicationCtx, p.repo, p.pr, p.content)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if cause != nil {
+			code := publicationCode(cause)
 			// Keep publication failures visible without repeating the same warning on every tick.
 			var exists bool
 			if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE run_id=? AND type='verification.warning' AND json_extract(payload_json,'$.source_event')=? AND json_extract(payload_json,'$.code')=?)`, p.runID, p.event, code).Scan(&exists); err != nil {

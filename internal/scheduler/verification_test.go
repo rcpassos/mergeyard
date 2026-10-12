@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/fault"
@@ -192,5 +193,127 @@ func TestReviewRetryKeepsVerificationFromAlreadyAdjudicatedFix(t *testing.T) {
 	}
 	if strings.Contains(string(input), "Changed source") {
 		t.Fatal("already adjudicated fix responses leaked into retry")
+	}
+}
+
+func TestNonSuccessImplementVerificationSurvivesManualPRHandback(t *testing.T) {
+	for _, status := range []string{"blocked", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			report := blockedReport(successfulScript)
+			if status == "failed" {
+				report = strings.Replace(successfulScript, `"status":"success"`, `"status":"failed"`, 1)
+			}
+			script := strings.Replace(report, `"verification":[]`, `"verification":[{"command":"non-success implement test","outcome":"failed","excerpt":"non-success implement evidence marker"}]`, 1)
+			s, runtime, api, remote, cfg, r := localFlow(t, "sleep 0.2; "+script)
+			before := finish(t, s, workflow.NeedsAttention, workflow.Implement)
+			if before.Implementer.Report == nil || len(before.Implementer.Report.Verification) != 1 {
+				t.Fatal("fixture missing saved non-success evidence")
+			}
+			if _, err := s.Takeover(context.Background(), before.ID); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", before.ID)
+			gitCommand(t, path, "add", ".")
+			gitCommand(t, path, "commit", "-m", "manual PR work")
+			gitCommand(t, path, "push", "origin", "HEAD:refs/heads/mergeyard/issue-7")
+			head := gitCommand(t, remote, "rev-parse", "mergeyard/issue-7")
+			pr := &github.PullRequest{Number: 88, State: github.Open, URL: "https://github.com/owner/repo/pull/88", Body: "human PR body", Draft: true}
+			pr.Head.Ref = "mergeyard/issue-7"
+			pr.Head.Repo.FullName = "owner/repo"
+			pr.Head.SHA = head
+			pr.Base.Ref = "main"
+			api.prs = map[string]*github.PullRequest{"mergeyard/issue-7": pr}
+			// Refresh PR head from the fixture remote during handback and review.
+			var err error
+			s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			selected, err := s.Handback(context.Background(), before.ID)
+			if err != nil || selected.Phase != workflow.Review {
+				t.Fatalf("handback selection: %+v %v", selected, err)
+			}
+			after := finish(t, s, workflow.WaitingForCI, workflow.Review)
+			input, err := os.ReadFile(filepath.Join(runtime.Workspace.Root, "runs", after.ID, "phases", "review-1-1", "input.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(pr.Body, "non-success implement evidence marker") {
+				t.Fatal("publication fixture did not eventually publish non-success evidence")
+			}
+			if !strings.Contains(string(input), "non-success implement evidence marker") {
+				t.Fatal("review omitted latest saved non-success implement evidence; PR publication occurs only after review starts")
+			}
+		})
+	}
+}
+
+type stalledEvidenceGitHub struct {
+	branchGitHub
+	bounded bool
+}
+
+func (f *stalledEvidenceGitHub) UpdatePullRequest(ctx context.Context, _ string, _ int, _ github.PullRequestContent) (*github.PullRequest, error) {
+	deadline, ok := ctx.Deadline()
+	f.bounded = ok && time.Until(deadline) <= 5100*time.Millisecond
+	if !f.bounded {
+		return nil, context.DeadlineExceeded
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestStalledVerificationPublicationReleasesReconciliationAndRetries(t *testing.T) {
+	_, rt, api, _, cfg, r := localFlow(t, successfulScript)
+	cfg.PRComments = false
+	offline := &evidenceGitHub{branchGitHub: branchGitHub{api}, offline: true}
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: offline, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	stalled := &stalledEvidenceGitHub{branchGitHub: branchGitHub{api}}
+	s, err = scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: stalled, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	started := time.Now()
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !stalled.bounded || time.Since(started) > 7*time.Second || ctx.Err() != nil {
+		t.Fatal("optional publication was not bounded independently of caller")
+	}
+	history, err := rt.Events.History(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	warning := false
+	for _, e := range history {
+		if e.RunID == run.ID && e.Type == "verification.warning" {
+			warning = true
+		}
+	}
+	if !warning {
+		t.Fatal("publication timeout warning was not saved")
+	}
+	healthy := &evidenceGitHub{branchGitHub: branchGitHub{api}}
+	s, err = scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: healthy, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if healthy.updates != 1 {
+		t.Fatal("timed out evidence was not retained for retry")
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if healthy.updates != 1 {
+		t.Fatal("successful retry receipt was not saved")
 	}
 }

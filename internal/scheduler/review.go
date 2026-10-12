@@ -381,8 +381,12 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	// Already-adjudicated fixes are excluded from dispute context, but their
 	// command verification remains the latest evidence on a same-round Retry.
 	latestVerification := []verification.Entry{}
-	if implementReport != nil {
-		latestVerification = implementReport.Verification
+	// Manual PR handback can start review after a valid blocked/failed report.
+	// Malformed results may retain partial reports, so include only valid completions.
+	for _, attempt := range run.ImplementHistory {
+		if attempt.Report != nil && (attempt.Error == "" || strings.HasPrefix(attempt.Error, "phase.blocked:") || strings.HasPrefix(attempt.Error, "phase.failed:")) {
+			latestVerification = attempt.Report.Verification
+		}
 	}
 	for _, fix := range run.FixHistory {
 		if fix.Report != nil {
