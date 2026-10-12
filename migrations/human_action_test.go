@@ -63,8 +63,8 @@ func TestHumanActionUpgradesPublishedIssueRefusalSchema(t *testing.T) {
 	}
 	var version, pending int
 	var reason, raw string
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 24 {
-		t.Fatalf("schema = %d, err %v; want 24", version, err)
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 25 {
+		t.Fatalf("schema = %d, err %v; want 25", version, err)
 	}
 	if err := db.QueryRow("SELECT reason,pending FROM issue_refusals WHERE issue_number=7").Scan(&reason, &pending); err != nil || reason != "untrusted actor" || pending != 1 {
 		t.Fatalf("refusal lost: %q %d %v", reason, pending, err)
