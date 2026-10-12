@@ -28,6 +28,47 @@ Known configuration
 sections must be mappings with unique string keys; YAML merge keys (`<<`) are
 rejected rather than silently ignored. Ordinary anchors and aliases can be read.
 
+## Agent ports and session isolation
+
+`agent_ports` is a top-level setting, defaulting to `{base: 5100, size: 10}`.
+Each nonterminal run holds a persisted block starting at `base + size * slot`.
+Slots are allocated from the first free block across all configured repositories.
+The implementer and fix phases use the lower `floor(size / 2)` ports; the
+reviewer uses the remaining upper ports. For the default first block this means
+5100–5104 for implementation/fixes and 5105–5109 for review. Odd sizes give the
+reviewer the extra port. `base` must be a positive TCP port, `size` must be at
+least two, and enough complete blocks must fit below 65536 for `concurrency`.
+
+Assignments survive control-plane restarts and configuration edits. Legacy runs
+without assignments receive persisted blocks before dispatch. A run retains its
+block in `READY_TO_MERGE`, `MANUAL`, `NEEDS_ATTENTION`, and waiting states, so
+handback and fixes can reuse it. Only `FAILED`, `STOPPED`, and `COMPLETED` release
+the block; Retry from `FAILED` receives an available block before agent launch.
+Since merge-ready runs release an execution slot while retaining their ports,
+port slots can grow beyond `concurrency`. If all complete blocks up to 65535 are
+reserved, new claims fail atomically with `agent_ports.exhausted`.
+
+The phase wrapper adds these variables to the explicitly supplied harness
+environment, overriding any caller-supplied values with the same names:
+
+| Variable | Value |
+| --- | --- |
+| `MERGEYARD_RUN_ID` | Stable run ID for browser and test session namespaces |
+| `MERGEYARD_PHASE` | `implement`, `review`, or `fix` |
+| `MERGEYARD_PORT_BASE` | First port in this phase's assigned sub-range |
+| `MERGEYARD_PORT_COUNT` | Number of consecutive ports in that sub-range |
+
+Standing instructions ask agents to use only their assigned ports and namespace
+browser/test sessions with the run ID and phase. Repository `AGENTS.md` /
+`CLAUDE.md` remains the source of commands for starting and configuring services.
+Mergeyard does not start or stop those services or reserve sockets at OS level;
+agents must verify service ownership and clean up their own services/sessions.
+Independent Mergeyard workspaces on the same machine should use separate bases.
+
+`mergeyard doctor` warns with `agent_ports.dashboard_overlap` when the initial
+blocks for configured concurrency overlap the dashboard `port`. Allow additional
+space for retained merge-ready runs when selecting ports for other services.
+
 ## Per-issue harness overrides
 
 An issue can select a role's harness with `mergeyard:implementer=claude`,

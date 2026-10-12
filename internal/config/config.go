@@ -24,6 +24,7 @@ type Config struct {
 	PollInterval    time.Duration `yaml:"poll_interval"`
 	CITimeout       time.Duration `yaml:"ci_timeout"`
 	Concurrency     int
+	AgentPorts      AgentPorts `yaml:"agent_ports"`
 	Labels          Labels
 	TrustedLabelers []string `yaml:"trusted_labelers"`
 	Agents          Agents
@@ -33,6 +34,19 @@ type Config struct {
 	PRComments      bool        `yaml:"pr_comments"`
 	UsageLimits     UsageLimits `yaml:"usage_limits"`
 	Repositories    []Repository
+}
+
+// AgentPorts describes the block allocated to each nonterminal run.
+type AgentPorts struct {
+	Base int `json:"base"`
+	Size int `json:"size"`
+}
+
+func (p AgentPorts) Validate() error {
+	if p.Base < 1 || p.Base > 65535 || p.Size < 2 || p.Size > 65536-p.Base {
+		return &Error{Code: "config.invalid_agent_ports", Path: "agent_ports", Message: "Port blocks must start at 1..65535, contain at least two ports, and end at or before 65535"}
+	}
+	return nil
 }
 
 type Role struct {
@@ -94,6 +108,7 @@ func defaults() Config {
 	return Config{
 		Version: 1, Port: 7331, OpenBrowser: true, Workspace: workspace.DefaultPath,
 		PollInterval: 30 * time.Second, CITimeout: time.Hour, Concurrency: 1,
+		AgentPorts:      AgentPorts{Base: 5100, Size: 10},
 		Labels:          Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
 		TrustedLabelers: []string{},
 		Agents: Agents{
@@ -143,6 +158,15 @@ func Parse(data []byte) (Config, *Document, error) {
 	m.readDuration("poll_interval", &cfg.PollInterval)
 	m.readDuration("ci_timeout", &cfg.CITimeout)
 	m.readPositiveInt("concurrency", &cfg.Concurrency, "config.invalid_concurrency")
+	ports := m.child("agent_ports")
+	ports.readPositiveInt("base", &cfg.AgentPorts.Base, "config.invalid_agent_ports")
+	ports.readPositiveInt("size", &cfg.AgentPorts.Size, "config.invalid_agent_ports")
+	ports.finish()
+	if err == nil {
+		if err = cfg.AgentPorts.Validate(); err == nil && cfg.Concurrency > (65536-cfg.AgentPorts.Base)/cfg.AgentPorts.Size {
+			m.fail("config.invalid_agent_ports", "agent_ports", "configured concurrency exceeds the available port blocks")
+		}
+	}
 	readLabels(m.child("labels"), &cfg.Labels)
 	readTrustedLabelers(m, &cfg.TrustedLabelers)
 	agents := m.child("agents")

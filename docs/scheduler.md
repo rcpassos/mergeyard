@@ -79,7 +79,11 @@ Implementer snapshots retain the harness, UUID, model, effort, skills, permissio
 attempt and process identity in dashboard and status output, including during review. Supply `Dependencies.Env` explicitly with
 the environment the harness needs, for example `PATH`, `HOME`, `LANG`, and
 `TMPDIR`. It is the complete child environment, not an implicit copy of the
-control-plane environment. Dependencies default to the real GitHub, managed Git,
+control-plane environment. Agent launches additionally receive `MERGEYARD_RUN_ID`,
+`MERGEYARD_PHASE`, `MERGEYARD_PORT_BASE`, and `MERGEYARD_PORT_COUNT` from the run's
+persisted port block; these reserved values override entries in `Dependencies.Env`.
+See [agent isolation configuration](configuration.md#agent-ports-and-session-isolation).
+Dependencies default to the real GitHub, managed Git,
 and local tmux adapters.
 
 After implementation, Mergeyard commits changes, pushes without force, discovers

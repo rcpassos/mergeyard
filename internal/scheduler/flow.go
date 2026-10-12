@@ -455,7 +455,11 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	if err := sessions.RequireProcessJournal(phaseDir); err != nil {
 		return err
 	}
-	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
+	env, err := s.phaseEnvironment(ctx, run.ID, workflow.Implement)
+	if err != nil {
+		return err
+	}
+	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: env}
 	phase.Interruption = interruptionContext(previous, phase)
 	checkID := checkRetryIdentity(run, workflow.Implement, previous, number, checkRetry)
 	checkResult := s.checkResult(run, checkID)

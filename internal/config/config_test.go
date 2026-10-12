@@ -21,6 +21,7 @@ func TestMinimalConfigUsesPRDDefaults(t *testing.T) {
 	want := config.Config{
 		Version: 1, Port: 7331, OpenBrowser: true, Workspace: "~/.mergeyard",
 		PollInterval: 30 * time.Second, CITimeout: time.Hour, Concurrency: 1,
+		AgentPorts:      config.AgentPorts{Base: 5100, Size: 10},
 		Labels:          config.Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
 		TrustedLabelers: []string{},
 		Agents: config.Agents{

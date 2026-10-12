@@ -39,6 +39,7 @@ func WriteReviewInput(ctx context.Context, writer FileWriter, phase PhaseContext
 	}
 	var text strings.Builder
 	text.WriteString(fault.HumanActionInstruction + "\n\n")
+	text.WriteString(isolationInstructions)
 	text.WriteString(acceptance.Input(input.Issue.IssueBody, true))
 	if phase.Interruption != "" {
 		text.WriteString("## Interruption context\n\n" + phase.Interruption + "\n\n")

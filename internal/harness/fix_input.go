@@ -34,6 +34,7 @@ func WriteFixInput(ctx context.Context, writer FileWriter, phase PhaseContext, i
 	}
 	var text strings.Builder
 	text.WriteString(fault.HumanActionInstruction + "\n\n")
+	text.WriteString(isolationInstructions)
 	text.WriteString(acceptance.Input(input.Issue.IssueBody, false))
 	if phase.Interruption != "" {
 		text.WriteString("## Interruption context\n\n" + phase.Interruption + "\n\n")

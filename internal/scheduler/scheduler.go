@@ -103,6 +103,12 @@ func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler,
 	if cfg.Concurrency < 1 {
 		return nil, &fault.Error{Code: "config.invalid_concurrency", Message: "Scheduler concurrency must be positive"}
 	}
+	if cfg.AgentPorts == (config.AgentPorts{}) {
+		cfg.AgentPorts = config.AgentPorts{Base: 5100, Size: 10}
+	}
+	if err := cfg.AgentPorts.Validate(); err != nil {
+		return nil, err
+	}
 	if cfg.CITimeout == 0 {
 		cfg.CITimeout = time.Hour
 	}
@@ -351,7 +357,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 				s.control.mu.Unlock()
 				break
 			}
-			run, err := s.workflow.Transition(ctx, uuid.NewString(), workflow.Request{Trigger: workflow.IssueClaimed, Repository: repo.Repo, IssueNumber: issue.Number, RoleSettings: settings})
+			run, err := s.workflow.Transition(ctx, uuid.NewString(), workflow.Request{Trigger: workflow.IssueClaimed, Repository: repo.Repo, IssueNumber: issue.Number, RoleSettings: settings, AgentPorts: &s.cfg.AgentPorts})
 			s.control.mu.Unlock()
 			if err != nil {
 				failures = append(failures, err)
