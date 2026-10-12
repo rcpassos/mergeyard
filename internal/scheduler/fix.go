@@ -210,7 +210,19 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 			return fail(err)
 		}
 		if !result.TreeChanged {
-			if a.ci != nil {
+			if a.ci != nil && a.ci.RepairCause == "git.base_conflict" {
+				baseGit, ok := s.deps.Git.(BaseGit)
+				if !ok {
+					return fail(&fault.Error{Code: "git.base_check_unsupported", Message: "Git adapter cannot establish conflict resolution"})
+				}
+				merged, err := baseGit.CheckBase(ctx, gitRun, a.ci.Base.BaseBranch, result.SHA)
+				if err != nil {
+					return fail(err)
+				}
+				if len(merged.Conflicts) > 0 {
+					return s.finishFixAttempt(ctx, repo, run, a, nil, a.report, &fault.Error{Code: "phase.result_invalid", Message: "Fix reports success but still conflicts with the current base"})
+				}
+			} else if a.ci != nil {
 				return s.finishFixAttempt(ctx, repo, run, a, nil, a.report, &fault.Error{Code: "phase.result_invalid", Message: "CI repair reports success but made no code changes"})
 			}
 			for _, response := range a.report.Responses {

@@ -384,3 +384,31 @@ func TestBaseVerificationTimeoutRetainsCommandEvidenceAndCleansScratch(t *testin
 		t.Fatalf("timeout evidence=%+v", step)
 	}
 }
+
+func TestBaseConflictRepairCanPreserveFilesWhileMergingBaseAncestry(t *testing.T) {
+	_, rt, base, remote, cfg, r := localFlow(t, ciFixScript(`git -c user.name=Test -c user.email=test@example.invalid merge -Xours --no-commit origin/main >/dev/null 2>&1; `+ciFixedReport))
+	data, err := os.ReadFile(cfg.Agents.Claude.Executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.Replace(string(data), "'implemented' > feature.txt", "'implemented' > README.md", 1)
+	if err := os.WriteFile(cfg.Agents.Claude.Executable, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxRounds = 2
+	api := passingBaseAPI(base)
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: ciBranchGitHub{api}, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	baseSHA := advanceBase(t, remote, "README.md", "conflicting base\n")
+	ready := finish(t, s, workflow.ReadyToMerge, workflow.Review)
+	if ready.ReviewRound != 2 || ready.ApprovedSHA == approved.ApprovedSHA {
+		t.Fatalf("merge ancestry was not reviewed: %+v", ready)
+	}
+	if gitCommand(t, remote, "rev-parse", ready.ApprovedSHA+"^{tree}") != gitCommand(t, remote, "rev-parse", approved.ApprovedSHA+"^{tree}") {
+		t.Fatal("fixture did not preserve the tree")
+	}
+	gitCommand(t, remote, "merge-base", "--is-ancestor", baseSHA, ready.ApprovedSHA)
+}

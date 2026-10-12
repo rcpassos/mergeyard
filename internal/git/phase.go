@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 )
 
@@ -55,7 +56,15 @@ func commit(ctx context.Context, run Run, phase Phase) (CommitResult, error) {
 	if err != nil {
 		return CommitResult{}, err
 	}
-	if changed {
+	// A conflict resolved in favor of HEAD can leave an identical index tree.
+	// Complete its pending merge so the new base ancestry is still recorded.
+	_, mergeErr := command(ctx, run.Path, "git.commit", "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	var exit *exec.ExitError
+	if mergeErr != nil && !(ctx.Err() == nil && errors.As(mergeErr, &exit) && exit.ExitCode() == 1) {
+		return CommitResult{}, mergeErr
+	}
+	needsCommit := changed || mergeErr == nil
+	if needsCommit {
 		message := fmt.Sprintf("mergeyard: #%d %s", run.IssueNumber, phase.Title)
 		if _, err := command(ctx, run.Path, "git.commit", "commit", "-m", message); err != nil {
 			return CommitResult{}, err
@@ -65,7 +74,7 @@ func commit(ctx context.Context, run Run, phase Phase) (CommitResult, error) {
 	if err != nil {
 		return CommitResult{}, err
 	}
-	result := CommitResult{SHA: sha, Committed: changed}
+	result := CommitResult{SHA: sha, Committed: needsCommit}
 	if phase.RequireChanges {
 		different, err := hasDiff(ctx, run.Path, "diff", "--quiet", "--exit-code", run.BaseSHA, "HEAD", "--")
 		if err != nil {
