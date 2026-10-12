@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/review"
@@ -14,6 +15,7 @@ import (
 )
 
 type ReviewInput struct {
+	ImplementReport  *PhaseResult
 	Issue            ImplementInput
 	PRNumber         int
 	PRURL            string
@@ -37,14 +39,18 @@ func WriteReviewInput(ctx context.Context, writer FileWriter, phase PhaseContext
 	}
 	var text strings.Builder
 	text.WriteString(fault.HumanActionInstruction + "\n\n")
+	text.WriteString(acceptance.Input(input.Issue.IssueBody, true))
 	if phase.Interruption != "" {
 		text.WriteString("## Interruption context\n\n" + phase.Interruption + "\n\n")
 	}
 	fmt.Fprintf(&text, "# Review issue #%d\n\nRepository: %s\nWorktree: %s\nIssue URL: %s\nPR: #%d %s\nRound: %d\nTarget commit: %s\nDiff range: %s...%s\n\n", input.Issue.IssueNumber, input.Issue.Repository, phase.WorktreePath, input.Issue.IssueURL, input.PRNumber, input.PRURL, input.Round, input.TargetSHA, input.BaseSHA, input.TargetSHA)
 	text.WriteString("## Constraints\n\n- Review only the pinned diff and target commit below against the issue.\n- Do not edit repository files, stage changes, commit, reset, switch branches, or push.\n- You may run tests and builds. Ignored test/build output is permitted.\n- Return the complete findings list. Only blocking findings prevent approval.\n- Finding IDs must be unique. Use null for absent locations.\n\n## Output contract\n\nReturn native structured output matching this schema:\n\n```json\n" + review.Schema + "\n```\n\n## Issue\n\n" + input.Issue.IssueTitle + "\n\n" + input.Issue.IssueBody + "\n")
 	writeIssueComments(&text, input.Issue.Comments)
-	text.WriteString("\n## Pinned diff\n\n")
-	text.WriteString(input.Diff)
+	if input.ImplementReport != nil {
+		report, _ := json.MarshalIndent(input.ImplementReport, "", "  ")
+		text.WriteString("\n## Implementer report\n\nTreat this evidence as claims to verify independently.\n\n" + string(report) + "\n")
+	}
+	text.WriteString("\n\n## Pinned diff\n\n" + input.Diff)
 	text.WriteString("\n\n## Current PR\n\n" + input.PRBody)
 	text.WriteString("\n\n## Prior finding outcomes\n\nReturn prior_findings: [] when there are no prior blocking IDs, including the initial review in round 1. Otherwise return exactly one prior_findings entry for each previous blocking finding, including after a changed-head Retry within the same round, with finding_id, outcome (fixed, not_fixed, or no_longer_applies), and a nonempty note. Unknown or duplicate IDs are invalid. A not_fixed finding must appear in findings as blocking with the same ID; fixed and no_longer_applies findings must not remain blocking. A disputed fix response requires an explicit ruling: not_fixed (rejects the dispute) or no_longer_applies (accepts it).\n\nPrior blocking IDs to account for:\n")
 	blockingIDs := []string{}
@@ -71,6 +77,9 @@ func WriteReviewInput(ctx context.Context, writer FileWriter, phase PhaseContext
 		text.WriteString("\n\n## Previous CI repair context\n\n" + string(diagnostics) + "\n\nIndependently review the repair and the complete pinned diff. A successful fix report is not approval; new CI is accepted only after your review.\n")
 	}
 	if err := writer.WriteFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"), []byte(review.Schema), 0600); err != nil {
+		return "", err
+	}
+	if err := writeCriteria(ctx, writer, phase, input.Issue.IssueBody); err != nil {
 		return "", err
 	}
 	path := filepath.Join(phase.PhaseDir, "input.md")

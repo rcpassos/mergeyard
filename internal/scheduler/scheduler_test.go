@@ -255,7 +255,7 @@ func localFlow(t *testing.T, script string) (*scheduler.Scheduler, *app.Runtime,
 }
 
 const successfulScript = `printf '%s\n' 'implemented' > feature.txt
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Added feature"}}'`
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Added feature"}}'`
 
 func finish(t *testing.T, s *scheduler.Scheduler, state workflow.State, phase workflow.Phase) workflow.Run {
 	t.Helper()
@@ -353,10 +353,10 @@ func has(issue github.Issue, label string) bool {
 
 func TestImplementFailuresPreserveWorkspaceAndRequireAttention(t *testing.T) {
 	cases := []struct{ name, script, code string }{
-		{"blocked", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"status":"blocked","summary":"Need a product decision"}}'`, "phase.blocked"},
+		{"blocked", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"status":"blocked","summary":"Need a product decision"}}'`, "phase.blocked"},
 		{"invalid", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"status":"success"}}'`, "phase.result_invalid"},
 		{"failed", `exit 1`, "phase.retries_exhausted"},
-		{"no-changes", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Nothing to do"}}'`, "git.no_changes"},
+		{"no-changes", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Nothing to do"}}'`, "git.no_changes"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -551,12 +551,12 @@ func TestPhaseRetryIsBoundedAndKeepsOneRun(t *testing.T) {
 		t.Run(map[bool]string{true: "succeeds", false: "exhausted"}[success], func(t *testing.T) {
 			script := `if [ ! -f retry-marker ]; then
  printf '%s\n' 'first attempt' > retry-marker
- printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"failed","summary":"Temporary failure"}}'
+ printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"failed","summary":"Temporary failure"}}'
  else
  ` + successfulScript + `
  fi`
 			if !success {
-				script = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"failed","summary":"Persistent failure"}}'`
+				script = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"failed","summary":"Persistent failure"}}'`
 			}
 			_, runtime, api, _, cfg, r := localFlow(t, script)
 			cfg.Repositories[0].Implementer.MaxAttempts = 2

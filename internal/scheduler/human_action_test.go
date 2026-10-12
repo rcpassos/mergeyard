@@ -24,14 +24,14 @@ func TestHumanActionAcrossAllHarnessPairingsAndPhases(t *testing.T) {
 		for _, reviewer := range []string{"claude", "codex"} {
 			for _, phase := range []workflow.Phase{workflow.Implement, workflow.Review, workflow.Fix} {
 				t.Run(implementer+"/"+reviewer+"/"+string(phase), func(t *testing.T) {
-					blockedFix := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"status":"blocked","summary":"Need a decision",` + blockedAction + `,"responses":[]}}'`
+					blockedFix := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"status":"blocked","summary":"Need a decision",` + blockedAction + `,"responses":[]}}'`
 					s, runtime, _, _, cfg, _ := pairingFlow(t, implementer, reviewer, blockedFix)
 					script := loopScript(blockedFix)
 					if phase == workflow.Implement {
-						script = strings.Replace(script, successfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"status":"blocked","summary":"Need a decision",`+blockedAction+`}}'`, 1)
+						script = strings.Replace(script, successfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"status":"blocked","summary":"Need a decision",`+blockedAction+`}}'`, 1)
 					}
 					if phase == workflow.Review {
-						script = strings.Replace(script, changesReview, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"status":"blocked","summary":"",`+blockedAction+`,"findings":[],"prior_findings":[]}}'`, 1)
+						script = strings.Replace(script, changesReview, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"status":"blocked","summary":"",`+blockedAction+`,"findings":[],"prior_findings":[]}}'`, 1)
 					}
 					replacePhaseScript(t, cfg, phase, script)
 					run := finish(t, s, workflow.NeedsAttention, phase)
@@ -161,17 +161,17 @@ func TestReconcileLegacyImplementAndFixSchemas(t *testing.T) {
 				gate := filepath.Join(t.TempDir(), "release")
 				fix := `printf fixed > feature.txt; ` + fixedReport
 				s, initial, api, _, cfg, r := pairingFlow(t, agent, "claude", fix)
-				legacy := strings.ReplaceAll(loopScript(fix), `"schema_version":2,"human_action":null,`, `"schema_version":1,`)
+				legacy := strings.ReplaceAll(loopScript(fix), `"schema_version":3,"criteria":[],"human_action":null,`, `"schema_version":1,`)
 				held := `while [ ! -f '` + gate + `' ]; do /bin/sleep 0.02; done; `
 				// Gate only the phase whose schema is being restored.
 				if phase == workflow.Implement {
-					legacy = strings.Replace(legacy, strings.ReplaceAll(successfulScript, `"schema_version":2,"human_action":null,`, `"schema_version":1,`), held+strings.ReplaceAll(successfulScript, `"schema_version":2,"human_action":null,`, `"schema_version":1,`), 1)
+					legacy = strings.Replace(legacy, strings.ReplaceAll(successfulScript, `"schema_version":3,"criteria":[],"human_action":null,`, `"schema_version":1,`), held+strings.ReplaceAll(successfulScript, `"schema_version":3,"criteria":[],"human_action":null,`, `"schema_version":1,`), 1)
 				} else {
-					legacy = strings.Replace(legacy, strings.ReplaceAll(fix, `"schema_version":2,"human_action":null,`, `"schema_version":1,`), held+strings.ReplaceAll(fix, `"schema_version":2,"human_action":null,`, `"schema_version":1,`), 1)
+					legacy = strings.Replace(legacy, strings.ReplaceAll(fix, `"schema_version":3,"criteria":[],"human_action":null,`, `"schema_version":1,`), held+strings.ReplaceAll(fix, `"schema_version":3,"criteria":[],"human_action":null,`, `"schema_version":1,`), 1)
 				}
 				// Other phases must emit their current contract.
 				if phase == workflow.Fix {
-					legacy = strings.Replace(legacy, strings.ReplaceAll(successfulScript, `"schema_version":2,"human_action":null,`, `"schema_version":1,`), successfulScript, 1)
+					legacy = strings.Replace(legacy, strings.ReplaceAll(successfulScript, `"schema_version":3,"criteria":[],"human_action":null,`, `"schema_version":1,`), successfulScript, 1)
 				}
 				replacePhaseScript(t, cfg, phase, legacy)
 				run := waitForPhase(t, s, phase)
@@ -183,7 +183,7 @@ func TestReconcileLegacyImplementAndFixSchemas(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				schema = []byte(strings.Replace(string(schema), `"const":2`, `"const":1`, 1))
+				schema = []byte(strings.Replace(string(schema), `"const":3`, `"const":1`, 1))
 				// Only the const is read on reconciliation; original outputs retain their strict v1 shape.
 				if err := os.WriteFile(filepath.Join(dir, "schema.json"), schema, 0600); err != nil {
 					t.Fatal(err)
@@ -218,10 +218,10 @@ func TestBlockedActionSurvivesFailedAttemptRestart(t *testing.T) {
 	for _, agent := range []string{"claude", "codex"} {
 		for _, phase := range []workflow.Phase{workflow.Implement, workflow.Fix} {
 			t.Run(agent+"/"+string(phase), func(t *testing.T) {
-				blocked := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"status":"blocked","summary":"Need decision",` + blockedAction + `,"responses":[]}}'`
+				blocked := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"status":"blocked","summary":"Need decision",` + blockedAction + `,"responses":[]}}'`
 				s, initial, api, _, cfg, r := pairingFlow(t, agent, "claude", blocked)
 				if phase == workflow.Implement {
-					replacePhaseScript(t, cfg, phase, strings.Replace(loopScript(blocked), successfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"status":"blocked","summary":"Need decision",`+blockedAction+`}}'`, 1))
+					replacePhaseScript(t, cfg, phase, strings.Replace(loopScript(blocked), successfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"status":"blocked","summary":"Need decision",`+blockedAction+`}}'`, 1))
 				}
 				run := finish(t, s, workflow.NeedsAttention, phase)
 				expected := run.HumanAction

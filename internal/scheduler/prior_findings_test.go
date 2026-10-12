@@ -52,7 +52,7 @@ func TestHarnessPairingsReconcileV1ReviewAfterUpgrade(t *testing.T) {
 				gate := filepath.Join(t.TempDir(), "release-v1")
 				fix := `printf fixed > feature.txt; ` + fixedReport
 				s, initial, api, _, cfg, r := pairingFlow(t, implementer, reviewer, fix)
-				legacy := strings.Replace(changesReview, `"schema_version":3,"human_action":null,"prior_findings":[],`, `"schema_version":1,`, 1)
+				legacy := strings.Replace(changesReview, `"schema_version":4,"criteria":[],"human_action":null,"prior_findings":[],`, `"schema_version":1,`, 1)
 				held := `while [ ! -f '` + gate + `' ]; do /bin/sleep 0.02; done; `
 				replacePhaseScript(t, cfg, workflow.Review, strings.Replace(loopScript(fix), changesReview, held+legacy, 1))
 				run := waitForPhase(t, s, workflow.Review)
@@ -65,6 +65,7 @@ func TestHarnessPairingsReconcileV1ReviewAfterUpgrade(t *testing.T) {
 				props["schema_version"].(map[string]any)["const"] = 1
 				delete(props, "prior_findings")
 				delete(props, "human_action")
+				delete(props, "criteria")
 				schema["required"] = []string{"schema_version", "status", "summary", "findings"}
 				raw, _ := json.Marshal(schema)
 				if err := os.WriteFile(filepath.Join(phaseDir, "schema.json"), raw, 0600); err != nil {
@@ -101,6 +102,7 @@ func TestHarnessPairingsReconcileV1ReviewAfterUpgrade(t *testing.T) {
 				}
 				delete(saved, "prior_findings")
 				delete(saved, "human_action")
+				delete(saved, "criteria")
 				encoded, _ = json.Marshal(saved)
 				if _, err := runtime.DB.Exec(`UPDATE review_attempts SET report_json=? WHERE attempt_id IN (SELECT id FROM phase_attempts WHERE run_id=? AND round=1 AND phase='review')`, string(encoded), run.ID); err != nil {
 					t.Fatal(err)
@@ -120,7 +122,7 @@ func TestHarnessPairingsReconcileV1ReviewAfterUpgrade(t *testing.T) {
 					t.Fatal(err)
 				}
 				run = finish(t, restarted, workflow.WaitingForCI, workflow.Review)
-				if run.ReviewRound != 2 || run.Review.Report.SchemaVersion != 3 || len(run.Review.Report.PriorFindings) != 2 || len(run.ReviewHistory) != 2 || run.ReviewHistory[0].Report.PriorFindings == nil || api.creations != 1 {
+				if run.ReviewRound != 2 || run.Review.Report.SchemaVersion != 4 || len(run.Review.Report.PriorFindings) != 2 || len(run.ReviewHistory) != 2 || run.ReviewHistory[0].Report.PriorFindings == nil || api.creations != 1 {
 					t.Fatalf("v1 history failed v2 continuation: %+v", run)
 				}
 			})
