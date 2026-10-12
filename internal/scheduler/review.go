@@ -365,7 +365,7 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	}
 	var implementReport *harness.PhaseResult
 	var resultPath string
-	if err := s.db.QueryRowContext(ctx, "SELECT result_path FROM phase_attempts WHERE run_id=? AND phase='implement' AND status='succeeded' ORDER BY attempt DESC LIMIT 1", run.ID).Scan(&resultPath); err == nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT result_path FROM phase_attempts WHERE run_id=? AND phase='implement' AND step='' AND status='succeeded' ORDER BY attempt DESC LIMIT 1", run.ID).Scan(&resultPath); err == nil {
 		raw, err := s.deps.Runner.ReadFile(ctx, resultPath)
 		if err != nil {
 			return fail(err)
