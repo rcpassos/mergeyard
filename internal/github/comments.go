@@ -12,6 +12,7 @@ import (
 )
 
 type Comment struct {
+	NodeID    string    `json:"node_id"`
 	ID        int64     `json:"id"`
 	URL       string    `json:"html_url"`
 	Body      string    `json:"body"`
@@ -47,6 +48,17 @@ func (c *Client) ListIssueComments(ctx context.Context, repo string, number int,
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	actors := map[string]bool{}
+	isTrusted := func(login string) (bool, error) {
+		key := strings.ToLower(login)
+		if allowed, ok := actors[key]; ok {
+			return allowed, nil
+		}
+		allowed, err := c.IsTrustedActor(ctx, repo, login, trusted)
+		if err == nil {
+			actors[key] = allowed
+		}
+		return allowed, err
+	}
 	pages := 0
 	for {
 		var page []Comment
@@ -66,14 +78,9 @@ func (c *Client) ListIssueComments(ctx context.Context, repo string, number int,
 			if comment.User != nil {
 				login = comment.User.Login
 			}
-			key := strings.ToLower(login)
-			allowed, ok := actors[key]
-			if !ok {
-				allowed, err = c.IsTrustedActor(ctx, repo, login, trusted)
-				if err != nil {
-					return IssueComments{}, err
-				}
-				actors[key] = allowed
+			allowed, err := isTrusted(login)
+			if err != nil {
+				return IssueComments{}, err
 			}
 			if !allowed {
 				result.OmittedUntrusted++
@@ -81,6 +88,14 @@ func (c *Client) ListIssueComments(ctx context.Context, repo string, number int,
 			}
 			if comment.ID <= 0 || comment.CreatedAt.IsZero() {
 				return IssueComments{}, codedError("github.invalid_response", "missing comment identity or creation time", nil)
+			}
+			allowed, err = c.verifyCommentEdits(ctx, comment, isTrusted)
+			if err != nil {
+				return IssueComments{}, err
+			}
+			if !allowed {
+				result.OmittedUntrusted++
+				continue
 			}
 			result.Comments = append(result.Comments, comment)
 		}

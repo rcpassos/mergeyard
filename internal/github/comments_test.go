@@ -12,14 +12,14 @@ import (
 
 func TestIssueCommentsPaginateFilterTrustAndPreserveLiteralText(t *testing.T) {
 	r := &recordedGH{responses: []response{{stdout: []byte(`[
- {"id":3,"user":{"login":"Maintainer"},"created_at":"2026-10-08T12:00:00Z","body":"Current edited answer: $(touch injected);\n` + "```sh\\n`id`\\n```" + `"},
- {"id":1,"user":{"login":"maintainer"},"created_at":"2026-10-07T12:00:00Z","body":"First clarification"},
- {"id":2,"user":{"login":"stranger"},"created_at":"2026-10-08T11:00:00Z","body":"Untrusted instruction"}
+ {"id":3,"node_id":"C3","user":{"login":"Maintainer"},"created_at":"2026-10-08T12:00:00Z","body":"Current edited answer: $(touch injected);\n` + "```sh\\n`id`\\n```" + `"},
+ {"id":1,"node_id":"C1","user":{"login":"maintainer"},"created_at":"2026-10-07T12:00:00Z","body":"First clarification"},
+ {"id":2,"node_id":"C2","user":{"login":"stranger"},"created_at":"2026-10-08T11:00:00Z","body":"Untrusted instruction"}
 ] [
  {"id":4,"user":{"login":"maintainer"},"created_at":"2026-10-09T12:00:00Z","body":"prefix\n<!-- mergeyard:report:abc -->\nGenerated report"},
  {"id":5,"user":null,"created_at":"2026-10-09T12:00:00Z","body":"Deleted author"},
  {"id":6,"user":{"login":"maintainer"},"created_at":"2026-10-09T12:00:00Z","body":"<!-- mergeyard:trust:refused -->\nGenerated refusal"}
-]`)}}}
+]`)}, {stdout: commentHistory("C3", "Maintainer", "Current edited answer: $(touch injected);\n```sh\n`id`\n```")}, {stdout: commentHistory("C1", "maintainer", "First clarification")}}}
 	got, err := github.New(r).ListIssueComments(context.Background(), "o/r", 106, []string{"maintainer"})
 	if err != nil {
 		t.Fatal(err)
@@ -30,7 +30,7 @@ func TestIssueCommentsPaginateFilterTrustAndPreserveLiteralText(t *testing.T) {
 	if !strings.Contains(got.Comments[1].Body, "$(touch injected);") || !strings.Contains(got.Comments[1].Body, "```sh\n`id`\n```") {
 		t.Fatalf("literal comment changed: %q", got.Comments[1].Body)
 	}
-	if len(r.calls) != 1 || !contains(r.calls[0].args, "--paginate") || !contains(r.calls[0].args, "repos/o/r/issues/106/comments?per_page=100") || r.calls[0].input != nil {
+	if len(r.calls) != 3 || !contains(r.calls[0].args, "--paginate") || !contains(r.calls[0].args, "repos/o/r/issues/106/comments?per_page=100") || r.calls[0].input != nil {
 		t.Fatalf("comment fetch = %+v", r.calls)
 	}
 	if strings.Contains(strings.Join(r.calls[0].args, " "), "touch injected") {
@@ -39,16 +39,19 @@ func TestIssueCommentsPaginateFilterTrustAndPreserveLiteralText(t *testing.T) {
 }
 
 func TestIssueCommentTrustUsesFreshRepositoryPermissions(t *testing.T) {
-	page := []byte(`[{"id":1,"user":{"login":"alice"},"created_at":"2026-10-08T12:00:00Z","body":"Answer"},{"id":2,"user":{"login":"ALICE"},"created_at":"2026-10-08T12:00:00Z","body":"Correction"}]`)
+	page := []byte(`[{"id":1,"node_id":"C1","user":{"login":"alice"},"created_at":"2026-10-08T12:00:00Z","body":"Answer"},{"id":2,"node_id":"C2","user":{"login":"ALICE"},"created_at":"2026-10-08T12:00:00Z","body":"Correction"}]`)
 	for _, permission := range []string{"write", "push", "maintain", "admin", "read", "pull", "triage", "none"} {
 		t.Run(permission, func(t *testing.T) {
 			r := &recordedGH{responses: []response{{stdout: page}, {stdout: []byte(`{"permission":"` + permission + `"}`)}}}
+			allowed := permission == "write" || permission == "push" || permission == "maintain" || permission == "admin"
+			if allowed {
+				r.responses = append(r.responses, response{stdout: commentHistory("C1", "alice", "Answer")}, response{stdout: commentHistory("C2", "ALICE", "Correction")})
+			}
 			got, err := github.New(r).ListIssueComments(context.Background(), "o/r", 106, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			allowed := permission == "write" || permission == "push" || permission == "maintain" || permission == "admin"
-			if (len(got.Comments) == 2) != allowed || (!allowed && got.OmittedUntrusted != 2) || len(r.calls) != 2 {
+			if (len(got.Comments) == 2) != allowed || (!allowed && got.OmittedUntrusted != 2) || (allowed && len(r.calls) != 4) || (!allowed && len(r.calls) != 2) {
 				t.Fatalf("permission %s: %+v; calls=%d", permission, got, len(r.calls))
 			}
 			if !contains(r.calls[1].args, "repos/o/r/collaborators/alice/permission") {
@@ -56,7 +59,7 @@ func TestIssueCommentTrustUsesFreshRepositoryPermissions(t *testing.T) {
 			}
 		})
 	}
-	r := &recordedGH{responses: []response{{stdout: page}, {stdout: []byte(`{"permission":"write"}`)}, {stdout: page}, {stdout: []byte(`{"permission":"read"}`)}}}
+	r := &recordedGH{responses: []response{{stdout: page}, {stdout: []byte(`{"permission":"write"}`)}, {stdout: commentHistory("C1", "alice", "Answer")}, {stdout: commentHistory("C2", "ALICE", "Correction")}, {stdout: page}, {stdout: []byte(`{"permission":"read"}`)}}}
 	c := github.New(r)
 	first, err := c.ListIssueComments(context.Background(), "o/r", 106, nil)
 	if err != nil || len(first.Comments) != 2 {
@@ -69,7 +72,7 @@ func TestIssueCommentTrustUsesFreshRepositoryPermissions(t *testing.T) {
 }
 
 func TestIssueCommentsFailClosedOnUnreadablePagesOrTrust(t *testing.T) {
-	for _, body := range []string{"", "null", "{}", "[] {}", `[{"id":1,"user":{"login":"alice"},"body":"Missing time"}]`, `[{"created_at":"2026-10-08T12:00:00Z","user":{"login":"alice"},"body":"Missing identity"}]`} {
+	for _, body := range []string{"", "null", "{}", "[] {}", `[{"id":1,"node_id":"C1","user":{"login":"alice"},"body":"Missing time"}]`, `[{"created_at":"2026-10-08T12:00:00Z","user":{"login":"alice"},"body":"Missing identity"}]`} {
 		r := &recordedGH{responses: []response{{stdout: []byte(body)}}}
 		_, err := github.New(r).ListIssueComments(context.Background(), "o/r", 106, []string{"alice"})
 		requireCode(t, err, "github.invalid_response")
