@@ -340,7 +340,7 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	}
 	env, err := s.phaseEnvironment(ctx, run.ID, workflow.Review)
 	if err != nil {
-		return err
+		return fail(err)
 	}
 	phase := harness.PhaseContext{Phase: workflow.Review, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: env}
 	if previous.target == snapshot.Head {

@@ -104,3 +104,47 @@ func TestAgentPortExhaustionKeepsRetryFailedAndReconcilesStop(t *testing.T) {
 		t.Fatalf("legacy run did not reuse released block: %+v %v", legacy.AgentPorts, err)
 	}
 }
+
+func TestLegacyReviewWithoutAvailablePortsLeavesRestartUsable(t *testing.T) {
+	_, runtime, api, _, cfg, r := localFlow(t, successfulScript)
+	cfg.AgentPorts = config.AgentPorts{Base: 65534, Size: 2}
+	deps := scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r}
+	s, err := scheduler.New(cfg, schedulerResources(runtime), deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	run := finish(t, s, workflow.Active, workflow.Review)
+	// Represent an upgraded run awaiting its first reviewer, without a lease.
+	if _, err := runtime.DB.ExecContext(ctx, "DELETE FROM agent_port_leases WHERE run_id=?", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	api.issues["owner/repo"] = append(api.issues["owner/repo"], ready(8))
+	if _, err := runtime.Workflow.Transition(ctx, "holder", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 8, AgentPorts: &cfg.AgentPorts}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Workflow.Transition(ctx, "holder", workflow.Request{Trigger: workflow.TakeOver}); err != nil {
+		t.Fatal(err)
+	}
+	s, err = scheduler.New(cfg, schedulerResources(runtime), deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatalf("port exhaustion prevented restart: %v", err)
+	}
+	waiting, err := runtime.Workflow.Get(ctx, run.ID)
+	if err != nil || waiting.State != workflow.NeedsAttention || waiting.LastErrorCode != "agent_ports.exhausted" || waiting.AgentPorts != nil {
+		t.Fatalf("unassigned reviewer was not held safely: %+v %v", waiting, err)
+	}
+	if err := s.Stop(ctx, "holder"); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := s.Retry(ctx, run.ID)
+	if err != nil || selected.AgentPorts == nil || selected.AgentPorts.Base != 65534 {
+		t.Fatalf("Retry did not acquire released block: %+v %v", selected, err)
+	}
+	advanceFixUntil(t, s, runtime, run.ID, func(current workflow.Run) bool {
+		return current.State == workflow.WaitingForCI && current.Phase == workflow.Review
+	})
+}
