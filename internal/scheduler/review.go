@@ -139,6 +139,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 			cause = err
 			if err == nil {
 				report = &review.Report{HumanAction: result.HumanAction, SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Findings: result.Findings, PriorFindings: result.PriorFindings}
+				_ = json.Unmarshal(result.Criteria, &report.Criteria)
 				previous, fix, err := review.LoadPriorContext(ctx, s.db, run.ID, run.ReviewRound)
 				if err != nil {
 					return err
@@ -362,7 +363,21 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 			checks = &run.SystemSteps[i]
 		}
 	}
-	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair, Checks: checks})
+	var implementReport *harness.PhaseResult
+	var resultPath string
+	if err := s.db.QueryRowContext(ctx, "SELECT result_path FROM phase_attempts WHERE run_id=? AND phase='implement' AND status='succeeded' ORDER BY attempt DESC LIMIT 1", run.ID).Scan(&resultPath); err == nil {
+		raw, err := s.deps.Runner.ReadFile(ctx, resultPath)
+		if err != nil {
+			return fail(err)
+		}
+		implementReport = &harness.PhaseResult{}
+		if err := json.Unmarshal(raw, implementReport); err != nil {
+			return fail(err)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return fail(err)
+	}
+	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{ImplementReport: implementReport, Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair, Checks: checks})
 	if err != nil {
 		return fail(err)
 	}

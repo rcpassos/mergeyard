@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -42,6 +43,7 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 	}
 	var text strings.Builder
 	text.WriteString(fault.HumanActionInstruction + "\n\n")
+	text.WriteString(acceptance.Input(input.IssueBody, false))
 	if phase.Interruption != "" {
 		text.WriteString("## Interruption context\n\n" + phase.Interruption + "\n\n")
 	}
@@ -63,6 +65,9 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 		text.WriteString("\n## Local checks\n\nRepair the failing configured command using this diagnostic. Mergeyard will commit and rerun checks before publication.\n\n" + string(data) + "\n")
 	}
 	if err := writer.WriteFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"), ImplementSchema(), 0600); err != nil {
+		return "", err
+	}
+	if err := writeCriteria(ctx, writer, phase, input.IssueBody); err != nil {
 		return "", err
 	}
 	path := filepath.Join(phase.PhaseDir, "input.md")

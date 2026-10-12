@@ -614,9 +614,13 @@ The harness prompt is a fixed Mergeyard template that contains only Mergeyard-ge
 
 | Phase | Input contains |
 |---|---|
-| `implement` | repository, issue number/title/body/URL, base branch, worktree path, constraints, output contract |
+| `implement` | repository, issue number/title/body/URL, extracted acceptance criteria with stable IDs, base branch, worktree path, constraints, output contract |
 | `review` | the above plus PR number/URL, the diff range to review, latest local check results (command, pass/fail, excerpt), and on later rounds: previous findings and the implementer's fix report |
 | `fix` | the above plus the latest blocking review findings and/or failing CI checks with failure excerpts |
+
+Only list or checklist items under a case-insensitive `## Acceptance criteria` heading are extracted, in source order as `AC1`, `AC2`, and so on. Checked boxes still count; other sections and free prose do not. If none are found, every phase input explicitly says "no acceptance criteria found" and requires `criteria: []`. This does not prevent claiming the issue. Each attempt saves its extracted contract in `criteria.json` beside its input; result validation after restart uses that snapshot.
+
+A reviewer receives the implementer's evidence report and any subsequent fix report. When criteria exist, the reviewer independently spot-checks at least one and records the command/result or observation in the criterion's note.
 
 A check-retry attempt stays in the current `implement` or `fix` phase and adds the failing command and output excerpt to that phase's full input file.
 
@@ -644,7 +648,7 @@ Common fields:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "status": "success",
   "summary": "Short phase summary",
   "human_action": null
@@ -665,23 +669,34 @@ A missing action, null/blank decision for `blocked`, or a non-null action for an
 
 #### Implement result
 
-Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safely continue without human input.
+Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safely continue without human input. Implement v3 and fix v3 require one evidence entry for every extracted criterion:
+
+```json
+"criteria": [
+  { "id": "AC1", "met": true, "evidence": "go test ./internal/importer passed." }
+]
+```
+
+All three fields are required; `met` is a boolean and `evidence` is a nonempty command and result or observation. Missing verification must be described explicitly. Unknown, duplicate, or omitted criterion IDs are invalid, including for blocked/failed reports.
 
 #### Review result
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "status": "changes_required",
   "summary": "One blocking finding",
   "human_action": null,
   "prior_findings": [],
+  "criteria": [
+    { "id": "AC1", "verdict": "not_met", "note": "Spot-check: invalid VAT input was accepted." }
+  ],
   "findings": [
     {
       "id": "R1-F1",
       "severity": "blocking",
       "title": "Missing validation",
-      "details": "VAT input accepts an invalid format.",
+      "details": "AC1: VAT input accepts an invalid format.",
       "file": "src/checkout.ts",
       "line": 42
     }
@@ -692,6 +707,8 @@ Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safel
 Statuses: `approved`, `changes_required`, `blocked`, `failed`.
 
 Severities: `blocking`, `warning`, `note`. Only `blocking` findings prevent approval. On later rounds the reviewer returns the complete current list of blocking findings, not only new ones. `file` and `line` are `null` when a finding has no location.
+
+Review v4 requires `criteria: [{id, verdict, note}]`, with all fields required. Verdicts are `met`, `not_met`, or `unverified`, and notes must be nonempty. Each `not_met` must be backed by a blocking finding whose title or details identify that criterion ID. A warning or an unrelated blocker does not satisfy this rule. Violations follow §13.3. PR review comments show each criterion's verdict and the full report; the dashboard run view shows implement/fix evidence and review verdicts per criterion, preserving prior attempts.
 
 Review schema v2 requires `prior_findings`. The initial review in round 1 returns an empty array. Each subsequent review returns exactly one outcome for every blocking finding from the latest accepted review, including a changed-head Retry within the same round:
 
@@ -705,16 +722,19 @@ Review schema v2 requires `prior_findings`. The initial review in round 1 return
 
 Outcome notes must be nonempty. Unknown, duplicate, or omitted prior blocking IDs are invalid. `not_fixed` findings must remain in `findings` as blocking with the same ID; resolved findings cannot remain blocking. A `disputed` fix response requires the reviewer to rule `not_fixed` or `no_longer_applies`. Violations follow the invalid-result path in §13.3, including phase retry limits.
 
-Schema versions are phase-specific. Issue #98 introduced review v2 with `prior_findings`. Issue #99 adds required nullable `human_action`: implement and fix use v2; review uses v3. The acceptance-criteria change (#97) must build on these shapes and bump the affected version again. Persisted v1 reviews load with an empty `prior_findings` list. All attempts already launched with older persisted schemas keep their original contract when reconciled after upgrade, including implement/fix v1 and review v1/v2. Newly launched attempts require the current versions; reviews account for blockers even when the preceding review was v1.
+Schema versions are phase-specific. Issue #98 introduced review v2 with `prior_findings`. Issue #99 adds required nullable `human_action`: implement and fix use v2; review uses v3. Issue #97 adds required `criteria` arrays: implement and fix now use v3, and review uses v4. Persisted v1 reviews load with an empty `prior_findings` list. All attempts already launched with older persisted schemas keep their original contract when reconciled after upgrade, including implement/fix v1/v2 and review v1/v2/v3. Older reports do not claim criterion verification. Newly launched attempts require the current versions; reviews account for blockers even when the preceding review was v1.
 
 #### Fix result
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "status": "success",
   "summary": "Fixed R1-F1; disputed R1-F2",
   "human_action": null,
+  "criteria": [
+    { "id": "AC1", "met": true, "evidence": "VAT validation test passed." }
+  ],
   "responses": [
     { "finding_id": "R1-F1", "resolution": "fixed", "note": "Added VAT format check." },
     { "finding_id": "R1-F2", "resolution": "disputed", "note": "Covered by middleware in api/validate.ts." }

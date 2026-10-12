@@ -202,7 +202,7 @@ func TestClearingConfiguredListsWaitsForLiveOwnedStepsAfterRestart(t *testing.T)
 func TestClearedChecksStillSupplyRecordedResultsToReview(t *testing.T) {
 	reviewer := `phase_dir=''; previous=''; for arg do if [ "$previous" = '--add-dir' ]; then phase_dir=$arg; fi; previous=$arg; done
 if ! /usr/bin/grep -q 'old-step-finished' "$phase_dir/input.md"; then
- printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":3,"human_action":null,"prior_findings":[],"status":"failed","summary":"Missing completed check evidence","findings":[]}}'
+ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"human_action":null,"prior_findings":[],"status":"failed","summary":"Missing completed check evidence","findings":[]}}'
 else
 ` + approvedReview + `
 fi`

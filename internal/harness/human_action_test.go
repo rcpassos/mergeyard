@@ -34,14 +34,14 @@ func TestHumanActionNativeContracts(t *testing.T) {
 				{"extra field", `{"decision":"Clarify","files":[],"options":[],"extra":true}`, false},
 			} {
 				t.Run(adapter.Type()+"/"+string(phase)+"/"+tc.name, func(t *testing.T) {
-					version, extra := 2, ""
+					version, extra := 3, ""
 					if phase == workflow.Review {
-						version, extra = 3, `,"findings":[],"prior_findings":[]`
+						version, extra = 4, `,"findings":[],"prior_findings":[]`
 					}
 					if phase == workflow.Fix {
 						extra = `,"responses":[]`
 					}
-					raw := []byte(fmt.Sprintf(`{"schema_version":%d,"status":"blocked","summary":"Need input","human_action":%s%s}`, version, tc.action, extra))
+					raw := []byte(fmt.Sprintf(`{"schema_version":%d,"criteria":[],"status":"blocked","summary":"Need input","human_action":%s%s}`, version, tc.action, extra))
 					artifacts := harness.PhaseArtifacts{Stdout: []byte(`{"type":"result","is_error":false,"structured_output":` + string(raw) + `}`)}
 					if adapter.Type() == "codex" {
 						artifacts.Stdout = []byte(`{"type":"thread.started","thread_id":"01a10c5c-8a43-7c52-ba89-5a6d6ec1e22c"}` + "\n" + `{"type":"turn.completed"}`)
@@ -66,15 +66,15 @@ func TestHumanActionNativeContracts(t *testing.T) {
 
 func TestHumanActionRequiredAndOnlyForBlocked(t *testing.T) {
 	for _, phase := range []workflow.Phase{workflow.Implement, workflow.Review, workflow.Fix} {
-		version, extra, status := 2, "", "success"
+		version, extra, status := 3, "", "success"
 		if phase == workflow.Review {
-			version, extra, status = 3, `,"findings":[],"prior_findings":[]`, "approved"
+			version, extra, status = 4, `,"findings":[],"prior_findings":[]`, "approved"
 		}
 		if phase == workflow.Fix {
 			extra = `,"responses":[]`
 		}
 		for _, action := range []string{"", `,"human_action":{"decision":"Clarify","files":[],"options":[]}`, `,"human_action":null`} {
-			raw := fmt.Sprintf(`{"schema_version":%d,"status":%q,"summary":"Done"%s%s}`, version, status, extra, action)
+			raw := fmt.Sprintf(`{"schema_version":%d,"criteria":[],"status":%q,"summary":"Done"%s%s}`, version, status, extra, action)
 			_, err := harness.NewClaude(config.Claude{}).ParseResult(harness.PhaseContext{Phase: phase}, harness.PhaseArtifacts{Stdout: []byte(`{"type":"result","is_error":false,"structured_output":` + raw + `}`)})
 			if (err == nil) != (action == `,"human_action":null`) {
 				t.Fatalf("phase %s accepted wrong action: %s: %v", phase, raw, err)

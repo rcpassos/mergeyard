@@ -154,6 +154,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 				cause = err
 				if err == nil {
 					report = &review.FixReport{HumanAction: result.HumanAction, SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses}
+					_ = json.Unmarshal(result.Criteria, &report.Criteria)
 					if err := report.ValidateFindings(a.findings); err != nil {
 						cause = &fault.Error{Code: "phase.result_invalid", Message: "Fix responses do not match supplied findings", Err: err}
 						report = nil

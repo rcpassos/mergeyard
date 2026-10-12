@@ -76,8 +76,17 @@ ORDER BY a.run_id,a.round,CASE a.phase WHEN 'review' THEN 0 ELSE 1 END,a.attempt
 				rows.Close()
 				return err
 			}
+			if r.SchemaVersion >= 4 {
+				outcomes = "\n\nAcceptance criteria:"
+				if len(r.Criteria) == 0 {
+					outcomes += " no acceptance criteria found."
+				}
+				for _, c := range r.Criteria {
+					outcomes += " " + c.ID + " " + c.Verdict + ";"
+				}
+			}
 			counts := r.PriorCounts()
-			outcomes = fmt.Sprintf("\n\nPrior findings: %d fixed / %d not fixed / %d no longer applies.", counts.Fixed, counts.NotFixed, counts.NoLongerApplies)
+			outcomes += fmt.Sprintf("\n\nPrior findings: %d fixed / %d not fixed / %d no longer applies.", counts.Fixed, counts.NotFixed, counts.NoLongerApplies)
 		}
 		if p.phase == "fix" {
 			title = "Fix"

@@ -27,8 +27,8 @@ for arg do
  if [ "$previous" = '-o' ]; then last_message=$arg; fi
  previous=$arg
 done
-printf '%s\n' '{"schema_version":2,"human_action":null,"status":"success","summary":"Added feature"}' > "$last_message"
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"schema_version\":2,\"human_action\":null,\"status\":\"success\",\"summary\":\"Added feature\"}"}}' '{"type":"turn.completed"}'`
+printf '%s\n' '{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Added feature"}' > "$last_message"
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"schema_version\":3,\"criteria\":[],\"human_action\":null,\"status\":\"success\",\"summary\":\"Added feature\"}"}}' '{"type":"turn.completed"}'`
 const codexImplementation = codexIdentity + "\n" + `printf '%s\n' implemented > feature.txt` + "\n" + codexResult
 
 func codexFlow(t *testing.T, script string) (*scheduler.Scheduler, *app.Runtime, *fakeGitHub, string, config.Config, runner.Runner) {
@@ -160,7 +160,7 @@ func TestCodexEarlyIdentityRestartAndStop(t *testing.T) {
 
 func TestCodexFailuresStayVisibleAndDoNotPublish(t *testing.T) {
 	for _, tc := range []struct{ name, script, code, diagnostic string }{
-		{"invalid", codexIdentity + "\n" + strings.ReplaceAll(codexResult, `"schema_version":2,"human_action":null,`, ""), "phase.result_invalid", "requires"},
+		{"invalid", codexIdentity + "\n" + strings.ReplaceAll(codexResult, `"schema_version":3,"criteria":[],"human_action":null,`, ""), "phase.result_invalid", "requires"},
 		{"incomplete", codexIdentity + "\n" + strings.ReplaceAll(codexResult, `'{"type":"turn.completed"}'`, ""), "phase.result_missing", "native completion"},
 		{"startup", `echo 'invalid configuration: effort' >&2; exit 1`, "phase.retries_exhausted", "invalid configuration: effort"},
 		{"blocked", codexIdentity + "\n" + blockedReport(codexResult), "phase.blocked", "Added feature"},
