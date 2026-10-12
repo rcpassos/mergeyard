@@ -70,6 +70,13 @@ without publishing or requiring a release tag. It uses the committed dashboard
 assets, so regenerate them first when changing the UI. CI also builds snapshots
 on pull requests to catch packaging problems before tagging.
 
+CI runs the Go suite in four deterministic shards alongside lint, Python tests,
+dashboard asset checks, and the full release snapshot. Every top-level Go test,
+example, and fuzz seed runs in one shard, with its subtests kept together. The
+`test` check requires every shard and build check to pass. Superseded PR runs are
+canceled; Go module caches track dependencies and build caches refresh per commit.
+Local `make test` still runs the complete suite without sharding.
+
 Installer tests run as part of `go test ./...`. They use local release fixtures
 and a fake downloader to exercise platform selection, versioned URLs, upgrades,
 and failures without contacting GitHub or modifying a real installation.

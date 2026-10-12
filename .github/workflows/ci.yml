@@ -8,25 +8,49 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  test:
+  go-tests:
+    name: Go tests (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-scope: tests
+      - name: Install tmux for session integration tests
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Check test environment
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_preflight.py
+      - name: Test
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_shard.py --shard ${{ matrix.shard }} --total 4 ./...
+
+  checks:
+    name: Lint, Python tests, and release build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-go
         with:
-          go-version-file: go.mod
+          cache-scope: build
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Install tmux for session integration tests
+      - name: Install tmux for preflight smoke tests
         run: sudo apt-get update && sudo apt-get install -y tmux
       - name: Lint
         run: make lint
-      - name: Test
-        run: make test
+      - name: Python tests
+        run: make test-python
       - name: Build
         run: make build
       - name: Check committed dashboard assets
@@ -43,3 +67,17 @@ jobs:
           distribution: goreleaser
           version: '~> v2'
           args: release --snapshot --clean
+
+  # Preserve the required check name and fail if any shard or build check fails.
+  test:
+    needs: [go-tests, checks]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all checks to pass
+        env:
+          GO_TEST_RESULT: ${{ needs.go-tests.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+        run: |
+          test "$GO_TEST_RESULT" = success
+          test "$CHECKS_RESULT" = success
