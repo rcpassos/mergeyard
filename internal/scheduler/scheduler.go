@@ -27,6 +27,9 @@ import (
 
 // GitHub is the external issue, label, and PR boundary.
 type GitHub interface {
+	VerifyIssueTrust(context.Context, string, github.Issue, string, []string) (github.TrustDecision, error)
+	RecheckIssueTrust(context.Context, string, github.Issue, string, []string) (github.TrustDecision, error)
+	EnsureTrustRefusalComment(context.Context, string, int, string) error
 	ListOpenIssues(context.Context, string) ([]github.Issue, error)
 	GetIssue(context.Context, string, int) (github.Issue, error)
 	GetPullRequest(context.Context, string, int) (*github.PullRequest, error)
@@ -244,6 +247,9 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return err
 	}
 	var failures []error
+	if err := s.reconcileRefusals(ctx); err != nil {
+		failures = append(failures, err)
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -305,12 +311,38 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			if issue.State != github.Open || !hasLabel(issue, repo.Labels.Ready) || hasLabel(issue, repo.Labels.Running) || hasLabel(issue, repo.Labels.NeedsAttention) || existing[issueKey(repo.Repo, issue.Number)] {
 				continue
 			}
+			allowed, err := s.authorizeIssue(ctx, repo, issue)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			if !allowed {
+				continue
+			}
 			blockers, err := s.deps.GitHub.UnresolvedBlockers(ctx, repo.Repo, issue.Number)
 			if err != nil {
 				failures = append(failures, err)
 				continue
 			}
 			if len(blockers) > 0 {
+				continue
+			}
+			// Freeze fresh executable intent and recheck authorization when a
+			// slot is actually about to be claimed, even if discovery was cached.
+			issue, err = s.deps.GitHub.GetIssue(ctx, repo.Repo, issue.Number)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			if issue.State != github.Open || !hasLabel(issue, repo.Labels.Ready) || hasLabel(issue, repo.Labels.Running) || hasLabel(issue, repo.Labels.NeedsAttention) {
+				continue
+			}
+			allowed, err = s.recheckIssue(ctx, repo, issue)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			if !allowed {
 				continue
 			}
 			s.control.mu.Lock()

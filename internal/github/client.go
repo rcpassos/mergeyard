@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
@@ -41,6 +42,7 @@ type Issue struct {
 	Body         string             `json:"body"`
 	State        State              `json:"state"`
 	CreatedAt    time.Time          `json:"created_at"`
+	UpdatedAt    time.Time          `json:"updated_at"`
 	URL          string             `json:"html_url"`
 	Labels       []Label            `json:"labels"`
 	Dependencies *DependencySummary `json:"issue_dependencies_summary"`
@@ -63,9 +65,11 @@ func (ghRunner) Run(ctx context.Context, input []byte, args ...string) ([]byte, 
 	return stdout.Bytes(), stderr.Bytes(), err
 }
 
-// Client wraps the authenticated gh CLI. It holds no issue or repository state.
+// Client wraps the authenticated gh CLI and caches issue authorization snapshots.
 type Client struct {
-	runner CommandRunner
+	runner     CommandRunner
+	trustMu    sync.Mutex
+	trustCache map[string]trustCacheEntry
 }
 
 // New uses the installed gh executable when runner is nil.

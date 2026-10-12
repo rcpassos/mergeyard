@@ -23,12 +23,33 @@ import (
 )
 
 type fakeGitHub struct {
-	issues    map[string][]github.Issue
-	blockers  map[int][]github.Issue
-	prs       map[string]*github.PullRequest
-	creations int
-	head      func(string) string
-	mutate    func(action, repo string, n int, label string) error
+	trust         func(github.Issue) (github.TrustDecision, error)
+	trustComments map[int]string
+	issues        map[string][]github.Issue
+	blockers      map[int][]github.Issue
+	prs           map[string]*github.PullRequest
+	creations     int
+	head          func(string) string
+	mutate        func(action, repo string, n int, label string) error
+}
+
+func (f *fakeGitHub) VerifyIssueTrust(_ context.Context, _ string, issue github.Issue, _ string, _ []string) (github.TrustDecision, error) {
+	if f.trust != nil {
+		return f.trust(issue)
+	}
+	return github.TrustDecision{Allowed: true}, nil
+}
+func (f *fakeGitHub) RecheckIssueTrust(ctx context.Context, repo string, issue github.Issue, ready string, trusted []string) (github.TrustDecision, error) {
+	return f.VerifyIssueTrust(ctx, repo, issue, ready, trusted)
+}
+func (f *fakeGitHub) EnsureTrustRefusalComment(_ context.Context, _ string, n int, reason string) error {
+	if f.trustComments == nil {
+		f.trustComments = make(map[int]string)
+	}
+	if _, exists := f.trustComments[n]; !exists {
+		f.trustComments[n] = reason
+	}
+	return nil
 }
 
 func (f *fakeGitHub) ListOpenIssues(_ context.Context, repo string) ([]github.Issue, error) {

@@ -91,3 +91,14 @@ source does not need changes. If code must change, publish a new version rather
 than moving a published tag. A checksum failure leaves the existing executable
 untouched; retry using an explicit tag and inspect the release assets if it
 persists.
+
+## Unreleased behavior changes
+
+Ready-label authorization is enforced by default. Actors with only `triage` or
+`read` permission can no longer authorize agent execution. With no configured
+`trusted_labelers`, only `write`, `maintain`, and `admin` permission is trusted.
+Use a global or per-repository allowlist to explicitly authorize other actors.
+Untrusted harness override labels and untrusted body edits after approval also
+prevent claim. Refusals remove the ready label and appear in the dashboard.
+The upgrade adds schema version 22 for durable refusal diagnostics; preserve a
+workspace backup before downgrading to a binary supporting only older schemas.

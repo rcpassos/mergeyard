@@ -76,7 +76,7 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 			for _, candidate := range issues {
 				if candidate.Number == run.IssueNumber && candidate.State == github.Open {
 					issue = candidate
-					err = s.saveIssue(ctx, run.ID, issue)
+					err = s.recoverIssueSnapshot(ctx, repo, run.ID, issue)
 					break
 				}
 			}

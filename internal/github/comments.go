@@ -25,6 +25,14 @@ func (c *Client) EnsureReportComment(ctx context.Context, repo string, number in
 	if number <= 0 || !ok || !reportMarker.MatchString(marker) {
 		return nil, codedError("github.invalid_input", "expected a report marker and positive PR number", nil)
 	}
+	return c.ensureComment(ctx, repo, number, body)
+}
+
+func (c *Client) ensureComment(ctx context.Context, repo string, number int, body string) (*Comment, error) {
+	marker, _, _ := strings.Cut(body, "\n")
+	if number <= 0 {
+		return nil, codedError("github.invalid_input", "expected a positive issue number", nil)
+	}
 	path, err := issuePath(repo, number)
 	if err != nil {
 		return nil, err

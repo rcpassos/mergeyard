@@ -35,6 +35,7 @@
 {{define "section"}}<section class="queue-section"><h2>{{.Name}} <span class="count">{{len .Runs}} runs / {{len .Issues}} issues</span></h2>
 {{range .Runs}}{{template "run-row" .}}{{end}}
 {{range .Issues}}<article class="issue-row"><div><a class="issue-title" href="https://github.com/{{.Repository}}/issues/{{.Issue.Number}}" target="_blank" rel="noreferrer">{{.Repository}} #{{.Issue.Number}} · {{.Issue.Title}}</a>
+{{if .RefusalReason}}<p class="notice">Refused: {{.RefusalReason}}</p>{{end}}
 {{if .Blockers}}<p class="blockers">Blocked by {{range .Blockers}}<a href="{{.URL}}" target="_blank" rel="noreferrer">#{{.Number}} {{.Title}}</a> {{end}}</p>{{end}}</div><span class="row-note">GitHub issue</span></article>{{end}}
 {{if and (not .Runs) (not .Issues)}}<p class="empty">No items in this section.</p>{{end}}</section>{{end}}
 

@@ -212,11 +212,39 @@ agent-needs-attention   output: a human must act
 
 An issue is never dispatched merely because it is open. The ready label is an explicit authorization signal that the issue is sufficiently specified and trusted for agent execution.
 
+Authorization is enforced by default. The most recent ready-label event must
+have a trusted actor: a login in the resolved global/per-repository
+`trusted_labelers` allowlist, or, when the list is empty, a user with `write`,
+`maintain`, or `admin` repository permission. `triage` and `read` are insufficient.
+Every present implementer/reviewer harness override label uses the same actor
+rule. An explicit repository list replaces the global list; `[]` restores the
+permission-based policy. Comparisons of actor logins ignore case.
+
 Detailed phase state lives in Mergeyard/SQLite, not in labels.
 
 ### 7.3 Claim transition
 
-When Mergeyard claims an issue it must, in this order:
+Before creating a run, Mergeyard reads the issue events API to verify the latest
+ready-label and harness override actors. It reads GraphQL `lastEditedAt`, `editor`
+and paginated `userContentEdits` to reject any body edit at or after approval by
+an untrusted actor. Missing or unreadable authorization/edit history fails closed.
+The body observed through GraphQL must match the snapshot that will be executed.
+
+An untrusted or unverifiable issue is never claimed. Mergeyard persists its
+refusal reason, ensures one marker comment (`<!-- mergeyard:trust:refused -->`),
+then removes the ready label. Failed side effects are retried after restart.
+The dashboard lists refused issues and their reasons even without the ready label.
+After reviewing the body and override labels, a trusted maintainer can reapply
+the ready label; a trusted decision clears the refusal without duplicating the
+historical comment.
+
+Decisions cache the observed issue, label-event identity and edit state. Quiet
+polls make no further trust API calls; issue-list `updated_at`, content/label
+changes and allowlist changes invalidate the snapshot. Immediately before claim,
+Mergeyard reads the current issue and rechecks actors and edits without the cache.
+Restart also rechecks trust.
+
+When Mergeyard claims an authorized issue it must, in this order:
 
 1. create the local run record in a `CLAIMING` state;
 2. add the `running` label;
@@ -1485,6 +1513,14 @@ The MVP binds only to loopback addresses. Remote dashboard exposure is unsupport
 ### Issue trust boundary
 
 Agents run with the user's local permissions. An issue body is effectively executable intent once it receives the ready label. The ready label is a trusted-maintainer authorization boundary.
+
+This boundary is enforced before claim for ready labels, harness override labels,
+and body edits after approval (sections 7.2–7.3). Explicit `trusted_labelers` narrow
+authorization; otherwise write/maintain/admin permission is trusted. `doctor`
+warns for public repositories without an explicit allowlist. Unreadable history
+refuses execution. Issue trust decisions are cached per observed snapshot for quiet polling; an
+uncached check immediately before claim observes permission revocations and rapid
+label changes.
 
 Mergeyard does not sandbox agent code or protect the machine from malicious instructions in an approved issue.
 
