@@ -57,6 +57,99 @@ func TestHarnessOverrideUsesDefaultsAndConfiguredSkills(t *testing.T) {
 	t.Fatal("missing claim event")
 }
 
+func TestIncompatibleHarnessOverridesRemainCorrectableBeforeClaim(t *testing.T) {
+	for _, role := range []string{"implementer", "reviewer"} {
+		for _, correction := range []string{"label", "configuration"} {
+			t.Run(role+"/"+correction, func(t *testing.T) {
+				_, runtime, api, _, cfg, r := codexFlow(t, codexImplementation)
+				cfg.Repositories[0].Implementer.Agent = "claude"
+				selected := &cfg.Repositories[0].Implementer
+				if role == "reviewer" {
+					selected = &cfg.Repositories[0].Reviewer
+				}
+				selected.Skills = []string{"plugin:check"}
+				label := "mergeyard:" + role + "=codex"
+				api.issues["owner/repo"][0].Labels = append(api.issues["owner/repo"][0].Labels, github.Label{Name: label})
+				deps := scheduler.Dependencies{GitHub: api, Runner: r}
+				s, err := scheduler.New(cfg, schedulerResources(runtime), deps)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					if err := s.Tick(context.Background()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				runs, err := s.Runs(context.Background())
+				if err != nil || len(runs) != 0 {
+					t.Fatalf("incompatible settings frozen on run: %+v %v", runs, err)
+				}
+				issue := api.issues["owner/repo"][0]
+				if !has(issue, cfg.Repositories[0].Labels.Ready) || !has(issue, cfg.Repositories[0].Labels.NeedsAttention) || has(issue, cfg.Repositories[0].Labels.Running) || api.creations != 0 || len(api.overrideComments) != 1 {
+					t.Fatalf("invalid selection was not left correctable: %+v", issue)
+				}
+				for _, value := range []string{role, "codex", "config.invalid_skills", "configuration"} {
+					if !strings.Contains(api.overrideComments[7], value) {
+						t.Fatalf("missing diagnostic %q: %s", value, api.overrideComments[7])
+					}
+				}
+				if correction == "label" {
+					if err := api.RemoveLabel(context.Background(), "owner/repo", 7, label); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					selected.Skills = []string{"check"}
+				}
+				if err := api.RemoveLabel(context.Background(), "owner/repo", 7, cfg.Repositories[0].Labels.NeedsAttention); err != nil {
+					t.Fatal(err)
+				}
+				s, err = scheduler.New(cfg, schedulerResources(runtime), deps)
+				if err != nil {
+					t.Fatal(err)
+				}
+				run := finish(t, s, workflow.Active, workflow.Review)
+				saved := run.RoleSettings.Implementer
+				if role == "reviewer" {
+					saved = run.RoleSettings.Reviewer
+				}
+				wantAgent, wantSkill := "claude", "plugin:check"
+				if correction == "configuration" {
+					wantAgent, wantSkill = "codex", "check"
+				}
+				if saved.Agent != wantAgent || strings.Join(saved.Skills, ",") != wantSkill {
+					t.Fatalf("correction not applied at claim: %+v", saved)
+				}
+			})
+		}
+	}
+
+}
+
+type harnessWithoutSkillSelection struct{ harness.HarnessAdapter }
+
+func (h harnessWithoutSkillSelection) Capabilities() harness.HarnessCapabilities {
+	caps := h.HarnessAdapter.Capabilities()
+	caps.SkillSelection = false
+	return caps
+}
+
+func TestHarnessOverrideRequiresDestinationCapabilities(t *testing.T) {
+	_, runtime, api, _, cfg, r := localFlow(t, successfulScript)
+	cfg.Repositories[0].Implementer.Skills = []string{"check"}
+	api.issues["owner/repo"][0].Labels = append(api.issues["owner/repo"][0].Labels, github.Label{Name: "mergeyard:implementer=codex"})
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r, Harnesses: map[string]harness.HarnessAdapter{"codex": harnessWithoutSkillSelection{harness.NewCodex(cfg.Agents.Codex)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.Runs(context.Background())
+	if err != nil || len(runs) != 0 || !strings.Contains(api.overrideComments[7], "harness.capability_unsupported") {
+		t.Fatalf("unsupported destination was claimed: %+v %v, diagnostic=%s", runs, err, api.overrideComments[7])
+	}
+}
+
 func TestMatchingHarnessOverridesRetainConfiguredSettings(t *testing.T) {
 	s, runtime, api, _, cfg, r := pairingFlow(t, "codex", "claude", disputedReport)
 	api.issues["owner/repo"][0].Labels = append(api.issues["owner/repo"][0].Labels, github.Label{Name: "mergeyard:implementer=codex"}, github.Label{Name: "mergeyard:reviewer=claude"})

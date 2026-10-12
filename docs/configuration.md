@@ -51,6 +51,14 @@ feature have no stored selection and continue reading configuration. Harness
 permissions, executables and execution policy remain configuration settings.
 Run detail and `mergeyard status` show the stored selection.
 
+Before claiming, Mergeyard validates both resolved roles against their selected
+harnesses, including supported capabilities and skill syntax. For example,
+Claude's namespaced skills such as `plugin:check` cannot be used by Codex. An
+incompatible selection remains unclaimed, receives needs-attention and an
+explanation, and can be corrected through role configuration or override labels.
+Skills are preserved rather than silently discarded. Remove needs-attention
+after correcting the selection to allow another claim.
+
 Unknown agents or labels selecting different harnesses for the same role prevent
 the claim. Mergeyard applies the repository's `needs_attention` label and posts
 one comment naming the invalid labels and valid values. Fix the override labels

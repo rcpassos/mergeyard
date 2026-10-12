@@ -3,18 +3,37 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/github"
 )
 
-func resolveIssueRoleSettings(repo config.Repository, issue github.Issue) (*config.RunRoleSettings, error) {
+func (s *Scheduler) resolveIssueRoleSettings(repo config.Repository, issue github.Issue) (*config.RunRoleSettings, error) {
 	labels := make([]string, len(issue.Labels))
 	for i, label := range issue.Labels {
 		labels[i] = label.Name
 	}
-	return config.ResolveRoleSettings(repo, labels)
+
+	settings, err := config.ResolveRoleSettings(repo, labels)
+	if err != nil {
+		return nil, err
+	}
+	resolved := settings.Apply(repo)
+	var failures []error
+	for _, selection := range []struct {
+		name string
+		role config.Role
+	}{{"implementer", resolved.Implementer}, {"reviewer", resolved.Reviewer}} {
+		if err := validateHarnessRole(s.harnesses, selection.role); err != nil {
+			failures = append(failures, fmt.Errorf("Resolved %s settings for %s are incompatible: %w. Correct the override labels or role configuration, then remove the needs-attention label", selection.name, selection.role.Agent, err))
+		}
+	}
+	if err := errors.Join(failures...); err != nil {
+		return nil, err
+	}
+	return settings, nil
 }
 
 func (s *Scheduler) refuseHarnessOverride(ctx context.Context, repo config.Repository, number int, reason string) error {
@@ -72,7 +91,7 @@ func (s *Scheduler) reconcileHarnessOverrideRefusals(ctx context.Context) error 
 			failures = append(failures, err)
 			continue
 		}
-		_, overrideErr := resolveIssueRoleSettings(repo, issue)
+		_, overrideErr := s.resolveIssueRoleSettings(repo, issue)
 		if issue.State != github.Open || overrideErr == nil {
 			// An attention label may have been applied despite a lost response.
 			// Preserve a maintainer's correction instead of replaying stale intent.

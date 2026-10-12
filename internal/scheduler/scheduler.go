@@ -128,18 +128,7 @@ func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler,
 	for _, repo := range cfg.Repositories {
 		if repo.Enabled {
 			for _, role := range []config.Role{repo.Implementer, repo.Reviewer} {
-				adapter, ok := adapters[role.Agent]
-				if !ok {
-					return nil, &fault.Error{Code: "config.invalid_agent", Message: "Unsupported phase harness: " + role.Agent}
-				}
-				capabilities := adapter.Capabilities()
-				if !capabilities.StructuredOutput || !capabilities.SessionResume ||
-					(role.Model != "" && !capabilities.ModelSelection) ||
-					(role.Effort != "" && !capabilities.EffortSelection) ||
-					(len(role.Skills) > 0 && !capabilities.SkillSelection) {
-					return nil, &fault.Error{Code: "harness.capability_unsupported", Message: "Phase harness requires structured output and session resume"}
-				}
-				if err := adapter.ValidateConfig(role); err != nil {
+				if err := validateHarnessRole(adapters, role); err != nil {
 					return nil, err
 				}
 			}
@@ -342,7 +331,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			if !allowed {
 				continue
 			}
-			settings, err := resolveIssueRoleSettings(repo, issue)
+			settings, err := s.resolveIssueRoleSettings(repo, issue)
 			if err != nil {
 				if refusalErr := s.refuseHarnessOverride(ctx, repo, issue.Number, err.Error()); refusalErr != nil {
 					failures = append(failures, refusalErr)
@@ -405,4 +394,20 @@ func (s *Scheduler) repository(name string) (config.Repository, bool) {
 func (s *Scheduler) runRepository(run workflow.Run) (config.Repository, bool) {
 	repo, ok := s.repository(run.Repository)
 	return run.RoleSettings.Apply(repo), ok
+}
+
+// validateHarnessRole shares startup and claim-time adapter validation.
+func validateHarnessRole(adapters map[string]harness.HarnessAdapter, role config.Role) error {
+	adapter, ok := adapters[role.Agent]
+	if !ok {
+		return &fault.Error{Code: "config.invalid_agent", Message: "Unsupported phase harness: " + role.Agent}
+	}
+	capabilities := adapter.Capabilities()
+	if !capabilities.StructuredOutput || !capabilities.SessionResume ||
+		(role.Model != "" && !capabilities.ModelSelection) ||
+		(role.Effort != "" && !capabilities.EffortSelection) ||
+		(len(role.Skills) > 0 && !capabilities.SkillSelection) {
+		return &fault.Error{Code: "harness.capability_unsupported", Message: "Phase harness requires structured output and session resume"}
+	}
+	return adapter.ValidateConfig(role)
 }
