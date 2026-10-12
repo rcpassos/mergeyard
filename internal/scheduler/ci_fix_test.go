@@ -240,7 +240,7 @@ func TestCIFixInvalidOutputObeysImplementerAttemptLimit(t *testing.T) {
 		{"invented findings", fixedReport, "phase.result_invalid", 2},
 		{"invalid output", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Missing"}}'`, "phase.result_invalid", 2},
 		{"no code changes", ciFixedReport, "phase.result_invalid", 2},
-		{"blocked", strings.Replace(ciFixedReport, `"status":"success"`, `"status":"blocked"`, 1), "phase.blocked", 1},
+		{"blocked", blockedReport(ciFixedReport), "phase.blocked", 1},
 		{"failed", "exit 1", "phase.retries_exhausted", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

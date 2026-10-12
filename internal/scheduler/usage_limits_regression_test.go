@@ -178,6 +178,9 @@ func TestSuccessfulNativeInvalidReportsBypassClassifier(t *testing.T) {
 		for _, status := range []string{"blocked", "failed", "invalid", "missing"} {
 			t.Run(agent+"/"+status, func(t *testing.T) {
 				report := `{"schema_version":2,"human_action":null,"status":"` + status + `","summary":"A tool mentioned a usage limit"}`
+				if status == "blocked" {
+					report = blockedReport(report)
+				}
 				script := `printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":` + report + `}'`
 				if status == "missing" {
 					script = `printf '%s\n' '{"type":"result","subtype":"success","is_error":false}'`

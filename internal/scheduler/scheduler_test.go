@@ -850,3 +850,9 @@ func TestRuntimeDashboardControlSharesDispatchGate(t *testing.T) {
 		t.Fatal("shared gate did not resume dispatch")
 	}
 }
+
+// blockedReport retains the current contract when a success fixture becomes blocked.
+func blockedReport(report string) string {
+	report = strings.Replace(report, `"status":"success"`, `"status":"blocked"`, 1)
+	return strings.Replace(report, `"human_action":null`, `"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]}`, 1)
+}

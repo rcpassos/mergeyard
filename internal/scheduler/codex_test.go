@@ -163,7 +163,7 @@ func TestCodexFailuresStayVisibleAndDoNotPublish(t *testing.T) {
 		{"invalid", codexIdentity + "\n" + strings.ReplaceAll(codexResult, `"schema_version":2,"human_action":null,`, ""), "phase.result_invalid", "requires"},
 		{"incomplete", codexIdentity + "\n" + strings.ReplaceAll(codexResult, `'{"type":"turn.completed"}'`, ""), "phase.result_missing", "native completion"},
 		{"startup", `echo 'invalid configuration: effort' >&2; exit 1`, "phase.retries_exhausted", "invalid configuration: effort"},
-		{"blocked", codexIdentity + "\n" + strings.ReplaceAll(codexResult, `"success"`, `"blocked"`), "phase.blocked", "Added feature"},
+		{"blocked", codexIdentity + "\n" + blockedReport(codexResult), "phase.blocked", "Added feature"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, api, remote, _, _ := codexFlow(t, tc.script)
