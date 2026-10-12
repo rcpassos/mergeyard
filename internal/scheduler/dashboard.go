@@ -9,10 +9,11 @@ import (
 
 // QueueIssue is an open ready, blocked, or attention issue discovered on GitHub.
 type QueueIssue struct {
-	Repository string
-	Issue      github.Issue
-	Blockers   []github.Issue
-	Attention  bool
+	Repository    string
+	Issue         github.Issue
+	Blockers      []github.Issue
+	Attention     bool
+	RefusalReason string
 }
 
 // Queue discovers issues without claiming them, even when paused or at capacity.
@@ -38,11 +39,15 @@ func (s *Scheduler) Queue(ctx context.Context) ([]QueueIssue, error) {
 			if issue.State != github.Open {
 				continue
 			}
-			attention := hasLabel(issue, repo.Labels.NeedsAttention)
+			reason, err := s.refusalReason(ctx, repo.Repo, issue.Number)
+			if err != nil {
+				return nil, err
+			}
+			attention := hasLabel(issue, repo.Labels.NeedsAttention) || reason != ""
 			if !attention && (!hasLabel(issue, repo.Labels.Ready) || hasLabel(issue, repo.Labels.Running)) {
 				continue
 			}
-			item := QueueIssue{Repository: repo.Repo, Issue: issue, Attention: attention}
+			item := QueueIssue{Repository: repo.Repo, Issue: issue, Attention: attention, RefusalReason: reason}
 			if !attention {
 				item.Blockers, err = s.deps.GitHub.UnresolvedBlockers(ctx, repo.Repo, issue.Number)
 				if err != nil {

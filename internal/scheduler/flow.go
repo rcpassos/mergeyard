@@ -76,7 +76,7 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 			for _, candidate := range issues {
 				if candidate.Number == run.IssueNumber && candidate.State == github.Open {
 					issue = candidate
-					err = s.saveIssue(ctx, run.ID, issue)
+					err = s.recoverIssueSnapshot(ctx, repo, run.ID, issue)
 					break
 				}
 			}
@@ -458,10 +458,8 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	phase.Interruption = interruptionContext(previous, phase)
 	checkID := checkRetryIdentity(run, workflow.Implement, previous, number, checkRetry)
 	checkResult := s.checkResult(run, checkID)
-	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
-	if err != nil {
-		return err
-	}
+	// The persisted claim snapshot is the authorized executable intent.
+	// Live issue reads elsewhere observe lifecycle state only.
 	input, err := harness.WriteImplementInput(ctx, s.deps.Runner, phase, harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch, Checks: checkResult})
 	if err != nil {
 		return err

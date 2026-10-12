@@ -350,7 +350,7 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	if run.Review.Report.Status != "changes_required" && repair == nil {
 		return fail(&fault.Error{Code: "phase.result_invalid", Message: "Fix requires blocking findings or pinned repairable CI evidence"})
 	}
-	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
+	issue, _, err := s.context(ctx, run)
 	if err != nil {
 		return err
 	}

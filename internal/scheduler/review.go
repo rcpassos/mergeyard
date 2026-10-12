@@ -341,10 +341,6 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if previous.target == snapshot.Head {
 		phase.Interruption = interruptionContext(previous.attempt, phase)
 	}
-	issue, err = s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
-	if err != nil {
-		return err
-	}
 	previousFindings, fixReport, err := review.LoadPriorContext(ctx, s.db, run.ID, run.ReviewRound)
 	if err != nil {
 		return err

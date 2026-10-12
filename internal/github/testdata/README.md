@@ -125,3 +125,23 @@ immediately. `*github.Error` aliases the shared `*fault.Error`, exposes a stable
 - `github.unavailable`
 - `github.command_failed`
 - `github.canceled`
+
+## Trust-boundary fixtures
+
+Captured read-only with authenticated `gh api` on 2026-10-12:
+
+- `trust-label-events.json`: `repos/rcpassos/mergeyard/issues/105/events
+  --paginate`, retaining event identity, kind, actor login, label and timestamp.
+- `trust-admin-permission.json`: permission and role_name from
+  `repos/rcpassos/mergeyard/collaborators/rcpassos/permission`.
+- `trust-read-permission.json`: permission and role_name from
+  `repos/rcpassos/mergeyard/collaborators/octocat/permission`.
+- `trust-content-edits.json`: GraphQL `repository(owner:"rcpassos",
+  name:"mergeyard").issue(number:105)` with body, lastEditedAt, editor and
+  `userContentEdits(first:100)` nodes (editedAt/editor) and pageInfo.
+
+Admin/read are recorded observations. Write, maintain, triage and legacy
+push/pull responses in `trust_test.go` are synthetic policy cases, not recorded
+permission observations. Later label events, body edits, pagination, malformed
+responses and ambiguous writes are also synthetic cases built around the recorded
+responses. Normal tests never modify GitHub issues or require credentials.

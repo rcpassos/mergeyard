@@ -163,7 +163,7 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 		return fail("github.issue_closed", "Issue is closed; reopen it before retrying")
 	}
 	if errors.Is(contextErr, sql.ErrNoRows) && gitRun.ID == "" {
-		if err := s.saveIssue(ctx, run.ID, issue); err != nil {
+		if err := s.recoverIssueSnapshot(ctx, repo, run.ID, issue); err != nil {
 			return err
 		}
 		contextErr = nil

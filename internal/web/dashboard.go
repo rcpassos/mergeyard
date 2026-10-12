@@ -156,9 +156,10 @@ type runView struct {
 }
 
 type issueView struct {
-	Repository string
-	Issue      github.Issue
-	Blockers   []github.Issue
+	Repository    string
+	Issue         github.Issue
+	Blockers      []github.Issue
+	RefusalReason string
 }
 
 type queueSection struct {
@@ -300,7 +301,7 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 		} else if len(item.Blockers) > 0 {
 			section = blockedSection
 		}
-		data.Sections[section].Issues = append(data.Sections[section].Issues, issueView{item.Repository, item.Issue, item.Blockers})
+		data.Sections[section].Issues = append(data.Sections[section].Issues, issueView{Repository: item.Repository, Issue: item.Issue, Blockers: item.Blockers, RefusalReason: item.RefusalReason})
 	}
 	return nil
 }

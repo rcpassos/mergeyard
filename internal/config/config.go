@@ -17,21 +17,22 @@ import (
 // Config is the effective configuration. Repository settings are fully resolved;
 // an empty BaseBranch is intentionally left for runtime GitHub discovery.
 type Config struct {
-	Version      int
-	Port         int
-	OpenBrowser  bool `yaml:"open_browser"`
-	Workspace    string
-	PollInterval time.Duration `yaml:"poll_interval"`
-	CITimeout    time.Duration `yaml:"ci_timeout"`
-	Concurrency  int
-	Labels       Labels
-	Agents       Agents
-	Implementer  Role
-	Reviewer     Role
-	MaxRounds    int         `yaml:"max_rounds"`
-	PRComments   bool        `yaml:"pr_comments"`
-	UsageLimits  UsageLimits `yaml:"usage_limits"`
-	Repositories []Repository
+	Version         int
+	Port            int
+	OpenBrowser     bool `yaml:"open_browser"`
+	Workspace       string
+	PollInterval    time.Duration `yaml:"poll_interval"`
+	CITimeout       time.Duration `yaml:"ci_timeout"`
+	Concurrency     int
+	Labels          Labels
+	TrustedLabelers []string `yaml:"trusted_labelers"`
+	Agents          Agents
+	Implementer     Role
+	Reviewer        Role
+	MaxRounds       int         `yaml:"max_rounds"`
+	PRComments      bool        `yaml:"pr_comments"`
+	UsageLimits     UsageLimits `yaml:"usage_limits"`
+	Repositories    []Repository
 }
 
 type Role struct {
@@ -71,17 +72,18 @@ type UsageLimits struct {
 }
 
 type Repository struct {
-	Setup          []string      `yaml:"setup"`
-	Checks         []string      `yaml:"checks"`
-	CheckRetries   int           `yaml:"check_retries"`
-	CommandTimeout time.Duration `yaml:"command_timeout"`
-	Repo           string
-	BaseBranch     string `yaml:"base_branch"`
-	Concurrency    int
-	Enabled        bool
-	Implementer    Role
-	Reviewer       Role
-	Labels         Labels
+	TrustedLabelers []string      `yaml:"trusted_labelers"`
+	Setup           []string      `yaml:"setup"`
+	Checks          []string      `yaml:"checks"`
+	CheckRetries    int           `yaml:"check_retries"`
+	CommandTimeout  time.Duration `yaml:"command_timeout"`
+	Repo            string
+	BaseBranch      string `yaml:"base_branch"`
+	Concurrency     int
+	Enabled         bool
+	Implementer     Role
+	Reviewer        Role
+	Labels          Labels
 }
 
 // Error retains the configuration API while sharing the runtime error shape.
@@ -92,7 +94,8 @@ func defaults() Config {
 	return Config{
 		Version: 1, Port: 7331, OpenBrowser: true, Workspace: workspace.DefaultPath,
 		PollInterval: 30 * time.Second, CITimeout: time.Hour, Concurrency: 1,
-		Labels: Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
+		Labels:          Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
+		TrustedLabelers: []string{},
 		Agents: Agents{
 			Claude: Claude{Executable: "claude", PermissionMode: "bypassPermissions", AllowedTools: []string{}},
 			Codex:  Codex{Executable: "codex", Sandbox: "workspace-write", NetworkAccess: true},
@@ -141,6 +144,7 @@ func Parse(data []byte) (Config, *Document, error) {
 	m.readDuration("ci_timeout", &cfg.CITimeout)
 	m.readPositiveInt("concurrency", &cfg.Concurrency, "config.invalid_concurrency")
 	readLabels(m.child("labels"), &cfg.Labels)
+	readTrustedLabelers(m, &cfg.TrustedLabelers)
 	agents := m.child("agents")
 	claude := agents.child("claude")
 	claude.read("executable", &cfg.Agents.Claude.Executable)
@@ -169,7 +173,7 @@ func Parse(data []byte) (Config, *Document, error) {
 			seenRepos := make(map[string]bool)
 			for i, node := range repos.Content {
 				r := Repository{Concurrency: cfg.Concurrency, Enabled: true, CommandTimeout: 20 * time.Minute, CheckRetries: 1,
-					Implementer: cloneRole(cfg.Implementer), Reviewer: cloneRole(cfg.Reviewer), Labels: cfg.Labels}
+					Implementer: cloneRole(cfg.Implementer), Reviewer: cloneRole(cfg.Reviewer), Labels: cfg.Labels, TrustedLabelers: slices.Clone(cfg.TrustedLabelers)}
 				rm := newMapping(node, fmt.Sprintf("repositories[%d]", i), &err, &doc.Warnings)
 				rm.readRepo("repo", &r.Repo)
 				if !repository.ValidName(r.Repo) {
@@ -196,6 +200,7 @@ func Parse(data []byte) (Config, *Document, error) {
 				rm.readDuration("command_timeout", &r.CommandTimeout)
 				rm.readPositiveInt("concurrency", &r.Concurrency, "config.invalid_concurrency")
 				rm.read("enabled", &r.Enabled)
+				readTrustedLabelers(rm, &r.TrustedLabelers)
 				readRole(rm.child("implementer"), &r.Implementer)
 				readRole(rm.child("reviewer"), &r.Reviewer)
 				readLabels(rm.child("labels"), &r.Labels)
@@ -214,6 +219,27 @@ func Parse(data []byte) (Config, *Document, error) {
 func cloneRole(r Role) Role {
 	r.Skills = slices.Clone(r.Skills)
 	return r
+}
+
+func readTrustedLabelers(m mapping, target *[]string) {
+	if node := m.node("trusted_labelers"); node != nil {
+		if node.Kind != yaml.SequenceNode {
+			m.fail("config.invalid_trusted_labelers", "trusted_labelers", "expected a list of GitHub logins")
+			return
+		}
+		for _, login := range node.Content {
+			if dereference(login).Tag != "!!str" {
+				m.fail("config.invalid_trusted_labelers", "trusted_labelers", "expected string GitHub logins")
+				return
+			}
+		}
+	}
+	m.read("trusted_labelers", target)
+	for _, login := range *target {
+		if strings.TrimSpace(login) != login || login == "" || strings.ContainsAny(login, "/\\\x00\n\r\t ") {
+			m.fail("config.invalid_trusted_labelers", "trusted_labelers", "expected nonempty GitHub logins without whitespace or path separators")
+		}
+	}
 }
 
 func readRole(m mapping, r *Role) {

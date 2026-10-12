@@ -229,3 +229,58 @@ Retry-as-probe require its evidence-backed capability. See
 `mergeyard status` and Settings report the configuration loaded by the running
 control plane, its selected source path, resolved workspace, and effective
 repository role overrides. Edit the selected file and restart to apply changes.
+
+## Trusted labelers
+
+Authorization is enforced before claim. `trusted_labelers` is an optional list of
+GitHub logins, globally or per repository. A nonempty list is an allowlist that
+replaces permission-based trust. Login comparisons ignore case. A repository
+inherits the global list; an explicit repository list replaces it. `[]` clears an
+inherited list and returns to the default policy; it does not disable enforcement.
+
+```yaml
+trusted_labelers: [alice, release-bot]
+repositories:
+  - repo: company/api
+  - repo: company/frontend
+    trusted_labelers: [bob]
+  - repo: company/internal
+    trusted_labelers: [] # trust write/maintain/admin permission
+```
+
+With no nonempty list, the actor must have `write`, `maintain`, or `admin`
+repository permission. `triage` and `read` do not authorize execution. The GitHub
+account running Mergeyard must be able to read collaborator permissions, issue
+label events and GraphQL content edit history. If those reads fail or omit required
+information, Mergeyard refuses the issue.
+
+Mergeyard checks the most recent ready-label event, plus each present
+`mergeyard:implementer=<agent>` and `mergeyard:reviewer=<agent>` label event. It
+also checks every body edit at or after the ready-label event. An edit by an
+untrusted actor prevents claim, even if a later edit has a trusted editor. Edits
+before approval are accepted: a trusted maintainer reviews that content when
+applying the ready label. Equal timestamps are treated conservatively as after
+approval because GitHub timestamps do not establish ordering within a second.
+
+A refusal creates no run. Mergeyard persists the reason, posts one comment with
+`<!-- mergeyard:trust:refused -->`, and removes the ready label. Pending comment
+and label operations survive restarts. The dashboard lists the issue under
+**Needs attention**, including its refusal reason after the ready label is gone.
+A trusted maintainer should review the body and override labels, remove or
+reapply any untrusted overrides, then reapply the ready label. The historical
+comment is retained, and a newly trusted decision clears the dashboard refusal.
+
+The issue title, body and URL saved at claim remain the input for implementation,
+review, fix and resumed attempts. Later issue edits do not replace this authorized
+snapshot. Lifecycle polling still reads current issue state and labels. Refusal
+comments must be authored by Mergeyard's authenticated GitHub account and contain
+its explanation; copied markers from other accounts are ignored.
+
+Authorization decisions are cached for the observed issue, label-event identity
+and body-edit state during the client lifetime. The issue-list `updated_at`,
+content and labels invalidate the snapshot, so a quiet poll adds no trust API
+requests. Changes to the configured allowlist also invalidate it. A fresh issue read and uncached authorization check run immediately before a
+claim. This catches permission revocation and rapid label changes even when an
+unchanged issue snapshot was cached during blocked polls. A restart also rechecks
+trust.
+`doctor` warns when a public repository has no explicit allowlist.
