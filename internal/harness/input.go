@@ -10,6 +10,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -20,6 +21,7 @@ type ImplementInput struct {
 	IssueNumber int
 	IssueTitle  string
 	IssueBody   string
+	Comments    github.IssueComments
 	IssueURL    string
 	BaseBranch  string
 	Checks      *workflow.SystemStepSnapshot
@@ -57,6 +59,7 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 	text.WriteString(implementSchema)
 	text.WriteString("\n```\n\n## Issue\n\n")
 	text.WriteString(input.IssueTitle + "\n\n" + input.IssueBody + "\n")
+	writeIssueComments(&text, input.Comments)
 	if input.Checks != nil {
 		data, err := json.MarshalIndent(input.Checks, "", "  ")
 		if err != nil {

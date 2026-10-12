@@ -414,7 +414,11 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	phase := harness.PhaseContext{Phase: workflow.Fix, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
 	phase.Interruption = interruptionContext(previous.attempt, phase)
 	checkID := checkRetryIdentity(run, workflow.Fix, previous.attempt, number, checkRetry)
-	input, err := harness.WriteFixInput(ctx, s.deps.Runner, phase, harness.FixInput{Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, PRBody: pr.Body, TargetSHA: target, Round: run.ReviewRound, Findings: findings, CI: repair, Checks: s.checkResult(run, checkID)})
+	issueInput, err := s.phaseIssueInput(ctx, repo, run.ID, issue, gitRun.BaseBranch, &phase)
+	if err != nil {
+		return fail(err)
+	}
+	input, err := harness.WriteFixInput(ctx, s.deps.Runner, phase, harness.FixInput{Issue: issueInput, PRNumber: pr.Number, PRURL: pr.URL, PRBody: pr.Body, TargetSHA: target, Round: run.ReviewRound, Findings: findings, CI: repair, Checks: s.checkResult(run, checkID)})
 	if err != nil {
 		return fail(err)
 	}

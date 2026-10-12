@@ -377,7 +377,11 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return fail(err)
 	}
-	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{ImplementReport: implementReport, Issue: harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: gitRun.BaseBranch}, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair, Checks: checks})
+	issueInput, err := s.phaseIssueInput(ctx, repo, run.ID, issue, gitRun.BaseBranch, &phase)
+	if err != nil {
+		return fail(err)
+	}
+	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{ImplementReport: implementReport, Issue: issueInput, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair, Checks: checks})
 	if err != nil {
 		return fail(err)
 	}
