@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -259,5 +260,73 @@ fi
 	})
 	if run.State != workflow.WaitingForCI || run.ReviewRound != 2 {
 		t.Fatalf("unchecked refreshed body reached implement/review/fix: %+v", run)
+	}
+}
+
+func TestPendingRefusalPreservesTrustedRelabelAfterRestart(t *testing.T) {
+	for _, removalCompleted := range []bool{false, true} {
+		for _, paused := range []bool{false, true} {
+			name := fmt.Sprintf("removal_completed=%t/paused=%t", removalCompleted, paused)
+			t.Run(name, func(t *testing.T) {
+				api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}, blockers: map[int][]github.Issue{7: {ready(99)}}, trust: func(github.Issue) (github.TrustDecision, error) {
+					return github.TrustDecision{Reason: "Untrusted label actor."}, nil
+				}}
+				s, rt := fixture(t, api)
+				interrupted, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				api.mutate = func(action, repo string, n int, label string) error {
+					if action == "remove" && label == "ready-for-agent" {
+						if !removalCompleted {
+							return errors.New("ready-label removal interrupted")
+						}
+						// Cancellation after the remote mutation keeps its local receipt pending.
+						cancel()
+					}
+					return nil
+				}
+				if err := s.Tick(interrupted); err == nil {
+					t.Fatal("expected interrupted refusal")
+				}
+				if len(api.trustComments) != 1 {
+					t.Fatal("initial refusal should have one explanation")
+				}
+				if has(api.issues["owner/repo"][0], "ready-for-agent") == removalCompleted {
+					t.Fatal("interruption did not reach the intended removal boundary")
+				}
+				ctx := context.Background()
+				api.mutate = nil
+				api.trust = func(github.Issue) (github.TrustDecision, error) { return github.TrustDecision{Allowed: true}, nil }
+				if err := api.RemoveLabel(ctx, "owner/repo", 7, "ready-for-agent"); err != nil {
+					t.Fatal(err)
+				}
+				if err := api.AddLabel(ctx, "owner/repo", 7, "ready-for-agent"); err != nil {
+					t.Fatal(err)
+				}
+				cfg, _, err := config.Parse([]byte("repositories: [{repo: owner/repo}]"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				restarted, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: api})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if paused {
+					if err := restarted.Pause(ctx, true); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := restarted.Tick(ctx); err != nil {
+					t.Fatal(err)
+				}
+				queue, err := restarted.Queue(ctx)
+				if err != nil || len(queue) != 1 || queue[0].Attention || queue[0].RefusalReason != "" || !has(api.issues["owner/repo"][0], "ready-for-agent") {
+					t.Fatalf("pending refusal consumed trusted reauthorization: labels=%+v queue=%+v err=%v", api.issues["owner/repo"][0].Labels, queue, err)
+				}
+				runs, err := restarted.Runs(ctx)
+				if err != nil || len(runs) != 0 || len(api.trustComments) != 1 {
+					t.Fatalf("replay must preserve queued work and one explanation: runs=%+v err=%v", runs, err)
+				}
+			})
+		}
 	}
 }

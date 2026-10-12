@@ -103,6 +103,21 @@ func (s *Scheduler) reconcileRefusals(ctx context.Context) error {
 		if !ok || !repo.Enabled {
 			continue
 		}
+		issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, refusal.number)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if hasLabel(issue, refusal.ready) {
+			// A maintainer may have reapplied authorization while removal was
+			// pending. Recheck without the poll cache before mutating that label.
+			// Use its saved name even if configuration has since renamed ready.
+			repo.Labels.Ready = refusal.ready
+			if _, err := s.recheckIssue(ctx, repo, issue); err != nil {
+				failures = append(failures, err)
+			}
+			continue
+		}
 		if err := s.finishRefusal(ctx, repo.Repo, refusal.number, refusal.ready, refusal.reason); err != nil {
 			failures = append(failures, err)
 		}
