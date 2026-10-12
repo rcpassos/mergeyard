@@ -164,6 +164,9 @@ func waitForPhase(t *testing.T, s *scheduler.Scheduler, phase workflow.Phase) wo
 			return false
 		}
 		result = runs[0]
+		if phase == workflow.Implement {
+			return result.Implementer != nil && result.Implementer.Status == "running"
+		}
 		if phase == workflow.Review {
 			return result.Review != nil && result.Review.Status == "running" && result.Review.SessionID != ""
 		}
@@ -338,7 +341,7 @@ func TestCodexReviewAndFixRequireCompletionAndSchema(t *testing.T) {
 					report = changesReview
 				}
 				if kind == "schema" {
-					report = strings.ReplaceAll(report, `"schema_version":2,`, "")
+					report = strings.ReplaceAll(report, `"schema_version":3,"human_action":null,`, "")
 				}
 				if kind == "provider failure" {
 					report = `echo 'Unsupported model' >&2; exit 1`

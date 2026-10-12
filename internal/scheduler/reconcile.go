@@ -81,6 +81,9 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 			reconcilable[issueKey(run.Repository, run.IssueNumber)] = true
 		}
 	}
+	if err := s.publishAttention(ctx); err != nil {
+		failures = append(failures, err)
+	}
 	if err := s.publishReports(ctx); err != nil {
 		failures = append(failures, err)
 	}

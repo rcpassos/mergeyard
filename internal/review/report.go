@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"math/big"
 	"path"
 	"strings"
@@ -20,11 +21,12 @@ type Finding struct {
 }
 
 type Report struct {
-	SchemaVersion int            `json:"schema_version"`
-	Status        string         `json:"status"`
-	Summary       string         `json:"summary"`
-	Findings      []Finding      `json:"findings"`
-	PriorFindings []PriorFinding `json:"prior_findings"`
+	HumanAction   *fault.HumanAction `json:"human_action"`
+	SchemaVersion int                `json:"schema_version"`
+	Status        string             `json:"status"`
+	Summary       string             `json:"summary"`
+	Findings      []Finding          `json:"findings"`
+	PriorFindings []PriorFinding     `json:"prior_findings"`
 }
 
 type PriorFinding struct {
@@ -76,12 +78,20 @@ type Snapshot struct {
 
 // Parse enforces the native strict contract before using any reported verdict.
 func Parse(data []byte) (Report, error) {
-	return parse(data, 2)
+	return parse(data, 3)
 }
 
 // ParseLegacy is only for attempts launched with the persisted v1 schema.
 func ParseLegacy(data []byte) (Report, error) {
 	return parse(data, 1)
+}
+
+// ParseVersion is for an attempt's saved contract, never for a newly launched review.
+func ParseVersion(data []byte, version int) (Report, error) {
+	if version < 1 || version > 3 {
+		return Report{}, fmt.Errorf("unsupported review schema version")
+	}
+	return parse(data, int64(version))
 }
 
 func parse(data []byte, expectedVersion int64) (Report, error) {
@@ -90,17 +100,20 @@ func parse(data []byte, expectedVersion int64) (Report, error) {
 		return Report{}, err
 	}
 	fieldCount := 5
+	if expectedVersion == 3 {
+		fieldCount = 6
+	}
 	if expectedVersion == 1 {
 		fieldCount = 4
 	}
-	if len(fields) != fieldCount || fields["schema_version"] == nil || fields["status"] == nil || fields["summary"] == nil || fields["findings"] == nil || (expectedVersion == 2 && fields["prior_findings"] == nil) {
-		return Report{}, fmt.Errorf("review requires schema_version, status, summary, findings, and (in v2) prior_findings")
+	if len(fields) != fieldCount || fields["schema_version"] == nil || fields["status"] == nil || fields["summary"] == nil || fields["findings"] == nil || (expectedVersion >= 2 && fields["prior_findings"] == nil) {
+		return Report{}, fmt.Errorf("review requires schema_version, status, summary, findings, prior_findings (v2+), and human_action (v3)")
 	}
 	version, ok := new(big.Rat).SetString(string(fields["schema_version"]))
 	if !ok || version.Cmp(big.NewRat(expectedVersion, 1)) != 0 {
 		return Report{}, fmt.Errorf("schema_version must be %d", expectedVersion)
 	}
-	if expectedVersion == 2 {
+	if expectedVersion >= 2 {
 		if bytes.Equal(bytes.TrimSpace(fields["prior_findings"]), []byte("null")) {
 			return Report{}, fmt.Errorf("prior_findings cannot be null")
 		}
@@ -133,6 +146,11 @@ func parse(data []byte, expectedVersion int64) (Report, error) {
 			}
 		}
 	}
+	if expectedVersion == 3 {
+		if _, err := fault.ParseHumanAction(fields["human_action"], stringValue(fields["status"])); err != nil {
+			return Report{}, err
+		}
+	}
 	// Normalize equivalent numeric spellings after checking the exact value.
 	fields["schema_version"] = json.RawMessage(fmt.Sprint(expectedVersion))
 	if expectedVersion == 1 {
@@ -147,8 +165,13 @@ func parse(data []byte, expectedVersion int64) (Report, error) {
 }
 
 func (r Report) Validate() error {
-	if (r.SchemaVersion != 1 && r.SchemaVersion != 2) || r.Findings == nil || (r.SchemaVersion == 2 && r.PriorFindings == nil) {
+	if (r.SchemaVersion < 1 || r.SchemaVersion > 3) || r.Findings == nil || (r.SchemaVersion >= 2 && r.PriorFindings == nil) {
 		return fmt.Errorf("invalid review version or findings")
+	}
+	if r.SchemaVersion == 3 {
+		if err := r.HumanAction.Validate(r.Status); err != nil {
+			return err
+		}
 	}
 	priorIDs := map[string]bool{}
 	for _, f := range r.PriorFindings {
@@ -232,4 +255,10 @@ func (r Report) ValidatePriorFindings(round int, previous []Finding, fix *FixRep
 	return nil
 }
 
-const Schema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":2},"status":{"type":"string","enum":["approved","changes_required","blocked","failed"]},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"severity":{"type":"string","enum":["blocking","warning","note"]},"title":{"type":"string"},"details":{"type":"string"},"file":{"type":["string","null"]},"line":{"type":["integer","null"],"minimum":1}},"required":["id","severity","title","details","file","line"],"additionalProperties":false}},"prior_findings":{"type":"array","items":{"type":"object","properties":{"finding_id":{"type":"string"},"outcome":{"type":"string","enum":["fixed","not_fixed","no_longer_applies"]},"note":{"type":"string"}},"required":["finding_id","outcome","note"],"additionalProperties":false}}},"required":["schema_version","status","summary","findings","prior_findings"],"additionalProperties":false}`
+const Schema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":3},"status":{"type":"string","enum":["approved","changes_required","blocked","failed"]},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"severity":{"type":"string","enum":["blocking","warning","note"]},"title":{"type":"string"},"details":{"type":"string"},"file":{"type":["string","null"]},"line":{"type":["integer","null"],"minimum":1}},"required":["id","severity","title","details","file","line"],"additionalProperties":false}},"human_action":` + fault.HumanActionSchema + `,"prior_findings":{"type":"array","items":{"type":"object","properties":{"finding_id":{"type":"string"},"outcome":{"type":"string","enum":["fixed","not_fixed","no_longer_applies"]},"note":{"type":"string"}},"required":["finding_id","outcome","note"],"additionalProperties":false}}},"required":["schema_version","status","summary","findings","prior_findings","human_action"],"additionalProperties":false}`
+
+func stringValue(data json.RawMessage) string {
+	var value string
+	_ = json.Unmarshal(data, &value)
+	return value
+}

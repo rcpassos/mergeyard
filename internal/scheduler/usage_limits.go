@@ -3,9 +3,11 @@ package scheduler
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,6 +31,28 @@ func (*temporaryLimitError) Error() string {
 // Parse semantic results first. Valid blocked/failed task reports and successful
 // native completion never enter the classifier, even when tool text names limits.
 func (s *Scheduler) parseExecution(ctx context.Context, runID, attemptID, agent string, phase harness.PhaseContext, artifacts harness.PhaseArtifacts) (harness.PhaseResult, error) {
+	// Every in-flight phase uses its saved schema after upgrade. Fresh native
+	// adapter calls default to the current contract.
+	if phase.PhaseDir != "" {
+		schema, err := s.deps.Runner.ReadFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"))
+		if err != nil {
+			return harness.PhaseResult{}, err
+		}
+		var contract struct {
+			Properties struct {
+				SchemaVersion struct {
+					Const int `json:"const"`
+				} `json:"schema_version"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(schema, &contract); err != nil {
+			return harness.PhaseResult{}, err
+		}
+		if contract.Properties.SchemaVersion.Const < 1 {
+			return harness.PhaseResult{}, &fault.Error{Code: "phase.result_invalid", Message: "Saved schema version is missing"}
+		}
+		phase.ResultSchemaVersion = contract.Properties.SchemaVersion.Const
+	}
 	result, err := s.harnesses[agent].ParseResult(phase, artifacts)
 	completed := s.harnesses[agent].NativeSucceeded(artifacts)
 	if completed {

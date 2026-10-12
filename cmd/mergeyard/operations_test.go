@@ -15,6 +15,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/maintenance"
 	"github.com/rcpassos/mergeyard/internal/review"
@@ -161,7 +162,7 @@ func TestCLIStatusEscapesUntrustedReviewText(t *testing.T) {
 	root := t.TempDir()
 	attack := "\x1b[2J\x1b[H\r\nScheduler: paused\b\t\a\u009b2J\u202e"
 	file := "src/file" + attack + ".go"
-	raw, err := json.Marshal(review.Report{SchemaVersion: 2, Status: "approved", Summary: "Reviewed café " + attack, PriorFindings: []review.PriorFinding{}, Findings: []review.Finding{{ID: "R1-F1" + attack, Severity: "note", Title: "Optional " + attack, Details: "Details " + attack, File: &file}}})
+	raw, err := json.Marshal(review.Report{SchemaVersion: 3, Status: "approved", Summary: "Reviewed café " + attack, PriorFindings: []review.PriorFinding{}, Findings: []review.Finding{{ID: "R1-F1" + attack, Severity: "note", Title: "Optional " + attack, Details: "Details " + attack, File: &file}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +171,7 @@ func TestCLIStatusEscapesUntrustedReviewText(t *testing.T) {
 		t.Fatalf("review report should retain original text: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(web.Status{Workspace: root, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Review, LastErrorCode: "review.failed", LastErrorMessage: attack, CI: &ci.Snapshot{SHA: "approved" + attack, CurrentHead: "current" + attack, QueryError: "query" + attack, Warning: "warning" + attack, Evidence: ci.Evidence{MergeSHA: "merge" + attack, Checks: []ci.Check{{Name: "check" + attack, SHA: "check-sha" + attack, State: "unknown", Status: "completed", Conclusion: "neutral", URL: "https://check.example/" + attack, Excerpt: "check excerpt" + attack}}, Required: []ci.Requirement{{Name: "required" + attack}}}}, FixHistory: []review.FixSnapshot{{CI: &ci.Snapshot{RepairCause: "ci.check_failed" + attack, Evidence: ci.Evidence{Checks: []ci.Check{{Name: "build" + attack, Conclusion: "failure", Excerpt: "failure excerpt" + attack, URL: "https://check.example/" + attack}}}}, Round: 1, Attempt: 1, Status: "succeeded", SessionID: "implementer" + attack, Report: &review.FixReport{SchemaVersion: 1, Status: "success", Summary: "Fix summary" + attack, Responses: []review.Response{{FindingID: "F1" + attack, Resolution: "disputed", Note: "Safe" + attack}}}}}, Review: &review.Snapshot{Agent: "claude", Model: "model" + attack, Effort: "high", Skills: []string{"review" + attack}, PermissionMode: "auto", SessionID: "session-1", Round: 1, Attempt: 1, TargetSHA: "pinned", Status: "succeeded", Accepted: true, Report: &report}}}})
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Review, LastErrorCode: "review.failed", LastErrorMessage: attack, HumanAction: &fault.HumanAction{Decision: "Choose recovery" + attack, Files: []string{file}, Options: []string{"Retry" + attack}}, CI: &ci.Snapshot{SHA: "approved" + attack, CurrentHead: "current" + attack, QueryError: "query" + attack, Warning: "warning" + attack, Evidence: ci.Evidence{MergeSHA: "merge" + attack, Checks: []ci.Check{{Name: "check" + attack, SHA: "check-sha" + attack, State: "unknown", Status: "completed", Conclusion: "neutral", URL: "https://check.example/" + attack, Excerpt: "check excerpt" + attack}}, Required: []ci.Requirement{{Name: "required" + attack}}}}, FixHistory: []review.FixSnapshot{{CI: &ci.Snapshot{RepairCause: "ci.check_failed" + attack, Evidence: ci.Evidence{Checks: []ci.Check{{Name: "build" + attack, Conclusion: "failure", Excerpt: "failure excerpt" + attack, URL: "https://check.example/" + attack}}}}, Round: 1, Attempt: 1, Status: "succeeded", SessionID: "implementer" + attack, Report: &review.FixReport{SchemaVersion: 1, Status: "success", Summary: "Fix summary" + attack, Responses: []review.Response{{FindingID: "F1" + attack, Resolution: "disputed", Note: "Safe" + attack}}}}}, Review: &review.Snapshot{Agent: "claude", Model: "model" + attack, Effort: "high", Skills: []string{"review" + attack}, PermissionMode: "auto", SessionID: "session-1", Round: 1, Attempt: 1, TargetSHA: "pinned", Status: "succeeded", Accepted: true, Report: &report}}}})
 	}))
 	defer server.Close()
 	configPath := filepath.Join(root, "config.yaml")
@@ -181,6 +182,11 @@ func TestCLIStatusEscapesUntrustedReviewText(t *testing.T) {
 	code, out, errOut := runCLI("status", "--config", configPath)
 	if code != 0 {
 		t.Fatalf("status failed: %s", errOut)
+	}
+	for _, want := range []string{"Human action required: Choose recovery", "File: src/file", "Option: Retry"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status lost human action %q: %s", want, out)
+		}
 	}
 	for _, r := range out {
 		if (unicode.IsControl(r) && r != '\n') || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {

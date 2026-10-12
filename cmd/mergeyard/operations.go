@@ -180,6 +180,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 					fmt.Fprintf(stdout, "  %s\n", terminalText(run.Merge.Error))
 				}
 			}
+			printHumanAction(stdout, run)
 			if run.LastErrorCode != "" {
 				fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 			}
@@ -300,6 +301,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		if len(run.Retries) > 0 {
 			printRetry(stdout, run.Retries[len(run.Retries)-1])
 		}
+		printHumanAction(stdout, run)
 		if run.LastErrorCode != "" {
 			fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 		}
@@ -420,4 +422,17 @@ func terminalText(value string) string {
 		}
 	}
 	return text.String()
+}
+
+func printHumanAction(out io.Writer, run workflow.Run) {
+	if run.HumanAction == nil {
+		return
+	}
+	fmt.Fprintf(out, "  Human action required: %s\n", terminalText(run.HumanAction.Decision))
+	for _, file := range run.HumanAction.Files {
+		fmt.Fprintf(out, "    File: %s\n", terminalText(file))
+	}
+	for _, option := range run.HumanAction.Options {
+		fmt.Fprintf(out, "    Option: %s\n", terminalText(option))
+	}
 }

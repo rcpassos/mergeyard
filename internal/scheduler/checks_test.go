@@ -46,7 +46,7 @@ func TestFailingChecksNeverPublishImplementation(t *testing.T) {
 func TestChecksResumeSamePhaseBeforePublicationWithoutSpendingAttempts(t *testing.T) {
 	script := `case "$*" in *implement-0-2*)
  printf fixed > feature.txt
- printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":1,"status":"success","summary":"Fixed checks"}}'
+ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Fixed checks"}}'
  ;; *) ` + successfulScript + ` ;; esac`
 	_, rt, api, remote, cfg, r := localFlow(t, script)
 	cfg.Repositories[0].Checks = []string{"/usr/bin/grep -q fixed feature.txt || { printf 'expected fixed\\n'; exit 3; }"}
@@ -178,7 +178,7 @@ func TestChecksAndCheckRepairSurviveControlPlaneRestart(t *testing.T) {
 			release := filepath.Join(t.TempDir(), "release")
 			script := successfulScript
 			if mode == "repair" {
-				script = `case "$*" in *implement-0-2*) while [ ! -f '` + release + `' ]; do /bin/sleep 0.02; done; printf fixed > feature.txt; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":1,"status":"success","summary":"Fixed checks"}}';; *) ` + successfulScript + `;; esac`
+				script = `case "$*" in *implement-0-2*) while [ ! -f '` + release + `' ]; do /bin/sleep 0.02; done; printf fixed > feature.txt; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Fixed checks"}}';; *) ` + successfulScript + `;; esac`
 			}
 			flow := localFlow
 			if mode == "fix" {
@@ -272,7 +272,7 @@ func TestChecksAndCheckRepairSurviveControlPlaneRestart(t *testing.T) {
 }
 
 func TestUsageLimitDuringCheckRepairRetainsItsAllowance(t *testing.T) {
-	script := `case "$*" in *implement-0-2*) exit 1;; *implement-0-3*) printf fixed > feature.txt; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":1,"status":"success","summary":"Fixed checks"}}';; *) ` + successfulScript + `;; esac`
+	script := `case "$*" in *implement-0-2*) exit 1;; *implement-0-3*) printf fixed > feature.txt; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Fixed checks"}}';; *) ` + successfulScript + `;; esac`
 	_, rt, api, _, cfg, r := localFlow(t, script)
 	cfg.Repositories[0].Checks = []string{"/usr/bin/grep -q fixed feature.txt || exit 3"}
 	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
@@ -370,7 +370,7 @@ func TestChecksAlsoRepairCIFixesBeforePush(t *testing.T) {
 func TestBlockedHarnessCanProbeUsingPendingCheckRepair(t *testing.T) {
 	script := `phase_dir=''; previous=''; for arg do if [ "$previous" = '--add-dir' ]; then phase_dir=$arg; fi; previous=$arg; done
 if /usr/bin/grep -q '#8' "$phase_dir/input.md"; then exit 1; fi
-case "$*" in *implement-0-1*) ` + successfulScript + `;; *) printf fixed > feature.txt; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":1,"status":"success","summary":"Fixed checks"}}';; esac`
+case "$*" in *implement-0-1*) ` + successfulScript + `;; *) printf fixed > feature.txt; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Fixed checks"}}';; esac`
 	_, rt, api, _, cfg, r := localFlow(t, script)
 	api.issues["owner/repo"] = append(api.issues["owner/repo"], ready(8))
 	cfg.Concurrency = 2
@@ -423,7 +423,7 @@ case "$*" in *implement-0-1*) ` + successfulScript + `;; *) printf fixed > featu
 }
 
 func TestHandbackAfterCheckRepairOpensOrdinaryAttemptBudget(t *testing.T) {
-	script := `case "$*" in *implement-0-3*) exit 1;; *implement-0-4*) printf fixed > feature.txt; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":1,"status":"success","summary":"Implemented after handback"}}';; *) ` + successfulScript + `;; esac`
+	script := `case "$*" in *implement-0-3*) exit 1;; *implement-0-4*) printf fixed > feature.txt; printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":2,"human_action":null,"status":"success","summary":"Implemented after handback"}}';; *) ` + successfulScript + `;; esac`
 	_, rt, api, _, cfg, r := localFlow(t, script)
 	cfg.Repositories[0].Implementer.MaxAttempts = 2
 	cfg.Repositories[0].Checks = []string{"/usr/bin/grep -q fixed feature.txt || exit 3"}

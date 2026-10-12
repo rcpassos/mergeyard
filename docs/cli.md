@@ -73,7 +73,7 @@ It acquires the configured workspace lock, so stop the control plane first if
 it is running. The command prints findings and preserves orphaned artifacts.
 
 Status output escapes terminal controls and Unicode formatting controls in review
-text, locations, settings and attention diagnostics. Stored reports keep their
+text, locations, settings and attention diagnostics. Needs-attention runs show the exact human decision or command, files to inspect, and available options before the fault diagnostics. Stored reports keep their
 original text; control sequences appear as visible escapes in the terminal.
 
 `mergeyard takeover <run-id>` prepares manual control through the running
