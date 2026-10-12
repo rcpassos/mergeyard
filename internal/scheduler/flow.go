@@ -300,6 +300,19 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		}
 		code, message, _ := strings.Cut(a.failure, ": ")
 		cause := &fault.Error{Code: code, Message: message}
+		if code == "phase.blocked" {
+			// The result was saved before the failed-attempt commit. Recover its
+			// decision if the control plane stopped before the attention transition.
+			data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.ref.PhaseDir, "result.json"))
+			if err != nil {
+				return harness.PhaseResult{}, false, err
+			}
+			var result harness.PhaseResult
+			if err := json.Unmarshal(data, &result); err != nil {
+				return result, false, err
+			}
+			cause.HumanAction = result.HumanAction
+		}
 		retry, err := s.retryPhase(ctx, run, workflow.Implement, a, cause, max)
 		if err != nil {
 			return harness.PhaseResult{}, false, err

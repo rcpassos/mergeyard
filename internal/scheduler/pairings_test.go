@@ -164,6 +164,9 @@ func waitForPhase(t *testing.T, s *scheduler.Scheduler, phase workflow.Phase) wo
 			return false
 		}
 		result = runs[0]
+		if phase == workflow.Implement {
+			return result.Implementer != nil && result.Implementer.Status == "running"
+		}
 		if phase == workflow.Review {
 			return result.Review != nil && result.Review.Status == "running" && result.Review.SessionID != ""
 		}

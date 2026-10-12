@@ -31,7 +31,7 @@ func TestHumanActionAcrossAllHarnessPairingsAndPhases(t *testing.T) {
 						script = strings.Replace(script, successfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"status":"blocked","summary":"Need a decision",`+blockedAction+`}}'`, 1)
 					}
 					if phase == workflow.Review {
-						script = strings.Replace(script, changesReview, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"status":"blocked","summary":"Need a decision",`+blockedAction+`,"findings":[],"prior_findings":[]}}'`, 1)
+						script = strings.Replace(script, changesReview, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"status":"blocked","summary":"",`+blockedAction+`,"findings":[],"prior_findings":[]}}'`, 1)
 					}
 					replacePhaseScript(t, cfg, phase, script)
 					run := finish(t, s, workflow.NeedsAttention, phase)
@@ -208,6 +208,44 @@ func TestReconcileLegacyImplementAndFixSchemas(t *testing.T) {
 					finish(t, restarted, workflow.Active, workflow.Review)
 				} else {
 					finish(t, restarted, workflow.WaitingForCI, workflow.Review)
+				}
+			})
+		}
+	}
+}
+
+func TestBlockedActionSurvivesFailedAttemptRestart(t *testing.T) {
+	for _, agent := range []string{"claude", "codex"} {
+		for _, phase := range []workflow.Phase{workflow.Implement, workflow.Fix} {
+			t.Run(agent+"/"+string(phase), func(t *testing.T) {
+				blocked := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"status":"blocked","summary":"Need decision",` + blockedAction + `,"responses":[]}}'`
+				s, initial, api, _, cfg, r := pairingFlow(t, agent, "claude", blocked)
+				if phase == workflow.Implement {
+					replacePhaseScript(t, cfg, phase, strings.Replace(loopScript(blocked), successfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":2,"status":"blocked","summary":"Need decision",`+blockedAction+`}}'`, 1))
+				}
+				run := finish(t, s, workflow.NeedsAttention, phase)
+				expected := run.HumanAction
+				// Recreate the durable boundary after the failed-attempt commit but before
+				// its attention transition. The saved result and attempt fault remain.
+				if _, err := initial.DB.Exec(`UPDATE runs SET state='ACTIVE',last_error_code=NULL,last_error_message=NULL,human_action_json=NULL WHERE id=?`, run.ID); err != nil {
+					t.Fatal(err)
+				}
+				root := initial.Workspace.Root
+				if err := initial.Close(); err != nil {
+					t.Fatal(err)
+				}
+				runtime, err := app.Open(context.Background(), root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer runtime.Close()
+				restarted, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumed := finish(t, restarted, workflow.NeedsAttention, phase)
+				if !reflect.DeepEqual(resumed.HumanAction, expected) {
+					t.Fatalf("blocked action lost across failed-attempt restart: got %+v want %+v", resumed.HumanAction, expected)
 				}
 			})
 		}

@@ -153,7 +153,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 				if cause == nil && (report.Status == "blocked" || report.Status == "failed") {
 					cause = &fault.Error{Code: "phase." + report.Status, Message: report.Summary, HumanAction: report.HumanAction}
 					if report.Summary == "" {
-						cause = &fault.Error{Code: "phase." + report.Status, Message: "Reviewer reported " + report.Status}
+						cause = &fault.Error{Code: "phase." + report.Status, Message: "Reviewer reported " + report.Status, HumanAction: report.HumanAction}
 					}
 				}
 			}

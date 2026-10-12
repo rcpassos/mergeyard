@@ -89,6 +89,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 	if a.status == "failed" {
 		code, message, _ := strings.Cut(a.failure, ": ")
 		cause := &fault.Error{Code: code, Message: message}
+		if code == "phase.blocked" && a.report != nil {
+			cause.HumanAction = a.report.HumanAction
+		}
 		retry, retryErr := s.retryPhase(ctx, run, workflow.Fix, a.attempt, cause, repo.Implementer.MaxAttempts)
 		if retryErr != nil {
 			return retryErr
