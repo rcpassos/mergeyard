@@ -1,0 +1,37 @@
+name: Set up Go with module and build caches
+description: Reuse dependencies and refresh compiled outputs for each commit.
+
+inputs:
+  cache-scope:
+    description: Separate test and release build outputs.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      id: go
+      with:
+        go-version-file: go.mod
+        cache: false
+    - name: Locate Go caches
+      id: paths
+      shell: bash
+      run: |
+        echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.paths.outputs.modules }}
+        key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+        restore-keys: |
+          go-mod-${{ runner.os }}-${{ runner.arch }}-
+    - name: Cache Go build outputs
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.paths.outputs.build }}
+        key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ inputs.cache-scope }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+        restore-keys: |
+          go-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ inputs.cache-scope }}-${{ hashFiles('go.sum') }}-
+          go-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ inputs.cache-scope }}-
