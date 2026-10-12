@@ -311,7 +311,7 @@ func (s *Scheduler) RetryEligible(ctx context.Context, run workflow.Run) (bool, 
 			return false, nil
 		}
 	}
-	repo, ok := s.repository(run.Repository)
+	repo, ok := s.runRepository(run)
 	if !ok {
 		return false, nil
 	}
@@ -386,7 +386,7 @@ func (s *Scheduler) retryStartsAgent(ctx context.Context, run workflow.Run, v wo
 		return true, nil
 	}
 	if err == nil && a.status == "succeeded" {
-		if repo, ok := s.repository(run.Repository); ok && len(repo.Checks) > 0 {
+		if repo, ok := s.runRepository(run); ok && len(repo.Checks) > 0 {
 			if checks := latestChecks(run); checks != nil && checks.Status == "failed" && checks.OwnerID == a.id {
 				return true, nil
 			}

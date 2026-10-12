@@ -158,6 +158,12 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 				count++
 			}
 			fmt.Fprintf(stdout, "%s  %s#%d  %s/%s\n", terminalText(run.ID), terminalText(run.Repository), run.IssueNumber, terminalText(string(run.State)), terminalText(string(run.Phase)))
+			if run.RoleSettings != nil {
+				fmt.Fprintln(stdout, "  Role settings at claim:")
+				printStoredRole(stdout, "implementer", run.RoleSettings.Implementer)
+				printStoredRole(stdout, "reviewer", run.RoleSettings.Reviewer)
+			}
+
 			if run.TakeoverStatus == workflow.TakeoverRequested {
 				fmt.Fprintln(stdout, "  Takeover requested; automation is suspended while processes stop and review restoration finishes")
 			}
@@ -435,4 +441,17 @@ func printHumanAction(out io.Writer, run workflow.Run) {
 	for _, option := range run.HumanAction.Options {
 		fmt.Fprintf(out, "    Option: %s\n", terminalText(option))
 	}
+}
+
+// printStoredRole keeps harness provenance beside the fixed run settings.
+func printStoredRole(out io.Writer, name string, settings config.RoleSettings) {
+	fmt.Fprintf(out, "    %s: %s · source %s · model %s · effort %s · skills %s\n", name,
+		terminalText(settings.Agent), terminalText(settings.HarnessSource),
+		defaultSetting(settings.Model), defaultSetting(settings.Effort), terminalText(strings.Join(settings.Skills, ", ")))
+}
+func defaultSetting(value string) string {
+	if value == "" {
+		return "harness default"
+	}
+	return terminalText(value)
 }

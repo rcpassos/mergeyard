@@ -25,7 +25,7 @@ func (s *Scheduler) Stop(ctx context.Context, id string) error {
 		if run.State.Terminal() {
 			return &fault.Error{Code: "run.terminal", Message: "Run is already terminal"}
 		}
-		if _, ok := s.repository(run.Repository); !ok {
+		if _, ok := s.runRepository(run); !ok {
 			return &fault.Error{Code: "config.repository_missing", Message: "Run repository is no longer configured"}
 		}
 		if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
@@ -39,7 +39,7 @@ func (s *Scheduler) Stop(ctx context.Context, id string) error {
 }
 
 func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
-	repo, ok := s.repository(run.Repository)
+	repo, ok := s.runRepository(run)
 	if !ok {
 		return &fault.Error{Code: "config.repository_missing", Message: "Run repository is no longer configured"}
 	}

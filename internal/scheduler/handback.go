@@ -36,7 +36,7 @@ func (s *Scheduler) Handback(ctx context.Context, id string) (workflow.Run, erro
 			}
 			return &fault.Error{Code: "handback.unavailable", Message: "Handback requires prepared manual control; request takeover first"}
 		}
-		repo, ok := s.repository(run.Repository)
+		repo, ok := s.runRepository(run)
 		if !ok {
 			return &fault.Error{Code: "config.repository_missing", Message: "Restore the run's repository configuration before handback"}
 		}

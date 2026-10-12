@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/rcpassos/mergeyard/internal/ci"
+	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/maintenance"
@@ -120,16 +121,17 @@ type MetadataPatch struct {
 // Run is the persisted lifecycle and workflow metadata snapshot. Worktree and
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
-	HumanAction        *fault.HumanAction   `json:"human_action,omitempty"`
-	SystemSteps        []SystemStepSnapshot `json:"system_steps,omitempty"`
-	RetryEligible      bool                 `json:"retry_eligible,omitempty"`
-	CreditProbes       []CreditProbe        `json:"credit_probes,omitempty"`
-	HarnessWait        *HarnessWait         `json:"harness_wait,omitempty"`
-	HarnessWaitHistory []HarnessWait        `json:"harness_wait_history,omitempty"`
-	Handbacks          []HandbackSnapshot   `json:"handbacks,omitempty"`
-	Retries            []RetrySnapshot      `json:"retries,omitempty"`
-	SessionRecoveries  []SessionRecovery    `json:"session_recoveries,omitempty"`
-	Implementer        *ImplementSnapshot   `json:"implementer,omitempty"`
+	RoleSettings       *config.RunRoleSettings `json:"role_settings,omitempty"`
+	HumanAction        *fault.HumanAction      `json:"human_action,omitempty"`
+	SystemSteps        []SystemStepSnapshot    `json:"system_steps,omitempty"`
+	RetryEligible      bool                    `json:"retry_eligible,omitempty"`
+	CreditProbes       []CreditProbe           `json:"credit_probes,omitempty"`
+	HarnessWait        *HarnessWait            `json:"harness_wait,omitempty"`
+	HarnessWaitHistory []HarnessWait           `json:"harness_wait_history,omitempty"`
+	Handbacks          []HandbackSnapshot      `json:"handbacks,omitempty"`
+	Retries            []RetrySnapshot         `json:"retries,omitempty"`
+	SessionRecoveries  []SessionRecovery       `json:"session_recoveries,omitempty"`
+	Implementer        *ImplementSnapshot      `json:"implementer,omitempty"`
 	RunMetadata
 	Merge            *maintenance.Snapshot `json:"merge,omitempty"`
 	CI               *ci.Snapshot          `json:"ci,omitempty"`
@@ -153,9 +155,11 @@ type Run struct {
 
 // Request supplies trigger-specific information, not an arbitrary new state.
 type Request struct {
-	Trigger     Trigger
-	Repository  string
-	IssueNumber int
+	// RoleSettings is accepted only at claim; legacy callers may omit it.
+	RoleSettings *config.RunRoleSettings
+	Trigger      Trigger
+	Repository   string
+	IssueNumber  int
 	// NextState is accepted only for Retry after external reconciliation.
 	NextState State
 	// NextPhase is required for HandBack and retrying an agent-backed state.
@@ -193,6 +197,9 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		if err != nil && !(errors.As(err, &missing) && missing.Code == "internal.run_not_found" && request.Trigger == IssueClaimed) {
 			return nil, err
 		}
+		if request.RoleSettings != nil && request.Trigger != IssueClaimed {
+			return nil, invalid("Role settings can only be stored at claim")
+		}
 		next, eventType, err := destination(current, request)
 		if err != nil {
 			return nil, err
@@ -227,8 +234,16 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 			if strings.TrimSpace(request.Repository) == "" || request.IssueNumber < 1 {
 				return nil, invalid("A new run requires a repository and a positive issue number")
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO runs (id, repository, issue_number, state) VALUES (?, ?, ?, ?)`,
-				id, request.Repository, request.IssueNumber, next.State)
+			var settings any
+			if request.RoleSettings != nil {
+				data, marshalErr := json.Marshal(request.RoleSettings)
+				if marshalErr != nil {
+					return nil, marshalErr
+				}
+				settings = string(data)
+			}
+			_, err = tx.ExecContext(ctx, `INSERT INTO runs (id, repository, issue_number, state, role_settings_json) VALUES (?, ?, ?, ?, ?)`,
+				id, request.Repository, request.IssueNumber, next.State, settings)
 		} else {
 			var code, message, humanAction any
 			if next.State == NeedsAttention || next.State == Failed {
@@ -603,13 +618,13 @@ type queryer interface {
 
 func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 	var run Run
-	var humanAction string
+	var humanAction, roleSettings string
 	err := db.QueryRowContext(ctx, `SELECT id, repository, issue_number, state, COALESCE(current_phase, ''),
 		created_at, updated_at, COALESCE(completed_at, ''), COALESCE(last_error_code, ''), COALESCE(last_error_message, ''),
-		COALESCE(pr_number, 0), review_round, COALESCE(approved_sha, ''), takeover_status, COALESCE(human_action_json, 'null')
+		COALESCE(pr_number, 0), review_round, COALESCE(approved_sha, ''), takeover_status, COALESCE(human_action_json, 'null'), COALESCE(role_settings_json, 'null')
 		FROM runs WHERE id = ?`, id).Scan(&run.ID, &run.Repository, &run.IssueNumber, &run.State, &run.Phase,
 		&run.CreatedAt, &run.UpdatedAt, &run.CompletedAt, &run.LastErrorCode, &run.LastErrorMessage,
-		&run.PRNumber, &run.ReviewRound, &run.ApprovedSHA, &run.TakeoverStatus, &humanAction)
+		&run.PRNumber, &run.ReviewRound, &run.ApprovedSHA, &run.TakeoverStatus, &humanAction, &roleSettings)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, &fault.Error{Code: "internal.run_not_found", Message: "Run does not exist", Path: id, Err: err}
 	}
@@ -617,6 +632,9 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 		return Run{}, storageError(err)
 	}
 	if err := json.Unmarshal([]byte(humanAction), &run.HumanAction); err != nil {
+		return Run{}, storageError(err)
+	}
+	if err := json.Unmarshal([]byte(roleSettings), &run.RoleSettings); err != nil {
 		return Run{}, storageError(err)
 	}
 	run.CreditProbes, err = LoadCreditProbes(ctx, db, id)

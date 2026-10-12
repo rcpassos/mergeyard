@@ -297,7 +297,25 @@ An issue is eligible only when all of the following are true:
 - the repository is enabled;
 - global concurrency has capacity;
 - repository concurrency has capacity, when a repository limit is set;
-- the implementer's harness is not usage-limited (section 12).
+- harness override labels are valid and unambiguous for each role;
+- the issue's resolved implementer harness has neither a usage limit nor an
+  exhausted-credit block (section 12).
+
+The fixed, case-insensitive labels `mergeyard:implementer=<agent>` and
+`mergeyard:reviewer=<agent>` select `claude` or `codex`. Without an override, each
+role uses repository configuration. Configured model and effort apply only when
+the resolved harness equals the configured agent; skills always come from the
+role configuration. Both roles' settings and their harness source (`label` or
+`config`) are persisted at claim and fixed for every later phase, restart,
+resume, recovery probe, takeover, handback and Retry. Existing runs without
+stored settings retain configuration-based behavior.
+
+Invalid or conflicting override labels create no run. Mergeyard applies the
+repository's needs-attention label and posts one explanatory comment naming the
+offending labels and valid values. Fixing the labels and removing needs-attention
+allows another evaluation. Harness restrictions are checked per issue; a skipped
+issue does not prevent later issues in the same repository from being considered.
+A restricted reviewer does not prevent claiming; the review phase gate waits.
 
 ### Dependency source
 

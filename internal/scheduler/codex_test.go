@@ -284,7 +284,7 @@ func TestCodexIdentityPersistsBeforeNextGitHubPoll(t *testing.T) {
 	t.Fatal("early identity waited for the GitHub polling interval")
 }
 
-func TestCodexRestartDoesNotSendSessionToAnotherHarness(t *testing.T) {
+func TestLegacyCodexRestartDoesNotSendSessionToAnotherHarness(t *testing.T) {
 	_, runtime, api, _, cfg, r := codexFlow(t, codexIdentity+"\n"+`echo temporary-failure >&2; exit 1`)
 	cfg.Repositories[0].Implementer.MaxAttempts = 2
 	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
@@ -307,6 +307,10 @@ func TestCodexRestartDoesNotSendSessionToAnotherHarness(t *testing.T) {
 			t.Fatal("first attempt did not fail")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	// Simulate a run claimed by the old binary, without a fixed role selection.
+	if _, err := runtime.DB.Exec("UPDATE runs SET role_settings_json=NULL"); err != nil {
+		t.Fatal(err)
 	}
 	cfg.Repositories[0].Implementer.Agent = "claude"
 	restarted, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
@@ -362,7 +366,7 @@ func TestCodexPermissionDisplayUsesEffectiveNetworkAccess(t *testing.T) {
 	}
 }
 
-func TestCodexFixRequestsPreserveHarnessOwnership(t *testing.T) {
+func TestLegacyCodexFixRequestsPreserveHarnessOwnership(t *testing.T) {
 	for _, tc := range []struct{ name, agent, code string }{
 		{"changed harness before fix", "claude", "harness.session_agent_changed"},
 	} {
@@ -372,6 +376,10 @@ func TestCodexFixRequestsPreserveHarnessOwnership(t *testing.T) {
 				t.Fatal(err)
 			}
 			run := finish(t, s, workflow.Active, workflow.Fix)
+			// Legacy sessions must still reject a configuration switch of harness.
+			if _, err := runtime.DB.Exec("UPDATE runs SET role_settings_json=NULL WHERE id=?", run.ID); err != nil {
+				t.Fatal(err)
+			}
 			cfg.Repositories[0].Implementer.Agent = tc.agent
 			restarted, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 			if err != nil {

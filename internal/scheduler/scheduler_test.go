@@ -23,16 +23,17 @@ import (
 )
 
 type fakeGitHub struct {
-	getIssue      func(string, int) (github.Issue, error)
-	comments      func(string, int, []string) (github.IssueComments, error)
-	trust         func(github.Issue) (github.TrustDecision, error)
-	trustComments map[int]string
-	issues        map[string][]github.Issue
-	blockers      map[int][]github.Issue
-	prs           map[string]*github.PullRequest
-	creations     int
-	head          func(string) string
-	mutate        func(action, repo string, n int, label string) error
+	getIssue         func(string, int) (github.Issue, error)
+	comments         func(string, int, []string) (github.IssueComments, error)
+	trust            func(github.Issue) (github.TrustDecision, error)
+	trustComments    map[int]string
+	overrideComments map[int]string
+	issues           map[string][]github.Issue
+	blockers         map[int][]github.Issue
+	prs              map[string]*github.PullRequest
+	creations        int
+	head             func(string) string
+	mutate           func(action, repo string, n int, label string) error
 }
 
 func (f *fakeGitHub) ListIssueComments(_ context.Context, repo string, n int, trusted []string) (github.IssueComments, error) {
@@ -888,4 +889,14 @@ func TestRuntimeDashboardControlSharesDispatchGate(t *testing.T) {
 func blockedReport(report string) string {
 	report = strings.Replace(report, `"status":"success"`, `"status":"blocked"`, 1)
 	return strings.Replace(report, `"human_action":null`, `"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]}`, 1)
+}
+
+func (f *fakeGitHub) EnsureHarnessOverrideComment(_ context.Context, _ string, n int, reason string) error {
+	if f.overrideComments == nil {
+		f.overrideComments = make(map[int]string)
+	}
+	if _, exists := f.overrideComments[n]; !exists {
+		f.overrideComments[n] = reason
+	}
+	return nil
 }

@@ -29,6 +29,7 @@ func (s *Scheduler) advance(ctx context.Context, repo config.Repository, run wor
 	})
 }
 func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run workflow.Run) error {
+	repo = run.RoleSettings.Apply(repo)
 	if run.State.Terminal() {
 		return nil
 	}

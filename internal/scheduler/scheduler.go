@@ -30,6 +30,7 @@ type GitHub interface {
 	VerifyIssueTrust(context.Context, string, github.Issue, string, []string) (github.TrustDecision, error)
 	RecheckIssueTrust(context.Context, string, github.Issue, string, []string) (github.TrustDecision, error)
 	EnsureTrustRefusalComment(context.Context, string, int, string) error
+	EnsureHarnessOverrideComment(context.Context, string, int, string) error
 	ListOpenIssues(context.Context, string) ([]github.Issue, error)
 	GetIssue(context.Context, string, int) (github.Issue, error)
 	ListIssueComments(context.Context, string, int, []string) (github.IssueComments, error)
@@ -248,6 +249,9 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return err
 	}
 	var failures []error
+	if err := s.reconcileHarnessOverrideRefusals(ctx); err != nil {
+		failures = append(failures, err)
+	}
 	if err := s.reconcileRefusals(ctx); err != nil {
 		failures = append(failures, err)
 	}
@@ -278,14 +282,6 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	}
 	for _, repo := range s.cfg.Repositories {
 		if !repo.Enabled || slots >= s.cfg.Concurrency || s.control.Paused() {
-			continue
-		}
-		gate, err := s.harnessGate(ctx, repo.Implementer.Agent)
-		if err != nil {
-			failures = append(failures, err)
-			continue
-		}
-		if gate != nil {
 			continue
 		}
 		limit := repo.Concurrency
@@ -346,12 +342,27 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			if !allowed {
 				continue
 			}
+			settings, err := resolveIssueRoleSettings(repo, issue)
+			if err != nil {
+				if refusalErr := s.refuseHarnessOverride(ctx, repo, issue.Number, err.Error()); refusalErr != nil {
+					failures = append(failures, refusalErr)
+				}
+				continue
+			}
+			gate, err := s.harnessGate(ctx, settings.Implementer.Agent)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			if gate != nil {
+				continue
+			}
 			s.control.mu.Lock()
 			if s.control.paused {
 				s.control.mu.Unlock()
 				break
 			}
-			run, err := s.workflow.Transition(ctx, uuid.NewString(), workflow.Request{Trigger: workflow.IssueClaimed, Repository: repo.Repo, IssueNumber: issue.Number})
+			run, err := s.workflow.Transition(ctx, uuid.NewString(), workflow.Request{Trigger: workflow.IssueClaimed, Repository: repo.Repo, IssueNumber: issue.Number, RoleSettings: settings})
 			s.control.mu.Unlock()
 			if err != nil {
 				failures = append(failures, err)
@@ -388,4 +399,10 @@ func (s *Scheduler) repository(name string) (config.Repository, bool) {
 		}
 	}
 	return config.Repository{}, false
+}
+
+// runRepository projects the stored selection onto current repository policy.
+func (s *Scheduler) runRepository(run workflow.Run) (config.Repository, bool) {
+	repo, ok := s.repository(run.Repository)
+	return run.RoleSettings.Apply(repo), ok
 }
