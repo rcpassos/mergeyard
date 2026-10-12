@@ -16,6 +16,9 @@ func TestDoctorWarnsWhenAgentPortBlocksOverlapDashboard(t *testing.T) {
 		{0, 1, true}, {-11, 2, true}, {-11, 1, true}, {1, 1, false},
 	} {
 		path, _, opts := repositorySetup(t, "")
+		// Use the documented dashboard port for range geometry; the machine
+		// probe may independently report a busy port on the host.
+		setConfig(t, path, "port", 7331)
 		cfg, _, err := config.Load(path)
 		if err != nil {
 			t.Fatal(err)

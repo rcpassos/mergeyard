@@ -152,7 +152,12 @@ func setup(t *testing.T, extra string) (string, *fakeCommands, doctor.Options) {
 	listener.Close()
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	// Healthy fixtures keep all allocatable agent blocks above the dashboard.
-	data := fmt.Sprintf("port: %d\nagent_ports: {base: %d, size: 2}\nworkspace: %q\n", port, port+1, filepath.Join(t.TempDir(), "workspace")) + extra
+	agentPortBase, agentPortSize := port+1, 2
+	if agentPortBase > 65534 {
+		// A dashboard at the TCP ceiling instead sits beyond one large block.
+		agentPortBase, agentPortSize = 1, port-1
+	}
+	data := fmt.Sprintf("port: %d\nagent_ports: {base: %d, size: %d}\nworkspace: %q\n", port, agentPortBase, agentPortSize, filepath.Join(t.TempDir(), "workspace")) + extra
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
