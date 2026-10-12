@@ -6,17 +6,112 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 )
 
 type Comment struct {
-	ID   int64  `json:"id"`
-	URL  string `json:"html_url"`
-	Body string `json:"body"`
-	User *Actor `json:"user"`
+	NodeID    string    `json:"node_id"`
+	ID        int64     `json:"id"`
+	URL       string    `json:"html_url"`
+	Body      string    `json:"body"`
+	User      *Actor    `json:"user"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 var reportMarker = regexp.MustCompile(`^<!-- mergeyard:report:[a-zA-Z0-9]+ -->$`)
+var mergeyardMarker = regexp.MustCompile(`<!--\s*mergeyard:[\s\S]*?-->`)
+
+// IssueComments contains trusted human comments in chronological order. Marked
+// Mergeyard comments are excluded independently of author permissions.
+type IssueComments struct {
+	Comments         []Comment
+	OmittedUntrusted int
+}
+
+// ListIssueComments fetches current text from every page and uses the same actor
+// policy as ready-label authorization. Permission decisions are cached only for
+// this fetch, so a later attempt observes changes to repository access.
+func (c *Client) ListIssueComments(ctx context.Context, repo string, number int, trusted []string) (IssueComments, error) {
+	var result IssueComments
+	if number <= 0 {
+		return result, codedError("github.invalid_input", "expected a positive issue number", nil)
+	}
+	path, err := issuePath(repo, number)
+	if err != nil {
+		return result, err
+	}
+	data, err := c.request(ctx, nil, "GET", path+"/comments?per_page=100", true)
+	if err != nil {
+		return result, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	actors := map[string]bool{}
+	isTrusted := func(login string) (bool, error) {
+		key := strings.ToLower(login)
+		if allowed, ok := actors[key]; ok {
+			return allowed, nil
+		}
+		allowed, err := c.IsTrustedActor(ctx, repo, login, trusted)
+		if err == nil {
+			actors[key] = allowed
+		}
+		return allowed, err
+	}
+	pages := 0
+	for {
+		var page []Comment
+		err := decoder.Decode(&page)
+		if err == io.EOF {
+			break
+		}
+		if err != nil || page == nil {
+			return IssueComments{}, codedError("github.invalid_response", "expected a comment array", err)
+		}
+		pages++
+		for _, comment := range page {
+			if mergeyardMarker.MatchString(comment.Body) {
+				continue
+			}
+			login := ""
+			if comment.User != nil {
+				login = comment.User.Login
+			}
+			allowed, err := isTrusted(login)
+			if err != nil {
+				return IssueComments{}, err
+			}
+			if !allowed {
+				result.OmittedUntrusted++
+				continue
+			}
+			if comment.ID <= 0 || comment.CreatedAt.IsZero() {
+				return IssueComments{}, codedError("github.invalid_response", "missing comment identity or creation time", nil)
+			}
+			allowed, err = c.verifyCommentEdits(ctx, comment, isTrusted)
+			if err != nil {
+				return IssueComments{}, err
+			}
+			if !allowed {
+				result.OmittedUntrusted++
+				continue
+			}
+			result.Comments = append(result.Comments, comment)
+		}
+	}
+	if pages == 0 {
+		return IssueComments{}, codedError("github.invalid_response", "missing comment array", nil)
+	}
+	sort.Slice(result.Comments, func(i, j int) bool {
+		a, b := result.Comments[i], result.Comments[j]
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			return a.ID < b.ID
+		}
+		return a.CreatedAt.Before(b.CreatedAt)
+	})
+	return result, nil
+}
 
 // EnsureReportComment inspects every page before a single create attempt. A
 // transport or decoding failure may have applied remotely; callers must replay

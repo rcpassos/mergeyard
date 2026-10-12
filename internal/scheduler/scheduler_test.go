@@ -24,6 +24,7 @@ import (
 
 type fakeGitHub struct {
 	getIssue      func(string, int) (github.Issue, error)
+	comments      func(string, int, []string) (github.IssueComments, error)
 	trust         func(github.Issue) (github.TrustDecision, error)
 	trustComments map[int]string
 	issues        map[string][]github.Issue
@@ -32,6 +33,13 @@ type fakeGitHub struct {
 	creations     int
 	head          func(string) string
 	mutate        func(action, repo string, n int, label string) error
+}
+
+func (f *fakeGitHub) ListIssueComments(_ context.Context, repo string, n int, trusted []string) (github.IssueComments, error) {
+	if f.comments != nil {
+		return f.comments(repo, n, trusted)
+	}
+	return github.IssueComments{}, nil
 }
 
 func (f *fakeGitHub) VerifyIssueTrust(_ context.Context, _ string, issue github.Issue, _ string, _ []string) (github.TrustDecision, error) {

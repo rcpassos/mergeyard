@@ -614,13 +614,17 @@ The harness prompt is a fixed Mergeyard template that contains only Mergeyard-ge
 
 | Phase | Input contains |
 |---|---|
-| `implement` | repository, issue number/title/body/URL, base branch, worktree path, constraints, output contract |
+| `implement` | repository, issue number/title/body/URL, trusted human issue comments (author and timestamp), omitted/truncated comment counts, base branch, worktree path, constraints, output contract |
 | `review` | the above plus PR number/URL, the diff range to review, latest local check results (command, pass/fail, excerpt), and on later rounds: previous findings and the implementer's fix report |
 | `fix` | the above plus the latest blocking review findings and/or failing CI checks with failure excerpts |
 
 A check-retry attempt stays in the current `implement` or `fix` phase and adds the failing command and output excerpt to that phase's full input file.
 
-Issue, PR, review, and CI text must be written to files or passed through stdin. It must never be interpolated into shell command strings.
+Before every implement, fix, or review attempt, including resumed sessions and Retry after `blocked`, Mergeyard fetches all pages of issue comments using their current edited text. Comments carrying a `<!-- mergeyard:... -->` marker are excluded. Authors must satisfy the trusted-labeler rule: a nonempty `trusted_labelers` list replaces repository permissions; otherwise write, maintain, or admin access is required. Authors and every edit actor must satisfy this policy. Mergeyard verifies paginated comment edit history against the fetched current body and author; comments edited by an excluded actor are omitted and counted. Missing, redacted, or changing history prevents launching with unverifiable context. Untrusted comments are excluded and their count is stated under `## Issue comments`.
+
+Comments appear oldest first, with author and creation timestamp. The total comment text is capped at 32 KiB: retain the newest complete comments and omit older ones. If the newest comment alone exceeds the cap, retain its trailing text without splitting UTF-8 characters. State truncation in the input. On subsequent attempts, mention comments added since the previous input for that role in the interruption context. Only issue comments are included; PR review comments are already represented by structured review findings and CI inputs.
+
+Issue, comment, PR, review, and CI text must be written to files or passed through stdin. It must never be interpolated into shell command strings. Issue comment text is only written to files.
 
 Mergeyard does not merge or reinterpret repository instruction files. Each harness reads its own: Codex reads `AGENTS.md` only; Claude Code reads `CLAUDE.md`, and reads `AGENTS.md` only when no `CLAUDE.md` exists. A repository that has only one of the two files may give the other harness no instructions; `doctor` warns about this (section 30).
 
