@@ -26,14 +26,28 @@ type RetryGit interface {
 
 // Retry shares the operation gate with stop, reconciliation, and every phase.
 // It selects work durably; only later scheduler ticks can launch that work.
-func (s *Scheduler) Retry(ctx context.Context, id string) (workflow.Run, error) {
+// The optional note is persisted with the request for all later phase inputs.
+func (s *Scheduler) Retry(ctx context.Context, id string, notes ...string) (workflow.Run, error) {
+	if len(notes) > 1 {
+		return workflow.Run{}, &fault.Error{Code: "retry.invalid_note", Message: "Retry accepts at most one guidance note"}
+	}
+	note := ""
+	if len(notes) == 1 && strings.TrimSpace(notes[0]) != "" {
+		note = notes[0]
+	}
 	var result workflow.Run
 	err := s.workflow.WithRunOperation(ctx, id, func(ctx context.Context, run workflow.Run) error {
+		// Repeating a request may resume reconciliation, but must never silently
+		// replace the immutable note or discard a new note while work is active.
+		sameNote := func(v workflow.RetrySnapshot) bool { return v.Guidance != nil && v.Guidance.Text == note }
+		if pending := run.PendingRetry(); pending != nil && note != "" && !sameNote(*pending) {
+			return &fault.Error{Code: "retry.note_conflict", Message: "Retry reconciliation is pending; its guidance cannot be changed"}
+		}
 		if run.TakeoverStatus == workflow.TakeoverRequested {
 			return &fault.Error{Code: "takeover.operation_pending", Message: "Finish takeover or Stop before requesting Retry"}
 		}
 		if !run.RetryAllowed() {
-			if len(run.Retries) > 0 && run.State != workflow.Stopped && run.State != workflow.Manual {
+			if len(run.Retries) > 0 && run.State != workflow.Stopped && run.State != workflow.Manual && (note == "" || sameNote(run.Retries[len(run.Retries)-1])) {
 				result = run
 				return nil
 			}
@@ -42,6 +56,9 @@ func (s *Scheduler) Retry(ctx context.Context, id string) (workflow.Run, error) 
 		if run.State == workflow.WaitingForHarness {
 			for _, probe := range run.CreditProbes {
 				if probe.Status == "reserved" || probe.Status == "running" {
+					if note != "" && (len(run.Retries) == 0 || !sameNote(run.Retries[len(run.Retries)-1])) {
+						return &fault.Error{Code: "retry.note_conflict", Message: "Credit recovery is already in progress; new guidance requires another eligible Retry"}
+					}
 					result = run
 					return nil
 				}
@@ -53,6 +70,9 @@ func (s *Scheduler) Retry(ctx context.Context, id string) (workflow.Run, error) 
 		}
 		if run.PendingRetry() == nil {
 			v := workflow.RetrySnapshot{Pending: true, RequestedAt: s.deps.Now().UTC().Format(time.RFC3339Nano), Cause: run.LastErrorCode}
+			if note != "" {
+				v.Guidance = &workflow.HumanGuidance{Author: "user", CreatedAt: v.RequestedAt, Text: note}
+			}
 			data, err := json.Marshal(v)
 			if err != nil {
 				return err

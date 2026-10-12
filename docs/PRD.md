@@ -1095,6 +1095,27 @@ Retry is allowed from `NEEDS_ATTENTION` and `FAILED`, and from `WAITING_FOR_HARN
 - reconciles Git/PR/CI state first and determines the next safe phase;
 - grants one additional review round when the run stopped on `review.max_rounds_exceeded`.
 
+Retry accepts optional free-text human guidance: `mergeyard retry <run-id>
+--note "…"` or `--note-file <path>` (mutually exclusive), and an optional guidance
+field in the dashboard. A nonblank note is saved atomically with the Retry
+intent, attributed to the local user (`user`) and timestamped. File contents,
+including newlines, are preserved. Empty or whitespace-only guidance follows
+the existing note-free Retry path.
+
+All submitted notes remain in run history and `mergeyard status`, survive
+restart, and appear in submission order under `## Human guidance` in every
+later implement, fix and review `input.md`, including resumed attempts. The
+reviewer may cite guidance when marking a prior finding `no_longer_applies`,
+while still accounting for every prior blocking ID under §13.2. Guidance is
+written only into files and never interpolated into command strings (§13.1).
+
+Notes cannot be edited or deleted. Repeating an in-progress request with the
+same guidance does not append another note or grant another attempt. Pending
+reconciliation can be continued without a note; a different note is rejected
+rather than silently replacing or discarding guidance. New guidance requires
+another eligible Retry. Notes remain saved even when reconciliation rejects
+the request. Posting guidance to the PR conversation is not implemented.
+
 Retry after `workspace.setup_failed` reruns setup before starting the agent. Retry after `checks.failed` reruns checks before any agent attempt or publication and grants exactly one additional check/fix attempt, with the grant and prior retry history persisted.
 
 Retry after exhausted credits follows the single-run recovery probe in section 12. Retry after usage-limit wait exhaustion grants one additional wait as specified there. Handback can also grant a review round under the conditions in section 20.
@@ -1493,7 +1514,7 @@ mergeyard watch <run-id>
 mergeyard takeover <run-id>
 mergeyard handback <run-id>
 mergeyard stop <run-id>
-mergeyard retry <run-id>
+mergeyard retry <run-id> [--note "…" | --note-file <path>]
 mergeyard harness check <claude|codex>
 mergeyard reconcile
 ```

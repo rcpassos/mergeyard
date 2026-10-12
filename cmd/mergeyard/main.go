@@ -52,11 +52,13 @@ var commands = []command{
 	{name: "reconcile", summary: "report orphaned claims, worktrees, and sessions"},
 }
 
-// globalOptions holds flags accepted by every command.
+// globalOptions holds shared flags and the Retry-only guidance options.
 type globalOptions struct {
-	configPath string // empty means use the PRD §26 search order
-	help       bool
-	version    bool
+	configPath    string // empty means use the PRD §26 search order
+	help          bool
+	version       bool
+	retryNote     *string
+	retryNoteFile *string
 }
 
 // Set by GoReleaser for release builds.
@@ -89,9 +91,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printUsage(stderr)
 		return 2
 	}
+	if (opts.retryNote != nil || opts.retryNoteFile != nil) && cmd.name != "retry" {
+		fmt.Fprintln(stderr, "mergeyard: --note and --note-file require retry")
+		return 2
+	}
 	if len(rest) != cmd.arity() {
 		fmt.Fprintf(stderr, "usage: mergeyard %s\n", cmd.usage())
 		return 2
+	}
+	if cmd.name == "retry" {
+		if opts.retryNoteFile != nil {
+			data, err := os.ReadFile(*opts.retryNoteFile)
+			if err != nil {
+				fmt.Fprintf(stderr, "mergeyard retry: read note file: %v\n", err)
+				return 1
+			}
+			note := string(data)
+			opts.retryNote = &note
+		}
+		if opts.retryNote != nil {
+			rest = append(rest, *opts.retryNote)
+		}
 	}
 	if cmd.name == "version" {
 		fmt.Fprintf(stdout, "mergeyard %s\n", version)
@@ -189,6 +209,25 @@ func parseGlobalFlags(args []string) (globalOptions, []string, error) {
 				return opts, nil, fmt.Errorf("flag does not take a value: %s", arg)
 			}
 			opts.help = true
+		case "note", "note-file":
+			if opts.retryNote != nil || opts.retryNoteFile != nil {
+				return opts, nil, errors.New("use exactly one of --note or --note-file")
+			}
+			if !hasValue {
+				if i+1 >= len(args) {
+					return opts, nil, fmt.Errorf("flag needs an argument: --%s", name)
+				}
+				i++
+				value = args[i]
+			}
+			if name == "note" {
+				opts.retryNote = &value
+			} else {
+				if value == "" {
+					return opts, nil, errors.New("flag needs an argument: --note-file")
+				}
+				opts.retryNoteFile = &value
+			}
 		case "config":
 			// A separate value starting with "-" is a missing value, not a path;
 			// "--config=-x" remains possible.
@@ -229,7 +268,10 @@ func printUsage(w io.Writer) {
 	for _, c := range commands {
 		fmt.Fprintf(w, "  mergeyard %-24s %s\n", c.usage(), c.summary)
 	}
-	fmt.Fprint(w, "\nGlobal flags:\n"+
+	fmt.Fprint(w, "\nRetry flags (optional, mutually exclusive):\n"+
+		"  --note <text>       human guidance for the rest of the run\n"+
+		"  --note-file <path>  read human guidance from a file\n"+
+		"\nGlobal flags:\n"+
 		"  --config <path>   config file (default: ./mergeyard.yaml, then ~/.config/mergeyard/config.yaml)\n"+
 		"  --version        show the installed version\n"+
 		"  -h, --help        show this help\n")

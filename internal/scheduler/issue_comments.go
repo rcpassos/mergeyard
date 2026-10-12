@@ -13,10 +13,20 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/harness"
+	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
 func (s *Scheduler) phaseIssueInput(ctx context.Context, repo config.Repository, runID string, issue github.Issue, baseBranch string, phase *harness.PhaseContext) (harness.ImplementInput, error) {
 	input := harness.ImplementInput{Repository: repo.Repo, IssueNumber: issue.Number, IssueTitle: issue.Title, IssueBody: issue.Body, IssueURL: issue.URL, BaseBranch: baseBranch}
+	retries, err := workflow.LoadRetries(ctx, s.db, runID)
+	if err != nil {
+		return input, err
+	}
+	for _, retry := range retries {
+		if retry.Guidance != nil {
+			input.Guidance = append(input.Guidance, *retry.Guidance)
+		}
+	}
 	comments, err := s.deps.GitHub.ListIssueComments(ctx, repo.Repo, issue.Number, repo.TrustedLabelers)
 	if err != nil {
 		return input, err
