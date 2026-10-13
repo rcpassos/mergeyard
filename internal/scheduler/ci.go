@@ -224,6 +224,9 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 	if err := s.evaluateEscalation(ctx, repo, &run); err != nil {
 		return err
 	}
+	if !s.deps.Now().UTC().Before(v.Deadline) {
+		return fail("ci.wait_timeout", "CI wait deadline expired during escalation evaluation; inspect GitHub and saved evidence")
+	}
 	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.CIPassed, Metadata: workflow.MetadataPatch{CI: &v}})
 	if err != nil {
 		return err

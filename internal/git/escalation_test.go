@@ -2,9 +2,11 @@ package git_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/escalation"
@@ -56,5 +58,92 @@ func TestEscalationDiffUsesPinnedHeadAndExactPaths(t *testing.T) {
 	wrong := managedgit.Run{}
 	if _, err := f.manager.EscalationDiff(context.Background(), wrong, head); err == nil {
 		t.Fatal("unowned run accepted")
+	}
+}
+
+func TestEscalationDiffPinsLineCountingSettings(t *testing.T) {
+	for _, scope := range []string{"global", "repository"} {
+		t.Run(scope, func(t *testing.T) {
+			f := newFixture(t)
+			text := func(chars string, extras int) string {
+				var out strings.Builder
+				for i := 0; i < 30; i++ {
+					fmt.Fprintf(&out, "anchor %d\n", i)
+					for _, char := range chars {
+						fmt.Fprintf(&out, "%d %c\n", i, char)
+					}
+				}
+				for i := 0; i < extras; i++ {
+					fmt.Fprintf(&out, "extra %d\n", i)
+				}
+				return out.String()
+			}
+			write(t, f.seed, "example.txt", text("EECADBCBAEBBCEBBDEDBACAC", 0))
+			git(t, f.seed, "add", ".")
+			git(t, f.seed, "commit", "-m", "base text")
+			git(t, f.seed, "push", "origin", "main")
+			run := prepare(t, f)
+			write(t, run.Path, "example.txt", text("EDCEDECAAEBBCABBDEDCACAC", 39))
+			git(t, run.Path, "add", ".")
+			git(t, run.Path, "commit", "-m", "approved text")
+			head := git(t, run.Path, "rev-parse", "HEAD")
+			configArgs := []string{"config"}
+			if scope == "global" {
+				file := filepath.Join(t.TempDir(), "gitconfig")
+				t.Setenv("GIT_CONFIG_GLOBAL", file)
+				configArgs = append(configArgs, "--file", file)
+			}
+			for _, algorithm := range []string{"myers", "histogram", "patience", "minimal"} {
+				t.Run(algorithm, func(t *testing.T) {
+					git(t, run.Path, append(append([]string{}, configArgs...), "diff.algorithm", algorithm)...)
+					git(t, run.Path, append(append([]string{}, configArgs...), "diff.indentHeuristic", "true")...)
+					got, err := f.manager.EscalationDiff(context.Background(), run, head)
+					want := []escalation.FileChange{{Path: "example.txt", Additions: 219, Deletions: 180}}
+					if err != nil || !reflect.DeepEqual(got, want) {
+						t.Fatalf("configured %s: diff=%+v, err=%v; want %+v", algorithm, got, err, want)
+					}
+					if flags := escalation.Evaluate(escalation.Defaults(), got); len(flags) != 0 {
+						t.Fatalf("399 changed lines acquired a size flag: %+v", flags)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestEscalationDiffIncludesIgnoredGitlinks(t *testing.T) {
+	f := newFixture(t)
+	child := filepath.Join(t.TempDir(), "child")
+	git(t, f.seed, "init", "--initial-branch=main", child)
+	write(t, child, "action.txt", "first\n")
+	git(t, child, "add", ".")
+	git(t, child, "commit", "-m", "first child commit")
+	first := git(t, child, "rev-parse", "HEAD")
+	write(t, child, "action.txt", "second\n")
+	git(t, child, "commit", "-am", "second child commit")
+	second := git(t, child, "rev-parse", "HEAD")
+	write(t, f.seed, ".gitmodules", fmt.Sprintf("[submodule \"action\"]\n path = .github/action\n url = %s\n ignore = all\n", child))
+	git(t, f.seed, "add", ".gitmodules")
+	git(t, f.seed, "update-index", "--add", "--cacheinfo", "160000,"+first+",.github/action")
+	git(t, f.seed, "commit", "-m", "base gitlink")
+	git(t, f.seed, "push", "origin", "main")
+	run := prepare(t, f)
+	git(t, run.Path, "update-index", "--cacheinfo", "160000,"+second+",.github/action")
+	git(t, run.Path, "commit", "-m", "approved gitlink")
+	head := git(t, run.Path, "rev-parse", "HEAD")
+	for _, policy := range []string{"all", "dirty", "untracked", "none"} {
+		t.Run(policy, func(t *testing.T) {
+			git(t, run.Path, "config", "diff.ignoreSubmodules", policy)
+			git(t, run.Path, "config", "submodule.action.ignore", "all")
+			got, err := f.manager.EscalationDiff(context.Background(), run, head)
+			want := []escalation.FileChange{{Path: ".github/action", Additions: 1, Deletions: 1}}
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("ignore %s: diff=%+v, err=%v; want %+v", policy, got, err, want)
+			}
+			wantFlags := []escalation.Flag{{Reason: "ci/deploy", Files: []string{".github/action"}}}
+			if flags := escalation.Evaluate(escalation.Defaults(), got); !reflect.DeepEqual(flags, wantFlags) {
+				t.Fatalf("gitlink CI flag: %+v, want %+v", flags, wantFlags)
+			}
+		})
 	}
 }

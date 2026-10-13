@@ -48,14 +48,64 @@ type escalationGit struct {
 	*managedgit.Manager
 	unavailable bool
 	diffCalls   int
+	afterDiff   func()
 }
 
 func (g *escalationGit) EscalationDiff(ctx context.Context, run managedgit.Run, head string) ([]escalation.FileChange, error) {
 	g.diffCalls++
+	if g.afterDiff != nil {
+		defer g.afterDiff()
+	}
 	if g.unavailable {
 		return nil, errors.New("diff unavailable")
 	}
 	return g.Manager.EscalationDiff(ctx, run, head)
+}
+
+func TestEscalationEvaluationHonorsSavedCIDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		finishedAt  time.Duration
+		unavailable bool
+		state       workflow.State
+		code        string
+	}{
+		{"before deadline", -time.Nanosecond, false, workflow.ReadyToMerge, ""},
+		{"at deadline", 0, false, workflow.NeedsAttention, "ci.wait_timeout"},
+		{"after deadline", time.Second, false, workflow.NeedsAttention, "ci.wait_timeout"},
+		{"advisory error before deadline", -time.Nanosecond, true, workflow.ReadyToMerge, ""},
+		{"advisory error after deadline", time.Second, true, workflow.NeedsAttention, "ci.wait_timeout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			_, rt, base, _, cfg, r := localFlow(t, successfulScript)
+			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+			api := &escalationGitHub{ciGitHub: &ciGitHub{fakeGitHub: base, applyReady: true, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}}
+			g := &escalationGit{Manager: managedgit.New(rt.Workspace), unavailable: tc.unavailable}
+			s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: api, Git: g, Runner: r, Now: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+			deadline := run.CI.Deadline
+			now = deadline.Add(-time.Second)
+			g.afterDiff = func() { now = deadline.Add(tc.finishedAt) }
+			if _, err := s.Reconcile(ctx); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := rt.Workflow.Get(ctx, run.ID)
+			if err != nil || saved.State != tc.state || saved.LastErrorCode != tc.code || !saved.CI.Deadline.Equal(deadline) {
+				t.Fatalf("state=%s code=%q deadline=%v, want %s/%s/%v; err=%v", saved.State, saved.LastErrorCode, saved.CI.Deadline, tc.state, tc.code, deadline, err)
+			}
+			if tc.state == workflow.NeedsAttention && api.bodyCalls != 0 {
+				t.Fatal("published escalation after CI deadline")
+			}
+			var attempts int
+			if err := rt.DB.QueryRow("SELECT count(*) FROM phase_attempts WHERE run_id=?", run.ID).Scan(&attempts); err != nil || attempts != 2 {
+				t.Fatalf("deadline handling launched an agent: attempts=%d err=%v", attempts, err)
+			}
+		})
+	}
 }
 
 func TestEscalationReadinessRestartAndSurfaces(t *testing.T) {

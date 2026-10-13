@@ -46,7 +46,10 @@ escalation:
 ```
 
 The size rule triggers when additions plus deletions exceed the threshold across
-the entire diff. `0` disables it. Binary files count as zero lines, but still
+the entire diff. Git uses Myers with the indentation heuristic disabled, and
+includes changed submodule gitlinks regardless of local ignore settings, so
+machine configuration cannot change the line-counting or submodule policy.
+`0` disables the size rule. Binary files count as zero lines, but still
 match path rules. Paths are relative to the repository root: `*`, `?` and character
 classes match within one path segment; `**` as a complete segment matches zero or
 more directories. Thus `**/migrations/**` includes root and nested migrations.

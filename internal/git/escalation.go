@@ -10,7 +10,8 @@ import (
 )
 
 // EscalationDiff reads exact paths and line counts for the approved commit.
-// A fixed rename threshold/limit makes this independent of local diff settings.
+// Pin line counting, heuristic, submodule and rename policies instead of
+// inheriting machine or repository diff settings.
 // Renames retain both paths, but count only the actual changed lines once.
 func (m *Manager) EscalationDiff(ctx context.Context, run Run, head string) ([]escalation.FileChange, error) {
 	m.mu.Lock()
@@ -21,7 +22,7 @@ func (m *Manager) EscalationDiff(ctx context.Context, run Run, head string) ([]e
 	if !shaPattern.MatchString(head) || !shaPattern.MatchString(run.BaseSHA) {
 		return nil, failure("git.escalation_diff", run.Path, errors.New("invalid diff target"))
 	}
-	out, err := command(ctx, run.Path, "git.escalation_diff", "diff", "--numstat", "-z", "--find-renames=50%", "-l1000", "--no-ext-diff", "--no-textconv", run.BaseSHA+"..."+head, "--")
+	out, err := command(ctx, run.Path, "git.escalation_diff", "diff", "--numstat", "-z", "--diff-algorithm=myers", "--no-indent-heuristic", "--ignore-submodules=none", "--find-renames=50%", "-l1000", "--no-ext-diff", "--no-textconv", run.BaseSHA+"..."+head, "--")
 	if err != nil {
 		return nil, err
 	}
