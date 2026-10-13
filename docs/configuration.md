@@ -52,6 +52,8 @@ configured diff algorithms and submodule ignore settings cannot change the resul
 Escalation diffs disable user and system attribute files, including an explicit
 `core.attributesFile` and Git's default user attributes file. Repository
 `.gitattributes` still apply to binary detection.
+The binary size cutoff is fixed at Git's default 512 MiB, regardless of local
+`core.bigFileThreshold` settings.
 `0` disables the size rule. Binary files count as zero lines, but still
 match path rules. Paths are relative to the repository root: `*`, `?` and character
 classes match within one path segment; `**` as a complete segment matches zero or
@@ -92,6 +94,7 @@ dashboard and in `mergeyard status`. The PR body gets an owned escalation sectio
 with the same reasons, files and approved commit. It preserves the generated
 summary and user-written content, removes stale flags on a subsequent unflagged
 approval, and is independent of `pr_comments`. Unflagged runs show no badge.
+Deferred verification evidence updates preserve the escalation section.
 Diff evaluation or PR body publication failures produce advisory warnings and
 retry on subsequent readiness observations, including after restart. They do not
 prevent readiness. Incomplete or ambiguous PR ownership markers are left intact

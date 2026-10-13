@@ -13,6 +13,7 @@ import (
 // Pin line counting, heuristic, submodule and rename policies instead of
 // inheriting machine or repository diff settings.
 // User and system attributes are excluded; repository .gitattributes still apply.
+// Pin Git's 512 MiB binary cutoff as well, so local limits cannot hide text lines.
 // Renames retain both paths, but count only the actual changed lines once.
 func (m *Manager) EscalationDiff(ctx context.Context, run Run, head string) ([]escalation.FileChange, error) {
 	m.mu.Lock()
@@ -23,7 +24,7 @@ func (m *Manager) EscalationDiff(ctx context.Context, run Run, head string) ([]e
 	if !shaPattern.MatchString(head) || !shaPattern.MatchString(run.BaseSHA) {
 		return nil, failure("git.escalation_diff", run.Path, errors.New("invalid diff target"))
 	}
-	out, err := commandWithEnv(ctx, run.Path, "git.escalation_diff", []string{"GIT_ATTR_NOSYSTEM=1"}, "-c", "core.attributesFile=", "diff", "--numstat", "-z", "--diff-algorithm=myers", "--no-indent-heuristic", "--ignore-submodules=none", "--find-renames=50%", "-l1000", "--no-ext-diff", "--no-textconv", run.BaseSHA+"..."+head, "--")
+	out, err := commandWithEnv(ctx, run.Path, "git.escalation_diff", []string{"GIT_ATTR_NOSYSTEM=1"}, "-c", "core.attributesFile=", "-c", "core.bigFileThreshold=512m", "diff", "--numstat", "-z", "--diff-algorithm=myers", "--no-indent-heuristic", "--ignore-submodules=none", "--find-renames=50%", "-l1000", "--no-ext-diff", "--no-textconv", run.BaseSHA+"..."+head, "--")
 	if err != nil {
 		return nil, err
 	}

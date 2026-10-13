@@ -210,3 +210,42 @@ func TestEscalationDiffIgnoresUserAttributes(t *testing.T) {
 		})
 	}
 }
+
+func TestEscalationDiffPinsBinarySizeCutoff(t *testing.T) {
+	for _, scope := range []string{"global", "repository"} {
+		t.Run(scope, func(t *testing.T) {
+			f := newFixture(t)
+			write(t, f.seed, "feature.go", "base\n")
+			git(t, f.seed, "add", ".")
+			git(t, f.seed, "commit", "-m", "base text")
+			git(t, f.seed, "push", "origin", "main")
+			run := prepare(t, f)
+			var content strings.Builder
+			for i := 0; i < 401; i++ {
+				fmt.Fprintf(&content, "line %d\n", i)
+			}
+			write(t, run.Path, "feature.go", content.String())
+			git(t, run.Path, "add", ".")
+			git(t, run.Path, "commit", "-m", "approved text")
+			head := git(t, run.Path, "rev-parse", "HEAD")
+			configArgs := []string{"config"}
+			if scope == "global" {
+				file := filepath.Join(t.TempDir(), "gitconfig")
+				t.Setenv("GIT_CONFIG_GLOBAL", file)
+				configArgs = append(configArgs, "--file", file)
+			}
+			want := []escalation.FileChange{{Path: "feature.go", Additions: 401, Deletions: 1}}
+			wantFlags := []escalation.Flag{{Reason: "size: 402 changed lines exceeds 400", Files: []string{"feature.go"}}}
+			for _, threshold := range []string{"512m", "1"} {
+				git(t, run.Path, append(append([]string{}, configArgs...), "core.bigFileThreshold", threshold)...)
+				got, err := f.manager.EscalationDiff(context.Background(), run, head)
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("cutoff %s: diff=%+v, err=%v; want %+v", threshold, got, err, want)
+				}
+				if flags := escalation.Evaluate(escalation.Defaults(), got); !reflect.DeepEqual(flags, wantFlags) {
+					t.Fatalf("cutoff %s: flags=%+v; want %+v", threshold, flags, wantFlags)
+				}
+			}
+		})
+	}
+}

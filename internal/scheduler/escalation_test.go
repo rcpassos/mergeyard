@@ -51,6 +51,87 @@ type escalationGit struct {
 	afterDiff   func()
 }
 
+type delayedVerificationGitHub struct {
+	*escalationGitHub
+	failVerification bool
+}
+
+func (f *delayedVerificationGitHub) UpdatePullRequest(ctx context.Context, repo string, number int, content github.PullRequestContent) (*github.PullRequest, error) {
+	if f.failVerification {
+		return nil, &fault.Error{Code: "github.unavailable", Message: "Verification body write unavailable"}
+	}
+	return f.fakeGitHub.UpdatePullRequest(ctx, repo, number, content)
+}
+
+func TestDelayedVerificationPreservesPublishedEscalation(t *testing.T) {
+	ctx := context.Background()
+	script := "mkdir -p .github/workflows; printf 'workflow\\n' > .github/workflows/ci.yml; " + successfulScript
+	_, rt, base, _, cfg, r := localFlow(t, script)
+	api := &delayedVerificationGitHub{escalationGitHub: &escalationGitHub{ciGitHub: &ciGitHub{fakeGitHub: base, applyReady: true, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}}, failVerification: true}
+	deps := scheduler.Dependencies{GitHub: api, Git: &escalationGit{Manager: managedgit.New(rt.Workspace)}, Runner: r}
+	s, err := scheduler.New(cfg, schedulerResources(rt), deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	var warnings int
+	if err := rt.DB.QueryRow("SELECT count(*) FROM events WHERE run_id=? AND type='verification.warning'", run.ID).Scan(&warnings); err != nil || warnings == 0 {
+		t.Fatalf("verification was not deferred: warnings=%d err=%v", warnings, err)
+	}
+	pr := api.prs["mergeyard/issue-7"]
+	prefix, suffix := "Human introduction\r\n\r\n", "\n\nHuman checklist\n"
+	pr.Body = prefix + pr.Body + suffix
+	api.failVerification = false
+	assertPublication := func(rt *app.Runtime) {
+		t.Helper()
+		saved, err := rt.Workflow.Get(ctx, run.ID)
+		if err != nil || saved.State != workflow.ReadyToMerge || saved.Escalation == nil || !saved.Escalation.Published || len(saved.Escalation.Reasons) != 1 {
+			t.Fatalf("readiness/escalation receipt: %+v, err=%v", saved, err)
+		}
+		var receipts int
+		if err := rt.DB.QueryRow("SELECT count(*) FROM events WHERE run_id=? AND type='verification.published'", run.ID).Scan(&receipts); err != nil || receipts != 1 {
+			t.Fatalf("verification receipts=%d, err=%v", receipts, err)
+		}
+		for _, text := range []string{"Needs careful review", "ci/deploy", ".github/workflows/ci.yml", run.ApprovedSHA, "Verification evidence", "no verification reported", "Added feature"} {
+			if !strings.Contains(pr.Body, text) {
+				t.Fatalf("late verification lost %q despite publication receipts: %s", text, pr.Body)
+			}
+		}
+		if !strings.HasPrefix(pr.Body, prefix) || !strings.HasSuffix(pr.Body, suffix) {
+			t.Fatalf("late verification changed authored content: %q", pr.Body)
+		}
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertPublication(rt)
+	body, publications := pr.Body, api.bodyCalls
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertPublication(rt)
+	root := rt.Workspace.Root
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := app.Open(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { restarted.Close() })
+	s, err = scheduler.New(cfg, schedulerResources(restarted), deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertPublication(restarted)
+	if pr.Body != body || api.bodyCalls != publications {
+		t.Fatal("published body was rewritten after receipt or restart")
+	}
+}
+
 func (g *escalationGit) EscalationDiff(ctx context.Context, run managedgit.Run, head string) ([]escalation.FileChange, error) {
 	g.diffCalls++
 	if g.afterDiff != nil {

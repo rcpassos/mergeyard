@@ -9,7 +9,78 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/verification"
 )
+
+func TestVerificationBodyUpdatePreservesEscalation(t *testing.T) {
+	content := github.PullRequestContent{IssueNumber: 100, IssueTitle: "Flags", Summary: "Original summary", RunID: "run"}
+	generated, err := github.GeneratePullRequestBody(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := escalation.Snapshot{HeadSHA: "approved", Reasons: []escalation.Flag{{Reason: "ci/deploy", Files: []string{".github/workflows/ci.yml"}}}}
+	section, err := github.UpdateEscalationBody("", snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	section = strings.TrimSpace(section)
+	prefix, suffix := "Human introduction\r\n\r\n", "\n\nHuman checklist\n"
+	for _, placement := range []string{"nested", "sibling"} {
+		t.Run(placement, func(t *testing.T) {
+			body := prefix + generated + suffix
+			if placement == "nested" {
+				body, err = github.UpdateEscalationBody(body, snapshot)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				body = prefix + generated + "\n\n" + section + suffix
+			}
+			next := content
+			next.Summary, next.Verification = "Latest summary", []verification.Entry{}
+			updated, err := github.UpdatePullRequestBody(body, next)
+			if err != nil || !strings.Contains(updated, section) || !strings.HasPrefix(updated, prefix) || !strings.HasSuffix(updated, suffix) || !strings.Contains(updated, "no verification reported") || strings.Contains(updated, content.Summary) {
+				t.Fatalf("verification update lost escalation or authored content: %q, err=%v", updated, err)
+			}
+			again, err := github.UpdatePullRequestBody(updated, next)
+			if err != nil || again != updated || strings.Count(again, section) != 1 {
+				t.Fatalf("body update is not idempotent: %q, err=%v", again, err)
+			}
+			cleared, err := github.UpdateEscalationBody(updated, escalation.Snapshot{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cleared, err = github.UpdatePullRequestBody(cleared, next)
+			if err != nil || strings.Contains(cleared, "Needs careful review") {
+				t.Fatalf("verification restored cleared escalation: %q, err=%v", cleared, err)
+			}
+		})
+	}
+}
+
+func TestVerificationBodyUpdateRejectsAmbiguousEscalation(t *testing.T) {
+	const generatedStart, generatedEnd = "<!-- mergeyard:generated:start -->", "<!-- mergeyard:generated:end -->"
+	const escalationStart, escalationEnd = "<!-- mergeyard:escalation:start -->", "<!-- mergeyard:escalation:end -->"
+	content := github.PullRequestContent{IssueNumber: 100, IssueTitle: "Flags", Summary: "Summary", RunID: "run"}
+	for _, body := range []string{
+		generatedStart + escalationStart + generatedEnd,
+		generatedStart + escalationEnd + generatedEnd,
+		generatedStart + escalationEnd + escalationStart + generatedEnd,
+		generatedStart + escalationStart + escalationStart + escalationEnd + generatedEnd,
+		escalationStart + generatedStart + generatedEnd + escalationEnd,
+		generatedStart + escalationStart + generatedEnd + escalationEnd,
+		escalationStart + generatedStart + escalationEnd + generatedEnd,
+	} {
+		_, err := github.UpdatePullRequestBody(body, content)
+		requireCode(t, err, "pr.invalid_generated_section")
+	}
+	for _, marker := range []string{escalationStart, escalationEnd} {
+		injected := content
+		injected.Summary += marker
+		_, err := github.GeneratePullRequestBody(injected)
+		requireCode(t, err, "github.invalid_input")
+	}
+}
 
 func TestEscalationBodyPreservesSummaryAndUserContent(t *testing.T) {
 	generated, err := github.GeneratePullRequestBody(github.PullRequestContent{IssueNumber: 100, IssueTitle: "Flags", Summary: "Original summary", RunID: "run"})
