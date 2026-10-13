@@ -302,14 +302,28 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 				if attention == "ci.action_required" {
 					return fail(attention, "CI was canceled or requires action; the managed merge is preserved")
 				}
-				g, ok := s.deps.Git.(interface {
-					PrepareBaseRepair(context.Context, managedgit.Run, string, string) error
-				})
-				if !ok {
-					return fail("git.base_check_unsupported", "Git adapter cannot reconcile the managed merge")
-				}
-				if err := g.PrepareBaseRepair(ctx, gitRun, target.Head.SHA, run.CI.Base.BaseSHA); err != nil {
-					return s.rejectRetry(ctx, run, v, err)
+				committed := run.Fix != nil && run.Fix.Status == "succeeded" && run.Fix.CommitSHA != "" && run.Fix.TargetSHA == target.Head.SHA
+				if committed {
+					// A successful fix may already have consumed MERGE_HEAD,
+					// with only checks or publication left. Validate its exact
+					// journaled commit instead of preparing the old merge again.
+					g, ok := s.deps.Git.(FixGit)
+					if !ok {
+						return fail("git.fix_unsupported", "Git adapter cannot inspect the saved fix commit")
+					}
+					if err := g.InspectFixTarget(ctx, gitRun, run.Fix.CommitSHA); err != nil {
+						return s.rejectRetry(ctx, run, v, err)
+					}
+				} else {
+					g, ok := s.deps.Git.(interface {
+						PrepareBaseRepair(context.Context, managedgit.Run, string, string) error
+					})
+					if !ok {
+						return fail("git.base_check_unsupported", "Git adapter cannot reconcile the managed merge")
+					}
+					if err := g.PrepareBaseRepair(ctx, gitRun, target.Head.SHA, run.CI.Base.BaseSHA); err != nil {
+						return s.rejectRetry(ctx, run, v, err)
+					}
 				}
 				wait.QueryError = ""
 				wait.RepairCause = "git.base_conflict"

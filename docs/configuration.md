@@ -186,7 +186,9 @@ edits conflict files; Mergeyard stages them, completes the merge commit, runs
 checks, and publishes it for independent review. Restart recognizes the saved
 merge parent and preserves partial resolutions. Explicit Retry after a blocked
 fixer retains that merge, rechecks CI priority, and resumes the same fix phase
-with its partial file edits.
+with its partial file edits. If the repair commit is already journaled, Retry
+validates that exact local commit and resumes checks/publication without
+preparing another merge or launching another fixer.
 
 `repositories[].verify_commands` runs on the combined base + approved head in a
 separate detached scratch worktree. Omission defaults to the repository's
