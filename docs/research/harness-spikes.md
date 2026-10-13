@@ -40,6 +40,17 @@ allowed_warning`, reset values, and offline warning fixtures on 2.1.288.
 No headless usage-limit failure was observed; its release gate remains open.
 This warning does not verify the proposed failure classifier in §5.2.
 
+Update (2026-10-13): [issue #61's follow-up capture](claude-m3/report.md#observed-weekly-rejection--2026-10-13)
+preserves a genuine headless weekly rejection on 2.1.288: `status: rejected`,
+assistant `error: rate_limit`, terminal `is_error: true` / `api_error_status: 429`
+despite `subtype: success`, and process exit 1. The epoch-second reset agrees
+with the native Europe/Lisbon reset text. Sanitized weekly-rejection and expired
+OAuth controls are available offline. This resolves the missing live-evidence
+gate for that observed variant; production binding and limited-session
+resumability remain [#81](https://github.com/rcpassos/mergeyard/issues/81) work.
+Earlier tables/proposals below retain their original research context; use the
+M3 report for this observed headless failure contract.
+
 ---
 
 ## 1. Summary table
