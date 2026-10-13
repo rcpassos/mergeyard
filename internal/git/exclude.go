@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/rcpassos/mergeyard/internal/pathspec"
 )
@@ -88,7 +89,8 @@ func stage(ctx context.Context, run Run) ([]Diagnostic, error) {
 		}
 		for name := range retained {
 			info, err := os.Lstat(filepath.Join(run.Path, name))
-			if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+				// A parent resolved as a file also makes its children absent.
 				continue // add --update below stages real deletions.
 			}
 			if err != nil {
