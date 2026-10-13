@@ -72,9 +72,12 @@ printf tracked > README.md
 }
 
 func TestExcludedOnlyPhaseRetainsDiagnosticsOnNoChanges(t *testing.T) {
-	script := `mkdir -p .venv/bin
+	// Reuse the shared result schema, then leave only excluded changes.
+	script := successfulScript + `
+rm feature.txt
+mkdir -p .venv/bin
 printf tool > .venv/bin/python
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Only setup artifacts"}}'`
+`
 	_, rt, api, remote, cfg, r := localFlow(t, script)
 	cfg.Repositories[0].Exclude = []string{".venv/"}
 	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: api, Runner: r})
