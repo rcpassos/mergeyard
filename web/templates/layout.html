@@ -99,6 +99,7 @@
 <div><dt>Process session</dt><dd><code>{{.ProcessSession}}</code></dd></div></dl>
 {{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}
 {{with .Report}}<h3>Implement status: {{.Status}}</h3><p>{{.Summary}}</p>
+{{template "verification" .}}
 <h3>Acceptance criteria</h3>{{range .Criteria}}<article class="notice"><h4>{{.ID}} · {{if .Met}}met{{else}}not met{{end}}</h4><p>{{.Evidence}}</p></article>{{else}}{{if ge .SchemaVersion 3}}<p>No acceptance criteria found.</p>{{else}}<p>Criteria were not recorded by this schema version.</p>{{end}}{{end}}{{end}}</section>{{end}}
 {{range .ReviewHistory}}<section class="queue-section"><h2>Independent review · round {{.Round}}, attempt {{.Attempt}}</h2>
 <dl class="run-facts"><div><dt>Reviewer</dt><dd>{{.Agent}} · model {{.Model}} · effort {{.Effort}}</dd></div>
@@ -119,6 +120,7 @@
 {{with .CI}}<h3>CI repair cause: {{.RepairCause}}</h3><p>Another independent review is required after this fix.</p>{{range .Evidence.Checks}}<article class="notice"><h4>{{.Name}} · {{.Conclusion}}</h4>{{if .Excerpt}}<pre>{{.Excerpt}}</pre>{{end}}{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer">Check details</a>{{end}}</article>{{end}}{{end}}
 {{range .Findings}}<article class="notice"><h4>{{.ID}} · {{.Title}}</h4><p>{{.Details}}</p></article>{{end}}
 {{with .Report}}<h3>Fix status: {{.Status}}</h3><p>{{.Summary}}</p>
+{{template "verification" .}}
 <h3>Acceptance criteria</h3>{{range .Criteria}}<article class="notice"><h4>{{.ID}} · {{if .Met}}met{{else}}not met{{end}}</h4><p>{{.Evidence}}</p></article>{{else}}{{if ge .SchemaVersion 3}}<p>No acceptance criteria found.</p>{{else}}<p>Criteria were not recorded by this schema version.</p>{{end}}{{end}}{{range .Responses}}<article class="notice"><h4>{{.FindingID}} · {{.Resolution}}</h4><p>{{.Note}}</p></article>{{else}}<p>No responses reported.</p>{{end}}{{end}}</section>{{end}}
 
 {{with .CI}}<section class="queue-section"><h2>CI and readiness</h2>
@@ -149,3 +151,6 @@
 {{define "phase-output"}}<section id="phase-output"{{if .Run.CanStop}} hx-get="/runs/{{.Run.ID}}/output" hx-trigger="every 2s" hx-target="this" hx-swap="outerHTML" hx-sync="this:queue last"{{end}}><h2>Phase output</h2><p class="connection">{{.LogMessage}}</p><pre class="log-tail" tabindex="0">{{if .Log}}{{.Log}}{{else}}No readable output yet.{{end}}</pre></section>{{end}}
 
 {{define "human-action"}}{{if .}}<section class="notice failure human-action"><h2>Human action required</h2><p>{{.Decision}}</p>{{if .Files}}<h3>Files to inspect</h3><ul>{{range .Files}}<li><code>{{.}}</code></li>{{end}}</ul>{{end}}{{if .Options}}<h3>Options</h3><ul>{{range .Options}}<li>{{.}}</li>{{end}}</ul>{{end}}</section>{{end}}{{end}}
+
+{{define "verification"}}<h3>Verification evidence</h3>
+{{range .Verification}}<article class="notice"><h4><code>{{.Command}}</code> · {{.Outcome}}</h4>{{if .Excerpt}}<pre>{{.Excerpt}}</pre>{{end}}</article>{{else}}{{if ge .SchemaVersion 4}}<p>no verification reported</p>{{else}}<p>Verification was not recorded by this schema version.</p>{{end}}{{end}}{{end}}

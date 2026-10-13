@@ -670,7 +670,7 @@ Common fields:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "status": "success",
   "summary": "Short phase summary",
   "human_action": null
@@ -691,7 +691,7 @@ A missing action, null/blank decision for `blocked`, or a non-null action for an
 
 #### Implement result
 
-Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safely continue without human input. Implement v3 and fix v3 require one evidence entry for every extracted criterion:
+Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safely continue without human input. Implement v4 and fix v4 require one evidence entry for every extracted criterion:
 
 ```json
 "criteria": [
@@ -700,6 +700,19 @@ Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safel
 ```
 
 All three fields are required; `met` is a boolean and `evidence` is a nonempty command and result or observation. Missing verification must be described explicitly. Unknown, duplicate, or omitted criterion IDs are invalid, including for blocked/failed reports.
+
+Implement and fix v4 also require command verification evidence:
+
+```json
+"verification": [
+  { "command": "go test ./internal/importer", "outcome": "passed", "excerpt": "ok importer" },
+  { "command": "make build", "outcome": "skipped", "excerpt": null }
+]
+```
+
+Every entry requires all three fields, with no extra properties. `command` must be a nonempty string, `outcome` is `passed`, `failed`, or `skipped`, and `excerpt` is a string or null. Mergeyard caps each excerpt at 4,000 Unicode characters including the truncation notice before saving it. An empty array is valid and displays as "no verification reported". Criteria evidence may refer to these entries by command. Evidence describes the agent's reported commands; Mergeyard does not execute them as part of this contract.
+
+Reports are stored with their phase attempts, including valid blocked/failed results, and displayed in the dashboard run view with history preserved. Review input includes a dedicated latest command evidence section, preferring the latest saved fix report over the implement report. This evidence remains available when a later review retry no longer needs the already-adjudicated fix responses. The reviewer may rerun or challenge this evidence, but rerunning its commands is not mandatory.
 
 #### Review result
 
@@ -744,15 +757,16 @@ Review schema v2 requires `prior_findings`. The initial review in round 1 return
 
 Outcome notes must be nonempty. Unknown, duplicate, or omitted prior blocking IDs are invalid. `not_fixed` findings must remain in `findings` as blocking with the same ID; resolved findings cannot remain blocking. A `disputed` fix response requires the reviewer to rule `not_fixed` or `no_longer_applies`. Violations follow the invalid-result path in §13.3, including phase retry limits.
 
-Schema versions are phase-specific. Issue #98 introduced review v2 with `prior_findings`. Issue #99 adds required nullable `human_action`: implement and fix use v2; review uses v3. Issue #97 adds required `criteria` arrays: implement and fix now use v3, and review uses v4. Persisted v1 reviews load with an empty `prior_findings` list. All attempts already launched with older persisted schemas keep their original contract when reconciled after upgrade, including implement/fix v1/v2 and review v1/v2/v3. Older reports do not claim criterion verification. Newly launched attempts require the current versions; reviews account for blockers even when the preceding review was v1.
+Schema versions are phase-specific. Issue #98 introduced review v2 with `prior_findings`. Issue #99 adds required nullable `human_action`: implement and fix use v2; review uses v3. Issue #97 adds required `criteria` arrays: implement and fix use v3, and review uses v4. Issue #94 adds required `verification` arrays: implement and fix now use v4; review stays v4. Persisted v1 reviews load with an empty `prior_findings` list. All attempts already launched with older persisted schemas keep their original contract when reconciled after upgrade, including implement/fix v1/v2/v3 and review v1/v2/v3. Older reports do not claim criterion or command verification that their schema did not carry. Newly launched attempts require the current versions; reviews account for blockers even when the preceding review was v1.
 
 #### Fix result
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "status": "success",
   "summary": "Fixed R1-F1; disputed R1-F2",
+  "verification": [{ "command": "go test ./internal/importer", "outcome": "passed", "excerpt": "ok importer" }],
   "human_action": null,
   "criteria": [
     { "id": "AC1", "met": true, "evidence": "VAT validation test passed." }
@@ -917,10 +931,11 @@ Default title: `#<issue> <issue title>`.
 Default body:
 
 - `Closes #<issue>`;
-- implementation summary;
+- latest implement/fix summary;
+- a collapsed `<details>` block with the latest implement/fix command verification evidence;
 - a Mergeyard-generated footer with the run ID.
 
-Mergeyard updates its generated section without overwriting user-written content. If more than one open PR exists for the branch, the run moves to `NEEDS_ATTENTION`.
+Mergeyard updates its generated section without overwriting user-written content. Each valid implement/fix report replaces the evidence in that section, including blocked/failed reports when a PR exists. An empty verification array displays "no verification reported". Evidence is rendered as literal JSON, escaping HTML, backticks, ownership markers, and mentions, so reported commands and excerpts cannot break the section or trigger mentions. The saved completion event is the publication intent; a receipt records delivery. Failed writes retry from the latest report after restart, reading the current PR body every time and preserving human edits. Body publication serves never-attempted and least-recently-attempted evidence first, recording attempt order durably before each network call so one slow PR cannot monopolize retries across ticks or restarts. It shares a five-second network budget across each batch; warnings and receipts are saved with the caller context so a timed-out write remains retryable. Body publication is independent of `pr_comments`, and failures leave saved evidence available without stopping phase progression. If more than one open PR exists for the branch, the run moves to `NEEDS_ATTENTION`.
 
 ---
 

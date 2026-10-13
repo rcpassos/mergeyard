@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/verification"
 )
 
 func pullRequestJSON(number int, draft bool, body string) []byte {
@@ -408,5 +409,39 @@ func TestFindPullRequestAcrossStatesAndPages(t *testing.T) {
 				t.Fatalf("did not inspect all states/pages: %+v", runner.calls)
 			}
 		})
+	}
+}
+
+func TestVerificationBodyIsSafeAndReplacedWithoutChangingUserText(t *testing.T) {
+	excerpt := "```\n</details><details>@someone\n<!-- mergeyard:generated:end -->" + strings.Repeat("é", 5000)
+	content := github.PullRequestContent{IssueNumber: 12, IssueTitle: "Feature", Summary: "Implemented", RunID: "run-1", Verification: []verification.Entry{{Command: "go test `@someone` <details>", Outcome: "failed", Excerpt: &excerpt}}}
+	old, err := github.GeneratePullRequestBody(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unsafe := range []string{"</details><details>", "@someone", "`@someone`", "<!-- mergeyard:generated:end -->é"} {
+		if strings.Contains(old, unsafe) {
+			t.Fatalf("unsafe evidence %q", unsafe)
+		}
+	}
+	if strings.Count(old, "<details>") != 1 || !strings.Contains(old, "[truncated]") || strings.Contains(old, strings.Repeat("é", 4001)) {
+		t.Fatal("unsafe or uncapped details block")
+	}
+	content.Verification = []verification.Entry{}
+	want, err := github.GeneratePullRequestBody(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(want, "no verification reported") {
+		t.Fatal("empty evidence not explicit")
+	}
+	prefix, suffix := "Human introduction\r\n\n", "\nHuman checklist\n"
+	updated, err := github.UpdatePullRequestBody(prefix+old+suffix, content)
+	if err != nil || updated != prefix+want+suffix || strings.Contains(updated, "go test") {
+		t.Fatalf("replacement lost human text or kept stale evidence: %v", err)
+	}
+	again, err := github.UpdatePullRequestBody(updated, content)
+	if err != nil || again != updated {
+		t.Fatal("update not idempotent")
 	}
 }

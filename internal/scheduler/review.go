@@ -22,6 +22,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/sessions"
+	"github.com/rcpassos/mergeyard/internal/verification"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -377,11 +378,26 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return fail(err)
 	}
+	// Already-adjudicated fixes are excluded from dispute context, but their
+	// command verification remains the latest evidence on a same-round Retry.
+	latestVerification := []verification.Entry{}
+	// Manual PR handback can start review after a valid blocked/failed report.
+	// Malformed results may retain partial reports, so include only valid completions.
+	for _, attempt := range run.ImplementHistory {
+		if attempt.Report != nil && (attempt.Error == "" || strings.HasPrefix(attempt.Error, "phase.blocked:") || strings.HasPrefix(attempt.Error, "phase.failed:")) {
+			latestVerification = attempt.Report.Verification
+		}
+	}
+	for _, fix := range run.FixHistory {
+		if fix.Report != nil {
+			latestVerification = fix.Report.Verification
+		}
+	}
 	issueInput, err := s.phaseIssueInput(ctx, repo, run.ID, issue, gitRun.BaseBranch, &phase)
 	if err != nil {
 		return fail(err)
 	}
-	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{ImplementReport: implementReport, Issue: issueInput, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair, Checks: checks})
+	input, err := harness.WriteReviewInput(ctx, s.deps.Runner, phase, harness.ReviewInput{Verification: latestVerification, ImplementReport: implementReport, Issue: issueInput, PRNumber: pr.Number, PRURL: pr.URL, TargetSHA: snapshot.Head, BaseSHA: gitRun.BaseSHA, Diff: diff, Round: run.ReviewRound, PRBody: pr.Body, PreviousFindings: previousFindings, FixReport: fixReport, CI: repair, Checks: checks})
 	if err != nil {
 		return fail(err)
 	}

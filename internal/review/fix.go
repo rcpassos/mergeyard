@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/verification"
 	"math/big"
 	"strings"
 )
@@ -17,6 +18,7 @@ type Response struct {
 }
 
 type FixReport struct {
+	Verification  []verification.Entry  `json:"verification"`
 	Criteria      []acceptance.Evidence `json:"criteria"`
 	HumanAction   *fault.HumanAction    `json:"human_action"`
 	SchemaVersion int                   `json:"schema_version"`
@@ -25,11 +27,11 @@ type FixReport struct {
 	Responses     []Response            `json:"responses"`
 }
 
-func ParseFix(data []byte) (FixReport, error) { return ParseFixVersion(data, 3) }
+func ParseFix(data []byte) (FixReport, error) { return ParseFixVersion(data, 4) }
 
 // ParseFixVersion preserves contracts of attempts launched before upgrade.
 func ParseFixVersion(data []byte, expectedVersion int64) (FixReport, error) {
-	if expectedVersion < 1 || expectedVersion > 3 {
+	if expectedVersion < 1 || expectedVersion > 4 {
 		return FixReport{}, fmt.Errorf("unsupported fix schema version")
 	}
 	var fields map[string]json.RawMessage
@@ -39,12 +41,15 @@ func ParseFixVersion(data []byte, expectedVersion int64) (FixReport, error) {
 	fieldCount := 4
 	if expectedVersion >= 2 {
 		fieldCount = 5
-		if expectedVersion == 3 {
+		if expectedVersion >= 3 {
 			fieldCount = 6
 		}
 	}
+	if expectedVersion == 4 {
+		fieldCount = 7
+	}
 	if len(fields) != fieldCount || fields["responses"] == nil {
-		return FixReport{}, fmt.Errorf("fix requires schema_version, status, summary, responses, human_action (v2+), and criteria (v3)")
+		return FixReport{}, fmt.Errorf("fix requires schema_version, status, summary, responses, human_action (v2+), criteria (v3+), and verification (v4)")
 	}
 	// Validate the required scalar fields before inspecting responses.
 	for _, key := range []string{"schema_version", "status", "summary", "responses"} {
@@ -61,7 +66,7 @@ func ParseFixVersion(data []byte, expectedVersion int64) (FixReport, error) {
 			return FixReport{}, err
 		}
 	}
-	if expectedVersion == 3 {
+	if expectedVersion >= 3 {
 		if _, err := acceptance.ParseEvidence(fields["criteria"]); err != nil {
 			return FixReport{}, err
 		}
@@ -81,11 +86,18 @@ func ParseFixVersion(data []byte, expectedVersion int64) (FixReport, error) {
 	if err := json.Unmarshal(normalized, &report); err != nil {
 		return report, err
 	}
+	if expectedVersion >= 4 {
+		var err error
+		report.Verification, err = verification.Parse(fields["verification"])
+		if err != nil {
+			return report, err
+		}
+	}
 	return report, report.Validate()
 }
 
 func (r FixReport) Validate() error {
-	if (r.SchemaVersion < 1 || r.SchemaVersion > 3) || (r.Status != "success" && r.Status != "blocked" && r.Status != "failed") || strings.TrimSpace(r.Summary) == "" || r.Responses == nil {
+	if (r.SchemaVersion < 1 || r.SchemaVersion > 4) || (r.Status != "success" && r.Status != "blocked" && r.Status != "failed") || strings.TrimSpace(r.Summary) == "" || r.Responses == nil {
 		return fmt.Errorf("invalid fix version, status, summary, or responses")
 	}
 	if r.SchemaVersion >= 2 {
@@ -93,8 +105,13 @@ func (r FixReport) Validate() error {
 			return err
 		}
 	}
-	if r.SchemaVersion == 3 {
+	if r.SchemaVersion >= 3 {
 		if err := acceptance.ValidateEvidence(r.Criteria); err != nil {
+			return err
+		}
+	}
+	if r.SchemaVersion >= 4 {
+		if err := verification.Validate(r.Verification); err != nil {
 			return err
 		}
 	}
@@ -132,4 +149,4 @@ func (r FixReport) ValidateFindings(findings []Finding) error {
 	return nil
 }
 
-const FixSchema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":3},"status":{"type":"string","enum":["success","blocked","failed"]},"summary":{"type":"string"},"human_action":` + fault.HumanActionSchema + `,"responses":{"type":"array","items":{"type":"object","properties":{"finding_id":{"type":"string"},"resolution":{"type":"string","enum":["fixed","disputed"]},"note":{"type":"string"}},"required":["finding_id","resolution","note"],"additionalProperties":false}},"criteria":` + acceptance.EvidenceSchema + `},"required":["schema_version","status","summary","responses","human_action","criteria"],"additionalProperties":false}`
+const FixSchema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":4},"status":{"type":"string","enum":["success","blocked","failed"]},"summary":{"type":"string"},"human_action":` + fault.HumanActionSchema + `,"responses":{"type":"array","items":{"type":"object","properties":{"finding_id":{"type":"string"},"resolution":{"type":"string","enum":["fixed","disputed"]},"note":{"type":"string"}},"required":["finding_id","resolution","note"],"additionalProperties":false}},"criteria":` + acceptance.EvidenceSchema + `,"verification":` + verification.Schema + `},"required":["schema_version","status","summary","responses","human_action","criteria","verification"],"additionalProperties":false}`

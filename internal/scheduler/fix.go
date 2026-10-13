@@ -153,7 +153,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 				result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Fix, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 				cause = err
 				if err == nil {
-					report = &review.FixReport{HumanAction: result.HumanAction, SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses}
+					report = &review.FixReport{HumanAction: result.HumanAction, SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses, Verification: result.Verification}
 					_ = json.Unmarshal(result.Criteria, &report.Criteria)
 					if err := report.ValidateFindings(a.findings); err != nil {
 						cause = &fault.Error{Code: "phase.result_invalid", Message: "Fix responses do not match supplied findings", Err: err}

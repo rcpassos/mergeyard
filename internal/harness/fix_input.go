@@ -8,6 +8,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/review"
+	"github.com/rcpassos/mergeyard/internal/verification"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,7 @@ func WriteFixInput(ctx context.Context, writer FileWriter, phase PhaseContext, i
 		return "", err
 	}
 	var text strings.Builder
+	text.WriteString("## Verification evidence\n\n" + verification.Instruction + "\n\n")
 	text.WriteString(fault.HumanActionInstruction + "\n\n")
 	text.WriteString(acceptance.Input(input.Issue.IssueBody, false))
 	if phase.Interruption != "" {

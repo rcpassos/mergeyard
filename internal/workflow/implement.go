@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/rcpassos/mergeyard/internal/acceptance"
+	"github.com/rcpassos/mergeyard/internal/verification"
 )
 
 // ImplementReport retains the implementer's evidence for display.
 type ImplementReport struct {
+	Verification  []verification.Entry  `json:"verification"`
 	SchemaVersion int                   `json:"schema_version"`
 	Status        string                `json:"status"`
 	Summary       string                `json:"summary"`

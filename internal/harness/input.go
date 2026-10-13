@@ -11,6 +11,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/verification"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -44,6 +45,7 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 		return "", err
 	}
 	var text strings.Builder
+	text.WriteString("## Verification evidence\n\n" + verification.Instruction + "\n\n")
 	text.WriteString(fault.HumanActionInstruction + "\n\n")
 	text.WriteString(acceptance.Input(input.IssueBody, false))
 	if phase.Interruption != "" {

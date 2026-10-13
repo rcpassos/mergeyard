@@ -41,6 +41,7 @@ type GitHub interface {
 	FindOpenPullRequest(context.Context, string, string) (*github.PullRequest, error)
 	FindPullRequest(context.Context, string, string) (*github.PullRequest, error)
 	CreateDraftPullRequest(context.Context, string, string, string, github.PullRequestContent) (*github.PullRequest, error)
+	UpdatePullRequest(context.Context, string, int, github.PullRequestContent) (*github.PullRequest, error)
 }
 
 // Git is the managed Git boundary; implementations must preserve run ownership.
