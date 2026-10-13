@@ -266,9 +266,9 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 				return s.rejectRetry(ctx, run, v, err)
 			}
 		}
-		selected, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: v.NextState, NextPhase: v.NextPhase, Metadata: patch})
+		selected, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: v.NextState, NextPhase: v.NextPhase, Metadata: patch, AgentPorts: &s.cfg.AgentPorts})
 		if err != nil {
-			v.Pending = true
+			v.Pending = !agentPortsExhausted(err)
 			return s.rejectRetry(ctx, run, v, err)
 		}
 		return s.retryLabels(ctx, repo, selected)
@@ -401,9 +401,9 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 		return s.rejectRetry(ctx, run, v, err)
 	}
 	v.Pending = false
-	selected, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: v.NextState, NextPhase: v.NextPhase, Metadata: patch})
+	selected, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: v.NextState, NextPhase: v.NextPhase, Metadata: patch, AgentPorts: &s.cfg.AgentPorts})
 	if err != nil {
-		v.Pending = true
+		v.Pending = !agentPortsExhausted(err)
 		return s.rejectRetry(ctx, run, v, err)
 	}
 	if selected.State == workflow.WaitingForCI {
@@ -466,6 +466,7 @@ func safeRetryError(cause error) string {
 		return "internal.run_operation: Could not reconcile Retry; check the application log"
 	}
 	messages := map[string]string{
+		"agent_ports.exhausted":         "No agent port block is available; finish or stop retained runs, or configure another range",
 		"retry.unavailable":             "Retry requires a failed or needs-attention run",
 		"retry.stop_pending":            "Finish the pending Stop before retrying",
 		"retry.process_running":         "An owned process is still running; wait or stop it before retrying",

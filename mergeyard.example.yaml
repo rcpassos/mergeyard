@@ -7,6 +7,9 @@ workspace: ~/.mergeyard
 poll_interval: 30s
 ci_timeout: 60m
 concurrency: 1 # global active runs
+agent_ports:
+  base: 5100 # first run block; subsequent blocks start at base + size * slot
+  size: 10 # implementer/fix use lower half; reviewer uses upper half
 trusted_labelers: [] # optional logins; empty trusts write/maintain/admin permission
 
 labels:

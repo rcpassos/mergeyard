@@ -414,7 +414,11 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	if err := sessions.RequireProcessJournal(phaseDir); err != nil {
 		return fail(err)
 	}
-	phase := harness.PhaseContext{Phase: workflow.Fix, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
+	env, err := s.phaseEnvironment(ctx, run.ID, workflow.Fix)
+	if err != nil {
+		return fail(err)
+	}
+	phase := harness.PhaseContext{Phase: workflow.Fix, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: env}
 	phase.Interruption = interruptionContext(previous.attempt, phase)
 	checkID := checkRetryIdentity(run, workflow.Fix, previous.attempt, number, checkRetry)
 	issueInput, err := s.phaseIssueInput(ctx, repo, run.ID, issue, gitRun.BaseBranch, &phase)
