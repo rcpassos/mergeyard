@@ -2,6 +2,7 @@ package scheduler_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
@@ -315,5 +318,89 @@ func TestStalledVerificationPublicationReleasesReconciliationAndRetries(t *testi
 	}
 	if healthy.updates != 1 {
 		t.Fatal("successful retry receipt was not saved")
+	}
+}
+
+type finiteSlowBodyGitHub struct {
+	*fakeGitHub
+	calls []int
+}
+
+func (f *finiteSlowBodyGitHub) UpdatePullRequest(ctx context.Context, repo string, n int, content github.PullRequestContent) (*github.PullRequest, error) {
+	f.calls = append(f.calls, n)
+	if n == 101 {
+		timer := time.NewTimer(6 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return nil, &fault.Error{Code: "github.unavailable", Message: "Finite slow failure for only first PR"}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return f.fakeGitHub.UpdatePullRequest(ctx, repo, n, content)
+}
+func TestSlowVerificationPublicationDoesNotStarveHealthyPRAfterRestart(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{}, prs: map[string]*github.PullRequest{
+		"first": {Number: 101, Body: "human first"}, "second": {Number: 102, Body: "human second"},
+	}}
+	_, rt := fixture(t, api)
+	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.PRComments = false
+	client := &finiteSlowBodyGitHub{fakeGitHub: api}
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for i, id := range []string{"probe-first", "probe-second"} {
+		if _, err := rt.DB.ExecContext(ctx, `INSERT INTO runs(id,repository,issue_number,state,pr_number) VALUES(?,'owner/repo',?,'STOPPED',?)`, id, i+1, 101+i); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rt.DB.ExecContext(ctx, `INSERT INTO scheduler_runs(run_id,issue_json) VALUES(?,?)`, id, fmt.Sprintf(`{"number":%d,"title":"Feature"}`, i+1)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rt.Events.Publish(ctx, events.Draft{RunID: id, Type: "phase.completed", Payload: map[string]any{"phase": "implement", "result": map[string]any{"schema_version": 4, "criteria": []any{}, "human_action": nil, "status": "success", "summary": "Valid evidence", "verification": []any{map[string]any{"command": "test", "outcome": "passed", "excerpt": nil}}}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	root := rt.Workspace.Root
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := app.Open(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { restarted.Close() })
+	s, err = scheduler.New(cfg, schedulerResources(restarted), scheduler.Dependencies{GitHub: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("body publication call order: %v", client.calls)
+	if len(client.calls) != 3 || client.calls[0] != 101 || client.calls[1] != 102 || client.calls[2] != 101 {
+		t.Fatalf("pending evidence did not rotate after restart: %v", client.calls)
+	}
+	delivered := false
+	for _, n := range client.calls {
+		if n == 102 {
+			delivered = true
+		}
+	}
+	if !delivered {
+		t.Fatal("healthy second PR was never attempted after repeated bounded retries of finite-slow first PR")
+	}
+	if !strings.Contains(api.prs["second"].Body, "Valid evidence") {
+		t.Fatal("healthy second PR evidence was not published")
 	}
 }

@@ -25,7 +25,9 @@ SELECT e.id,e.run_id,r.repository,r.pr_number,c.issue_json,e.report
 FROM evidence e JOIN runs r ON r.id=e.run_id JOIN scheduler_runs c ON c.run_id=r.id
 WHERE r.pr_number>0 AND e.id=(SELECT MAX(n.id) FROM evidence n WHERE n.run_id=e.run_id)
 AND NOT EXISTS (SELECT 1 FROM events p WHERE p.run_id=e.run_id AND p.type='verification.published' AND json_extract(p.payload_json,'$.source_event')=e.id)
-ORDER BY e.id`)
+ORDER BY COALESCE((SELECT MAX(p.id) FROM events p
+ WHERE p.run_id=e.run_id AND p.type='verification.attempted'
+ AND json_extract(p.payload_json,'$.source_event')=e.id),0),e.id`)
 	if err != nil {
 		return err
 	}
@@ -71,6 +73,11 @@ ORDER BY e.id`)
 		}
 		if publicationCtx.Err() != nil {
 			break
+		}
+		// Journal attempts before transport so a slow report rotates behind
+		// untouched reports even if the scheduler restarts or the write is ambiguous.
+		if _, err := s.bus.Publish(ctx, events.Draft{RunID: p.runID, Type: "verification.attempted", Payload: map[string]any{"source_event": p.event, "pr_number": p.pr}}); err != nil {
+			return err
 		}
 		_, cause := s.deps.GitHub.UpdatePullRequest(publicationCtx, p.repo, p.pr, p.content)
 		if ctx.Err() != nil {
