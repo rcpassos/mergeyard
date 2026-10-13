@@ -89,12 +89,12 @@ func (s *Scheduler) systemStep(ctx context.Context, repo config.Repository, run 
 			return nil, false, err
 		}
 	}
-	commandsChanged := last != nil && req.Step == "checks" && !slices.Equal(last.Commands, req.Commands)
+	commandsChanged := last != nil && (req.Step == "checks" || req.Step == "verify") && !slices.Equal(last.Commands, req.Commands)
 	if last == nil || (commandsChanged && last.Status != "running") || last.WorktreeIdentity != identity || last.TargetSHA != req.TargetSHA || last.OwnerID != req.OwnerID || (req.Retry && last.Status != "running" && last.Status != "succeeded") {
 		return s.startSystemStep(ctx, repo, run, gitRun, req, number)
 	}
 	if last.Status != "running" {
-		if last.Step == "checks" && last.Status == "succeeded" {
+		if (last.Step == "checks" || last.Step == "verify") && last.Status == "succeeded" {
 			failure := checkEvidenceError(last)
 			if failure == "" && !last.PinnedTreeVerified {
 				failure = "Checked workspace has no durable pinned-tree verification"
@@ -158,7 +158,7 @@ func (s *Scheduler) systemStep(ctx context.Context, repo config.Repository, run 
 		output.Write(data)
 	}
 	last.Output = excerpt(output.String())
-	if last.Step == "checks" {
+	if last.Step == "checks" || last.Step == "verify" {
 		last.Results, err = s.checkResults(ctx, last)
 		if err != nil {
 			return nil, false, err
@@ -193,7 +193,7 @@ func excerpt(output string) string {
 }
 
 func (s *Scheduler) startSystemStep(ctx context.Context, repo config.Repository, run workflow.Run, gitRun managedgit.Run, req systemStepRequest, number int) (*workflow.SystemStepSnapshot, bool, error) {
-	if req.Step == "checks" {
+	if req.Step == "checks" || req.Step == "verify" {
 		if err := s.verifyCheckedTree(ctx, gitRun, req.TargetSHA); err != nil {
 			return nil, false, err
 		}
@@ -220,7 +220,7 @@ func (s *Scheduler) startSystemStep(ctx context.Context, repo config.Repository,
 	// One login shell shares setup state between list entries; stop on the first
 	// failing command or pipeline. No command text is taken from issues or PRs.
 	script := "set -e\nset -o pipefail\n" + strings.Join(req.Commands, "\n") + "\n"
-	if req.Step == "checks" {
+	if req.Step == "checks" || req.Step == "verify" {
 		script = checksScript(dir, req.Commands)
 	}
 	// Keep login startup state, but contain explicit exits and the check EXIT
@@ -370,6 +370,13 @@ func checkEvidenceError(v *workflow.SystemStepSnapshot) string {
 // Setup may change the workspace, while checks must test a clean pinned commit.
 // The same guard serves implement, fix, handback, and cached evidence on restart.
 func (s *Scheduler) verifyCheckedTree(ctx context.Context, gitRun managedgit.Run, target string) error {
+	if gitRun.Branch == "" {
+		g, ok := s.deps.Git.(BaseGit)
+		if !ok {
+			return &fault.Error{Code: "git.base_check_unsupported", Message: "Git adapter cannot inspect verification scratch"}
+		}
+		return g.InspectVerification(ctx, gitRun, target)
+	}
 	g, ok := s.deps.Git.(interface {
 		InspectFixTarget(context.Context, managedgit.Run, string) error
 	})

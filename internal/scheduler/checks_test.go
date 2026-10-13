@@ -361,8 +361,15 @@ func TestChecksAlsoRepairCIFixesBeforePush(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish(t, s, workflow.WaitingForCI, workflow.Review)
+	finish(t, s, workflow.Active, workflow.Fix)
 	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	if run.ReviewRound != 2 || run.Fix.Attempt != 2 || len(run.SystemSteps) != 3 || len(run.Fix.Report.Responses) != 0 {
+	var checks []workflow.SystemStepSnapshot
+	for _, step := range run.SystemSteps {
+		if step.Step == "checks" {
+			checks = append(checks, step)
+		}
+	}
+	if run.ReviewRound != 2 || run.Fix.Attempt != 2 || len(checks) != 3 || len(run.Fix.Report.Responses) != 0 {
 		t.Fatalf("CI check repair=%+v", run)
 	}
 }

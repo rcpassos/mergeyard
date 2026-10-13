@@ -95,6 +95,7 @@ type Repository struct {
 	TrustedLabelers []string      `yaml:"trusted_labelers"`
 	Setup           []string      `yaml:"setup"`
 	Checks          []string      `yaml:"checks"`
+	VerifyCommands  []string      `yaml:"verify_commands"`
 	CheckRetries    int           `yaml:"check_retries"`
 	CommandTimeout  time.Duration `yaml:"command_timeout"`
 	Repo            string
@@ -221,6 +222,15 @@ func Parse(data []byte) (Config, *Document, error) {
 				rm.read("setup", &r.Setup)
 				readExclude(rm, &r.Exclude)
 				rm.read("checks", &r.Checks)
+				rm.read("verify_commands", &r.VerifyCommands)
+				if n := rm.node("verify_commands"); n != nil && dereference(n).Kind != yaml.SequenceNode {
+					rm.fail("config.invalid_verify_commands", "verify_commands", "expected a sequence; use [] to disable verification")
+				}
+				for _, command := range r.VerifyCommands {
+					if strings.TrimSpace(command) == "" || strings.ContainsRune(command, 0) {
+						rm.fail("config.invalid_verify_commands", "verify_commands", "commands must be nonempty and contain no NUL")
+					}
+				}
 				for _, command := range r.Checks {
 					if strings.TrimSpace(command) == "" || strings.ContainsRune(command, 0) {
 						rm.fail("config.invalid_checks", "checks", "commands must be nonempty and contain no NUL")

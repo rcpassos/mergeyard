@@ -213,7 +213,19 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 			return fail(err)
 		}
 		if !result.TreeChanged {
-			if a.ci != nil {
+			if a.ci != nil && a.ci.RepairCause == "git.base_conflict" {
+				baseGit, ok := s.deps.Git.(BaseGit)
+				if !ok {
+					return fail(&fault.Error{Code: "git.base_check_unsupported", Message: "Git adapter cannot establish conflict resolution"})
+				}
+				merged, err := baseGit.CheckBase(ctx, gitRun, a.ci.Base.BaseBranch, result.SHA)
+				if err != nil {
+					return fail(err)
+				}
+				if len(merged.Conflicts) > 0 {
+					return s.finishFixAttempt(ctx, repo, run, a, nil, a.report, &fault.Error{Code: "phase.result_invalid", Message: "Fix reports success but still conflicts with the current base"})
+				}
+			} else if a.ci != nil {
 				return s.finishFixAttempt(ctx, repo, run, a, nil, a.report, &fault.Error{Code: "phase.result_invalid", Message: "CI repair reports success but made no code changes"})
 			}
 			for _, response := range a.report.Responses {
@@ -347,7 +359,7 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	var repair *ci.Snapshot
 	if run.Review.Report.Status == "approved" && run.CI != nil && run.CI.SHA == run.Review.TargetSHA && run.CI.QueryError == "" {
 		_, cause := run.CI.Evidence.Gate()
-		if (cause == "ci.check_failed" || cause == "ci.check_timed_out") && run.CI.RepairCause == cause {
+		if ((cause == "ci.check_failed" || cause == "ci.check_timed_out") && run.CI.RepairCause == cause) || (baseRepairCause(*run.CI) != "" && baseRepairCause(*run.CI) == run.CI.RepairCause) {
 			repair = run.CI
 		}
 	}
@@ -368,6 +380,31 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	target := run.Review.TargetSHA
 	if !reviewHeadMatches(pr, repo, run, gitRun, target) {
 		return fail(&fault.Error{Code: "review.head_changed", Message: "PR head changed before fix launch"})
+	}
+	if repair != nil && repair.RepairCause == "git.base_conflict" {
+		if !repair.Base.MergePrepared {
+			g, ok := s.deps.Git.(interface {
+				PrepareBaseRepair(context.Context, managedgit.Run, string, string) error
+			})
+			if !ok {
+				return fail(&fault.Error{Code: "git.base_check_unsupported", Message: "Git adapter cannot prepare conflict repair"})
+			}
+			wait := *repair
+			base := *repair.Base
+			wait.Base = &base
+			base.MergeStarted = true
+			if err := s.saveCI(ctx, run, wait, "ci.updated"); err != nil {
+				return err
+			}
+			if err := g.PrepareBaseRepair(ctx, gitRun, target, base.BaseSHA); err != nil {
+				return fail(err)
+			}
+			base.MergePrepared = true
+			if err := s.saveCI(ctx, run, wait, "ci.updated"); err != nil {
+				return err
+			}
+			repair = &wait
+		}
 	}
 	findings := []review.Finding{}
 	for _, f := range run.Review.Report.Findings {

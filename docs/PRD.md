@@ -960,9 +960,20 @@ Mergeyard monitors GitHub checks on the PR head commit after reviewer approval.
 
 Normalized CI states: `pending`, `passed`, `failed`, `unknown`.
 
-- `passed` → `READY_TO_MERGE`.
+- `passed` → current-base merge gate and configured verification → `READY_TO_MERGE`.
 - `failed` → `fix` with the failed check names, failure excerpts, and URLs, if a review round remains; otherwise `NEEDS_ATTENTION`.
 - If no checks are reported for the head commit after 2 minutes, CI is treated as passed.
+
+Before readiness, Mergeyard fetches the PR base and runs `git merge-tree --write-tree origin/<base> <approved-head>`. A conflict follows the CI-failure repair path with the conflicting paths: fix if a review round remains, otherwise `NEEDS_ATTENTION` with `git.base_conflict`. Mergeyard journals and
+starts the pinned base merge in the run worktree before launching the agent,
+which only edits conflict files. Mergeyard owns staging and the merge commit,
+including resolutions that preserve the approved tree. Reconciliation recognizes
+the same pending merge parent and retains partial resolutions. Canceled or
+action-required CI takes priority over current-base repair; an unavailable
+synthetic merge does not prevent a proven conflict repair when head-check evidence
+and requirements are available.
+
+Per-repository `verify_commands` defaults to `checks` when omitted; explicit `[]` disables commands, but retains the merge-tree check. On a clean merge, commands run on a synthetic base + approved-head commit in a separate detached scratch worktree. They use the configured command timeout and system-step process journal, keep per-command output and exit evidence, and never change the run worktree or push. Verification failure or timeout follows the same repair path and `max_rounds` bound; exhaustion reports `git.base_verification_failed`. Fix input carries the command and output excerpt. The synthetic commit, scratch creation intent, base/head pair, command session and cleanup are persisted. A moved base requires another verification before readiness.
 
 Mergeyard respects branch protection and required checks. It does not rerun flaky checks automatically.
 
@@ -970,7 +981,7 @@ Mergeyard respects branch protection and required checks. It does not rerun flak
 
 ## 19. Ready to Merge
 
-When the reviewer has approved the current head commit and CI has passed, Mergeyard:
+When the reviewer has approved the current head commit, CI has passed, and current-base verification has passed, Mergeyard:
 
 1. records the approved commit SHA;
 2. marks the draft PR as ready for review;
@@ -982,6 +993,7 @@ Mergeyard never merges. While waiting:
 
 - when GitHub reports the PR merged, Mergeyard cleans up and completes the run;
 - if the PR head changes after approval (for example the user pushes a commit), the dashboard shows a `changed after approval` warning; Mergeyard does not re-review automatically;
+- if the base moves after readiness, Mergeyard fetches and re-runs merge-tree against the approved head; the dashboard shows `stale vs base` or `conflicts with base`, without verification commands, re-review or automatic fixes;
 - if the PR is closed without merging, the run moves to `NEEDS_ATTENTION` (`pr.closed_unmerged`).
 
 ---
@@ -1123,7 +1135,7 @@ Retry is allowed from `NEEDS_ATTENTION` and `FAILED`, and from `WAITING_FOR_HARN
 - creates a new phase attempt;
 - does not reset user changes;
 - reconciles Git/PR/CI state first and determines the next safe phase;
-- grants one additional review round when the run stopped on `review.max_rounds_exceeded`.
+- grants one additional review round when the run stopped on `review.max_rounds_exceeded`, `git.base_conflict`, or `git.base_verification_failed`; current-base verification is repeated before authorizing a repair.
 
 Retry accepts optional free-text human guidance: `mergeyard retry <run-id>
 --note "…"` or `--note-file <path>` (mutually exclusive), and an optional guidance
@@ -1174,6 +1186,7 @@ Cases:
 - **Process still running:** restore the run as active and keep monitoring.
 - **Process finished while offline:** read exit metadata and the result, then continue.
 - **Setup in progress:** wait on a live setup session without starting another script. If it finished, read exit metadata and continue or report `workspace.setup_failed`. If the outcome is unknown, stop any remaining owned processes and rerun setup. The wrapper's timeout watchdog continues enforcing the original deadline while the control plane is offline.
+- **Current-base verification in progress:** preserve the journaled scratch and base/head pair while its command session is live. Consume saved results after exit, or stop owned processes before replaying an unknown outcome. Recheck the latest fetched base before readiness; results from an older combination cannot authorize it. Cleanup removes only the owned detached scratch after its processes stop and resumes after interruption, including terminal runs. A ready run observes base changes as warnings only.
 - **Checks in progress:** reconcile like setup: wait on a live session or consume its saved result; stop remaining owned processes and rerun checks if the outcome is unknown. A result authorizes publication only for the committed head it checked. Preserve retry counts, explicit grants, and handback origin. An in-progress check-retry implement/fix attempt is reconciled like any agent attempt, without consuming ordinary attempts or granting a fresh check budget.
 - **Harness limited:** keep the run in `WAITING_FOR_HARNESS` until the limit expires.
 - **PR merged while offline:** complete the run and clean up.
@@ -1407,8 +1420,9 @@ repositories:
     enabled: true
     setup: []             # e.g. ["npm ci"]; commands must be idempotent
     checks: []            # e.g. ["npm test", "npm run lint"]; before push/review
+    # verify_commands: [] # omit to default to checks; [] disables command verification
     check_retries: 1      # nonnegative; 0 disables automatic check fixes
-    command_timeout: 20m  # positive duration for each whole setup/checks script
+    command_timeout: 20m  # positive duration for each whole setup/checks/verification script
 
   - repo: company/frontend
     reviewer:             # per-repository role override
@@ -1418,7 +1432,7 @@ repositories:
 
 A repository-level `implementer` or `reviewer` block overrides only the fields it sets.
 
-Repository `checks` defaults to `[]`, `check_retries` to `1`, and `command_timeout` to `20m`. Setup and checks share the timeout and system-step process behavior in section 14. Current-base verification remains future work in [#96](https://github.com/rcpassos/mergeyard/issues/96): its planned `verify_commands` defaults to `checks` when omitted, while an explicit `[]` disables verification.
+Repository `checks` defaults to `[]`, `check_retries` to `1`, and `command_timeout` to `20m`. Setup and checks share the timeout and system-step process behavior in section 14. `verify_commands` defaults to `checks` when omitted; an explicit `[]` disables command verification. The merge-tree gate still applies. Verification uses a fresh scratch checkout, so commands must include any dependency preparation needed there.
 
 Model identifiers and effort levels are passed through to the harness. Mergeyard does not maintain a model catalog.
 
@@ -1686,6 +1700,8 @@ Examples:
 ```text
 workspace.setup_failed
 checks.failed
+git.base_conflict
+git.base_verification_failed
 git.no_changes
 git.branch_conflict
 git.push_rejected
