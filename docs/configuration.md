@@ -184,7 +184,9 @@ run requires attention with `git.base_conflict`. Mergeyard journals and starts
 the pinned merge in the run worktree before launching the fixer. The agent only
 edits conflict files; Mergeyard stages them, completes the merge commit, runs
 checks, and publishes it for independent review. Restart recognizes the saved
-merge parent and preserves partial resolutions.
+merge parent and preserves partial resolutions. Explicit Retry after a blocked
+fixer retains that merge, rechecks CI priority, and resumes the same fix phase
+with its partial file edits.
 
 `repositories[].verify_commands` runs on the combined base + approved head in a
 separate detached scratch worktree. Omission defaults to the repository's

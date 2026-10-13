@@ -202,3 +202,50 @@ func TestManagedBaseMergeIntentRecoversBeforeAgentLaunch(t *testing.T) {
 	}
 	gitCommand(t, remote, "merge-base", "--is-ancestor", baseSHA, ready.ApprovedSHA)
 }
+
+func TestRetryManagedConflictPreservesMergeAndRechecksCI(t *testing.T) {
+	for _, mode := range []string{"passed", "merge unavailable", "cancelled", "unavailable"} {
+		t.Run(mode, func(t *testing.T) {
+			blockedReport := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":{"decision":"Confirm resolution","files":[],"options":[]},"status":"blocked","summary":"Need guidance","responses":[]}}'`
+			fix := `printf '%s\n' implemented > feature.txt; case "$*" in *fix-1-1*) ` + blockedReport + `;; *) ` + ciFixedReport + `;; esac`
+			_, rt, base, remote, cfg, r := localFlow(t, ciFixScript(fix))
+			api := passingBaseAPI(base)
+			deps := scheduler.Dependencies{GitHub: ciBranchGitHub{api}, Runner: r}
+			s, err := scheduler.New(cfg, schedulerResources(rt), deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			finish(t, s, workflow.WaitingForCI, workflow.Review)
+			baseSHA := advanceBase(t, remote, "feature.txt", "conflicting base\n")
+			blocked := finish(t, s, workflow.NeedsAttention, workflow.Fix)
+			switch mode {
+			case "merge unavailable":
+				api.queryError = &fault.Error{Code: "github.merge_evidence_unknown"}
+			case "cancelled":
+				api.evidence.Checks[0].Conclusion = "cancelled"
+			case "unavailable":
+				api.queryError = &fault.Error{Code: "github.unavailable"}
+			}
+			_, err = s.Retry(context.Background(), blocked.ID)
+			if mode == "cancelled" || mode == "unavailable" {
+				if err == nil {
+					t.Fatal("unsafe retry authorized")
+				}
+				tree := setupWorktree(t, rt, blocked.ID)
+				if got := gitCommand(t, tree, "rev-parse", "MERGE_HEAD"); got != baseSHA {
+					t.Fatal("rejected retry altered merge")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("managed merge retry rejected: %v", err)
+			}
+			api.queryError = nil
+			ready := finish(t, s, workflow.ReadyToMerge, workflow.Review)
+			if ready.Fix.Attempt != 2 || ready.ReviewRound != 2 || !ready.Fix.CI.Base.MergePrepared {
+				t.Fatal("retry did not resume same managed repair")
+			}
+			gitCommand(t, remote, "merge-base", "--is-ancestor", baseSHA, ready.ApprovedSHA)
+		})
+	}
+}

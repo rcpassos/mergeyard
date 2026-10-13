@@ -123,7 +123,7 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 	evidence, evidenceErr := api.PullRequestEvidence(ctx, repo.Repo, target)
 	v.Evidence = evidence
 	v.Evidence.Gate()
-	mergeUnknown := evidenceErr != nil && errorCodeForReview(evidenceErr) == "github.merge_evidence_unknown" && evidence.MergeSHA == ""
+	mergeUnknown := missingSyntheticMerge(evidence, evidenceErr)
 	if evidenceErr != nil && !mergeUnknown {
 		return unknown(evidenceErr)
 	}

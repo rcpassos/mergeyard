@@ -279,7 +279,7 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 			// A failed repair does not authorize acting on saved check failures.
 			// Reconcile current CI before deciding whether any fixer is needed.
 			target := *pr
-			wait := s.observeRetryCI(ctx, repo, run, target)
+			wait, evidenceErr := s.observeRetryCI(ctx, repo, run, target)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -294,7 +294,28 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 				return fail("retry.head_ambiguous", "PR changed during CI reconciliation; inspect before retrying")
 			}
 			_, attention := wait.Evidence.Gate()
-			if wait.QueryError == "" && (attention == "ci.check_failed" || attention == "ci.check_timed_out") {
+			pendingMerge := run.CI.RepairCause == "git.base_conflict" && baseRepairCause(*run.CI) == "git.base_conflict" && run.CI.Base.MergeStarted
+			if pendingMerge {
+				if evidenceErr != nil && !missingSyntheticMerge(wait.Evidence, evidenceErr) {
+					return fail("retry.ci_unknown", "CI evidence is unavailable; the managed merge is preserved")
+				}
+				if attention == "ci.action_required" {
+					return fail(attention, "CI was canceled or requires action; the managed merge is preserved")
+				}
+				g, ok := s.deps.Git.(interface {
+					PrepareBaseRepair(context.Context, managedgit.Run, string, string) error
+				})
+				if !ok {
+					return fail("git.base_check_unsupported", "Git adapter cannot reconcile the managed merge")
+				}
+				if err := g.PrepareBaseRepair(ctx, gitRun, target.Head.SHA, run.CI.Base.BaseSHA); err != nil {
+					return s.rejectRetry(ctx, run, v, err)
+				}
+				wait.QueryError = ""
+				wait.RepairCause = "git.base_conflict"
+				patch.CI = &wait
+				v.Deadline = wait.Deadline.Format(time.RFC3339Nano)
+			} else if wait.QueryError == "" && (attention == "ci.check_failed" || attention == "ci.check_timed_out") {
 				wait.RepairCause = attention
 				patch.CI = &wait
 				v.Deadline = wait.Deadline.Format(time.RFC3339Nano)
@@ -337,7 +358,7 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 		if observedCI != nil {
 			wait = *observedCI
 		} else {
-			wait = s.observeRetryCI(ctx, repo, run, *pr)
+			wait, _ = s.observeRetryCI(ctx, repo, run, *pr)
 		}
 		patch.CI = &wait
 		v.Deadline = wait.Deadline.Format(time.RFC3339Nano)
@@ -411,7 +432,7 @@ func (s *Scheduler) retryProgressLabels(ctx context.Context, repo config.Reposit
 	return s.retryLabels(ctx, repo, current)
 }
 
-func (s *Scheduler) observeRetryCI(ctx context.Context, repo config.Repository, run workflow.Run, pr github.PullRequest) ci.Snapshot {
+func (s *Scheduler) observeRetryCI(ctx context.Context, repo config.Repository, run workflow.Run, pr github.PullRequest) (ci.Snapshot, error) {
 	now := s.deps.Now().UTC()
 	wait := ci.Snapshot{SHA: pr.Head.SHA}
 	if run.CI != nil {
@@ -420,8 +441,9 @@ func (s *Scheduler) observeRetryCI(ctx context.Context, repo config.Repository, 
 	wait.SHA, wait.CurrentHead = pr.Head.SHA, pr.Head.SHA
 	wait.StartedAt, wait.Deadline = now, now.Add(s.cfg.CITimeout)
 	wait.ReadyStarted = false
-	// Explicit retry rechecks a completed base failure against current inputs.
-	if wait.Base != nil && wait.Base.Cleaned {
+	// Recheck completed verification against current inputs, but retain the
+	// journal of a managed merge until its conflict repair is committed.
+	if wait.Base != nil && wait.Base.Cleaned && !wait.Base.MergeStarted {
 		wait.Base = nil
 	}
 	wait.BaseWarning = ""
@@ -430,7 +452,7 @@ func (s *Scheduler) observeRetryCI(ctx context.Context, repo config.Repository, 
 	if !ok {
 		wait.Evidence = ci.Evidence{}
 		wait.QueryError = "GitHub adapter cannot establish check requirements"
-		return wait
+		return wait, &fault.Error{Code: "github.ci_unsupported", Message: wait.QueryError}
 	}
 	var err error
 	wait.Evidence, err = api.PullRequestEvidence(ctx, repo.Repo, pr)
@@ -441,8 +463,9 @@ func (s *Scheduler) observeRetryCI(ctx context.Context, repo config.Repository, 
 	}
 	if wait.Evidence.SHA != pr.Head.SHA || (wait.Evidence.MergeSHA != "" && wait.Evidence.MergeSHA != pr.MergeCommitSHA) || pr.Base.Ref == "" {
 		wait.QueryError = "CI evidence does not establish the current PR target"
+		err = &fault.Error{Code: "ci.evidence_stale", Message: wait.QueryError}
 	}
-	return wait
+	return wait, err
 }
 
 func safeRetryError(cause error) string {

@@ -229,3 +229,9 @@ func (s *Scheduler) repairBase(ctx context.Context, repo config.Repository, run 
 func pendingBaseScratch(run workflow.Run) bool {
 	return run.CI != nil && run.CI.Base != nil && !run.CI.Base.Cleaned && run.CI.Base.ScratchPath != ""
 }
+
+// The adapter returns this error only after reading complete head checks and
+// requirements, before a usable synthetic merge can be established.
+func missingSyntheticMerge(e ci.Evidence, err error) bool {
+	return err != nil && errorCodeForReview(err) == "github.merge_evidence_unknown" && e.MergeSHA == ""
+}
