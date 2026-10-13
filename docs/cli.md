@@ -17,6 +17,86 @@ PRs, Git ownership, and sessions; orphaned claims and artifacts are reported
 without deletion or automatic redispatch. Pending stops finish before normal
 reconciliation can restore labels or advance work.
 
+`mergeyard plan [--repo owner/repo] [--json]` previews the next claims without
+changing labels, posting comments, creating runs/worktrees, or writing SQLite.
+With a running control plane it uses `GET /api/plan` over the existing local
+connection and the owner's loaded configuration, persisted runs and pause state.
+With no listener it loads the selected configuration, reads GitHub and opens the
+existing SQLite store in read-only mode, without locking the workspace or applying
+migrations. A workspace without a database is treated as having no persisted runs;
+planning does not create it. An incompatible database requires a normal startup
+to migrate before planning. Connection errors from an active server, including a
+workspace mismatch, are reported rather than falling back.
+
+The plan lists every open issue carrying its repository's ready label, including
+issues in disabled repositories. Repository configuration order, issue creation
+time, and issue number determine the order. Earlier `would_claim` issues reserve
+capacity only in memory. `--repo` filters the displayed results from that complete
+queue; earlier repositories still consume simulated global slots. Repository
+names ignore case; an unconfigured repository is an error.
+
+Decisions use the scheduler's own eligibility path:
+
+- `would_claim`: eligible with a free global and repository slot. Both roles show
+  resolved harness (`agent`), model, effort, skills and `harness_source` (`label`
+  or `config`), using the same harness-override resolver as a real claim. Empty
+  model/effort mean the harness default. A limited reviewer waits when its phase
+  starts and does not prevent the initial claim.
+- `waiting`: `concurrency_full`, `harness_limited` (the resolved implementer),
+  or `scheduler_paused` (only available from the running control plane).
+- `skipped`: `repo_disabled`, `running_label`, `needs_attention_label`,
+  `active_run`, `untrusted_labeler`, or `blocked_by` with sorted blocker numbers.
+  Invalid overrides discovered before an attention label is published report
+  `invalid_harness_override`; already labelled issues report
+  `needs_attention_label`. An issue that loses ready or closes during the fresh
+  pre-claim read reports `not_ready`.
+
+The first applicable gate is reported: disabled repository, running/attention
+labels, existing run, pause, capacity, trust, blockers, role settings, harness
+availability. Nonterminal runs consume capacity except `READY_TO_MERGE`; pending
+merge cleanup still prevents a duplicate claim. GitHub dependency/read failures
+return an error instead of a partial plan; unverifiable trust is skipped as it
+would be by dispatch. Planning observes current state without advancing existing
+runs or replaying pending label/comment deliveries. A later reconciliation or
+external change may therefore change the next poll's decisions.
+
+`--json` writes one versioned object; issue array order is deterministic, empty
+queues encode as `[]`, and output includes no observation timestamp or credentials:
+
+```json
+{
+  "schema_version": 1,
+  "paused": false,
+  "issues": [
+    {
+      "repository": "owner/repo",
+      "number": 7,
+      "title": "Add a feature",
+      "decision": "would_claim",
+      "role_settings": {
+        "implementer": {
+          "agent": "codex", "model": "", "effort": "",
+          "skills": ["implement"], "harness_source": "label"
+        },
+        "reviewer": {
+          "agent": "claude", "model": "", "effort": "",
+          "skills": [], "harness_source": "config"
+        }
+      }
+    },
+    {
+      "repository": "owner/repo", "number": 8, "title": "Follow-up",
+      "decision": "skipped", "reason": "blocked_by", "blockers": [42]
+    }
+  ]
+}
+```
+
+`reason` is omitted for `would_claim`; `blockers` appears only for `blocked_by`;
+`role_settings` appears only for `would_claim`. Text output displays blockers as
+`blocked_by #42` and escapes terminal control characters in issue titles and role
+settings. JSON preserves the original text through normal JSON escaping.
+
 The operational commands use the running process's local HTTP API. Start
 Mergeyard with the same configuration first. They do not open a second writable
 runtime database or acquire the owner's lock.

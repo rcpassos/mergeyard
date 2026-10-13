@@ -165,3 +165,19 @@ func (s *Server) checkHarness(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
+
+func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
+	provider, ok := s.operations.(interface {
+		Plan(context.Context, string) (scheduler.Plan, error)
+	})
+	if !ok {
+		http.Error(w, "Planning is unavailable", http.StatusNotImplemented)
+		return
+	}
+	report, err := provider.Plan(r.Context(), r.URL.Query().Get("repo"))
+	if err != nil {
+		s.operationError(w, r, err)
+		return
+	}
+	s.json(w, report)
+}

@@ -38,6 +38,7 @@ var commands = []command{
 	{name: "start", summary: "start the scheduler and dashboard (default)"},
 	{name: "init", summary: "interactive setup: writes config, checks tools"},
 	{name: "repo add", args: "<owner/repo>", summary: "add a repository to the config"},
+	{name: "plan", summary: "preview claims and explain the ready queue (read-only)"},
 	{name: "status", summary: "show scheduler and run status"},
 	{name: "harness check", args: "<claude|codex>", summary: "use account quota for a minimal credit recovery check"},
 	{name: "doctor", summary: "check tools, auth, and config"},
@@ -54,6 +55,8 @@ var commands = []command{
 
 // globalOptions holds shared flags and the Retry-only guidance options.
 type globalOptions struct {
+	planRepo      *string
+	planJSON      bool
 	configPath    string // empty means use the PRD §26 search order
 	help          bool
 	version       bool
@@ -95,6 +98,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "mergeyard: --note and --note-file require retry")
 		return 2
 	}
+	if (opts.planRepo != nil || opts.planJSON) && cmd.name != "plan" {
+		fmt.Fprintln(stderr, "mergeyard: --repo and --json require plan")
+		return 2
+	}
 	if len(rest) != cmd.arity() {
 		fmt.Fprintf(stderr, "usage: mergeyard %s\n", cmd.usage())
 		return 2
@@ -124,6 +131,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return checkSetup(ctx, opts.configPath, stdout, stderr)
+	}
+	if cmd.name == "plan" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		repository := ""
+		if opts.planRepo != nil {
+			repository = *opts.planRepo
+		}
+		if err := plan(ctx, opts.configPath, repository, opts.planJSON, stdout); err != nil {
+			fmt.Fprintf(stderr, "mergeyard plan: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	if cmd.name == "reconcile" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -199,6 +219,20 @@ func parseGlobalFlags(args []string) (globalOptions, []string, error) {
 		}
 		name, value, hasValue := strings.Cut(strings.TrimPrefix(arg[1:], "-"), "=")
 		switch name {
+		case "json":
+			if hasValue {
+				return opts, nil, fmt.Errorf("flag does not take a value: %s", arg)
+			}
+			opts.planJSON = true
+		case "repo":
+			if !hasValue && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				value = args[i]
+			}
+			if value == "" {
+				return opts, nil, errors.New("flag needs an argument: --repo")
+			}
+			opts.planRepo = &value
 		case "version":
 			if hasValue {
 				return opts, nil, fmt.Errorf("flag does not take a value: %s", arg)
@@ -271,6 +305,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprint(w, "\nRetry flags (optional, mutually exclusive):\n"+
 		"  --note <text>       human guidance for the rest of the run\n"+
 		"  --note-file <path>  read human guidance from a file\n"+
+		"\nPlan flags:\n"+
+		"  --repo <owner/repo>  show one configured repository\n"+
+		"  --json              print stable JSON\n"+
 		"\nGlobal flags:\n"+
 		"  --config <path>   config file (default: ./mergeyard.yaml, then ~/.config/mergeyard/config.yaml)\n"+
 		"  --version        show the installed version\n"+

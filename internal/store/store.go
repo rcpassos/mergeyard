@@ -34,3 +34,24 @@ func Open(ctx context.Context, path string) (*sql.DB, error) {
 	}
 	return db, nil
 }
+
+// OpenReadOnly opens an existing database without migrations or file creation.
+// The SQLite open mode enforces read-only access even if a caller attempts a write.
+func OpenReadOnly(ctx context.Context, path string) (*sql.DB, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	uri := url.URL{Scheme: "file", Path: absolute}
+	uri.RawQuery = url.Values{"mode": {"ro"}, "_pragma": {"query_only(1)", "busy_timeout(5000)"}}.Encode()
+	db, err := sql.Open("sqlite", uri.String())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, &fault.Error{Code: "workspace.database_open", Path: absolute, Err: err}
+	}
+	return db, nil
+}

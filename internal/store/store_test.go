@@ -150,3 +150,31 @@ func TestRelatedRecordsAndHarnessLimitUniqueness(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOnlyStoreRejectsWritesAndMissingDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state ?#.db")
+	db, err := store.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES('saved')"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	reader, err := store.OpenReadOnly(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var value string
+	if err := reader.QueryRow("SELECT value FROM fixture").Scan(&value); err != nil || value != "saved" {
+		t.Fatalf("read=%s err=%v", value, err)
+	}
+	if _, err := reader.Exec("INSERT INTO fixture VALUES('changed')"); err == nil {
+		t.Fatal("read-only store accepted a write")
+	}
+	if _, err := store.OpenReadOnly(ctx, filepath.Join(t.TempDir(), "missing.db")); err == nil {
+		t.Fatal("read-only store created missing database")
+	}
+}
