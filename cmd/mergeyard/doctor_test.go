@@ -46,7 +46,11 @@ func TestDoctorExitStatusAndGroups(t *testing.T) {
 			port := listener.Addr().(*net.TCPAddr).Port
 			listener.Close()
 			path := filepath.Join(home, "config.yaml")
-			data := fmt.Sprintf("port: %d\nworkspace: %q\nagents: {claude: {permission_mode: acceptEdits}}\n", port, filepath.Join(home, "workspace")) + tc.extra
+			agentPortBase, agentPortSize := port+1, 2
+			if agentPortBase > 65534 {
+				agentPortBase, agentPortSize = 1, port-1
+			}
+			data := fmt.Sprintf("port: %d\nagent_ports: {base: %d, size: %d}\nworkspace: %q\nagents: {claude: {permission_mode: acceptEdits}}\n", port, agentPortBase, agentPortSize, filepath.Join(home, "workspace")) + tc.extra
 			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 				t.Fatal(err)
 			}

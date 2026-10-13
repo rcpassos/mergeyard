@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/pathspec"
 	"github.com/rcpassos/mergeyard/internal/repository"
 	"github.com/rcpassos/mergeyard/internal/workspace"
 )
@@ -39,6 +40,7 @@ type PrepareRequest struct {
 // Run holds the paths and refs required to resume Git operations. Persist this
 // value with the run: BaseSHA pins the fetched base used for no-diff detection.
 type Run struct {
+	Exclude     []string
 	ID          string
 	Repository  string
 	RemoteURL   string
@@ -60,10 +62,17 @@ type Phase struct {
 }
 
 type CommitResult struct {
-	SHA       string
-	Committed bool
+	Diagnostics []Diagnostic
+	SHA         string
+	Committed   bool
 	// TreeChanged is set by CommitFix relative to its original review target.
 	TreeChanged bool
+}
+
+type Diagnostic struct {
+	Code    string `json:"code"`
+	Path    string `json:"path"`
+	Message string `json:"message"`
 }
 
 var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
@@ -204,6 +213,11 @@ func (m *Manager) newRun(req PrepareRequest) (Run, error) {
 }
 
 func (m *Manager) validateRun(run Run) error {
+	for _, pattern := range run.Exclude {
+		if err := pathspec.Validate(pattern); err != nil {
+			return failure("git.invalid_input", run.Path, err)
+		}
+	}
 	expected, err := m.newRun(PrepareRequest{Repository: run.Repository, RemoteURL: run.RemoteURL, RunID: run.ID, IssueNumber: run.IssueNumber})
 	if err != nil {
 		return failure("git.invalid_input", run.Path, err)

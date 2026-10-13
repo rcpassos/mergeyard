@@ -68,9 +68,9 @@ func TestCriteriaNativeContracts(t *testing.T) {
 				{"unknown property", `[{"id":"AC1","met":true,"evidence":"test passed","extra":true}]`, false},
 			} {
 				t.Run(adapter.Type()+string(kind)+tc.name, func(t *testing.T) {
-					version, extra, status := "3", "", "success"
+					version, extra, status := "4", `,"verification":[]`, "success"
 					if kind == workflow.Fix {
-						extra = `,"responses":[]`
+						extra = `,"verification":[],"responses":[]`
 					}
 					if kind == workflow.Review {
 						version, extra, status = "4", `,"findings":[],"prior_findings":[]`, "approved"
@@ -95,13 +95,15 @@ func TestCriteriaNativeContracts(t *testing.T) {
 	}
 }
 
-func TestPreCriteriaAttemptsKeepSavedContracts(t *testing.T) {
+func TestOlderAttemptsKeepSavedContracts(t *testing.T) {
 	for _, adapter := range []harness.HarnessAdapter{harness.NewClaude(config.Claude{}), harness.NewCodex(config.Codex{})} {
 		for _, tc := range []struct {
 			phase   workflow.Phase
 			version int
 			raw     string
 		}{
+			{workflow.Implement, 3, `{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done"}`},
+			{workflow.Fix, 3, `{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done","responses":[]}`},
 			{workflow.Implement, 2, `{"schema_version":2,"human_action":null,"status":"success","summary":"Done"}`},
 			{workflow.Fix, 2, `{"schema_version":2,"human_action":null,"status":"success","summary":"Done","responses":[]}`},
 			{workflow.Review, 2, `{"schema_version":2,"status":"approved","summary":"Done","findings":[],"prior_findings":[]}`},

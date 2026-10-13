@@ -82,7 +82,7 @@ func TestGitHubSchedulerIntegration(t *testing.T) {
 	t.Cleanup(func() { runtime.Close() })
 	root := t.TempDir()
 	executable := filepath.Join(root, "fake-claude")
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' 'scheduler integration change' > mergeyard-scheduler-integration-%d.txt\nprintf '%%s\\n' '%s'\n", time.Now().UnixNano(), `{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Added integration test file"}}`)
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' 'scheduler integration change' > mergeyard-scheduler-integration-%d.txt\nprintf '%%s\\n' '%s'\n", time.Now().UnixNano(), `{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":"Added integration test file"}}`)
 	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

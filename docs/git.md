@@ -35,7 +35,23 @@ The manager stages tracked edits/deletions and non-ignored new files. If the
 index has changes, it commits `mergeyard: #<issue> <title>` using the machine's
 identity. Existing agent commits remain in history. Implementation with no tree
 diff from the pinned base returns `git.no_changes` before pushing, including
-when an agent made only empty commits.
+when an agent made only empty commits or left only excluded untracked files.
+
+The saved `Run.Exclude` carries per-repository `exclude` patterns. Staging uses
+`git add --all -- . ':(exclude,glob)<pattern>'`, then includes matching tracked
+edits/deletions. A trailing `/` expands to `/**` so wildcard directories exclude
+their whole subtree. New excluded files already in the index are unstaged before
+committing; existing agent commits remain intact. Patterns use Git glob pathspec
+semantics, with `*` limited to a path component and `**` for recursive matching.
+No Git configuration, shared `info/exclude`, or repository files are rewritten.
+
+`CommitResult.Diagnostics` lists excluded untracked leftovers under
+`git.excluded_untracked` and warnings for matching tracked changes under
+`git.exclude_tracked`. The scheduler saves implement/fix diagnostics in each
+attempt's `staging.json` and a `git.staging_diagnostics` run event, even on
+`git.no_changes`. Excluded leftovers remain available during checks and review.
+Pinned-tree inspections and retry ignore only excluded untracked files; tracked
+or staged changes and other non-ignored files still require attention.
 
 Push uses an explicit refspec for the run branch and the verified origin URL,
 with force, mirrored updates, automatic tags, and recursive submodule pushes
@@ -49,7 +65,9 @@ Call `Manager.Cleanup` only after the run is completed. It removes the worktree,
 prunes stale metadata, and deletes the local branch, including after a squash
 merge. Remote branches remain. Cleanup can be retried after interruption and
 refuses dirty worktrees or worktrees on a different branch. Stopped, manual,
-and needs-attention runs must keep their artifacts.
+and needs-attention runs must keep their artifacts. Completed cleanup permits
+excluded untracked leftovers and removes them with the worktree after verifying
+ownership, publication and absence of other dirty work.
 
 ## Errors and verification
 

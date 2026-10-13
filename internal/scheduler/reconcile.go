@@ -42,6 +42,9 @@ func (s *Scheduler) Reconcile(ctx context.Context) (ReconcileReport, error) {
 }
 
 func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
+	if err := s.workflow.ReconcileAgentPorts(ctx, s.cfg.AgentPorts); err != nil {
+		return ReconcileReport{}, err
+	}
 	if err := s.reconcileHarnessChecks(ctx); err != nil {
 		return ReconcileReport{}, err
 	}
@@ -82,6 +85,9 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 		}
 	}
 	if err := s.publishAttention(ctx); err != nil {
+		failures = append(failures, err)
+	}
+	if err := s.publishVerification(ctx); err != nil {
 		failures = append(failures, err)
 	}
 	if err := s.publishReports(ctx); err != nil {

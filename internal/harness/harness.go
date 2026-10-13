@@ -10,6 +10,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/execution"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/review"
+	"github.com/rcpassos/mergeyard/internal/verification"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -90,6 +91,7 @@ type PhaseArtifacts struct {
 // PhaseResult is the schema-validated report. Blocked and failed reports are
 // valid results; the workflow decides their lifecycle consequences.
 type PhaseResult struct {
+	Verification []verification.Entry `json:"verification"`
 	// Criteria is the phase-specific array, validated before translation.
 	Criteria      json.RawMessage       `json:"criteria,omitempty"`
 	HumanAction   *fault.HumanAction    `json:"human_action"`
@@ -104,4 +106,4 @@ type PhaseResult struct {
 // ImplementSchema returns a fresh copy of the common OpenAI strict schema.
 func ImplementSchema() json.RawMessage { return json.RawMessage(implementSchema) }
 
-const implementSchema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":3},"status":{"type":"string","enum":["success","blocked","failed"]},"summary":{"type":"string"},"human_action":` + fault.HumanActionSchema + `,"criteria":` + acceptance.EvidenceSchema + `},"required":["schema_version","status","summary","human_action","criteria"],"additionalProperties":false}`
+const implementSchema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":4},"status":{"type":"string","enum":["success","blocked","failed"]},"summary":{"type":"string"},"human_action":` + fault.HumanActionSchema + `,"criteria":` + acceptance.EvidenceSchema + `,"verification":` + verification.Schema + `},"required":["schema_version","status","summary","human_action","criteria","verification"],"additionalProperties":false}`

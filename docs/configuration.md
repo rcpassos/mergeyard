@@ -28,6 +28,124 @@ Known configuration
 sections must be mappings with unique string keys; YAML merge keys (`<<`) are
 rejected rather than silently ignored. Ordinary anchors and aliases can be read.
 
+## Advisory escalation rules
+
+`escalation` flags ready-to-merge runs that need careful human review. Rules are
+deterministic and use no LLM. A flag never blocks `READY_TO_MERGE` or starts
+another agent. The default rules are:
+
+```yaml
+escalation:
+  max_changed_lines: 400
+  paths:
+    ".github/**": ci/deploy
+    "**/Dockerfile*": ci/deploy
+    "**/*.tf": ci/deploy
+    "**/migrations/**": migration
+  new_dependencies: true
+```
+
+The size rule triggers when additions plus deletions exceed the threshold across
+the entire diff. Git uses Myers with the indentation heuristic disabled, and
+includes changed submodule gitlinks regardless of local ignore settings, so
+configured diff algorithms and submodule ignore settings cannot change the result.
+Escalation diffs disable user and system attribute files, including an explicit
+`core.attributesFile` and Git's default user attributes file. Repository
+`.gitattributes` still apply to binary detection.
+The binary size cutoff is fixed at Git's default 512 MiB, regardless of local
+`core.bigFileThreshold` settings.
+`0` disables the size rule. Binary files count as zero lines, but still
+match path rules. Paths are relative to the repository root: `*`, `?` and character
+classes match within one path segment; `**` as a complete segment matches zero or
+more directories. Thus `**/migrations/**` includes root and nested migrations.
+Both old and new paths of renames are evaluated. Overlapping rules with the same
+reason are grouped, with unique files and reasons sorted for deterministic output.
+
+`new_dependencies` flags changes to `go.mod`, `package.json`, `pyproject.toml`,
+`Cargo.toml` and `Gemfile`, including nested manifests. Any manifest edit counts;
+this rule does not parse whether an individual dependency was added. Lockfile-only
+changes do not count. There are no built-in auth or payment path rules; add the
+paths appropriate to your repository.
+
+Each repository inherits global settings and overrides supplied fields. A supplied
+`paths` mapping **replaces** the inherited mapping, so include default paths you
+want to retain. `{}` clears paths; `new_dependencies: false` disables manifest
+flags. To disable all rules, set all three fields:
+
+```yaml
+repositories:
+  - repo: company/api
+    escalation:
+      max_changed_lines: 0
+      paths: {}
+      new_dependencies: false
+```
+
+Mergeyard evaluates `git diff <saved-run-base>...<approved-head>` as CI readiness
+completes. The run stores the base, approved head and `{reason, files}` list in
+SQLite. Restarts retain that result; a different approved head causes evaluation
+again with the current effective repository settings. Configuration changes alone
+do not change flags already saved for an approved head. Advancing the PR head
+without reviewer approval retains the existing changed-after-approval warning and
+does not relabel the new commit as approved.
+
+Flagged runs show a **Needs careful review** badge with reasons and files on the
+dashboard and in `mergeyard status`. The PR body gets an owned escalation section
+with the same reasons, files and approved commit. It preserves the generated
+summary and user-written content, removes stale flags on a subsequent unflagged
+approval, and is independent of `pr_comments`. Unflagged runs show no badge.
+Deferred verification evidence updates preserve the escalation section.
+Diff evaluation or PR body publication failures produce advisory warnings and
+retry on subsequent readiness observations, including after restart. They do not
+prevent readiness. Incomplete or ambiguous PR ownership markers are left intact
+for human repair.
+
+## Agent ports and session isolation
+
+`agent_ports` is a top-level setting, defaulting to `{base: 5100, size: 10}`.
+Each nonterminal run holds a persisted block starting at `base + size * slot`.
+Slots are allocated from the first free block across all configured repositories.
+The implementer and fix phases use the lower `floor(size / 2)` ports; the
+reviewer uses the remaining upper ports. For the default first block this means
+5100–5104 for implementation/fixes and 5105–5109 for review. Odd sizes give the
+reviewer the extra port. `base` must be a positive TCP port, `size` must be at
+least two, and enough complete blocks must fit below 65536 for `concurrency`.
+
+Assignments survive control-plane restarts and configuration edits. Legacy runs
+without assignments receive persisted blocks before dispatch. A run retains its
+block in `READY_TO_MERGE`, `MANUAL`, `NEEDS_ATTENTION`, and waiting states, so
+handback and fixes can reuse it. Only `FAILED`, `STOPPED`, and `COMPLETED` release
+the block; Retry from `FAILED` receives an available block before agent launch.
+Since merge-ready runs release an execution slot while retaining their ports,
+port slots can grow beyond `concurrency`. If all complete blocks up to 65535 are
+reserved, new claims and explicit Retry fail atomically with
+`agent_ports.exhausted`. Lifecycle observation continues so other runs can finish
+and release their blocks.
+
+The phase wrapper adds these variables to the explicitly supplied harness
+environment, overriding any caller-supplied values with the same names:
+
+| Variable | Value |
+| --- | --- |
+| `MERGEYARD_RUN_ID` | Stable run ID for browser and test session namespaces |
+| `MERGEYARD_PHASE` | `implement`, `review`, or `fix` |
+| `MERGEYARD_PORT_BASE` | First port in this phase's assigned sub-range |
+| `MERGEYARD_PORT_COUNT` | Number of consecutive ports in that sub-range |
+
+Standing instructions ask agents to use only their assigned ports and namespace
+browser/test sessions with the run ID and phase. Repository `AGENTS.md` /
+`CLAUDE.md` remains the source of commands for starting and configuring services.
+Mergeyard does not start or stop those services or reserve sockets at OS level;
+agents must verify service ownership and clean up their own services/sessions.
+Independent Mergeyard workspaces on the same machine should use separate bases.
+
+`mergeyard doctor` warns with `agent_ports.dashboard_overlap` when any complete
+allocatable block through 65535 overlaps the dashboard `port`, including blocks
+beyond `concurrency` that retained merge-ready runs can occupy. The default base
+5100 is below the default dashboard port 7331 and therefore warns; choose a base
+above the dashboard to avoid this overlap. Ports in an incomplete final block
+are never allocated.
+
 ## Per-issue harness overrides
 
 An issue can select a role's harness with `mergeyard:implementer=claude`,
@@ -114,6 +232,38 @@ Removing the configured list does not bypass an already-started setup execution.
 Mergeyard observes its result and, when the outcome is unknown, reruns its saved
 commands with the originally captured timeout before starting the agent. New
 executions for later phases or newly prepared worktrees use current configuration.
+
+## Repository staging exclusions
+
+`repositories[].exclude` is a list of repository-relative Git glob patterns,
+defaulting to `[]`. It keeps setup and tool leftovers out of Mergeyard's commits:
+
+```yaml
+repositories:
+  - repo: company/api
+    exclude: [".venv/", ".pytest_cache/", "agent-browser/", "*.har", "**/traces/**"]
+```
+
+Patterns use Git `:(exclude,glob)` pathspec semantics, not `.gitignore` syntax.
+`*` and `?` do not cross `/`; `*.har` matches only root files, while `**/*.har`
+matches at any depth. Character classes such as `[0-9]` and `[[:digit:]]` are
+supported. `**` must occupy a whole path component. A trailing `/` excludes the
+whole directory subtree (including patterns such as `**/cache/`). Patterns are
+relative to the repository root; leading `/`, `..` components, empty patterns,
+NUL, unfinished escapes/classes and invalid `**` forms fail configuration
+validation with `config.invalid_exclude`. Values must be a list of strings.
+Negation and additional pathspec magic are not interpreted as `.gitignore` rules.
+
+Only new files are excluded, including new files a tool has already staged.
+Matching tracked edits and deletions are still committed and produce a
+`git.exclude_tracked` warning. Leftovers are listed as
+`git.excluded_untracked` in the phase's `staging.json` and the run's
+`git.staging_diagnostics` event, including when implementation returns
+`git.no_changes` because it changed only excluded files. No Git configuration,
+`info/exclude`, or repository ignore files are rewritten. Excluded files remain
+available to local checks and are removed with the worktree on completed-run
+cleanup; stopped or attention runs retain them. Pinned-tree checks still reject
+all tracked changes and other non-ignored new files.
 
 ## Repository checks
 
@@ -289,7 +439,9 @@ settings, including repositories with `enabled: false`.
 | `config.invalid_max_attempts` | Role attempt limit must be a positive finite integer |
 | `config.invalid_verify_commands` | Verification must be a command list; entries must be nonempty and contain no NUL |
 | `config.invalid_checks` | Check commands must be nonempty and contain no NUL |
+| `config.invalid_exclude` | Exclusions must be a list of valid, nonempty repository-relative Git glob patterns |
 | `config.invalid_check_retries` | Check retry limit must be a nonnegative finite integer |
+| `config.invalid_escalation` | Size threshold must be nonnegative; path globs and single-line reasons must be valid |
 | `config.invalid_max_waits` | Usage-limit wait bound must be a positive finite integer |
 | `config.invalid_duration` | CI timeout, repository command timeout, poll interval or cooldown must parse as a positive Go duration |
 | `config.invalid_permission_mode` | Claude permission mode must be `auto`, `acceptEdits`, or `bypassPermissions` |

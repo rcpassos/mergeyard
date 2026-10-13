@@ -34,12 +34,12 @@ func TestHumanActionNativeContracts(t *testing.T) {
 				{"extra field", `{"decision":"Clarify","files":[],"options":[],"extra":true}`, false},
 			} {
 				t.Run(adapter.Type()+"/"+string(phase)+"/"+tc.name, func(t *testing.T) {
-					version, extra := 3, ""
+					version, extra := 4, `,"verification":[]`
 					if phase == workflow.Review {
 						version, extra = 4, `,"findings":[],"prior_findings":[]`
 					}
 					if phase == workflow.Fix {
-						extra = `,"responses":[]`
+						extra = `,"verification":[],"responses":[]`
 					}
 					raw := []byte(fmt.Sprintf(`{"schema_version":%d,"criteria":[],"status":"blocked","summary":"Need input","human_action":%s%s}`, version, tc.action, extra))
 					artifacts := harness.PhaseArtifacts{Stdout: []byte(`{"type":"result","is_error":false,"structured_output":` + string(raw) + `}`)}
@@ -66,12 +66,12 @@ func TestHumanActionNativeContracts(t *testing.T) {
 
 func TestHumanActionRequiredAndOnlyForBlocked(t *testing.T) {
 	for _, phase := range []workflow.Phase{workflow.Implement, workflow.Review, workflow.Fix} {
-		version, extra, status := 3, "", "success"
+		version, extra, status := 4, `,"verification":[]`, "success"
 		if phase == workflow.Review {
 			version, extra, status = 4, `,"findings":[],"prior_findings":[]`, "approved"
 		}
 		if phase == workflow.Fix {
-			extra = `,"responses":[]`
+			extra = `,"verification":[],"responses":[]`
 		}
 		for _, action := range []string{"", `,"human_action":{"decision":"Clarify","files":[],"options":[]}`, `,"human_action":null`} {
 			raw := fmt.Sprintf(`{"schema_version":%d,"criteria":[],"status":%q,"summary":"Done"%s%s}`, version, status, extra, action)

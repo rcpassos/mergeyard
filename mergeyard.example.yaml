@@ -7,7 +7,20 @@ workspace: ~/.mergeyard
 poll_interval: 30s
 ci_timeout: 60m
 concurrency: 1 # global active runs
+agent_ports:
+  base: 5100 # first run block; subsequent blocks start at base + size * slot
+  size: 10 # implementer/fix use lower half; reviewer uses upper half
 trusted_labelers: [] # optional logins; empty trusts write/maintain/admin permission
+
+# Advisory flags for READY_TO_MERGE; these never block readiness or merging.
+escalation:
+  max_changed_lines: 400 # additions + deletions; 0 disables size flag
+  paths:
+    ".github/**": ci/deploy
+    "**/Dockerfile*": ci/deploy
+    "**/*.tf": ci/deploy
+    "**/migrations/**": migration
+  new_dependencies: true # manifest changes count; lockfiles alone do not
 
 labels:
   ready: ready-for-agent
@@ -52,6 +65,9 @@ repositories:
     enabled: true
     # trusted_labelers: [alice, release-bot] # replaces global list; [] restores default policy
     setup: [] # e.g. ["npm ci"]; run on every fresh/recreated worktree; keep idempotent
+    # Git glob pathspecs, not .gitignore syntax; tracked changes still commit with a warning.
+    # *.har matches root files; **/*.har matches at any depth; directory/ excludes its subtree.
+    exclude: [] # e.g. [".venv/", ".pytest_cache/", "agent-browser/", "*.har"]
     checks: [] # e.g. ["npm test", "npm run lint"]; after commit, before push/review
     # verify_commands defaults to checks when omitted; [] disables command verification
     # verify_commands: ["npm ci", "npm test", "npm run lint"] # scratch base + approved head
@@ -59,6 +75,9 @@ repositories:
     command_timeout: 20m # positive duration for each whole setup/checks/verification script
 
   - repo: company/frontend
+    # Supplied fields override global escalation settings; paths replaces the map.
+    # escalation:
+    #   paths: {"**/auth/**": auth, "**/payments/**": money}
     reviewer: # only supplied fields override the global reviewer
       agent: codex
       effort: high

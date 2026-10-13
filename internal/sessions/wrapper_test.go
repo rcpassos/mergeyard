@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestWrapperRejectsEqualsInExecutable(t *testing.T) {
@@ -111,5 +113,43 @@ func TestGeneratedWrapperLogsAndMetadataWithoutTmux(t *testing.T) {
 	status, err := New(Options{}).Status(context.Background(), Ref{Name: "not-needed", PhaseDir: phaseDir})
 	if err != nil || status.State != Exited || status.ExitCode == nil || *status.ExitCode != 7 {
 		t.Fatalf("metadata = %+v, err=%v", status, err)
+	}
+}
+
+func TestGeneratedWrapperCompletesDuringWatchdogStartup(t *testing.T) {
+	dir := t.TempDir()
+	starting := filepath.Join(dir, "watchdog-starting")
+	signaled := filepath.Join(dir, "watchdog-signaled")
+	script, err := wrapperTimeout(Command{
+		Executable: "/bin/sh", Args: []string{"-c", "while [ ! -f " + quote(starting) + " ]; do /bin/sleep 0.01; done; exit 7"}, Dir: dir,
+	}, dir, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hold the watchdog in startup with the parent's no-op signal handler,
+	// before it installs the handler that terminates its sleep. The foreground
+	// completes during that window, so a TERM can be consumed without stopping
+	// the watchdog. Normal completion must still retire the full process group.
+	// Release startup only after the signal is consumed, rather than relying on
+	// a delay to make the foreground finish before the cleanup handler is ready.
+	startup := " sleeper=\n trap " + quote(": >"+quote(signaled)) + " INT TERM HUP\n : >" + quote(starting) + "\n while [ ! -f " + quote(signaled) + " ]; do /bin/sleep 0.01; done\n"
+	script = strings.Replace(script, " sleeper=\n", startup, 1)
+	path := filepath.Join(dir, "wrapper.sh")
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/bin/sh", path)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("completion waited for the starting watchdog: %v: %s", err, out)
+	}
+	// A bounded wrapper kills its own group after publishing the command result.
+	status, err := New(Options{}).Status(context.Background(), Ref{Name: "not-needed", PhaseDir: dir})
+	if err != nil || status.State != Exited || status.ExitCode == nil || *status.ExitCode != 7 || status.TimedOut {
+		t.Fatalf("completion metadata=%+v, err=%v", status, err)
 	}
 }

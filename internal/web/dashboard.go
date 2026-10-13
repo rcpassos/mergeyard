@@ -15,6 +15,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/doctor"
+	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
@@ -432,6 +433,10 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		if err != nil {
 			return nil, err
 		}
+		runs[i].Escalation, err = escalation.Load(ctx, d.DB, runs[i].ID)
+		if err != nil {
+			return nil, err
+		}
 		runs[i].SessionRecoveries, err = workflow.LoadSessionRecoveries(ctx, d.DB, runs[i].ID)
 		if err != nil {
 			return nil, err
@@ -544,7 +549,7 @@ func (s *Server) retryRunPage(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, r, &fault.Error{Code: "internal.run_not_found"}, "internal.run_not_found", http.StatusNotFound, "Run not found")
 		return
 	}
-	if _, err := s.operations.Retry(r.Context(), r.PathValue("id")); err != nil {
+	if _, err := s.operations.Retry(r.Context(), r.PathValue("id"), r.PostForm.Get("note")); err != nil {
 		s.operationError(w, r, err)
 		return
 	}

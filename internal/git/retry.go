@@ -17,11 +17,11 @@ func (m *Manager) InspectRetry(ctx context.Context, run Run, target string, allo
 	if err != nil {
 		return "", err
 	}
-	dirty, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all")
+	dirty, err := worktreeDirty(ctx, run)
 	if err != nil {
 		return "", err
 	}
-	if dirty != "" && !allowEdits {
+	if dirty && !allowEdits {
 		return head, failure("retry.worktree_dirty", run.Path, errors.New("preserved edits must be committed and published or moved aside before reviewing or waiting for CI"))
 	}
 	if target != "" && !shaPattern.MatchString(target) {

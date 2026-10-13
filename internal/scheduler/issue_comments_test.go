@@ -55,11 +55,11 @@ func TestRetryAfterBlockedRefreshesCommentsAcrossPhasesAndHarnesses(t *testing.T
 				script := loopScript(fix)
 				switch p {
 				case workflow.Implement:
-					script = strings.Replace(script, successfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"status":"blocked","summary":"Need an answer",`+blockedAction+`}}'`, 1)
+					script = strings.Replace(script, successfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"status":"blocked","summary":"Need an answer",`+blockedAction+`}}'`, 1)
 				case workflow.Review:
 					script = strings.Replace(script, changesReview, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"status":"blocked","summary":"Need an answer",`+blockedAction+`,"findings":[],"prior_findings":[]}}'`, 1)
 				case workflow.Fix:
-					script = loopScript(`printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"status":"blocked","summary":"Need an answer",` + blockedAction + `,"responses":[]}}'`)
+					script = loopScript(`printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"status":"blocked","summary":"Need an answer",` + blockedAction + `,"responses":[]}}'`)
 				}
 				replacePhaseScript(t, cfg, p, script)
 				cfg.Repositories[0].TrustedLabelers = []string{"maintainer"}

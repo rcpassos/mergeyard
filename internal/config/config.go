@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/pathspec"
 	"github.com/rcpassos/mergeyard/internal/repository"
 	"github.com/rcpassos/mergeyard/internal/workspace"
 	"go.yaml.in/yaml/v3"
@@ -17,6 +20,7 @@ import (
 // Config is the effective configuration. Repository settings are fully resolved;
 // an empty BaseBranch is intentionally left for runtime GitHub discovery.
 type Config struct {
+	Escalation      escalation.Rules
 	Version         int
 	Port            int
 	OpenBrowser     bool `yaml:"open_browser"`
@@ -24,6 +28,7 @@ type Config struct {
 	PollInterval    time.Duration `yaml:"poll_interval"`
 	CITimeout       time.Duration `yaml:"ci_timeout"`
 	Concurrency     int
+	AgentPorts      AgentPorts `yaml:"agent_ports"`
 	Labels          Labels
 	TrustedLabelers []string `yaml:"trusted_labelers"`
 	Agents          Agents
@@ -33,6 +38,19 @@ type Config struct {
 	PRComments      bool        `yaml:"pr_comments"`
 	UsageLimits     UsageLimits `yaml:"usage_limits"`
 	Repositories    []Repository
+}
+
+// AgentPorts describes the block allocated to each nonterminal run.
+type AgentPorts struct {
+	Base int `json:"base"`
+	Size int `json:"size"`
+}
+
+func (p AgentPorts) Validate() error {
+	if p.Base < 1 || p.Base > 65535 || p.Size < 2 || p.Size > 65536-p.Base {
+		return &Error{Code: "config.invalid_agent_ports", Path: "agent_ports", Message: "Port blocks must start at 1..65535, contain at least two ports, and end at or before 65535"}
+	}
+	return nil
 }
 
 type Role struct {
@@ -72,6 +90,8 @@ type UsageLimits struct {
 }
 
 type Repository struct {
+	Escalation      escalation.Rules
+	Exclude         []string      `yaml:"exclude"`
 	TrustedLabelers []string      `yaml:"trusted_labelers"`
 	Setup           []string      `yaml:"setup"`
 	Checks          []string      `yaml:"checks"`
@@ -93,8 +113,10 @@ type Error = fault.Error
 func defaults() Config {
 	role := Role{Agent: "claude", Skills: []string{}, MaxAttempts: 1}
 	return Config{
-		Version: 1, Port: 7331, OpenBrowser: true, Workspace: workspace.DefaultPath,
+		Escalation: escalation.Defaults(),
+		Version:    1, Port: 7331, OpenBrowser: true, Workspace: workspace.DefaultPath,
 		PollInterval: 30 * time.Second, CITimeout: time.Hour, Concurrency: 1,
+		AgentPorts:      AgentPorts{Base: 5100, Size: 10},
 		Labels:          Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
 		TrustedLabelers: []string{},
 		Agents: Agents{
@@ -144,8 +166,18 @@ func Parse(data []byte) (Config, *Document, error) {
 	m.readDuration("poll_interval", &cfg.PollInterval)
 	m.readDuration("ci_timeout", &cfg.CITimeout)
 	m.readPositiveInt("concurrency", &cfg.Concurrency, "config.invalid_concurrency")
+	ports := m.child("agent_ports")
+	ports.readPositiveInt("base", &cfg.AgentPorts.Base, "config.invalid_agent_ports")
+	ports.readPositiveInt("size", &cfg.AgentPorts.Size, "config.invalid_agent_ports")
+	ports.finish()
+	if err == nil {
+		if err = cfg.AgentPorts.Validate(); err == nil && cfg.Concurrency > (65536-cfg.AgentPorts.Base)/cfg.AgentPorts.Size {
+			m.fail("config.invalid_agent_ports", "agent_ports", "configured concurrency exceeds the available port blocks")
+		}
+	}
 	readLabels(m.child("labels"), &cfg.Labels)
 	readTrustedLabelers(m, &cfg.TrustedLabelers)
+	readEscalation(m.child("escalation"), &cfg.Escalation)
 	agents := m.child("agents")
 	claude := agents.child("claude")
 	claude.read("executable", &cfg.Agents.Claude.Executable)
@@ -174,6 +206,7 @@ func Parse(data []byte) (Config, *Document, error) {
 			seenRepos := make(map[string]bool)
 			for i, node := range repos.Content {
 				r := Repository{Concurrency: cfg.Concurrency, Enabled: true, CommandTimeout: 20 * time.Minute, CheckRetries: 1,
+					Escalation:  escalation.Rules{MaxChangedLines: cfg.Escalation.MaxChangedLines, NewDependencies: cfg.Escalation.NewDependencies, Paths: maps.Clone(cfg.Escalation.Paths)},
 					Implementer: cloneRole(cfg.Implementer), Reviewer: cloneRole(cfg.Reviewer), Labels: cfg.Labels, TrustedLabelers: slices.Clone(cfg.TrustedLabelers)}
 				rm := newMapping(node, fmt.Sprintf("repositories[%d]", i), &err, &doc.Warnings)
 				rm.readRepo("repo", &r.Repo)
@@ -187,6 +220,7 @@ func Parse(data []byte) (Config, *Document, error) {
 				seenRepos[name] = true
 				rm.read("base_branch", &r.BaseBranch)
 				rm.read("setup", &r.Setup)
+				readExclude(rm, &r.Exclude)
 				rm.read("checks", &r.Checks)
 				rm.read("verify_commands", &r.VerifyCommands)
 				if n := rm.node("verify_commands"); n != nil && dereference(n).Kind != yaml.SequenceNode {
@@ -211,6 +245,7 @@ func Parse(data []byte) (Config, *Document, error) {
 				rm.readPositiveInt("concurrency", &r.Concurrency, "config.invalid_concurrency")
 				rm.read("enabled", &r.Enabled)
 				readTrustedLabelers(rm, &r.TrustedLabelers)
+				readEscalation(rm.child("escalation"), &r.Escalation)
 				readRole(rm.child("implementer"), &r.Implementer)
 				readRole(rm.child("reviewer"), &r.Reviewer)
 				readLabels(rm.child("labels"), &r.Labels)
@@ -229,6 +264,29 @@ func Parse(data []byte) (Config, *Document, error) {
 func cloneRole(r Role) Role {
 	r.Skills = slices.Clone(r.Skills)
 	return r
+}
+
+func readExclude(m mapping, target *[]string) {
+	n := m.node("exclude")
+	if n == nil {
+		return
+	}
+	if n.Kind != yaml.SequenceNode {
+		m.fail("config.invalid_exclude", "exclude", "expected a list of Git glob patterns")
+		return
+	}
+	for _, item := range n.Content {
+		item = dereference(item)
+		if item.Tag != "!!str" {
+			m.fail("config.invalid_exclude", "exclude", "expected string Git glob patterns")
+			return
+		}
+		if err := pathspec.Validate(item.Value); err != nil {
+			m.fail("config.invalid_exclude", "exclude", fmt.Sprintf("invalid pattern %q: %v", item.Value, err))
+			return
+		}
+		*target = append(*target, item.Value)
+	}
 }
 
 func readTrustedLabelers(m mapping, target *[]string) {

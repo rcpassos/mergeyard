@@ -11,6 +11,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/verification"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -22,6 +23,7 @@ type ImplementInput struct {
 	IssueTitle  string
 	IssueBody   string
 	Comments    github.IssueComments
+	Guidance    []workflow.HumanGuidance
 	IssueURL    string
 	BaseBranch  string
 	Checks      *workflow.SystemStepSnapshot
@@ -44,7 +46,9 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 		return "", err
 	}
 	var text strings.Builder
+	text.WriteString("## Verification evidence\n\n" + verification.Instruction + "\n\n")
 	text.WriteString(fault.HumanActionInstruction + "\n\n")
+	text.WriteString(isolationInstructions)
 	text.WriteString(acceptance.Input(input.IssueBody, false))
 	if phase.Interruption != "" {
 		text.WriteString("## Interruption context\n\n" + phase.Interruption + "\n\n")
@@ -60,6 +64,7 @@ func WriteImplementInput(ctx context.Context, writer FileWriter, phase PhaseCont
 	text.WriteString("\n```\n\n## Issue\n\n")
 	text.WriteString(input.IssueTitle + "\n\n" + input.IssueBody + "\n")
 	writeIssueComments(&text, input.Comments)
+	writeHumanGuidance(&text, input.Guidance)
 	if input.Checks != nil {
 		data, err := json.MarshalIndent(input.Checks, "", "  ")
 		if err != nil {
@@ -93,4 +98,15 @@ func validatePhaseContext(ctx PhaseContext) error {
 		return phaseError("phase.invalid_request", "Phase input must be outside the worktree", err)
 	}
 	return nil
+}
+
+// Guidance stays in files; only the generated input path enters harness commands.
+func writeHumanGuidance(text *strings.Builder, notes []workflow.HumanGuidance) {
+	if len(notes) == 0 {
+		return
+	}
+	text.WriteString("\n## Human guidance\n\nThese notes were submitted by the user on Retry and apply for the rest of this run, in submission order.\n\n")
+	for _, note := range notes {
+		fmt.Fprintf(text, "### %s — %s\n\n%s\n\n", note.Author, note.CreatedAt, note.Text)
+	}
 }

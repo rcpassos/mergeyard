@@ -402,12 +402,14 @@ func wrapperTimeout(command Command, phaseDir string, timeout time.Duration) (st
 		// watchdog is retired; this also works with the control plane offline.
 		completionCleanup = " kill -KILL -$$ 2>/dev/null\n"
 	}
-	fmt.Fprintf(&b, "timer=\nfinish() {\n code=$1\n trap - EXIT\n if [ -n \"$timer\" ]; then kill -TERM \"$timer\" 2>/dev/null; wait \"$timer\" 2>/dev/null; fi\n printf '{\"exit_code\":%%s}\\n' \"$code\" >%s &&\n /bin/mv -f %s %s\n%s exit \"$code\"\n}\ntrap 'finish \"$?\"' EXIT\ntrap ':' INT TERM HUP\n", quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")), completionCleanup)
+	// TERM can arrive while the watchdog still has the parent's no-op handler.
+	// Kill and reap it unconditionally; completionCleanup removes its sleep and
+	// any other descendants after the foreground result has been published.
+	fmt.Fprintf(&b, "timer=\nfinish() {\n code=$1\n trap - EXIT\n if [ -n \"$timer\" ]; then kill -KILL \"$timer\" 2>/dev/null; wait \"$timer\" 2>/dev/null; fi\n printf '{\"exit_code\":%%s}\\n' \"$code\" >%s &&\n /bin/mv -f %s %s\n%s exit \"$code\"\n}\ntrap 'finish \"$?\"' EXIT\ntrap ':' INT TERM HUP\n", quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")), completionCleanup)
 	fmt.Fprintf(&b, "exec >%s 2>%s\n", quote(filepath.Join(phaseDir, "events.jsonl")), quote(filepath.Join(phaseDir, "stderr.log")))
 	if timeout > 0 {
-		// The watchdog belongs to the pane group and is stopped/reaped on normal
-		// completion. Its child sleep is also reaped so Status never sees a timer
-		// as leftover command work. Timeout metadata precedes the group-wide kill.
+		// The watchdog and its sleep belong to the pane group, which is removed
+		// on normal completion or timeout. Timeout metadata precedes the kill.
 		fmt.Fprintf(&b, "(\n sleeper=\n trap 'if [ -n \"$sleeper\" ]; then kill -TERM \"$sleeper\" 2>/dev/null; wait \"$sleeper\" 2>/dev/null; fi; exit 0' INT TERM HUP\n /bin/sleep %s &\n sleeper=$!\n wait \"$sleeper\" || exit 0\n printf '{\"exit_code\":124,\"timed_out\":true}\\n' >%s && /bin/mv -f %s %s\n kill -KILL -$$\n) &\ntimer=$!\n", strconv.FormatFloat(timeout.Seconds(), 'f', 9, 64), quote(filepath.Join(phaseDir, "timeout.json.tmp")), quote(filepath.Join(phaseDir, "timeout.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")))
 	}
 
