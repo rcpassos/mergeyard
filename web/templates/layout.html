@@ -43,6 +43,7 @@
 <a class="issue-title" href="/runs/{{.ID}}">{{.Repository}} #{{.IssueNumber}} · {{if .Title}}{{.Title}}{{else}}View run{{end}}</a>
 <p class="row-meta">{{if and (eq .State "WAITING_FOR_HARNESS") .HarnessWait}}{{if eq .HarnessWait.Reason "credits_exhausted"}}Waiting for credit recovery · {{.HarnessWait.Harness}} · explicit Retry required{{else}}Usage limit · {{.HarnessWait.Harness}} · reset {{.HarnessWait.ResetAt}} · {{.HarnessWait.ResetTimeSource}}{{end}} · {{.HarnessWait.Source}} · {{end}}{{if .Merge}}{{if .Merge.Pending}}Merged — cleanup pending{{else}}Merged — cleanup complete{{end}}{{else if eq .State "READY_TO_MERGE"}}Waiting for your merge{{else if .ReviewPending}}Draft PR created. Review pending.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
 {{with .Merge}}{{if .Early}}<p class="row-meta">Early merge before readiness</p>{{end}}{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}{{if .Pending}}<ul class="row-meta">{{range .Remaining}}<li>{{.}}</li>{{end}}</ul>{{end}}{{end}}
+{{if eq .State "READY_TO_MERGE"}}{{template "escalation" .Escalation}}{{end}}
 {{template "human-action" .HumanAction}}{{if .LastErrorCode}}<p class="error-code">{{.LastErrorCode}}: {{.LastErrorMessage}}</p>{{end}}</div>
 {{if .PRURL}}<a class="row-note" href="{{.PRURL}}" target="_blank" rel="noreferrer">Open PR</a>{{else}}<time class="row-note">{{.UpdatedAt}}</time>{{end}}</article>{{end}}
 
@@ -50,6 +51,7 @@
 <div class="run-heading"><h2>{{.Repository}} #{{.IssueNumber}} · {{.Title}}</h2><span class="badge badge-info">{{.State}}</span></div>
 {{with .Merge}}<section class="notice"><h3>{{if .Pending}}Merged — cleanup pending{{else}}Merged — cleanup complete{{end}}</h3><p>Merge observed {{.ObservedAt}}{{if .Early}} · Early merge before readiness{{end}}</p>{{if .Error}}<p>{{.Error}}</p>{{end}}{{if .Pending}}<ul>{{range .Remaining}}<li>{{.}}</li>{{end}}</ul>{{end}}</section>{{end}}
 {{if eq .State "READY_TO_MERGE"}}<p class="notice">Waiting for your merge</p>{{end}}
+{{if eq .State "READY_TO_MERGE"}}{{template "escalation" .Escalation}}{{end}}
 {{if .ReviewPending}}<p class="notice">Draft PR created. Independent review will start on the next scheduler tick.</p>{{end}}
 {{if .Stopping}}<p class="notice">Stop requested. The phase is stopping or GitHub label cleanup is pending. Retry Stop to finish cleanup.</p>{{end}}
 <p class="issue-summary">{{.Summary}}</p><div class="run-actions">
@@ -153,6 +155,12 @@
 {{define "phase-output"}}<section id="phase-output"{{if .Run.CanStop}} hx-get="/runs/{{.Run.ID}}/output" hx-trigger="every 2s" hx-target="this" hx-swap="outerHTML" hx-sync="this:queue last"{{end}}><h2>Phase output</h2><p class="connection">{{.LogMessage}}</p><pre class="log-tail" tabindex="0">{{if .Log}}{{.Log}}{{else}}No readable output yet.{{end}}</pre></section>{{end}}
 
 {{define "human-action"}}{{if .}}<section class="notice failure human-action"><h2>Human action required</h2><p>{{.Decision}}</p>{{if .Files}}<h3>Files to inspect</h3><ul>{{range .Files}}<li><code>{{.}}</code></li>{{end}}</ul>{{end}}{{if .Options}}<h3>Options</h3><ul>{{range .Options}}<li>{{.}}</li>{{end}}</ul>{{end}}</section>{{end}}{{end}}
+
+{{define "escalation"}}{{with .}}
+{{if .Reasons}}<div class="notice"><span class="badge badge-warning">Needs careful review</span><ul>{{range .Reasons}}<li>{{.Reason}}<ul>{{range .Files}}<li><code>{{.}}</code></li>{{end}}</ul></li>{{end}}</ul></div>{{end}}
+{{if .EvaluationWarning}}<p class="notice">{{.EvaluationWarning}}</p>{{end}}
+{{if .PublicationWarning}}<p class="notice">{{.PublicationWarning}}</p>{{end}}
+{{end}}{{end}}
 
 {{define "verification"}}<h3>Verification evidence</h3>
 {{range .Verification}}<article class="notice"><h4><code>{{.Command}}</code> · {{.Outcome}}</h4>{{if .Excerpt}}<pre>{{.Excerpt}}</pre>{{end}}</article>{{else}}{{if ge .SchemaVersion 4}}<p>no verification reported</p>{{else}}<p>Verification was not recorded by this schema version.</p>{{end}}{{end}}{{end}}

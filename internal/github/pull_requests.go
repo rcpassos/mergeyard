@@ -251,8 +251,10 @@ func GeneratePullRequestBody(content PullRequestContent) (string, error) {
 		return "", codedError("github.invalid_input", "expected an issue number, title, summary, and single-line run ID", nil)
 	}
 	for _, text := range []string{content.Summary, content.RunID} {
-		if strings.Contains(text, generatedStart) || strings.Contains(text, generatedEnd) {
-			return "", codedError("github.invalid_input", "generated content contains reserved ownership markers", nil)
+		for _, marker := range []string{generatedStart, generatedEnd, escalationStart, escalationEnd} {
+			if strings.Contains(text, marker) {
+				return "", codedError("github.invalid_input", "generated content contains reserved ownership markers", nil)
+			}
 		}
 	}
 	evidence := ""
@@ -277,7 +279,8 @@ func GeneratePullRequestBody(content PullRequestContent) (string, error) {
 }
 
 // UpdatePullRequestBody replaces only the owned section, preserving all other
-// bytes. Without an owned section, it appends one after the existing user text.
+// bytes and the separately published escalation subsection. Without an owned
+// section, it appends one after the existing user text.
 func UpdatePullRequestBody(body string, content PullRequestContent) (string, error) {
 	generated, err := GeneratePullRequestBody(content)
 	if err != nil {
@@ -292,6 +295,20 @@ func UpdatePullRequestBody(body string, content PullRequestContent) (string, err
 	}
 	if start < 0 || end < start || strings.Count(body, generatedStart) != 1 || strings.Count(body, generatedEnd) != 1 {
 		return "", codedError("pr.invalid_generated_section", "PR body has incomplete or ambiguous ownership markers", nil)
+	}
+	flagStart, flagEnd := strings.Index(body, escalationStart), strings.Index(body, escalationEnd)
+	if flagStart >= 0 || flagEnd >= 0 {
+		if flagStart < 0 || flagEnd < flagStart || strings.Count(body, escalationStart) != 1 || strings.Count(body, escalationEnd) != 1 {
+			return "", codedError("pr.invalid_generated_section", "PR body has ambiguous escalation ownership markers", nil)
+		}
+		flagEnd += len(escalationEnd)
+		if flagStart >= start+len(generatedStart) && flagEnd <= end {
+			// Verification can be delivered after escalation's saved publication
+			// receipt. Keep its independently owned bytes inside the new block.
+			generated = strings.TrimSuffix(generated, generatedEnd) + body[flagStart:flagEnd] + "\n" + generatedEnd
+		} else if flagStart < end+len(generatedEnd) && flagEnd > start {
+			return "", codedError("pr.invalid_generated_section", "PR body has overlapping ownership markers", nil)
+		}
 	}
 	return body[:start] + generated + body[end+len(generatedEnd):], nil
 }

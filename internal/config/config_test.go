@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/escalation"
 )
 
 func TestMinimalConfigUsesPRDDefaults(t *testing.T) {
@@ -18,8 +19,12 @@ func TestMinimalConfigUsesPRDDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	role := config.Role{Agent: "claude", Skills: []string{}, MaxAttempts: 1}
+	escalationRules := escalation.Rules{MaxChangedLines: 400, NewDependencies: true, Paths: map[string]string{
+		".github/**": "ci/deploy", "**/Dockerfile*": "ci/deploy", "**/*.tf": "ci/deploy", "**/migrations/**": "migration",
+	}}
 	want := config.Config{
-		Version: 1, Port: 7331, OpenBrowser: true, Workspace: "~/.mergeyard",
+		Escalation: escalationRules,
+		Version:    1, Port: 7331, OpenBrowser: true, Workspace: "~/.mergeyard",
 		PollInterval: 30 * time.Second, CITimeout: time.Hour, Concurrency: 1,
 		AgentPorts:      config.AgentPorts{Base: 5100, Size: 10},
 		Labels:          config.Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
@@ -30,7 +35,7 @@ func TestMinimalConfigUsesPRDDefaults(t *testing.T) {
 		},
 		Implementer: role, Reviewer: role, MaxRounds: 5, PRComments: true,
 		UsageLimits: config.UsageLimits{Cooldown: 30 * time.Minute, MaxWaits: 3},
-		Repositories: []config.Repository{{TrustedLabelers: []string{}, Repo: "rcpassos/mergeyard", CommandTimeout: 20 * time.Minute, CheckRetries: 1, Concurrency: 1, Enabled: true, Implementer: role, Reviewer: role,
+		Repositories: []config.Repository{{Escalation: escalationRules, TrustedLabelers: []string{}, Repo: "rcpassos/mergeyard", CommandTimeout: 20 * time.Minute, CheckRetries: 1, Concurrency: 1, Enabled: true, Implementer: role, Reviewer: role,
 			Labels: config.Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"}}},
 	}
 	if !reflect.DeepEqual(got, want) {
