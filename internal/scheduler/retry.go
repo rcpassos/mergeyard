@@ -446,6 +446,7 @@ func safeRetryError(cause error) string {
 		return "internal.run_operation: Could not reconcile Retry; check the application log"
 	}
 	messages := map[string]string{
+		"agent_ports.exhausted":         "No agent port block is available; finish or stop retained runs, or configure another range",
 		"retry.unavailable":             "Retry requires a failed or needs-attention run",
 		"retry.stop_pending":            "Finish the pending Stop before retrying",
 		"retry.process_running":         "An owned process is still running; wait or stop it before retrying",
