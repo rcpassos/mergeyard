@@ -1,9 +1,11 @@
 # Manual Claude M3 usage-limit capture
 
 Evidence for [issue #61](https://github.com/rcpassos/mergeyard/issues/61).
-Read [report.md](report.md) before using the fixtures: the required headless
-usage-limit failure has **not** been observed. The captured warning is a
-successful control, not a positive failure fixture.
+Read [report.md](report.md) before using the fixtures: a real headless weekly
+rejection was captured on 2026-10-13. The positive fixture establishes only that
+observed variant; the successful warning and authentication failure are negative
+controls. Production classifier work is tracked separately in
+[#81](https://github.com/rcpassos/mergeyard/issues/81).
 
 Run only when explicitly investigating an already suspected account limit.
 This performs one authenticated model invocation and can consume quota:
@@ -54,14 +56,21 @@ Distinguish temporary limits from exhausted credits/spend caps, ordinary 429
 throttling, startup/authentication errors, and supervisor cancellation. A
 watchdog-truncated run is not proof of native completion behavior.
 
-`fixtures/allowed-warning/` contains sanitized output from the one live call.
-`run.json` documents field omissions; `events.jsonl` retains all four event
-types in order; `stderr.log` is empty. These are offline classifier inputs only:
+The fixtures contain sanitized output from three explicitly bounded live calls:
+
+| Directory | Date | Offline classifier expectation |
+|---|---|---|
+| `fixtures/allowed-warning/` | 2026-10-06 | Available harness; a normally completed request with warning/reset fields must not pause it |
+| `fixtures/authentication-failed/` | 2026-10-13 | Ordinary failure; expired OAuth is not a temporary limit |
+| `fixtures/weekly-rejected/` | 2026-10-13 | Observed temporary weekly limit; top-level reset agrees with the rejected weekly window and native text |
+
+Each `run.json` documents field omissions; `events.jsonl` retains all four native
+records in order; `stderr.log` is empty. These are offline classifier inputs only:
 normal CI and `make test` never execute this script, call a paid harness, or
-attempt quota exhaustion. Future classifier tests should treat this capture as
-an available harness despite its warning/reset fields. It does not carry a
-Mergeyard phase schema or `structured_output`, so it is not a successful
-engineering-phase result fixture.
+attempt quota exhaustion. No fixture carries a Mergeyard phase schema or
+`structured_output`, so the warning is not a successful engineering-phase result
+fixture. Do not invent positive fixtures for unobserved variants or infer
+limited-session resumability from a session UUID alone.
 
 Reuse [Claude M1 continuity evidence](../harness-spikes.md#6-issue-9-live-m1-adapter-verification-2026-10-04)
 for resume/interactive handback; this probe does not repeat those checks.

@@ -1,0 +1,4 @@
+{"type":"system","subtype":"ui_invalidate","session_id":"ec11a963-e393-4071-96ac-299869650eac"}
+{"type":"system","subtype":"init","session_id":"ec11a963-e393-4071-96ac-299869650eac","model":"claude-sonnet-5-5","claude_code_version":"2.1.288","permissionMode":"default","tools":[]}
+{"type":"assistant","session_id":"ec11a963-e393-4071-96ac-299869650eac","error":"authentication_failed","message":{"model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","type":"message","content":[{"type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]}}
+{"type":"result","subtype":"success","session_id":"ec11a963-e393-4071-96ac-299869650eac","is_error":true,"api_error_status":null,"terminal_reason":"api_error","stop_reason":"stop_sequence","result":"Failed to authenticate: OAuth session expired and could not be refreshed","num_turns":1,"duration_ms":158,"total_cost_usd":0}
