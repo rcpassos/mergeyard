@@ -43,6 +43,7 @@ func WriteFixInput(ctx context.Context, writer FileWriter, phase PhaseContext, i
 	fmt.Fprintf(&text, "# Fix issue #%d\n\nRepository: %s\nBase branch: %s\nWorktree: %s\nIssue URL: %s\nPR: #%d %s\nRound: %d\nCurrent commit: %s\n\n", input.Issue.IssueNumber, input.Issue.Repository, input.Issue.BaseBranch, phase.WorktreePath, input.Issue.IssueURL, input.PRNumber, input.PRURL, input.Round, input.TargetSHA)
 	text.WriteString("## Constraints\n\n- Fix the supplied blocking findings, or dispute each with a concrete explanation.\n- Respond exactly once per supplied finding, with fixed or disputed and a nonempty note.\n- A success report must account for every finding. Blocked/failed reports may describe partial work.\n- Do not commit or push. Mergeyard owns publication.\n- The independent reviewer adjudicates disputes. Your success does not approve the PR.\n\n## Output contract\n\nReturn native structured output matching this schema:\n\n```json\n" + review.FixSchema + "\n```\n\n## Issue\n\n" + input.Issue.IssueTitle + "\n\n" + input.Issue.IssueBody + "\n")
 	writeIssueComments(&text, input.Issue.Comments)
+	writeHumanGuidance(&text, input.Issue.Guidance)
 	text.WriteString("\n## Current PR\n\n" + input.PRBody + "\n\n## Blocking findings\n\n")
 	findings, err := json.MarshalIndent(input.Findings, "", "  ")
 	if err != nil {

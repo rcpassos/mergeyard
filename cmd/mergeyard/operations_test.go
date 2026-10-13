@@ -598,3 +598,65 @@ func TestCLIHarnessCheckUsesRuntimeProtections(t *testing.T) {
 		t.Fatalf("workspace bypass: %d %d %s", code, calls, errOut)
 	}
 }
+
+func TestCLIRetryGuidanceAndStatus(t *testing.T) {
+	root := t.TempDir()
+	note := "Do it this way; $(touch injected)\n`id` --config --help"
+	received := ""
+	snapshot := workflow.Run{ID: "guided", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Implement, Retries: []workflow.RetrySnapshot{{Guidance: &workflow.HumanGuidance{Author: "user", CreatedAt: "2026-10-12T12:00:00Z", Text: note}, NextState: workflow.Active, NextPhase: workflow.Implement}}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "token", Runs: []workflow.Run{snapshot}})
+	})
+	mux.HandleFunc("POST /api/runs/guided/retry", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != "token" {
+			http.Error(w, "missing protection", 403)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		received = r.PostForm.Get("note")
+		json.NewEncoder(w).Encode(snapshot)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	configPath := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	notePath := filepath.Join(root, "guidance.md")
+	if err := os.WriteFile(notePath, []byte(note), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, flags := range [][]string{{"--note", note}, {"--note=" + note}, {"--note-file", notePath}} {
+		args := append([]string{"retry", "guided", "--config", configPath}, flags...)
+		code, out, errOut := runCLI(args...)
+		if code != 0 || received != note || !strings.Contains(out, "Human guidance by user · 2026-10-12T12:00:00Z") || !strings.Contains(out, terminalText(note)) {
+			t.Fatalf("retry: %d note=%q out=%s err=%s", code, received, out, errOut)
+		}
+	}
+	code, out, errOut := runCLI("status", "--config", configPath)
+	if code != 0 || !strings.Contains(out, terminalText(note)) {
+		t.Fatalf("status: %d %s %s", code, out, errOut)
+	}
+}
+
+func TestCLIRetryRejectsInvalidGuidanceOptionsBeforeConnecting(t *testing.T) {
+	for _, args := range [][]string{
+		{"retry", "guided", "--note"},
+		{"retry", "guided", "--note-file"},
+		{"retry", "guided", "--note", "one", "--note-file", "two"},
+		{"retry", "guided", "--note", "one", "--note", "two"},
+		{"status", "--note", "one"},
+	} {
+		code, _, stderr := runCLI(args...)
+		if code != 2 || strings.Contains(stderr, "runtime_unavailable") {
+			t.Fatalf("invalid options reached runtime: %v %d %s", args, code, stderr)
+		}
+	}
+	code, _, stderr := runCLI("retry", "guided", "--note-file", filepath.Join(t.TempDir(), "missing"))
+	if code != 1 || !strings.Contains(stderr, "read note file") {
+		t.Fatalf("missing note file: %d %s", code, stderr)
+	}
+}

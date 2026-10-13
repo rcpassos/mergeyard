@@ -6,10 +6,18 @@ import (
 	"encoding/json"
 )
 
+// HumanGuidance is an immutable note submitted by the local user on Retry.
+type HumanGuidance struct {
+	Author    string `json:"author"`
+	CreatedAt string `json:"created_at"`
+	Text      string `json:"text"`
+}
+
 // RetrySnapshot records human intent and its reconciled destination. AttemptFrom
 // opens a configured attempt window without changing physical attempt identities.
 // GrantedRound is an absolute ceiling, so replay cannot add another round.
 type RetrySnapshot struct {
+	Guidance       *HumanGuidance    `json:"guidance,omitempty"`
 	ID             int64             `json:"id"`
 	Pending        bool              `json:"pending"`
 	RequestedAt    string            `json:"requested_at"`
