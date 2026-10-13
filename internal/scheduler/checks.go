@@ -33,6 +33,9 @@ func (s *Scheduler) checkImplementation(ctx context.Context, repo config.Reposit
 	}
 	if commit == "" {
 		result, err := g.CommitImplement(ctx, gitRun, managedgit.Phase{Title: issue.Title, RequireChanges: true})
+		if diagnosticErr := s.recordStagingDiagnostics(ctx, run, result); diagnosticErr != nil {
+			return false, diagnosticErr
+		}
 		if err != nil {
 			return false, err
 		}

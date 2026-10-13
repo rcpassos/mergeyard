@@ -115,6 +115,38 @@ Mergeyard observes its result and, when the outcome is unknown, reruns its saved
 commands with the originally captured timeout before starting the agent. New
 executions for later phases or newly prepared worktrees use current configuration.
 
+## Repository staging exclusions
+
+`repositories[].exclude` is a list of repository-relative Git glob patterns,
+defaulting to `[]`. It keeps setup and tool leftovers out of Mergeyard's commits:
+
+```yaml
+repositories:
+  - repo: company/api
+    exclude: [".venv/", ".pytest_cache/", "agent-browser/", "*.har", "**/traces/**"]
+```
+
+Patterns use Git `:(exclude,glob)` pathspec semantics, not `.gitignore` syntax.
+`*` and `?` do not cross `/`; `*.har` matches only root files, while `**/*.har`
+matches at any depth. Character classes such as `[0-9]` and `[[:digit:]]` are
+supported. `**` must occupy a whole path component. A trailing `/` excludes the
+whole directory subtree (including patterns such as `**/cache/`). Patterns are
+relative to the repository root; leading `/`, `..` components, empty patterns,
+NUL, unfinished escapes/classes and invalid `**` forms fail configuration
+validation with `config.invalid_exclude`. Values must be a list of strings.
+Negation and additional pathspec magic are not interpreted as `.gitignore` rules.
+
+Only new files are excluded, including new files a tool has already staged.
+Matching tracked edits and deletions are still committed and produce a
+`git.exclude_tracked` warning. Leftovers are listed as
+`git.excluded_untracked` in the phase's `staging.json` and the run's
+`git.staging_diagnostics` event, including when implementation returns
+`git.no_changes` because it changed only excluded files. No Git configuration,
+`info/exclude`, or repository ignore files are rewritten. Excluded files remain
+available to local checks and are removed with the worktree on completed-run
+cleanup; stopped or attention runs retain them. Pinned-tree checks still reject
+all tracked changes and other non-ignored new files.
+
 ## Repository checks
 
 `repositories[].checks` is a list of shell commands, defaulting to `[]`. Omit it
@@ -245,6 +277,7 @@ settings, including repositories with `enabled: false`.
 | `config.invalid_max_rounds` | Round limit must be a positive finite integer |
 | `config.invalid_max_attempts` | Role attempt limit must be a positive finite integer |
 | `config.invalid_checks` | Check commands must be nonempty and contain no NUL |
+| `config.invalid_exclude` | Exclusions must be a list of valid, nonempty repository-relative Git glob patterns |
 | `config.invalid_check_retries` | Check retry limit must be a nonnegative finite integer |
 | `config.invalid_max_waits` | Usage-limit wait bound must be a positive finite integer |
 | `config.invalid_duration` | CI timeout, repository command timeout, poll interval or cooldown must parse as a positive Go duration |

@@ -48,14 +48,25 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 		if err := verifyWorktree(ctx, run); err != nil {
 			return err
 		}
-		status, err := command(ctx, run.Path, "git.cleanup", "status", "--porcelain", "--untracked-files=all")
+		dirty, err := worktreeDirty(ctx, run)
 		if err != nil {
 			return err
 		}
-		if status != "" {
+		if dirty {
 			return failure("git.cleanup", run.Path, errors.New("dirty work is preserved for human attention"))
 		}
-		if _, err := command(ctx, run.BasePath, "git.cleanup", "worktree", "remove", "--", run.Path); err != nil {
+		leftovers, err := excludedUntracked(ctx, run)
+		if err != nil {
+			return err
+		}
+		args := []string{"worktree", "remove"}
+		if len(leftovers) > 0 {
+			// Only configured untracked leftovers remain. Ownership and
+			// publication checks above still guard the complete worktree.
+			args = append(args, "--force")
+		}
+		args = append(args, "--", run.Path)
+		if _, err := command(ctx, run.BasePath, "git.cleanup", args...); err != nil {
 			return err
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {

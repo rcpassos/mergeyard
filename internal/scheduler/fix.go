@@ -206,6 +206,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 			return fail(&fault.Error{Code: "review.head_changed", Message: "PR head changed before fix publication"})
 		}
 		result, err := g.CommitFix(ctx, gitRun, managedgit.Phase{Title: fmt.Sprintf("fix review round %d", run.ReviewRound)}, a.target)
+		if diagnosticErr := s.recordStagingDiagnostics(ctx, run, result); diagnosticErr != nil {
+			return fail(diagnosticErr)
+		}
 		if err != nil {
 			return fail(err)
 		}

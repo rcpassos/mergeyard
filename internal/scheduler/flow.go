@@ -108,6 +108,7 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 		if err != nil {
 			return s.attention(ctx, repo, run, err)
 		}
+		gitRun.Exclude = repo.Exclude
 		if err := s.saveGit(ctx, run.ID, gitRun, repo.Implementer.Agent); err != nil {
 			return s.attention(ctx, repo, run, err)
 		}
@@ -132,8 +133,12 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 		return nil
 	}
 	if len(repo.Checks) == 0 && !runningSystemStep(run, "checks") {
-		if _, err := s.deps.Git.CommitAndPush(ctx, gitRun, managedgit.Phase{Title: issue.Title, RequireChanges: true}); err != nil {
+		commit, commitErr := s.deps.Git.CommitAndPush(ctx, gitRun, managedgit.Phase{Title: issue.Title, RequireChanges: true})
+		if err := s.recordStagingDiagnostics(ctx, run, commit); err != nil {
 			return s.attention(ctx, repo, run, err)
+		}
+		if commitErr != nil {
+			return s.attention(ctx, repo, run, commitErr)
 		}
 	} else {
 		ready, err := s.checkImplementation(ctx, repo, run, issue, gitRun)
@@ -237,6 +242,9 @@ func (s *Scheduler) context(ctx context.Context, run workflow.Run) (github.Issue
 	if gitJSON.Valid {
 		if err := json.Unmarshal([]byte(gitJSON.String), &gitRun); err != nil {
 			return issue, gitRun, err
+		}
+		if repo, ok := s.runRepository(run); ok {
+			gitRun.Exclude = repo.Exclude
 		}
 	}
 	return issue, gitRun, nil
