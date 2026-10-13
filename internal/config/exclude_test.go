@@ -33,3 +33,22 @@ func TestInvalidRepositoryExcludePatterns(t *testing.T) {
 		})
 	}
 }
+
+func TestRepositoryExcludePOSIXCharacterClasses(t *testing.T) {
+	for _, class := range []string{"alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "xdigit", "digit|graph", "alnum|alpha", "space|upper|xdigit", "unknown"} {
+		t.Run(class, func(t *testing.T) {
+			_, _, err := config.Parse([]byte(`repositories: [{repo: owner/repo, exclude: ["capture[[:` + class + `:]].har"]}]`))
+			switch class {
+			case "digit|graph", "alnum|alpha", "space|upper|xdigit", "unknown":
+				var failure *config.Error
+				if !errors.As(err, &failure) || failure.Code != "config.invalid_exclude" || failure.Path != "repositories[0].exclude" {
+					t.Fatalf("invalid POSIX class %q accepted: %v", class, err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("valid POSIX class %q rejected: %v", class, err)
+				}
+			}
+		})
+	}
+}

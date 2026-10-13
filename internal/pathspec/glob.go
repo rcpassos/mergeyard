@@ -4,6 +4,7 @@ package pathspec
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -41,7 +42,10 @@ func Validate(pattern string) error {
 						return fmt.Errorf("unfinished POSIX character class")
 					}
 					class := pattern[i+2 : i+2+end]
-					if !strings.Contains("|alnum|alpha|blank|cntrl|digit|graph|lower|print|punct|space|upper|xdigit|", "|"+class+"|") {
+					if !slices.Contains([]string{
+						"alnum", "alpha", "blank", "cntrl", "digit", "graph",
+						"lower", "print", "punct", "space", "upper", "xdigit",
+					}, class) {
 						return fmt.Errorf("unknown POSIX character class %q", class)
 					}
 					i += end + 3
