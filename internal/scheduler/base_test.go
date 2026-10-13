@@ -37,7 +37,7 @@ func passingBaseAPI(base *fakeGitHub) *ciGitHub {
 func TestBaseConflictRepairsOrRequiresAttentionWithinRoundBound(t *testing.T) {
 	for _, max := range []int{1, 2} {
 		t.Run(fmt.Sprint(max), func(t *testing.T) {
-			_, rt, base, remote, cfg, r := localFlow(t, ciFixScript(`git -c user.name=Test -c user.email=test@example.invalid merge --no-commit origin/main >/dev/null 2>&1 || :; printf resolved > README.md; git add README.md; `+ciFixedReport))
+			_, rt, base, remote, cfg, r := localFlow(t, ciFixScript(`printf resolved > README.md; `+ciFixedReport))
 			// Both branches edit the same originally tracked file.
 			data, err := os.ReadFile(cfg.Agents.Claude.Executable)
 			if err != nil {
@@ -386,7 +386,7 @@ func TestBaseVerificationTimeoutRetainsCommandEvidenceAndCleansScratch(t *testin
 }
 
 func TestBaseConflictRepairCanPreserveFilesWhileMergingBaseAncestry(t *testing.T) {
-	_, rt, base, remote, cfg, r := localFlow(t, ciFixScript(`git -c user.name=Test -c user.email=test@example.invalid merge -Xours --no-commit origin/main >/dev/null 2>&1; `+ciFixedReport))
+	_, rt, base, remote, cfg, r := localFlow(t, ciFixScript(`printf '%s\n' implemented > README.md; `+ciFixedReport))
 	data, err := os.ReadFile(cfg.Agents.Claude.Executable)
 	if err != nil {
 		t.Fatal(err)

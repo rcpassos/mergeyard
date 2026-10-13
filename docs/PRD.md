@@ -934,7 +934,14 @@ Normalized CI states: `pending`, `passed`, `failed`, `unknown`.
 - `failed` → `fix` with the failed check names, failure excerpts, and URLs, if a review round remains; otherwise `NEEDS_ATTENTION`.
 - If no checks are reported for the head commit after 2 minutes, CI is treated as passed.
 
-Before readiness, Mergeyard fetches the PR base and runs `git merge-tree --write-tree origin/<base> <approved-head>`. A conflict follows the CI-failure repair path with the conflicting paths: fix if a review round remains, otherwise `NEEDS_ATTENTION` with `git.base_conflict`.
+Before readiness, Mergeyard fetches the PR base and runs `git merge-tree --write-tree origin/<base> <approved-head>`. A conflict follows the CI-failure repair path with the conflicting paths: fix if a review round remains, otherwise `NEEDS_ATTENTION` with `git.base_conflict`. Mergeyard journals and
+starts the pinned base merge in the run worktree before launching the agent,
+which only edits conflict files. Mergeyard owns staging and the merge commit,
+including resolutions that preserve the approved tree. Reconciliation recognizes
+the same pending merge parent and retains partial resolutions. Canceled or
+action-required CI takes priority over current-base repair; an unavailable
+synthetic merge does not prevent a proven conflict repair when head-check evidence
+and requirements are available.
 
 Per-repository `verify_commands` defaults to `checks` when omitted; explicit `[]` disables commands, but retains the merge-tree check. On a clean merge, commands run on a synthetic base + approved-head commit in a separate detached scratch worktree. They use the configured command timeout and system-step process journal, keep per-command output and exit evidence, and never change the run worktree or push. Verification failure or timeout follows the same repair path and `max_rounds` bound; exhaustion reports `git.base_verification_failed`. Fix input carries the command and output excerpt. The synthetic commit, scratch creation intent, base/head pair, command session and cleanup are persisted. A moved base requires another verification before readiness.
 

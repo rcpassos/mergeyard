@@ -49,19 +49,21 @@ type Snapshot struct {
 // BaseVerification journals the exact base/head combination and ownership of
 // its disposable worktree before creation. Results remain after cleanup.
 type BaseVerification struct {
-	ID          string   `json:"id"`
-	BaseBranch  string   `json:"base_branch"`
-	BaseSHA     string   `json:"base_sha"`
-	HeadSHA     string   `json:"head_sha"`
-	TreeSHA     string   `json:"tree_sha"`
-	Conflicts   []string `json:"conflicts,omitempty"`
-	CommitSHA   string   `json:"commit_sha,omitempty"`
-	ScratchPath string   `json:"scratch_path,omitempty"`
-	Cleaned     bool     `json:"cleaned"`
-	Status      string   `json:"status"`
-	Error       string   `json:"error,omitempty"`
-	Output      string   `json:"output,omitempty"`
-	Commands    []string `json:"commands"`
+	ID            string   `json:"id"`
+	BaseBranch    string   `json:"base_branch"`
+	BaseSHA       string   `json:"base_sha"`
+	HeadSHA       string   `json:"head_sha"`
+	TreeSHA       string   `json:"tree_sha"`
+	Conflicts     []string `json:"conflicts,omitempty"`
+	CommitSHA     string   `json:"commit_sha,omitempty"`
+	ScratchPath   string   `json:"scratch_path,omitempty"`
+	Cleaned       bool     `json:"cleaned"`
+	Status        string   `json:"status"`
+	Error         string   `json:"error,omitempty"`
+	Output        string   `json:"output,omitempty"`
+	Commands      []string `json:"commands"`
+	MergeStarted  bool     `json:"merge_started,omitempty"`
+	MergePrepared bool     `json:"merge_prepared,omitempty"`
 }
 
 // Normalize retains native outcomes; unrecognized or stale evidence never passes.

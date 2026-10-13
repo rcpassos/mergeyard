@@ -378,6 +378,31 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	if !reviewHeadMatches(pr, repo, run, gitRun, target) {
 		return fail(&fault.Error{Code: "review.head_changed", Message: "PR head changed before fix launch"})
 	}
+	if repair != nil && repair.RepairCause == "git.base_conflict" {
+		if !repair.Base.MergePrepared {
+			g, ok := s.deps.Git.(interface {
+				PrepareBaseRepair(context.Context, managedgit.Run, string, string) error
+			})
+			if !ok {
+				return fail(&fault.Error{Code: "git.base_check_unsupported", Message: "Git adapter cannot prepare conflict repair"})
+			}
+			wait := *repair
+			base := *repair.Base
+			wait.Base = &base
+			base.MergeStarted = true
+			if err := s.saveCI(ctx, run, wait, "ci.updated"); err != nil {
+				return err
+			}
+			if err := g.PrepareBaseRepair(ctx, gitRun, target, base.BaseSHA); err != nil {
+				return fail(err)
+			}
+			base.MergePrepared = true
+			if err := s.saveCI(ctx, run, wait, "ci.updated"); err != nil {
+				return err
+			}
+			repair = &wait
+		}
+	}
 	findings := []review.Finding{}
 	for _, f := range run.Review.Report.Findings {
 		if f.Severity == "blocking" {

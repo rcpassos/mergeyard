@@ -120,25 +120,12 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 	if !s.deps.Now().UTC().Before(v.Deadline) {
 		return fail("ci.wait_timeout", "CI wait deadline expired before current-base verification")
 	}
-	basePassed, err := s.verifyBase(ctx, repo, run, gitRun, target, &v)
-	if err != nil {
-		return unknown(err)
-	}
-	if !basePassed {
-		v.QueryError = ""
-		if baseRepairCause(v) != "" {
-			if !s.deps.Now().UTC().Before(v.Deadline) {
-				return fail("ci.wait_timeout", "CI wait deadline expired before current-base repair authorization")
-			}
-			return s.repairBase(ctx, repo, run, gitRun, target, v)
-		}
-		return s.saveCI(ctx, run, v, "ci.updated")
-	}
-	evidence, err := api.PullRequestEvidence(ctx, repo.Repo, target)
+	evidence, evidenceErr := api.PullRequestEvidence(ctx, repo.Repo, target)
 	v.Evidence = evidence
 	v.Evidence.Gate()
-	if err != nil {
-		return unknown(err)
+	mergeUnknown := evidenceErr != nil && errorCodeForReview(evidenceErr) == "github.merge_evidence_unknown" && evidence.MergeSHA == ""
+	if evidenceErr != nil && !mergeUnknown {
+		return unknown(evidenceErr)
 	}
 	v.QueryError = ""
 	now = s.deps.Now().UTC()
@@ -147,10 +134,37 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 		passed = false
 		return unknown(&fault.Error{Code: "ci.evidence_stale", Message: "Checks were queried for another head or test merge commit"})
 	}
-	if attention != "" {
-		if attention == "ci.action_required" {
-			return fail(attention, "CI was canceled or requires action; inspect the saved check outcomes and links")
+	if attention == "ci.action_required" {
+		return fail(attention, "CI was canceled or requires action; inspect the saved check outcomes and links")
+	}
+	if !s.deps.Now().UTC().Before(v.Deadline) {
+		return fail("ci.wait_timeout", "CI wait deadline expired before current-base verification")
+	}
+	basePassed, err := s.verifyBase(ctx, repo, run, gitRun, target, &v)
+	if err != nil {
+		return unknown(err)
+	}
+	if !basePassed {
+		v.QueryError = ""
+		if baseRepairCause(v) != "" {
+			if evidenceErr != nil && baseRepairCause(v) != "git.base_conflict" {
+				return unknown(evidenceErr)
+			}
+			if !s.deps.Now().UTC().Before(v.Deadline) {
+				return fail("ci.wait_timeout", "CI wait deadline expired before current-base repair authorization")
+			}
+			return s.repairBase(ctx, repo, run, gitRun, target, v)
 		}
+		if evidenceErr != nil {
+			return unknown(evidenceErr)
+		}
+		return s.saveCI(ctx, run, v, "ci.updated")
+	}
+	if evidenceErr != nil {
+		return unknown(evidenceErr)
+	}
+	now = s.deps.Now().UTC()
+	if attention != "" {
 		if !now.Before(v.Deadline) {
 			return fail("ci.wait_timeout", "CI wait deadline expired; saved terminal check evidence does not authorize a code fix")
 		}
@@ -216,6 +230,9 @@ func (s *Scheduler) waitCI(ctx context.Context, repo config.Repository, run work
 	}
 	if !basePassed {
 		return s.saveCI(ctx, run, v, "ci.updated")
+	}
+	if !s.deps.Now().UTC().Before(v.Deadline) {
+		return fail("ci.wait_timeout", "CI wait deadline expired during final current-base verification; PR was not marked ready")
 	}
 	if fresh.Draft {
 		if v.ReadyStarted {

@@ -180,7 +180,11 @@ also report check retries.
 After approval and before readiness, Mergeyard fetches the PR's current base and
 runs `git merge-tree --write-tree` against the approved head. A conflict starts a
 fix with the conflicting paths if another review round remains; otherwise the
-run requires attention with `git.base_conflict`.
+run requires attention with `git.base_conflict`. Mergeyard journals and starts
+the pinned merge in the run worktree before launching the fixer. The agent only
+edits conflict files; Mergeyard stages them, completes the merge commit, runs
+checks, and publishes it for independent review. Restart recognizes the saved
+merge parent and preserves partial resolutions.
 
 `repositories[].verify_commands` runs on the combined base + approved head in a
 separate detached scratch worktree. Omission defaults to the repository's

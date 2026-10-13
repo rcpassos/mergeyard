@@ -93,3 +93,38 @@ func TestBaseMergeReportsConflictingPathsIncludingNewlines(t *testing.T) {
 		t.Fatalf("run workspace changed: %s", got)
 	}
 }
+
+func TestManagedBaseRepairReplayPreservesResolvedFilesAndIndex(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	write(t, run.Path, "README.md", "approved\n")
+	git(t, run.Path, "add", ".")
+	git(t, run.Path, "commit", "-m", "approved")
+	target := git(t, run.Path, "rev-parse", "HEAD")
+	write(t, f.seed, "README.md", "current base\n")
+	git(t, f.seed, "add", ".")
+	git(t, f.seed, "commit", "-m", "base")
+	git(t, f.seed, "push", "origin", "main")
+	merge, err := f.manager.CheckBase(context.Background(), run, "main", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.manager.PrepareBaseRepair(context.Background(), run, target, merge.BaseSHA); err != nil {
+		t.Fatal(err)
+	}
+	if pending := git(t, run.Path, "rev-parse", "MERGE_HEAD"); pending != merge.BaseSHA {
+		t.Fatal("wrong merge parent")
+	}
+	write(t, run.Path, "README.md", "approved\n")
+	stages := git(t, run.Path, "ls-files", "--unmerged")
+	if err := f.manager.PrepareBaseRepair(context.Background(), run, target, merge.BaseSHA); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(run.Path, "README.md"))
+	if err != nil || string(data) != "approved\n" {
+		t.Fatal("replay overwrote resolution")
+	}
+	if actual := git(t, run.Path, "ls-files", "--unmerged"); actual != stages {
+		t.Fatal("replay altered index")
+	}
+}

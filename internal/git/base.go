@@ -205,3 +205,53 @@ func (m *Manager) RemoveVerification(ctx context.Context, run Run, id, commit st
 	_, err = command(ctx, run.BasePath, "git.base_cleanup", "worktree", "prune", "--expire", "now")
 	return err
 }
+
+// PrepareBaseRepair starts the pinned merge outside the agent sandbox. The
+// caller persists creation intent first. A replay keeps resolutions and stages
+// intact when the same MERGE_HEAD is already present.
+func (m *Manager) PrepareBaseRepair(ctx context.Context, run Run, target, base string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.validateRun(run); err != nil {
+		return err
+	}
+	if !shaPattern.MatchString(target) || !shaPattern.MatchString(base) {
+		return failure("git.base_repair", run.Path, errors.New("invalid pinned merge commits"))
+	}
+	if err := verifyWorktree(ctx, run); err != nil {
+		return err
+	}
+	if _, err := verifyOrigin(ctx, run); err != nil {
+		return err
+	}
+	pending, err := command(ctx, run.Path, "git.base_repair", "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	var exit *exec.ExitError
+	if err != nil && !(ctx.Err() == nil && errors.As(err, &exit) && exit.ExitCode() == 1) {
+		return err
+	}
+	if err == nil {
+		head, err := command(ctx, run.Path, "git.base_repair", "rev-parse", "HEAD")
+		if err != nil {
+			return err
+		}
+		if pending != base || head != target {
+			return failure("git.base_repair", run.Path, errors.New("pending merge differs from the journaled base and head"))
+		}
+		return nil
+	}
+	if err := inspectFixTarget(ctx, run, target); err != nil {
+		return err
+	}
+	_, err = command(ctx, run.Path, "git.base_repair", "merge", "--no-commit", "--no-ff", "--no-edit", "--no-autostash", base)
+	if err != nil && !(ctx.Err() == nil && errors.As(err, &exit) && exit.ExitCode() == 1) {
+		return err
+	}
+	pending, checkErr := command(ctx, run.Path, "git.base_repair", "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	if checkErr != nil {
+		return checkErr
+	}
+	if pending != base {
+		return failure("git.base_repair", run.Path, errors.New("merge did not establish the journaled base parent"))
+	}
+	return nil
+}
