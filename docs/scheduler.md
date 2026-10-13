@@ -36,6 +36,13 @@ dependency. Global and repository limits count all nonterminal runs except
 harness gates withhold new claims and phase launches using the limited harness;
 eligible other-harness work and CI observation continue within capacity.
 
+`Plan(ctx, repository)` uses the same read-only candidate inspection and pure
+capacity/label eligibility policy as `Tick`. It reserves prospective slots in
+memory and returns every open ready issue's decision without reconciliation or
+claim effects. `PlanOffline` uses an existing read-only store (or no store for a
+fresh workspace). The CLI and local `GET /api/plan` expose the versioned snapshot;
+see [CLI operations](cli.md) for the JSON contract and reason precedence.
+
 Each issue resolves its implementer and reviewer through
 `config.ResolveRoleSettings`: fixed, case-insensitive
 `mergeyard:implementer=<agent>` and `mergeyard:reviewer=<agent>` labels override

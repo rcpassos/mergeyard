@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -199,35 +198,16 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 // Runs returns the persisted lifecycle snapshots, including durable review verdicts.
 func (s *Scheduler) Runs(ctx context.Context) ([]workflow.Run, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id FROM runs ORDER BY created_at, id")
+	runs, err := s.storedRuns(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
-	}
-	runs := make([]workflow.Run, 0, len(ids))
-	for _, id := range ids {
-		run, err := s.workflow.Get(ctx, id)
-		if err != nil {
-			return nil, err
-		}
+	for i, run := range runs {
 		run.RetryEligible, err = s.RetryEligible(ctx, run)
 		if err != nil {
 			return nil, err
 		}
-		runs = append(runs, s.runSnapshot(run))
+		runs[i] = s.runSnapshot(run)
 	}
 	return runs, nil
 }
@@ -261,98 +241,43 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if err != nil {
 		return errors.Join(append(failures, err)...)
 	}
-	slots := 0
-	repoSlots := map[string]int{}
-	existing := map[string]bool{}
-	for _, run := range runs {
-		if run.Merge != nil && run.Merge.Pending() {
-			existing[issueKey(run.Repository, run.IssueNumber)] = true
-		}
-		if !run.State.Terminal() {
-			existing[issueKey(run.Repository, run.IssueNumber)] = true
-			if run.State != workflow.ReadyToMerge {
-				slots++
-				repoSlots[strings.ToLower(run.Repository)]++
-			}
-		}
-	}
+	capacity := capacityFor(runs, false)
 	for _, repo := range s.cfg.Repositories {
-		if !repo.Enabled || slots >= s.cfg.Concurrency || s.control.Paused() {
+		if !repo.Enabled || capacity.slots >= s.cfg.Concurrency || s.control.Paused() {
 			continue
-		}
-		limit := repo.Concurrency
-		if limit <= 0 {
-			limit = s.cfg.Concurrency
 		}
 		issues, err := s.deps.GitHub.ListOpenIssues(ctx, repo.Repo)
 		if err != nil {
 			failures = append(failures, err)
 			continue
 		}
-		// Do not reorder a slice owned by the adapter.
-		issues = append([]github.Issue(nil), issues...)
-		sort.Slice(issues, func(i, j int) bool {
-			if issues[i].CreatedAt.Equal(issues[j].CreatedAt) {
-				return issues[i].Number < issues[j].Number
-			}
-			return issues[i].CreatedAt.Before(issues[j].CreatedAt)
-		})
-		for _, issue := range issues {
-			if s.control.Paused() || slots >= s.cfg.Concurrency || repoSlots[strings.ToLower(repo.Repo)] >= limit {
-				break
-			}
-			if issue.State != github.Open || !hasLabel(issue, repo.Labels.Ready) || hasLabel(issue, repo.Labels.Running) || hasLabel(issue, repo.Labels.NeedsAttention) || existing[issueKey(repo.Repo, issue.Number)] {
-				continue
-			}
-			allowed, err := s.authorizeIssue(ctx, repo, issue)
+		for _, issue := range orderedIssues(issues) {
+			capacity.paused = s.control.Paused()
+			candidate, err := s.inspectCandidate(ctx, repo, issue, capacity)
 			if err != nil {
 				failures = append(failures, err)
 				continue
 			}
-			if !allowed {
-				continue
+			if candidate.trust.Allowed || candidate.reason == "untrusted_labeler" {
+				if _, err := s.applyTrustDecision(ctx, repo, candidate.issue, candidate.trust, candidate.trustErr); err != nil {
+					failures = append(failures, err)
+					continue
+				}
+				if candidate.reason == "untrusted_labeler" {
+					continue
+				}
 			}
-			blockers, err := s.deps.GitHub.UnresolvedBlockers(ctx, repo.Repo, issue.Number)
-			if err != nil {
-				failures = append(failures, err)
-				continue
-			}
-			if len(blockers) > 0 {
-				continue
-			}
-			// Freeze fresh executable intent and recheck authorization when a
-			// slot is actually about to be claimed, even if discovery was cached.
-			issue, err = s.deps.GitHub.GetIssue(ctx, repo.Repo, issue.Number)
-			if err != nil {
-				failures = append(failures, err)
-				continue
-			}
-			if issue.State != github.Open || !hasLabel(issue, repo.Labels.Ready) || hasLabel(issue, repo.Labels.Running) || hasLabel(issue, repo.Labels.NeedsAttention) {
-				continue
-			}
-			allowed, err = s.recheckIssue(ctx, repo, issue)
-			if err != nil {
-				failures = append(failures, err)
-				continue
-			}
-			if !allowed {
-				continue
-			}
-			settings, err := s.resolveIssueRoleSettings(repo, issue)
-			if err != nil {
-				if refusalErr := s.refuseHarnessOverride(ctx, repo, issue.Number, err.Error()); refusalErr != nil {
-					failures = append(failures, refusalErr)
+			if candidate.settingsErr != nil {
+				if err := s.refuseHarnessOverride(ctx, repo, issue.Number, candidate.settingsErr.Error()); err != nil {
+					failures = append(failures, err)
 				}
 				continue
 			}
-			gate, err := s.harnessGate(ctx, settings.Implementer.Agent)
-			if err != nil {
-				failures = append(failures, err)
+			if candidate.decision != "would_claim" {
 				continue
 			}
-			if gate != nil {
-				continue
-			}
+			issue = candidate.issue
+			settings := candidate.settings
 			s.control.mu.Lock()
 			if s.control.paused {
 				s.control.mu.Unlock()
@@ -364,9 +289,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 				failures = append(failures, err)
 				continue
 			}
-			slots++
-			repoSlots[strings.ToLower(repo.Repo)]++
-			existing[issueKey(repo.Repo, issue.Number)] = true
+			capacity.reserve(repo.Repo, issue.Number)
 			if err := s.saveIssue(ctx, run.ID, issue); err != nil {
 				failures = append(failures, s.attention(ctx, repo, run, err))
 				continue
