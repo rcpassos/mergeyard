@@ -142,3 +142,72 @@ func TestPlanFlagsRequirePlan(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanOnlineReturnsEveryIssueInLargeQueue(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "never-created")
+	report := scheduler.Plan{SchemaVersion: 1, Paused: true, Issues: make([]scheduler.PlanIssue, 13000)}
+	for i := range report.Issues {
+		report.Issues[i] = scheduler.PlanIssue{Repository: "owner/repo", Number: i + 1, Title: strings.Repeat("x", 240), Decision: "waiting", Reason: "scheduler_paused"}
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) <= 4<<20 {
+		t.Fatalf("fixture must exceed the former response cap: %d bytes", len(encoded))
+	}
+	t.Logf("%d issues; encoded response: %d bytes", len(report.Issues), len(encoded)+1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("plan wrote to control plane: %s", r.Method)
+		}
+		switch r.URL.Path {
+		case "/api/status":
+			json.NewEncoder(w).Encode(web.Status{Workspace: workspace})
+		case "/api/plan":
+			w.Write(append(encoded, '\n'))
+		default:
+			t.Errorf("unexpected request: %s", r.URL)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	if err := os.WriteFile(path, []byte("port: "+strconv.Itoa(port)+"\nworkspace: "+strconv.Quote(workspace)+"\nrepositories: [{repo: owner/repo}]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, asJSON := range []bool{true, false} {
+		t.Run(strconv.FormatBool(asJSON), func(t *testing.T) {
+			args := []string{"plan", "--config", path}
+			if asJSON {
+				args = append(args, "--json")
+			}
+			code, out, stderr := runCLI(args...)
+			if code != 0 || stderr != "" {
+				t.Fatalf("large online plan failed: code=%d stderr=%s", code, stderr)
+			}
+			if asJSON {
+				var got scheduler.Plan
+				if err := json.Unmarshal([]byte(out), &got); err != nil {
+					t.Fatal(err)
+				}
+				if len(got.Issues) != 13000 {
+					t.Fatalf("queue truncated: got %d issues", len(got.Issues))
+				}
+				for i, issue := range got.Issues {
+					if issue.Number != i+1 || issue.Repository != "owner/repo" || issue.Title != strings.Repeat("x", 240) || issue.Decision != "waiting" || issue.Reason != "scheduler_paused" {
+						t.Fatalf("incomplete issue %d: %+v", i+1, issue)
+					}
+				}
+			} else {
+				if strings.Count(out, " waiting: scheduler_paused") != 13000 || !strings.Contains(out, "owner/repo#13000 waiting: scheduler_paused") {
+					t.Fatal("text output omitted queue decisions")
+				}
+			}
+		})
+	}
+	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+		t.Fatal("online plan created workspace")
+	}
+}

@@ -78,7 +78,9 @@ func (c *runtimeClient) request(ctx context.Context, method, path string, result
 		return fmt.Errorf("local API (%s): %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	if result != nil {
-		return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(result)
+		// Collection responses such as plans and status can grow with the queue.
+		// Decode the complete response; the HTTP client's timeout bounds the read.
+		return json.NewDecoder(resp.Body).Decode(result)
 	}
 	return nil
 }
