@@ -147,3 +147,66 @@ func TestEscalationDiffIncludesIgnoredGitlinks(t *testing.T) {
 		})
 	}
 }
+
+func TestEscalationDiffIgnoresUserAttributes(t *testing.T) {
+	for _, source := range []string{"global config", "repository config", "default XDG file"} {
+		t.Run(source, func(t *testing.T) {
+			f := newFixture(t)
+			write(t, f.seed, ".gitattributes", "opaque.go -diff\n")
+			write(t, f.seed, "feature.go", "base\n")
+			git(t, f.seed, "add", ".")
+			git(t, f.seed, "commit", "-m", "base attributes and text")
+			git(t, f.seed, "push", "origin", "main")
+			run := prepare(t, f)
+			var content strings.Builder
+			for i := 0; i < 401; i++ {
+				fmt.Fprintf(&content, "line %d\n", i)
+			}
+			write(t, run.Path, "feature.go", content.String())
+			write(t, run.Path, "opaque.go", "repository marks this text binary\n")
+			write(t, run.Path, "binary.tf", "\x00binary\n")
+			git(t, run.Path, "add", ".")
+			git(t, run.Path, "commit", "-m", "approved text and binary")
+			head := git(t, run.Path, "rev-parse", "HEAD")
+			want := []escalation.FileChange{{Path: "binary.tf"}, {Path: "feature.go", Additions: 401, Deletions: 1}, {Path: "opaque.go"}}
+			wantFlags := escalation.Evaluate(escalation.Defaults(), want)
+			if len(wantFlags) != 2 || wantFlags[1].Reason != "size: 402 changed lines exceeds 400" {
+				t.Fatalf("invalid size-flag fixture: %+v", wantFlags)
+			}
+			assertDiff := func() {
+				t.Helper()
+				got, err := f.manager.EscalationDiff(context.Background(), run, head)
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("diff=%+v, err=%v; want %+v", got, err, want)
+				}
+				if flags := escalation.Evaluate(escalation.Defaults(), got); !reflect.DeepEqual(flags, wantFlags) {
+					t.Fatalf("flags=%+v; want %+v", flags, wantFlags)
+				}
+			}
+			assertDiff()
+			attributesRoot := t.TempDir()
+			write(t, attributesRoot, "attributes", "*.go -diff\n*.tf diff\n")
+			attributes := filepath.Join(attributesRoot, "attributes")
+			switch source {
+			case "global config":
+				config := filepath.Join(t.TempDir(), "gitconfig")
+				t.Setenv("GIT_CONFIG_GLOBAL", config)
+				git(t, run.Path, "config", "--file", config, "core.attributesFile", attributes)
+			case "repository config":
+				git(t, run.Path, "config", "core.attributesFile", attributes)
+			case "default XDG file":
+				// Git's implicit user attributes live at $XDG_CONFIG_HOME/git/attributes.
+				if err := os.MkdirAll(filepath.Join(attributesRoot, "git"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				write(t, filepath.Join(attributesRoot, "git"), "attributes", "*.go -diff\n*.tf diff\n")
+				t.Setenv("XDG_CONFIG_HOME", attributesRoot)
+			}
+			// Confirm each source really changes ordinary Git's binary policy.
+			if raw := git(t, run.Path, "diff", "--numstat", run.BaseSHA+"..."+head); !strings.Contains(raw, "-\t-\tfeature.go") || !strings.Contains(raw, "1\t0\tbinary.tf") {
+				t.Fatalf("attributes fixture did not affect ordinary diff: %q", raw)
+			}
+			assertDiff()
+		})
+	}
+}

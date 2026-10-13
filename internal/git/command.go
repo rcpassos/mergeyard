@@ -14,9 +14,14 @@ import (
 // Execute Git directly, with the machine's identity and credentials. Disable
 // terminal prompts so an unattended run reports failures instead of hanging.
 func command(ctx context.Context, dir, code string, args ...string) (string, error) {
+	return commandWithEnv(ctx, dir, code, nil, args...)
+}
+
+func commandWithEnv(ctx context.Context, dir, code string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = append(cmd.Env, env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
