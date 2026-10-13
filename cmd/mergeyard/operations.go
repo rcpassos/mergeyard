@@ -41,7 +41,7 @@ func connect(ctx context.Context, path string) (*runtimeClient, web.Status, erro
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}}
 	var status web.Status
-	if err := client.request(ctx, http.MethodGet, "/api/status", &status); err != nil {
+	if err := client.request(ctx, http.MethodGet, "/api/status", &status, nil); err != nil {
 		return nil, status, err
 	}
 	root, err := workspace.ResolvePath(cfg.Workspace)
@@ -55,12 +55,15 @@ func connect(ctx context.Context, path string) (*runtimeClient, web.Status, erro
 	return client, status, nil
 }
 
-func (c *runtimeClient) request(ctx context.Context, method, path string, result any) error {
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
+func (c *runtimeClient) request(ctx context.Context, method, path string, result any, form url.Values) error {
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	if form != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
 	if method == http.MethodPost {
 		req.Header.Set("Origin", c.base)
 		req.Header.Set("X-CSRF-Token", c.token)
@@ -93,7 +96,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 	case "harness check":
 		fmt.Fprintln(stdout, "Check availability uses account quota for one minimal model request with no engineering work.")
 		var check workflow.HarnessCheck
-		if err := client.request(ctx, http.MethodPost, "/harnesses/"+args[0]+"/check", &check); err != nil {
+		if err := client.request(ctx, http.MethodPost, "/harnesses/"+args[0]+"/check", &check, nil); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "Harness %s: check %s · %s. Follow progress with mergeyard status.\n", terminalText(check.Harness), terminalText(check.ID), terminalText(check.Status))
@@ -298,7 +301,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			fmt.Fprintln(stdout, "No active runs.")
 		}
 	case "pause", "resume":
-		if err := client.request(ctx, http.MethodPost, "/scheduler/"+action, nil); err != nil {
+		if err := client.request(ctx, http.MethodPost, "/scheduler/"+action, nil, nil); err != nil {
 			return err
 		}
 		state := "paused"
@@ -307,13 +310,17 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		}
 		fmt.Fprintf(stdout, "Scheduler %s.\n", state)
 	case "stop":
-		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/stop", nil); err != nil {
+		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/stop", nil, nil); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "Run %s stopped.\n", args[0])
 	case "retry":
 		var run workflow.Run
-		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/retry", &run); err != nil {
+		form := url.Values{}
+		if len(args) > 1 {
+			form.Set("note", args[1])
+		}
+		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/retry", &run, form); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "Run %s: %s/%s\n", terminalText(run.ID), terminalText(string(run.State)), terminalText(string(run.Phase)))
@@ -327,7 +334,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 	case "handback":
 		fmt.Fprintln(stdout, "Handback commits and pushes manual work. Exit the interactive harness first. If independent review exceeds the allowance, exactly one additional review round will be granted. Manual conversation success does not clear the harness block.")
 		var run workflow.Run
-		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/handback", &run); err != nil {
+		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/handback", &run, nil); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "Run %s: %s/%s\n", terminalText(run.ID), terminalText(string(run.State)), terminalText(string(run.Phase)))
@@ -338,7 +345,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 	case "takeover":
 		return runner.RunInteractivePrepared(ctx, status.Workspace, args[0], func(ctx context.Context) (runner.ExecRequest, error) {
 			var command harness.InteractiveCommand
-			if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/takeover", &command); err != nil {
+			if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/takeover", &command, nil); err != nil {
 				return runner.ExecRequest{}, err
 			}
 			fmt.Fprintf(stdout, "Run %s is MANUAL. Exit the interactive harness before handing control back.\n", terminalText(args[0]))
@@ -346,7 +353,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		}, os.Stdin, stdout, stderr)
 	case "watch":
 		var ref runner.SessionRef
-		if err := client.request(ctx, http.MethodGet, "/api/runs/"+url.PathEscape(args[0])+"/watch", &ref); err != nil {
+		if err := client.request(ctx, http.MethodGet, "/api/runs/"+url.PathEscape(args[0])+"/watch", &ref, nil); err != nil {
 			return err
 		}
 		cmd := exec.CommandContext(ctx, "tmux", "-L", "mergeyard", "attach-session", "-r", "-t", "="+ref.Name)
@@ -408,6 +415,9 @@ func printHandback(out io.Writer, v workflow.HandbackSnapshot) {
 }
 
 func printRetry(out io.Writer, v workflow.RetrySnapshot) {
+	if v.Guidance != nil {
+		fmt.Fprintf(out, "  Human guidance by %s · %s: %s\n", terminalText(v.Guidance.Author), terminalText(v.Guidance.CreatedAt), terminalText(v.Guidance.Text))
+	}
 	if v.Pending {
 		fmt.Fprintln(out, "  Retry requested; reconciliation pending")
 		return

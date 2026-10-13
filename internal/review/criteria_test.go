@@ -50,7 +50,7 @@ func TestCriteriaStrictFields(t *testing.T) {
 		{"duplicate", `[{"id":"AC1","met":true,"evidence":"test passed"},{"id":"AC1","met":false,"evidence":"test failed"}]`, `[{"id":"AC1","verdict":"met","note":"test passed"},{"id":"AC1","verdict":"unverified","note":"not checked"}]`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fix := `{"schema_version":3,"human_action":null,"status":"success","summary":"Checked","responses":[],"criteria":` + tc.evidence + `}`
+			fix := `{"schema_version":4,"verification":[],"human_action":null,"status":"success","summary":"Checked","responses":[],"criteria":` + tc.evidence + `}`
 			_, err := review.ParseFix([]byte(fix))
 			if (err == nil) != tc.valid {
 				t.Fatalf("evidence valid=%v err=%v", tc.valid, err)

@@ -549,7 +549,7 @@ func (s *Server) retryRunPage(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, r, &fault.Error{Code: "internal.run_not_found"}, "internal.run_not_found", http.StatusNotFound, "Run not found")
 		return
 	}
-	if _, err := s.operations.Retry(r.Context(), r.PathValue("id")); err != nil {
+	if _, err := s.operations.Retry(r.Context(), r.PathValue("id"), r.PostForm.Get("note")); err != nil {
 		s.operationError(w, r, err)
 		return
 	}

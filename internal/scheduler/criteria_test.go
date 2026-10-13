@@ -26,7 +26,7 @@ func TestCriteriaCarryThroughAllHarnessPairings(t *testing.T) {
 				script := loopScript(fix)
 				evidence := `"criteria":[{"id":"AC1","met":true,"evidence":"go test: passed <script>evidence</script>"}]`
 				verdict := `"criteria":[{"id":"AC1","verdict":"met","note":"Spot-check: feature test passed <script>note</script>"}]`
-				script = strings.ReplaceAll(script, `"schema_version":3,"criteria":[]`, `"schema_version":3,`+evidence)
+				script = strings.ReplaceAll(script, `"schema_version":4,"verification":[],"criteria":[]`, `"schema_version":4,"verification":[],`+evidence)
 				script = strings.ReplaceAll(script, `"schema_version":4,"criteria":[]`, `"schema_version":4,`+verdict)
 				replacePhaseScript(t, cfg, workflow.Implement, script)
 				replacePhaseScript(t, cfg, workflow.Review, script)
@@ -162,7 +162,7 @@ func TestImplementationCriteriaHistorySurvivesRetryAndRestart(t *testing.T) {
 			first := strings.Replace(successfulScript, `"criteria":[]`, `"criteria":[{"id":"AC1","met":false,"evidence":"First validation <script>prior</script>"}]`, 1)
 			first = strings.Replace(first, `"status":"success"`, `"status":"blocked"`, 1)
 			first = strings.Replace(first, `"human_action":null`, `"human_action":{"decision":"Choose expected behavior","files":[],"options":[]}`, 1)
-			second := `printf fixed > feature.txt; printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":3,"human_action":null,"status":"success","summary":"Repaired feature","criteria":[{"id":"AC1","met":true,"evidence":"Second validation passed"}]}}'`
+			second := `printf fixed > feature.txt; printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"human_action":null,"status":"success","summary":"Repaired feature","criteria":[{"id":"AC1","met":true,"evidence":"Second validation passed"}]}}'`
 			script := `case "$*" in *implement-0-2*) while [ ! -f '` + gate + `' ]; do /bin/sleep 0.02; done; ` + second + `;; *) ` + first + `;; esac`
 			_, runtime, api, _, cfg, r := pairingFlow(t, agent, "claude", `printf fixed > feature.txt; `+fixedReport)
 			api.issues["owner/repo"][0].Body += "\n## Acceptance criteria\n- Feature works\n"

@@ -33,6 +33,9 @@ func (s *Scheduler) checkImplementation(ctx context.Context, repo config.Reposit
 	}
 	if commit == "" {
 		result, err := g.CommitImplement(ctx, gitRun, managedgit.Phase{Title: issue.Title, RequireChanges: true})
+		if diagnosticErr := s.recordStagingDiagnostics(ctx, run, result); diagnosticErr != nil {
+			return false, diagnosticErr
+		}
 		if err != nil {
 			return false, err
 		}
@@ -144,9 +147,9 @@ func (s *Scheduler) retryChecks(ctx context.Context, repo config.Repository, run
 		v.NextState = workflow.Manual
 		v.ResumeHandback = &workflow.HandbackSnapshot{Pending: true, RequestedAt: s.deps.Now().UTC().Format(time.RFC3339Nano)}
 	}
-	selected, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: v.NextState, NextPhase: v.NextPhase, Metadata: workflow.MetadataPatch{Retry: &v}})
+	selected, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: v.NextState, NextPhase: v.NextPhase, Metadata: workflow.MetadataPatch{Retry: &v}, AgentPorts: &s.cfg.AgentPorts})
 	if err != nil {
-		return err
+		return s.rejectRetry(ctx, run, v, err)
 	}
 	return s.retryLabels(ctx, repo, selected)
 }

@@ -48,24 +48,26 @@ func push(ctx context.Context, run Run, origin, source string) error {
 }
 
 func commit(ctx context.Context, run Run, phase Phase) (CommitResult, error) {
-	if _, err := command(ctx, run.Path, "git.stage", "add", "--all", "--", "."); err != nil {
-		return CommitResult{}, err
+	diagnostics, err := stage(ctx, run)
+	result := CommitResult{Diagnostics: diagnostics}
+	if err != nil {
+		return result, err
 	}
 	changed, err := hasDiff(ctx, run.Path, "diff", "--cached", "--quiet", "--exit-code", "--")
 	if err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
 	if changed {
 		message := fmt.Sprintf("mergeyard: #%d %s", run.IssueNumber, phase.Title)
 		if _, err := command(ctx, run.Path, "git.commit", "commit", "-m", message); err != nil {
-			return CommitResult{}, err
+			return result, err
 		}
 	}
 	sha, err := command(ctx, run.Path, "git.ref", "rev-parse", "HEAD")
 	if err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
-	result := CommitResult{SHA: sha, Committed: changed}
+	result.SHA, result.Committed = sha, changed
 	if phase.RequireChanges {
 		different, err := hasDiff(ctx, run.Path, "diff", "--quiet", "--exit-code", run.BaseSHA, "HEAD", "--")
 		if err != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -215,7 +216,7 @@ func TestPrepareResumesOwnedWorktreeWithoutDiscardingChanges(t *testing.T) {
 	write(t, first.Path, "partial.txt", "interrupted agent work\n")
 	f.request.KnownRuns = []managedgit.Run{first}
 	resumed := prepare(t, f)
-	if resumed != first {
+	if !reflect.DeepEqual(resumed, first) {
 		t.Fatalf("resume changed run data: %+v != %+v", resumed, first)
 	}
 	if data, err := os.ReadFile(filepath.Join(resumed.Path, "partial.txt")); err != nil || string(data) != "interrupted agent work\n" {

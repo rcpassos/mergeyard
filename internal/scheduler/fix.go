@@ -153,7 +153,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 				result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Fix, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
 				cause = err
 				if err == nil {
-					report = &review.FixReport{HumanAction: result.HumanAction, SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses}
+					report = &review.FixReport{HumanAction: result.HumanAction, SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses, Verification: result.Verification}
 					_ = json.Unmarshal(result.Criteria, &report.Criteria)
 					if err := report.ValidateFindings(a.findings); err != nil {
 						cause = &fault.Error{Code: "phase.result_invalid", Message: "Fix responses do not match supplied findings", Err: err}
@@ -206,6 +206,9 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 			return fail(&fault.Error{Code: "review.head_changed", Message: "PR head changed before fix publication"})
 		}
 		result, err := g.CommitFix(ctx, gitRun, managedgit.Phase{Title: fmt.Sprintf("fix review round %d", run.ReviewRound)}, a.target)
+		if diagnosticErr := s.recordStagingDiagnostics(ctx, run, result); diagnosticErr != nil {
+			return fail(diagnosticErr)
+		}
 		if err != nil {
 			return fail(err)
 		}
@@ -411,7 +414,11 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	if err := sessions.RequireProcessJournal(phaseDir); err != nil {
 		return fail(err)
 	}
-	phase := harness.PhaseContext{Phase: workflow.Fix, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
+	env, err := s.phaseEnvironment(ctx, run.ID, workflow.Fix)
+	if err != nil {
+		return fail(err)
+	}
+	phase := harness.PhaseContext{Phase: workflow.Fix, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: env}
 	phase.Interruption = interruptionContext(previous.attempt, phase)
 	checkID := checkRetryIdentity(run, workflow.Fix, previous.attempt, number, checkRetry)
 	issueInput, err := s.phaseIssueInput(ctx, repo, run.ID, issue, gitRun.BaseBranch, &phase)

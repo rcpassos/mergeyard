@@ -670,7 +670,7 @@ Common fields:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "status": "success",
   "summary": "Short phase summary",
   "human_action": null
@@ -691,7 +691,7 @@ A missing action, null/blank decision for `blocked`, or a non-null action for an
 
 #### Implement result
 
-Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safely continue without human input. Implement v3 and fix v3 require one evidence entry for every extracted criterion:
+Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safely continue without human input. Implement v4 and fix v4 require one evidence entry for every extracted criterion:
 
 ```json
 "criteria": [
@@ -700,6 +700,19 @@ Statuses: `success`, `blocked`, `failed`. `blocked` means the agent cannot safel
 ```
 
 All three fields are required; `met` is a boolean and `evidence` is a nonempty command and result or observation. Missing verification must be described explicitly. Unknown, duplicate, or omitted criterion IDs are invalid, including for blocked/failed reports.
+
+Implement and fix v4 also require command verification evidence:
+
+```json
+"verification": [
+  { "command": "go test ./internal/importer", "outcome": "passed", "excerpt": "ok importer" },
+  { "command": "make build", "outcome": "skipped", "excerpt": null }
+]
+```
+
+Every entry requires all three fields, with no extra properties. `command` must be a nonempty string, `outcome` is `passed`, `failed`, or `skipped`, and `excerpt` is a string or null. Mergeyard caps each excerpt at 4,000 Unicode characters including the truncation notice before saving it. An empty array is valid and displays as "no verification reported". Criteria evidence may refer to these entries by command. Evidence describes the agent's reported commands; Mergeyard does not execute them as part of this contract.
+
+Reports are stored with their phase attempts, including valid blocked/failed results, and displayed in the dashboard run view with history preserved. Review input includes a dedicated latest command evidence section, preferring the latest saved fix report over the implement report. This evidence remains available when a later review retry no longer needs the already-adjudicated fix responses. The reviewer may rerun or challenge this evidence, but rerunning its commands is not mandatory.
 
 #### Review result
 
@@ -744,15 +757,16 @@ Review schema v2 requires `prior_findings`. The initial review in round 1 return
 
 Outcome notes must be nonempty. Unknown, duplicate, or omitted prior blocking IDs are invalid. `not_fixed` findings must remain in `findings` as blocking with the same ID; resolved findings cannot remain blocking. A `disputed` fix response requires the reviewer to rule `not_fixed` or `no_longer_applies`. Violations follow the invalid-result path in §13.3, including phase retry limits.
 
-Schema versions are phase-specific. Issue #98 introduced review v2 with `prior_findings`. Issue #99 adds required nullable `human_action`: implement and fix use v2; review uses v3. Issue #97 adds required `criteria` arrays: implement and fix now use v3, and review uses v4. Persisted v1 reviews load with an empty `prior_findings` list. All attempts already launched with older persisted schemas keep their original contract when reconciled after upgrade, including implement/fix v1/v2 and review v1/v2/v3. Older reports do not claim criterion verification. Newly launched attempts require the current versions; reviews account for blockers even when the preceding review was v1.
+Schema versions are phase-specific. Issue #98 introduced review v2 with `prior_findings`. Issue #99 adds required nullable `human_action`: implement and fix use v2; review uses v3. Issue #97 adds required `criteria` arrays: implement and fix use v3, and review uses v4. Issue #94 adds required `verification` arrays: implement and fix now use v4; review stays v4. Persisted v1 reviews load with an empty `prior_findings` list. All attempts already launched with older persisted schemas keep their original contract when reconciled after upgrade, including implement/fix v1/v2/v3 and review v1/v2/v3. Older reports do not claim criterion or command verification that their schema did not carry. Newly launched attempts require the current versions; reviews account for blockers even when the preceding review was v1.
 
 #### Fix result
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "status": "success",
   "summary": "Fixed R1-F1; disputed R1-F2",
+  "verification": [{ "command": "go test ./internal/importer", "outcome": "passed", "excerpt": "ok importer" }],
   "human_action": null,
   "criteria": [
     { "id": "AC1", "met": true, "evidence": "VAT validation test passed." }
@@ -889,11 +903,26 @@ Every run starts from the fetched remote base branch.
 Mergeyard owns all commits. Agent prompts instruct harnesses not to commit: Codex's sandbox protects `.git`, and in a linked worktree the Git metadata lives outside the writable area, so agent commits would likely fail. If an agent commits anyway, the commits are kept. After each `implement` or `fix`:
 
 - if there are staged/unstaged tracked changes, Mergeyard creates a commit;
-- only non-ignored untracked files are included;
+- only non-ignored untracked files not matching repository `exclude` patterns are included;
 - if `implement` produced no diff from the base branch, the run moves to `NEEDS_ATTENTION` (`git.no_changes`);
 - if `fix` produced no changes and disputed every finding, the next review proceeds after configured checks pass.
 
 Configured local checks run against the committed head before it is pushed or reviewed. Every check-retry implement/fix attempt follows the same commit-and-check order. A failed check preserves the local commit and worktree for repair; no push or review starts until checks pass.
+
+Repository `exclude` defaults to `[]` and uses repository-relative Git glob
+pathspec semantics (`:(exclude,glob)`), not `.gitignore` syntax. `*` and `?`
+do not cross `/`; `**` occupies a whole path component and supports recursive
+matching. A trailing `/` excludes the directory subtree. Empty or invalid
+patterns fail configuration validation. Mergeyard applies exclusions only in
+its own staging, including unstaging excluded new files already in the index;
+it never rewrites Git configuration, shared `info/exclude`, or repository files.
+Matching tracked edits/deletions are still committed with a `git.exclude_tracked`
+warning. Excluded leftovers are listed in phase `staging.json` diagnostics and
+run events (`git.excluded_untracked`); they remain available to checks, do not
+count as dirty work for pinned checks or retry, and are removed with the worktree
+on completed-run cleanup. Other dirty work still prevents cleanup. An implement
+phase whose only changes are excluded files returns `git.no_changes` and retains
+its diagnostics and worktree for attention. Agent commits are kept as above.
 
 Default commit message: `mergeyard: #<issue> <issue title>`. The commit uses the machine's Git identity.
 
@@ -917,10 +946,11 @@ Default title: `#<issue> <issue title>`.
 Default body:
 
 - `Closes #<issue>`;
-- implementation summary;
+- latest implement/fix summary;
+- a collapsed `<details>` block with the latest implement/fix command verification evidence;
 - a Mergeyard-generated footer with the run ID.
 
-Mergeyard updates its generated section without overwriting user-written content. If more than one open PR exists for the branch, the run moves to `NEEDS_ATTENTION`.
+Mergeyard updates its generated section without overwriting user-written content. Each valid implement/fix report replaces the evidence in that section, including blocked/failed reports when a PR exists. An empty verification array displays "no verification reported". Evidence is rendered as literal JSON, escaping HTML, backticks, ownership markers, and mentions, so reported commands and excerpts cannot break the section or trigger mentions. The saved completion event is the publication intent; a receipt records delivery. Failed writes retry from the latest report after restart, reading the current PR body every time and preserving human edits. Body publication serves never-attempted and least-recently-attempted evidence first, recording attempt order durably before each network call so one slow PR cannot monopolize retries across ticks or restarts. It shares a five-second network budget across each batch; warnings and receipts are saved with the caller context so a timed-out write remains retryable. Body publication is independent of `pr_comments`, and failures leave saved evidence available without stopping phase progression. If more than one open PR exists for the branch, the run moves to `NEEDS_ATTENTION`.
 
 ---
 
@@ -1094,6 +1124,27 @@ Retry is allowed from `NEEDS_ATTENTION` and `FAILED`, and from `WAITING_FOR_HARN
 - does not reset user changes;
 - reconciles Git/PR/CI state first and determines the next safe phase;
 - grants one additional review round when the run stopped on `review.max_rounds_exceeded`.
+
+Retry accepts optional free-text human guidance: `mergeyard retry <run-id>
+--note "…"` or `--note-file <path>` (mutually exclusive), and an optional guidance
+field in the dashboard. A nonblank note is saved atomically with the Retry
+intent, attributed to the local user (`user`) and timestamped. File contents,
+including newlines, are preserved. Empty or whitespace-only guidance follows
+the existing note-free Retry path.
+
+All submitted notes remain in run history and `mergeyard status`, survive
+restart, and appear in submission order under `## Human guidance` in every
+later implement, fix and review `input.md`, including resumed attempts. The
+reviewer may cite guidance when marking a prior finding `no_longer_applies`,
+while still accounting for every prior blocking ID under §13.2. Guidance is
+written only into files and never interpolated into command strings (§13.1).
+
+Notes cannot be edited or deleted. Repeating an in-progress request with the
+same guidance does not append another note or grant another attempt. Pending
+reconciliation can be continued without a note; a different note is rejected
+rather than silently replacing or discarding guidance. New guidance requires
+another eligible Retry. Notes remain saved even when reconciliation rejects
+the request. Posting guidance to the PR conversation is not implemented.
 
 Retry after `workspace.setup_failed` reruns setup before starting the agent. Retry after `checks.failed` reruns checks before any agent attempt or publication and grants exactly one additional check/fix attempt, with the grant and prior retry history persisted.
 
@@ -1493,7 +1544,7 @@ mergeyard watch <run-id>
 mergeyard takeover <run-id>
 mergeyard handback <run-id>
 mergeyard stop <run-id>
-mergeyard retry <run-id>
+mergeyard retry <run-id> [--note "…" | --note-file <path>]
 mergeyard harness check <claude|codex>
 mergeyard reconcile
 ```

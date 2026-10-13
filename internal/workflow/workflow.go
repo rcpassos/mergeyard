@@ -123,6 +123,7 @@ type MetadataPatch struct {
 // agent metadata belongs to the components responsible for those resources.
 type Run struct {
 	Escalation         *escalation.Snapshot    `json:"escalation,omitempty"`
+	AgentPorts         *config.AgentPorts      `json:"agent_ports,omitempty"`
 	RoleSettings       *config.RunRoleSettings `json:"role_settings,omitempty"`
 	HumanAction        *fault.HumanAction      `json:"human_action,omitempty"`
 	SystemSteps        []SystemStepSnapshot    `json:"system_steps,omitempty"`
@@ -158,6 +159,8 @@ type Run struct {
 
 // Request supplies trigger-specific information, not an arbitrary new state.
 type Request struct {
+	// AgentPorts reserves a block atomically with a new claim or explicit Retry.
+	AgentPorts *config.AgentPorts
 	// RoleSettings is accepted only at claim; legacy callers may omit it.
 	RoleSettings *config.RunRoleSettings
 	Trigger      Trigger
@@ -202,6 +205,14 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		}
 		if request.RoleSettings != nil && request.Trigger != IssueClaimed {
 			return nil, invalid("Role settings can only be stored at claim")
+		}
+		if request.AgentPorts != nil {
+			if request.Trigger != IssueClaimed && request.Trigger != Retry {
+				return nil, invalid("Agent ports can only be supplied at claim or Retry")
+			}
+			if err := request.AgentPorts.Validate(); err != nil {
+				return nil, err
+			}
 		}
 		next, eventType, err := destination(current, request)
 		if err != nil {
@@ -278,6 +289,16 @@ func (w *Workflow) Transition(ctx context.Context, id string, request Request) (
 		}
 		if err != nil {
 			return nil, storageError(err)
+		}
+		if request.AgentPorts != nil {
+			if _, err := allocateAgentPorts(ctx, tx, id, *request.AgentPorts); err != nil {
+				return nil, err
+			}
+		}
+		if next.State.Terminal() {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM agent_port_leases WHERE run_id=?", id); err != nil {
+				return nil, storageError(err)
+			}
 		}
 		if current.ID != "" {
 			// Finish the intent in the same transaction as its lifecycle outcome.
@@ -638,6 +659,10 @@ func readRun(ctx context.Context, db queryer, id string) (Run, error) {
 		return Run{}, storageError(err)
 	}
 	if err := json.Unmarshal([]byte(roleSettings), &run.RoleSettings); err != nil {
+		return Run{}, storageError(err)
+	}
+	run.AgentPorts, err = loadAgentPorts(ctx, db, id)
+	if err != nil {
 		return Run{}, storageError(err)
 	}
 	run.CreditProbes, err = LoadCreditProbes(ctx, db, id)

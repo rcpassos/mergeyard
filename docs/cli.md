@@ -42,6 +42,26 @@ runtime database or acquire the owner's lock.
   when reconciliation selects agent work. A repeated request while the run is
   progressing returns its current state without another grant or attempt.
 
+Use `mergeyard retry <run-id> --note "Try again, but preserve the existing API"`
+or `mergeyard retry <run-id> --note-file guidance.md` to add human guidance.
+The flags are mutually exclusive; the file is read as text, preserving newlines.
+The dashboard Retry form provides the same optional guidance field. Empty or
+whitespace-only guidance behaves like Retry without a note.
+
+Each note is attributed to the local user (`user`), timestamped, and saved with
+the Retry request before reconciliation. Notes survive restart, appear in run
+history and `mergeyard status`, and are included in `## Human guidance` in every
+subsequent implement, fix, and review input for the rest of the run. Later notes
+append in submission order; they cannot be edited or deleted. The reviewer may
+resolve a prior finding as `no_longer_applies` with a note citing the guidance.
+Guidance text is written only into input files, never harness commands.
+
+Repeating an in-progress Retry with the same note does not duplicate it. A
+pending request can be continued without a note, but a different note cannot
+replace its saved guidance. New notes require another eligible Retry. Guidance
+remains saved even if reconciliation rejects the request. Notes are kept local;
+they are not posted to the PR conversation.
+
 Retry grants one additional independent review round after
 `review.max_rounds_exceeded`. A CI timeout on the unchanged approved commit
 receives a fresh configured wait window; passing checks can advance immediately,

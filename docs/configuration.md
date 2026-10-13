@@ -94,6 +94,52 @@ retry on subsequent readiness observations, including after restart. They do not
 prevent readiness. Incomplete or ambiguous PR ownership markers are left intact
 for human repair.
 
+## Agent ports and session isolation
+
+`agent_ports` is a top-level setting, defaulting to `{base: 5100, size: 10}`.
+Each nonterminal run holds a persisted block starting at `base + size * slot`.
+Slots are allocated from the first free block across all configured repositories.
+The implementer and fix phases use the lower `floor(size / 2)` ports; the
+reviewer uses the remaining upper ports. For the default first block this means
+5100–5104 for implementation/fixes and 5105–5109 for review. Odd sizes give the
+reviewer the extra port. `base` must be a positive TCP port, `size` must be at
+least two, and enough complete blocks must fit below 65536 for `concurrency`.
+
+Assignments survive control-plane restarts and configuration edits. Legacy runs
+without assignments receive persisted blocks before dispatch. A run retains its
+block in `READY_TO_MERGE`, `MANUAL`, `NEEDS_ATTENTION`, and waiting states, so
+handback and fixes can reuse it. Only `FAILED`, `STOPPED`, and `COMPLETED` release
+the block; Retry from `FAILED` receives an available block before agent launch.
+Since merge-ready runs release an execution slot while retaining their ports,
+port slots can grow beyond `concurrency`. If all complete blocks up to 65535 are
+reserved, new claims and explicit Retry fail atomically with
+`agent_ports.exhausted`. Lifecycle observation continues so other runs can finish
+and release their blocks.
+
+The phase wrapper adds these variables to the explicitly supplied harness
+environment, overriding any caller-supplied values with the same names:
+
+| Variable | Value |
+| --- | --- |
+| `MERGEYARD_RUN_ID` | Stable run ID for browser and test session namespaces |
+| `MERGEYARD_PHASE` | `implement`, `review`, or `fix` |
+| `MERGEYARD_PORT_BASE` | First port in this phase's assigned sub-range |
+| `MERGEYARD_PORT_COUNT` | Number of consecutive ports in that sub-range |
+
+Standing instructions ask agents to use only their assigned ports and namespace
+browser/test sessions with the run ID and phase. Repository `AGENTS.md` /
+`CLAUDE.md` remains the source of commands for starting and configuring services.
+Mergeyard does not start or stop those services or reserve sockets at OS level;
+agents must verify service ownership and clean up their own services/sessions.
+Independent Mergeyard workspaces on the same machine should use separate bases.
+
+`mergeyard doctor` warns with `agent_ports.dashboard_overlap` when any complete
+allocatable block through 65535 overlaps the dashboard `port`, including blocks
+beyond `concurrency` that retained merge-ready runs can occupy. The default base
+5100 is below the default dashboard port 7331 and therefore warns; choose a base
+above the dashboard to avoid this overlap. Ports in an incomplete final block
+are never allocated.
+
 ## Per-issue harness overrides
 
 An issue can select a role's harness with `mergeyard:implementer=claude`,
@@ -180,6 +226,38 @@ Removing the configured list does not bypass an already-started setup execution.
 Mergeyard observes its result and, when the outcome is unknown, reruns its saved
 commands with the originally captured timeout before starting the agent. New
 executions for later phases or newly prepared worktrees use current configuration.
+
+## Repository staging exclusions
+
+`repositories[].exclude` is a list of repository-relative Git glob patterns,
+defaulting to `[]`. It keeps setup and tool leftovers out of Mergeyard's commits:
+
+```yaml
+repositories:
+  - repo: company/api
+    exclude: [".venv/", ".pytest_cache/", "agent-browser/", "*.har", "**/traces/**"]
+```
+
+Patterns use Git `:(exclude,glob)` pathspec semantics, not `.gitignore` syntax.
+`*` and `?` do not cross `/`; `*.har` matches only root files, while `**/*.har`
+matches at any depth. Character classes such as `[0-9]` and `[[:digit:]]` are
+supported. `**` must occupy a whole path component. A trailing `/` excludes the
+whole directory subtree (including patterns such as `**/cache/`). Patterns are
+relative to the repository root; leading `/`, `..` components, empty patterns,
+NUL, unfinished escapes/classes and invalid `**` forms fail configuration
+validation with `config.invalid_exclude`. Values must be a list of strings.
+Negation and additional pathspec magic are not interpreted as `.gitignore` rules.
+
+Only new files are excluded, including new files a tool has already staged.
+Matching tracked edits and deletions are still committed and produce a
+`git.exclude_tracked` warning. Leftovers are listed as
+`git.excluded_untracked` in the phase's `staging.json` and the run's
+`git.staging_diagnostics` event, including when implementation returns
+`git.no_changes` because it changed only excluded files. No Git configuration,
+`info/exclude`, or repository ignore files are rewritten. Excluded files remain
+available to local checks and are removed with the worktree on completed-run
+cleanup; stopped or attention runs retain them. Pinned-tree checks still reject
+all tracked changes and other non-ignored new files.
 
 ## Repository checks
 
@@ -311,6 +389,7 @@ settings, including repositories with `enabled: false`.
 | `config.invalid_max_rounds` | Round limit must be a positive finite integer |
 | `config.invalid_max_attempts` | Role attempt limit must be a positive finite integer |
 | `config.invalid_checks` | Check commands must be nonempty and contain no NUL |
+| `config.invalid_exclude` | Exclusions must be a list of valid, nonempty repository-relative Git glob patterns |
 | `config.invalid_check_retries` | Check retry limit must be a nonnegative finite integer |
 | `config.invalid_escalation` | Size threshold must be nonnegative; path globs and single-line reasons must be valid |
 | `config.invalid_max_waits` | Usage-limit wait bound must be a positive finite integer |

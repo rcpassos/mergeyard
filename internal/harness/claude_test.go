@@ -15,12 +15,13 @@ import (
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runner"
+	"github.com/rcpassos/mergeyard/internal/verification"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
 const sessionID = "7f9e8221-470e-43e0-adc7-41798c5c193e"
 
-const successEvent = `{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Implemented the issue"}}`
+const successEvent = `{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":"Implemented the issue"}}`
 
 func phase(t *testing.T) harness.PhaseContext {
 	t.Helper()
@@ -46,7 +47,7 @@ func TestClaudeRejectsIncompleteOrInvalidResults(t *testing.T) {
 		{"nonzero exit", successEvent, "7", "phase.execution_failed"},
 		{"nonzero without result", "", "7", "phase.execution_failed"},
 		{"error event", `{"type":"result","is_error":true,"subtype":"error_during_execution"}`, "0", "phase.execution_failed"},
-		{"missing completion flag", `{"type":"result","structured_output":{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"done"}}`, "0", "phase.result_invalid"},
+		{"missing completion flag", `{"type":"result","structured_output":{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":"done"}}`, "0", "phase.result_invalid"},
 		{"schema retries exhausted", `{"type":"result","is_error":true,"subtype":"error_max_structured_output_retries"}`, "1", "phase.result_invalid"},
 		{"turns exhausted", `{"type":"result","is_error":true,"subtype":"error_max_turns"}`, "1", "phase.max_turns_exceeded"},
 		{"budget exhausted", `{"type":"result","is_error":true,"subtype":"error_max_budget_usd"}`, "1", "phase.budget_exceeded"},
@@ -99,7 +100,7 @@ func TestClaudeImplementContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := adapter.ParseResult(ctx, harness.PhaseArtifacts{Stdout: artifacts.Stdout, Stderr: artifacts.Stderr, ExitCode: artifacts.ExitCode})
-	if err != nil || !reflect.DeepEqual(result, harness.PhaseResult{Criteria: json.RawMessage("[]"), SchemaVersion: 3, Status: "success", Summary: "Implemented the issue"}) {
+	if err != nil || !reflect.DeepEqual(result, harness.PhaseResult{Verification: []verification.Entry{}, Criteria: json.RawMessage("[]"), SchemaVersion: 4, Status: "success", Summary: "Implemented the issue"}) {
 		t.Fatalf("result = %+v; error = %v", result, err)
 	}
 }
@@ -139,15 +140,15 @@ func TestClaudeValidatesImplementSchema(t *testing.T) {
 		`{}`, `[]`, `"prose"`,
 		`{"schema_version":4,"criteria":[],"human_action":null,"status":"success","summary":"done"}`,
 		`{"schema_version":2.000000000000000001,"human_action":null,"status":"success","summary":"done"}`,
-		`{"schema_version":3,"criteria":[],"human_action":null,"status":"approved","summary":"done"}`,
-		`{"schema_version":3,"criteria":[],"human_action":null,"status":"success"}`,
-		`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":null}`,
+		`{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"approved","summary":"done"}`,
+		`{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success"}`,
+		`{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":null}`,
 		`{"schema_version":null,"status":"success","summary":"done"}`,
-		`{"schema_version":3,"criteria":[],"human_action":null,"status":null,"summary":"done"}`,
-		`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":42}`,
+		`{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":null,"summary":"done"}`,
+		`{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":42}`,
 		`{"schema_version":"1","status":"success","summary":"done"}`,
-		`{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"done","unexpected":true}`,
-		`{"schema_version":3,"criteria":[],"human_action":null,"Status":"success","summary":"done"}`,
+		`{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":"done","unexpected":true}`,
+		`{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"Status":"success","summary":"done"}`,
 	} {
 		t.Run(output, func(t *testing.T) {
 			_, err := adapter.ParseResult(ctx, harness.PhaseArtifacts{Stdout: []byte(`{"type":"result","is_error":false,"structured_output":` + output + `}`)})
@@ -155,12 +156,12 @@ func TestClaudeValidatesImplementSchema(t *testing.T) {
 		})
 	}
 	for _, status := range []string{"success", "blocked", "failed"} {
-		output := `{"type":"result","is_error":false,"structured_output":{"schema_version":3.0,"criteria":[],"human_action":null,"status":"` + status + `","summary":""}}`
+		output := `{"type":"result","is_error":false,"structured_output":{"schema_version":4.0,"verification":[],"criteria":[],"human_action":null,"status":"` + status + `","summary":""}}`
 		if status == "blocked" {
 			output = strings.Replace(output, `"human_action":null`, `"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]}`, 1)
 		}
 		result, err := adapter.ParseResult(ctx, harness.PhaseArtifacts{Stdout: []byte(output)})
-		if err != nil || result.Status != status || result.SchemaVersion != 3 {
+		if err != nil || result.Status != status || result.SchemaVersion != 4 {
 			t.Fatalf("valid %s result = %+v; error = %v", status, result, err)
 		}
 	}
@@ -270,9 +271,9 @@ func TestImplementSchemaIsOpenAIStrict(t *testing.T) {
 	if err := json.Unmarshal(harness.ImplementSchema(), &schema); err != nil {
 		t.Fatal(err)
 	}
-	if schema.Type != "object" || schema.AdditionalProperties || len(schema.Properties) != 5 ||
-		!slices.Equal(schema.Required, []string{"schema_version", "status", "summary", "human_action", "criteria"}) ||
-		schema.Properties["schema_version"].Type != "integer" || schema.Properties["schema_version"].Const != 3 ||
+	if schema.Type != "object" || schema.AdditionalProperties || len(schema.Properties) != 6 ||
+		!slices.Equal(schema.Required, []string{"schema_version", "status", "summary", "human_action", "criteria", "verification"}) ||
+		schema.Properties["schema_version"].Type != "integer" || schema.Properties["schema_version"].Const != 4 ||
 		schema.Properties["status"].Type != "string" || !slices.Equal(schema.Properties["status"].Enum, []string{"success", "blocked", "failed"}) ||
 		schema.Properties["summary"].Type != "string" {
 		t.Fatalf("schema does not match PRD §13.2: %+v", schema)

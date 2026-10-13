@@ -21,7 +21,7 @@ import (
 type Operations interface {
 	Runs(context.Context) ([]workflow.Run, error)
 	Stop(context.Context, string) error
-	Retry(context.Context, string) (workflow.Run, error)
+	Retry(context.Context, string, ...string) (workflow.Run, error)
 	Watch(context.Context, string) (runner.SessionRef, error)
 	Handback(context.Context, string) (workflow.Run, error)
 	Takeover(context.Context, string) (harness.InteractiveCommand, error)
@@ -85,7 +85,7 @@ func (s *Server) watchRun(w http.ResponseWriter, r *http.Request) {
 	s.json(w, ref)
 }
 func (s *Server) retryRun(w http.ResponseWriter, r *http.Request) {
-	run, err := s.operations.Retry(r.Context(), r.PathValue("id"))
+	run, err := s.operations.Retry(r.Context(), r.PathValue("id"), r.PostForm.Get("note"))
 	if err != nil {
 		s.operationError(w, r, err)
 		return
@@ -126,6 +126,12 @@ func (s *Server) operationError(w http.ResponseWriter, r *http.Request, err erro
 			message = failure.Message
 		case "internal.run_not_found":
 			status = http.StatusNotFound
+		case "retry.invalid_note":
+			status = http.StatusBadRequest
+			message = failure.Message
+		case "retry.note_conflict":
+			status = http.StatusConflict
+			message = failure.Message
 		case "run.terminal", "phase.not_running", "retry.unavailable", "retry.process_running", "retry.stop_pending", "retry.pr_closed", "retry.worktree_dirty", "retry.head_diverged", "retry.head_ambiguous", "retry.pr_ambiguous", "retry.review_unrestored", "harness.session_resume_failed", "internal.run_conflict":
 			status = http.StatusConflict
 		}

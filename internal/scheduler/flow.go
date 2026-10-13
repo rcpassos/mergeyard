@@ -108,6 +108,7 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 		if err != nil {
 			return s.attention(ctx, repo, run, err)
 		}
+		gitRun.Exclude = repo.Exclude
 		if err := s.saveGit(ctx, run.ID, gitRun, repo.Implementer.Agent); err != nil {
 			return s.attention(ctx, repo, run, err)
 		}
@@ -132,8 +133,12 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 		return nil
 	}
 	if len(repo.Checks) == 0 && !runningSystemStep(run, "checks") {
-		if _, err := s.deps.Git.CommitAndPush(ctx, gitRun, managedgit.Phase{Title: issue.Title, RequireChanges: true}); err != nil {
+		commit, commitErr := s.deps.Git.CommitAndPush(ctx, gitRun, managedgit.Phase{Title: issue.Title, RequireChanges: true})
+		if err := s.recordStagingDiagnostics(ctx, run, commit); err != nil {
 			return s.attention(ctx, repo, run, err)
+		}
+		if commitErr != nil {
+			return s.attention(ctx, repo, run, commitErr)
 		}
 	} else {
 		ready, err := s.checkImplementation(ctx, repo, run, issue, gitRun)
@@ -149,7 +154,7 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 		return s.attention(ctx, repo, run, err)
 	}
 	if pr == nil {
-		pr, err = s.deps.GitHub.CreateDraftPullRequest(ctx, repo.Repo, gitRun.Branch, gitRun.BaseBranch, github.PullRequestContent{IssueNumber: issue.Number, IssueTitle: issue.Title, Summary: result.Summary, RunID: run.ID})
+		pr, err = s.deps.GitHub.CreateDraftPullRequest(ctx, repo.Repo, gitRun.Branch, gitRun.BaseBranch, github.PullRequestContent{IssueNumber: issue.Number, IssueTitle: issue.Title, Summary: result.Summary, RunID: run.ID, Verification: result.Verification})
 		if err != nil {
 			return s.attention(ctx, repo, run, err)
 		}
@@ -237,6 +242,9 @@ func (s *Scheduler) context(ctx context.Context, run workflow.Run) (github.Issue
 	if gitJSON.Valid {
 		if err := json.Unmarshal([]byte(gitJSON.String), &gitRun); err != nil {
 			return issue, gitRun, err
+		}
+		if repo, ok := s.runRepository(run); ok {
+			gitRun.Exclude = repo.Exclude
 		}
 	}
 	return issue, gitRun, nil
@@ -455,7 +463,11 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	if err := sessions.RequireProcessJournal(phaseDir); err != nil {
 		return err
 	}
-	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: s.deps.Env}
+	env, err := s.phaseEnvironment(ctx, run.ID, workflow.Implement)
+	if err != nil {
+		return err
+	}
+	phase := harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: env}
 	phase.Interruption = interruptionContext(previous, phase)
 	checkID := checkRetryIdentity(run, workflow.Implement, previous, number, checkRetry)
 	checkResult := s.checkResult(run, checkID)
