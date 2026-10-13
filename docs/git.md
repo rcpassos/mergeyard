@@ -41,7 +41,8 @@ The saved `Run.Exclude` carries per-repository `exclude` patterns. Staging uses
 `git add --all -- . ':(exclude,glob)<pattern>'`, then includes matching tracked
 edits/deletions. A trailing `/` expands to `/**` so wildcard directories exclude
 their whole subtree. New excluded files already in the index are unstaged before
-committing; existing agent commits remain intact. Patterns use Git glob pathspec
+committing. During a pending merge, tracked files from `HEAD` and every merge
+parent are retained, including base additions matching an exclude pattern; existing agent commits remain intact. Patterns use Git glob pathspec
 semantics, with `*` limited to a path component and `**` for recursive matching.
 No Git configuration, shared `info/exclude`, or repository files are rewritten.
 

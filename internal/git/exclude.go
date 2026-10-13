@@ -41,9 +41,23 @@ func excludedUntracked(ctx context.Context, run Run) ([]string, error) {
 func stage(ctx context.Context, run Run) ([]Diagnostic, error) {
 	var diagnostics []Diagnostic
 	if len(run.Exclude) > 0 {
-		// Exclusions apply to paths absent from HEAD, even if a tool has
-		// already added them to the index. Disable rename detection so an
-		// excluded rename destination is treated as a new path too.
+		parents, err := pendingMergeParents(ctx, run)
+		if err != nil {
+			return diagnostics, err
+		}
+		inherited := map[string]bool{}
+		for _, parent := range parents {
+			output, err := command(ctx, run.Path, "git.exclude", "ls-tree", "-r", "--name-only", "-z", parent)
+			if err != nil {
+				return diagnostics, err
+			}
+			for _, name := range nulPaths(output) {
+				inherited[name] = true
+			}
+		}
+		// Only paths absent from HEAD and every pending merge parent are
+		// generated additions. A merge's tracked incoming files must survive
+		// exclusions even if they are new to this branch.
 		specs := exclusionSpecs(run.Exclude, false)
 		args := append([]string{"diff", "--cached", "--ita-visible-in-index", "--no-renames", "--diff-filter=A", "--name-only", "-z", "HEAD", "--"}, specs...)
 		output, err := command(ctx, run.Path, "git.exclude", args...)
@@ -51,20 +65,28 @@ func stage(ctx context.Context, run Run) ([]Diagnostic, error) {
 			return diagnostics, err
 		}
 		for _, name := range nulPaths(output) {
+			if inherited[name] {
+				continue
+			}
 			if _, err := command(ctx, run.Path, "git.stage", "restore", "--staged", "--source=HEAD", "--", ":(literal)"+name); err != nil {
 				return diagnostics, err
 			}
 		}
-		// HEAD, rather than the current index, decides which files were
-		// already tracked. A tool may have removed a retained file from the
-		// index. After excluded additions are unstaged, --with-tree adds
-		// back only matching paths missing from the index but present in HEAD.
-		args = append([]string{"ls-files", "--cached", "--with-tree=HEAD", "-z", "--"}, specs...)
-		output, err = command(ctx, run.Path, "git.exclude", args...)
-		if err != nil {
-			return diagnostics, err
+		// Restore matching tracked paths from all parents when a tool has
+		// removed them from the index. Never use the current index as proof
+		// that a generated addition was already tracked.
+		retained := map[string]bool{}
+		for _, parent := range append([]string{"HEAD"}, parents...) {
+			args = append([]string{"ls-files", "--cached", "--with-tree=" + parent, "-z", "--"}, specs...)
+			output, err = command(ctx, run.Path, "git.exclude", args...)
+			if err != nil {
+				return diagnostics, err
+			}
+			for _, name := range nulPaths(output) {
+				retained[name] = true
+			}
 		}
-		for _, name := range nulPaths(output) {
+		for name := range retained {
 			info, err := os.Lstat(filepath.Join(run.Path, name))
 			if errors.Is(err, os.ErrNotExist) {
 				continue // add --update below stages real deletions.
@@ -126,4 +148,30 @@ func worktreeDirty(ctx context.Context, run Run) (bool, error) {
 	args := append([]string{"ls-files", "--others", "--exclude-standard", "-z", "--", "."}, exclusionSpecs(run.Exclude, true)...)
 	output, err := command(ctx, run.Path, "git.status", args...)
 	return len(nulPaths(output)) > 0, err
+}
+
+// MERGE_HEAD can contain several parents for an octopus merge. Read the
+// worktree-specific metadata path so linked worktrees retain their own parents.
+func pendingMergeParents(ctx context.Context, run Run) ([]string, error) {
+	path, err := command(ctx, run.Path, "git.exclude", "rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD")
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, failure("git.exclude", path, err)
+	}
+	parents := strings.Fields(string(data))
+	if len(parents) == 0 {
+		return nil, failure("git.exclude", path, errors.New("pending merge has no parent"))
+	}
+	for _, parent := range parents {
+		if !shaPattern.MatchString(parent) {
+			return nil, failure("git.exclude", path, errors.New("pending merge has an invalid parent"))
+		}
+	}
+	return parents, nil
 }

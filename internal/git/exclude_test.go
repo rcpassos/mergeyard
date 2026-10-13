@@ -210,3 +210,65 @@ func writeNested(t *testing.T, dir, name, content string) {
 	}
 	write(t, dir, name, content)
 }
+
+func TestConflictRepairExclusionsPreserveTrackedMergeParentFiles(t *testing.T) {
+	for _, mode := range []string{"merge index", "removed from index", "intent to add generated"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t)
+			run := prepare(t, f)
+			run.Exclude = []string{"*.har"}
+			write(t, run.Path, "README.md", "approved\n")
+			approved, err := f.manager.CommitAndPush(context.Background(), run, managedgit.Phase{Title: "implement", RequireChanges: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			write(t, f.seed, "README.md", "base change\n")
+			write(t, f.seed, "capture.har", "tracked base capture\n")
+			git(t, f.seed, "add", ".")
+			git(t, f.seed, "commit", "-m", "advance base with tracked capture")
+			git(t, f.seed, "push", "origin", "main")
+			base, err := f.manager.CheckBase(context.Background(), run, "main", approved.SHA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.manager.PrepareBaseRepair(context.Background(), run, approved.SHA, base.BaseSHA); err != nil {
+				t.Fatal(err)
+			}
+			write(t, run.Path, "README.md", "approved\n")
+			if mode == "removed from index" {
+				git(t, run.Path, "rm", "--cached", "capture.har")
+			}
+			write(t, run.Path, "generated.har", "new generated output\n")
+			if mode == "intent to add generated" {
+				git(t, run.Path, "add", "--intent-to-add", "generated.har")
+			} else {
+				git(t, run.Path, "add", "generated.har")
+			}
+			fixed, err := f.manager.CommitFix(context.Background(), run, managedgit.Phase{Title: "fix conflict"}, approved.SHA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := git(t, run.Path, "ls-tree", "--name-only", fixed.SHA, "capture.har"); got != "capture.har" {
+				t.Fatalf("tracked merge-parent file dropped: %q", got)
+			}
+			if got := git(t, run.Path, "show", fixed.SHA+":capture.har"); got != "tracked base capture" {
+				t.Fatalf("base contents lost: %q", got)
+			}
+			if got := git(t, run.Path, "ls-tree", "--name-only", fixed.SHA, "generated.har"); got != "" {
+				t.Fatal("generated excluded file committed")
+			}
+			for _, d := range fixed.Diagnostics {
+				if d.Path == "capture.har" && d.Code == "git.excluded_untracked" {
+					t.Fatal("tracked base file misclassified as generated")
+				}
+			}
+			git(t, run.Path, "merge-base", "--is-ancestor", base.BaseSHA, fixed.SHA)
+			if err := f.manager.PushFix(context.Background(), run, approved.SHA, fixed.SHA); err != nil {
+				t.Fatal(err)
+			}
+			if got := git(t, f.remote, "show", run.Branch+":capture.har"); got != "tracked base capture" {
+				t.Fatal("published merge dropped base addition")
+			}
+		})
+	}
+}
