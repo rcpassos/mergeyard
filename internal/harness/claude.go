@@ -32,7 +32,7 @@ func (*Claude) Type() string { return "claude" }
 
 func (*Claude) Capabilities() HarnessCapabilities {
 	return HarnessCapabilities{ModelSelection: true, EffortSelection: true, SkillSelection: true,
-		StructuredOutput: true, SessionResume: true, SessionIDSource: Preassigned}
+		StructuredOutput: true, SessionResume: true, TemporaryLimitDetection: true, SessionIDSource: Preassigned}
 }
 
 var skillName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)

@@ -1946,7 +1946,7 @@ After approval and passing CI, the PR is marked ready for review, the run stops 
 
 When a harness reports a usage limit during a phase:
 
-These waiting criteria apply to an adapter with verified temporary-limit detection. Both shipped adapters currently treat limit failures as ordinary failures. The normalized core is exercised offline; the native bindings remain post-M3 work.
+These waiting criteria apply to an adapter with verified temporary-limit detection. Claude detects the headless weekly rejection preserved in [the Claude M3 evidence](research/claude-m3/report.md), using the reported weekly reset or configured cooldown. Unknown Claude variants and all Codex limit failures remain ordinary failures that consume the attempt budget. Exhausted-credit detection remains disabled for both adapters. Native classifier and normalized core tests run offline.
 
 - the run moves to `WAITING_FOR_HARNESS`, not `NEEDS_ATTENTION`;
 - no new issue whose implementer uses that harness is claimed until the limit expires;

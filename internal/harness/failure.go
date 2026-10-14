@@ -20,10 +20,7 @@ type FailureClassification struct {
 	Source  string    `json:"source,omitempty"`
 }
 
-// Native bindings are deliberately deferred to their captured-evidence slices.
-func (*Claude) ClassifyFailure(PhaseArtifacts, time.Time) FailureClassification {
-	return FailureClassification{Kind: Ordinary}
-}
+// Codex's native binding remains deferred to its captured-evidence slice.
 func (*Codex) ClassifyFailure(PhaseArtifacts, time.Time) FailureClassification {
 	return FailureClassification{Kind: Ordinary}
 }

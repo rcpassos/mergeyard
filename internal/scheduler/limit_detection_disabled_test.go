@@ -25,8 +25,8 @@ func TestProductionHarnessLimitFailuresConsumeAttemptBudget(t *testing.T) {
 				if agent == "codex" {
 					adapter = harness.NewCodex(cfg.Agents.Codex)
 				}
-				if c := adapter.Capabilities(); c.TemporaryLimitDetection || c.CreditExhaustionDetection {
-					t.Fatalf("detection enabled without its evidence binding: %+v", c)
+				if c := adapter.Capabilities(); c.TemporaryLimitDetection != (agent == "claude") || c.CreditExhaustionDetection {
+					t.Fatalf("unexpected production detection capabilities: %+v", c)
 				}
 				s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: branchGitHub{api}, Runner: r})
 				if err != nil {
@@ -52,7 +52,7 @@ func TestProductionHarnessLimitFailuresConsumeAttemptBudget(t *testing.T) {
 					}
 				}
 				if _, err := s.CheckHarness(context.Background(), agent); err == nil {
-					t.Fatal("detection-disabled harness allowed a paid availability request")
+					t.Fatal("credit-detection-disabled harness allowed a paid availability request")
 				}
 			})
 		}

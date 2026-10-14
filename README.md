@@ -119,10 +119,11 @@ phases survive and are reconciled on the next startup. Takeover requires a
 prepared worktree and a recorded implementer session. Exit the interactive
 harness before handback. `open` remains reserved.
 
-Both production harnesses currently have temporary-limit and exhausted-credit
-detection disabled. Limits follow the ordinary failure path and consume the
-attempt budget. Credit recovery controls stay unavailable until their native
-evidence bindings land. See [M3 acceptance and evidence](docs/m3-acceptance.md)
+Claude detects the observed headless weekly usage-limit rejection and waits
+until its reported reset or the configured cooldown before resuming. Unknown
+Claude variants and all Codex limits consume the ordinary attempt budget.
+Exhausted-credit detection and credit recovery controls stay unavailable for
+both harnesses until their native evidence bindings land. See [M3 acceptance and evidence](docs/m3-acceptance.md)
 for the verified recovery core, current capability gates, and offline checks.
 
 ## Configuration

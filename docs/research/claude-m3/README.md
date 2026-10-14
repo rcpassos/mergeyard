@@ -56,13 +56,14 @@ Distinguish temporary limits from exhausted credits/spend caps, ordinary 429
 throttling, startup/authentication errors, and supervisor cancellation. A
 watchdog-truncated run is not proof of native completion behavior.
 
-The fixtures contain sanitized output from three explicitly bounded live calls:
+The fixtures contain sanitized output from four explicitly bounded live calls:
 
 | Directory | Date | Offline classifier expectation |
 |---|---|---|
 | `fixtures/allowed-warning/` | 2026-10-06 | Available harness; a normally completed request with warning/reset fields must not pause it |
 | `fixtures/authentication-failed/` | 2026-10-13 | Ordinary failure; expired OAuth is not a temporary limit |
 | `fixtures/weekly-rejected/` | 2026-10-13 | Observed temporary weekly limit; top-level reset agrees with the rejected weekly window and native text |
+| `fixtures/weekly-resumed/` | 2026-10-14 | Available harness; the same limited session resumed successfully after reset |
 
 Each `run.json` documents field omissions; `events.jsonl` retains all four native
 records in order; `stderr.log` is empty. These are offline classifier inputs only:
@@ -71,6 +72,14 @@ attempt quota exhaustion. No fixture carries a Mergeyard phase schema or
 `structured_output`, so the warning is not a successful engineering-phase result
 fixture. Do not invent positive fixtures for unobserved variants or infer
 limited-session resumability from a session UUID alone.
+
+`fixtures/weekly-resumed/` preserves the single post-reset resume on 2026-10-14.
+It used the same session UUID and original capture workspace, with `--resume`
+replacing `--session-id` and all safety bounds/settings reapplied. The successful
+completion confirms resumability for this limited session. See the exact argv
+in `run.json` and the report's observed facts. A reproduction requires that
+persisted session and its original workspace; a fresh session is not a resume
+check. The original capture supervisor was reused for the bounded request.
 
 Reuse [Claude M1 continuity evidence](../harness-spikes.md#6-issue-9-live-m1-adapter-verification-2026-10-04)
 for resume/interactive handback; this probe does not repeat those checks.

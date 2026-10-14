@@ -445,11 +445,22 @@ the harness adapter's `ClassifyFailure(artifacts, observedAt)` seam. Its normali
 `credits_exhausted`. Successful native output, including `allowed_warning`, and
 valid task-level blocked/failed results do not enter the classifier.
 
-Claude and Codex currently advertise neither `TemporaryLimitDetection` nor
-`CreditExhaustionDetection`; their classifiers return `ordinary`. Until the
-separate evidence-backed bindings land, usage limits surface as ordinary failures
-and consume the configured attempt budget. Core fixtures supply classified
-outcomes directly, without inventing native limit signals.
+Claude advertises `TemporaryLimitDetection` for the observed headless weekly
+rejection: matching session identity, `rate_limit_info.status: rejected` for
+`seven_day` with `isUsingOverage: false`, assistant `error: rate_limit`, terminal
+`is_error: true` / `terminal_reason: api_error` / HTTP 429, and exit 1. Its result
+subtype is nevertheless `success`. The adapter uses the top-level
+`rate_limit_info.resetsAt` as Unix seconds; the earlier five-hour reset and
+date-less diagnostic text are never reset sources. An absent, malformed, stale,
+or conflicting weekly reset leaves cooldown selection to the core. Unavailable
+overage credits accompanying this subscription limit do not produce a credit
+block. See the [captured rejection and post-reset resume](research/claude-m3/report.md).
+
+Unknown Claude variants and all Codex usage limits remain ordinary failures
+that consume the configured attempt budget. Codex's `TemporaryLimitDetection`
+and both adapters' `CreditExhaustionDetection` remain disabled. Core fixtures
+supply classified outcomes directly; Claude binding tests replay sanitized
+native fixtures offline. Normal CI makes no paid harness calls.
 
 A temporary limit saves the interrupted execution as `usage_limited` and records
 `WAITING_FOR_HARNESS`, the same phase/round, and reset provenance atomically. A
