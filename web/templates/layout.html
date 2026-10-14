@@ -88,8 +88,8 @@
 <div><dt>Updated</dt><dd><time>{{.UpdatedAt}}</time></dd></div></dl>
 {{with .RoleSettings}}<section class="queue-section"><h2>Role settings at claim</h2>
 <dl class="run-facts">
-{{with .Implementer}}<div><dt>Implementer</dt><dd>{{.Agent}} · source {{.HarnessSource}} · model {{if .Model}}{{.Model}}{{else}}harness default{{end}} · effort {{if .Effort}}{{.Effort}}{{else}}harness default{{end}} · skills {{range .Skills}}{{.}} {{else}}None{{end}}</dd></div>{{end}}
-{{with .Reviewer}}<div><dt>Reviewer</dt><dd>{{.Agent}} · source {{.HarnessSource}} · model {{if .Model}}{{.Model}}{{else}}harness default{{end}} · effort {{if .Effort}}{{.Effort}}{{else}}harness default{{end}} · skills {{range .Skills}}{{.}} {{else}}None{{end}}</dd></div>{{end}}
+{{with .Implementer}}<div><dt>Implementer</dt><dd>{{.Agent}} · source {{.HarnessSource}} · model {{if .Model}}{{.Model}}{{else}}harness default{{end}} · effort {{if .Effort}}{{.Effort}}{{else}}harness default{{end}} · skills {{range .Skills}}{{.}} {{else}}None{{end}} · tier {{if .Tier}}{{.Tier}} · labels {{range .TierLabels}}{{.}} {{end}}{{else}}None{{end}}</dd></div>{{end}}
+{{with .Reviewer}}<div><dt>Reviewer</dt><dd>{{.Agent}} · source {{.HarnessSource}} · model {{if .Model}}{{.Model}}{{else}}harness default{{end}} · effort {{if .Effort}}{{.Effort}}{{else}}harness default{{end}} · skills {{range .Skills}}{{.}} {{else}}None{{end}} · tier {{if .Tier}}{{.Tier}} · labels {{range .TierLabels}}{{.}} {{end}}{{else}}None{{end}}</dd></div>{{end}}
 </dl></section>{{end}}
 {{range .SessionRecoveries}}<section class="queue-section"><h2>Session recovery · {{.Phase}}, round {{.Round}}</h2>
 <p class="notice">harness.session_resume_failed: Saved conversation is missing; continuing once in a fresh session.</p>

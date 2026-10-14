@@ -188,6 +188,76 @@ or exhausted-credit block. A restricted issue is skipped while later issues in
 the repository are still considered, preserving their normal order. A restricted
 reviewer permits the claim and waits at the review phase gate.
 
+## Per-issue model and effort tiers
+
+Each role can define `low`, `medium`, and `high` model/effort presets separately
+for Claude and Codex. Fixed labels `mergeyard:implementer-tier=<tier>` and
+`mergeyard:reviewer-tier=<tier>` select them independently. Label prefixes and
+values are matched case-insensitively. With no tier label, the role retains its
+existing settings and harness override behavior; there is no implicit default
+tier, classifier, or automatic escalation.
+
+```yaml
+implementer:
+  agent: claude
+  model: opus
+  effort: high
+  tiers:
+    claude:
+      low: { model: sonnet, effort: medium }
+      high: { model: opus, effort: max }
+    codex:
+      high: {} # both fields use harness defaults
+reviewer:
+  agent: codex
+  tiers:
+    codex:
+      medium: { effort: high } # model uses the harness default
+```
+
+Resolve the harness first, then look up `<role>.tiers.<selected-harness>.<tier>`.
+For example, `mergeyard:implementer=codex` together with
+`mergeyard:implementer-tier=high` uses the Codex `high` entry even when the role
+normally uses Claude. The tier replaces model and effort together: an omitted,
+empty, or `null` field uses the selected harness's default, never the ordinary
+role's model/effort override. Skills remain the role's configured skills and
+undergo existing destination-harness validation. Model and effort strings still
+pass through without a catalog.
+
+Any subset of the harness/tier entries may be configured. A present empty tier
+mapping (`high: {}`) intentionally selects both harness defaults; an absent
+entry is undefined. Unknown tier label values, conflicting tiers for one role,
+or an undefined tier for the selected role and harness leave the issue unclaimed,
+apply the repository's `needs_attention` label and post one actionable explanation.
+This also applies to a tier label when no tiers are configured. Repeated labels
+selecting the same tier, including case variants, are accepted. Fix the labels
+or configuration and remove needs-attention to permit another claim; subsequent
+polls and restart replay do not duplicate the explanation.
+
+A repository inherits the global tier map for each role when `tiers` is omitted.
+Supplying a map **replaces the entire inherited map for that role**; it does not
+merge harnesses or individual tier fields. `tiers: {}` clears the role's map.
+The implementer and reviewer maps are independent. Tier configuration must use
+mapping nodes, known harnesses (`claude`, `codex`) and known tiers (`low`,
+`medium`, `high`); malformed definitions fail configuration loading. Unknown
+fields within a tier produce the usual configuration warnings.
+
+Tier labels follow the same trusted-label authorization as harness overrides,
+including the fresh check before claim. At claim, Mergeyard saves each role's
+tier and matching labels alongside its resolved role settings. Every automated
+phase, fix, restart, usage-limit resume, recovery probe, handback and Retry uses
+that snapshot; takeover resumes the same recorded implementer conversation.
+Editing labels or role configuration only affects subsequent claims. Older
+snapshots without tier metadata retain their saved settings with no selected
+tier; legacy runs without any settings snapshot retain their existing behavior.
+Usage limits and exhausted-credit blocks remain per harness, independent of tier.
+
+`mergeyard plan` uses the same resolver as claim. `mergeyard status`, dashboard
+run detail, and the generated PR footer show the saved tier and matching labels
+alongside harness, model and effort. Unlabelled roles show no selected tier.
+Subsequent verification updates retain the saved selection in the PR footer and
+preserve human content and the separately owned escalation section.
+
 ## Repository setup commands
 
 `repositories[].setup` is a list of shell commands, defaulting to `[]`. Omit it or
@@ -493,8 +563,9 @@ label events and GraphQL content edit history. If those reads fail or omit requi
 information, Mergeyard refuses the issue.
 
 Mergeyard checks the most recent ready-label event, plus each present
-`mergeyard:implementer=<agent>` and `mergeyard:reviewer=<agent>` label event. It
-also checks every body edit at or after the ready-label event. An edit by an
+`mergeyard:implementer=<agent>`, `mergeyard:reviewer=<agent>`,
+`mergeyard:implementer-tier=<tier>` and `mergeyard:reviewer-tier=<tier>` label event.
+It also checks every body edit at or after the ready-label event. An edit by an
 untrusted actor prevents claim, even if a later edit has a trusted editor. Edits
 before approval are accepted: a trusted maintainer reviews that content when
 applying the ready label. Equal timestamps are treated conservatively as after
@@ -504,9 +575,10 @@ A refusal creates no run. Mergeyard persists the reason, posts one comment with
 `<!-- mergeyard:trust:refused -->`, and removes the ready label. Pending comment
 and label operations survive restarts. The dashboard lists the issue under
 **Needs attention**, including its refusal reason after the ready label is gone.
-A trusted maintainer should review the body and override labels, remove or
-reapply any untrusted overrides, then reapply the ready label. The historical
-comment is retained, and a newly trusted decision clears the dashboard refusal.
+A trusted maintainer should review the body, harness override labels and tier
+labels, remove or reapply any untrusted selections, then reapply the ready label.
+The historical comment is retained, and a newly trusted decision clears the
+dashboard refusal.
 
 The issue title, body and URL saved at claim remain the input for implementation,
 review, fix and resumed attempts. Later issue edits do not replace this authorized

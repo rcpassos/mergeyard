@@ -216,8 +216,8 @@ Authorization is enforced by default. The most recent ready-label event must
 have a trusted actor: a login in the resolved global/per-repository
 `trusted_labelers` allowlist, or, when the list is empty, a user with `write`,
 `maintain`, or `admin` repository permission. `triage` and `read` are insufficient.
-Every present implementer/reviewer harness override label uses the same actor
-rule. An explicit repository list replaces the global list; `[]` restores the
+Every present implementer/reviewer harness override or tier label uses the same
+actor rule. An explicit repository list replaces the global list; `[]` restores the
 permission-based policy. Comparisons of actor logins ignore case.
 
 Detailed phase state lives in Mergeyard/SQLite, not in labels.
@@ -298,6 +298,8 @@ An issue is eligible only when all of the following are true:
 - global concurrency has capacity;
 - repository concurrency has capacity, when a repository limit is set;
 - harness override labels are valid and unambiguous for each role;
+- tier labels are valid and unambiguous, and select a defined tier for each
+  role's resolved harness;
 - the issue's resolved implementer harness has neither a usage limit nor an
   exhausted-credit block (section 12).
 
@@ -310,8 +312,19 @@ role configuration. Both roles' settings and their harness source (`label` or
 resume, recovery probe, takeover, handback and Retry. Existing runs without
 stored settings retain configuration-based behavior.
 
-Invalid or conflicting override labels create no run. Mergeyard applies the
-repository's needs-attention label and posts one explanatory comment naming the
+Fixed, case-insensitive `mergeyard:implementer-tier=<tier>` and
+`mergeyard:reviewer-tier=<tier>` labels independently select `low`, `medium`, or
+`high` from the resolved harness's role tier map (section 11). With no tier label,
+existing role settings remain unchanged. The run stores each selected tier and
+its matching labels alongside its settings; later configuration or label changes
+affect only subsequent claims. Older settings snapshots without tier metadata
+have no selected tier and remain usable.
+
+Invalid or conflicting harness override or tier labels create no run. An
+undefined tier for the selected role and harness also refuses claim, including
+a tier label with no tier configuration. Repeated same-tier labels are allowed.
+Mergeyard applies the repository's needs-attention label and posts one explanatory
+comment naming the
 offending labels and valid values. Fixing the labels and removing needs-attention
 allows another evaluation. Harness restrictions are checked per issue; a skipped
 issue does not prevent later issues in the same repository from being considered.
@@ -490,6 +503,28 @@ MVP adapter types:
 - `codex` — Codex CLI.
 
 Either adapter may be assigned to either role. The executable defaults to `claude` / `codex` on `PATH` and may be overridden in configuration.
+
+### Label-selected model and effort tiers
+
+Each role may define `<role>.tiers.<harness>.<tier>` presets for `claude` and
+`codex`, with fixed tier names `low`, `medium`, and `high`. Definitions may be
+partial. The selected harness is resolved first; a tier then replaces model and
+effort together. An omitted, empty, or `null` tier field uses the selected
+harness's default, never the ordinary role's override. A defined empty tier
+mapping selects both defaults. Skills retain their existing role configuration
+and destination-harness validation. Model and effort remain pass-through values.
+
+Repositories inherit omitted role tier maps. A supplied map replaces that role's
+entire global tier map; `{}` clears it. With no tier label there is no implicit
+tier. The classifier and automatic escalation are outside this slice, and tier
+selection cannot change settings mid-run. Usage-limit and exhausted-credit
+handling remain per harness, not per tier (section 12).
+
+Plan uses the claim resolver. Status, dashboard run detail and the PR footer show
+the saved tier, matching labels, harness, model and effort; unlabelled roles have
+no selected tier. PR creation and later verification updates preserve this
+snapshot in the footer while retaining human content and owned escalation notes.
+ADR 0002 records the role/harness tier boundary; ADR 0001 fixes settings at claim.
 
 ### Capabilities
 
@@ -1646,8 +1681,8 @@ The MVP binds only to loopback addresses. Remote dashboard exposure is unsupport
 
 Agents run with the user's local permissions. An issue body is effectively executable intent once it receives the ready label. The ready label is a trusted-maintainer authorization boundary.
 
-This boundary is enforced before claim for ready labels, harness override labels,
-and body edits after approval (sections 7.2–7.3). Explicit `trusted_labelers` narrow
+This boundary is enforced before claim for ready labels, harness override and
+tier labels, and body edits after approval (sections 7.2–7.3). Explicit `trusted_labelers` narrow
 authorization; otherwise write/maintain/admin permission is trusted. `doctor`
 warns for public repositories without an explicit allowlist. Unreadable history
 refuses execution. Issue trust decisions are cached per observed snapshot for quiet polling; an

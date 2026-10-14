@@ -148,7 +148,7 @@ func (c *Client) verifyIssueTrust(ctx context.Context, repo string, issue Issue,
 				continue
 			}
 			name := strings.ToLower(event.Label.Name)
-			if (strings.EqualFold(event.Label.Name, ready) || isHarnessOverrideLabel(name)) && (event.ID <= 0 || event.CreatedAt.IsZero()) {
+			if (strings.EqualFold(event.Label.Name, ready) || isRoleSettingsLabel(name)) && (event.ID <= 0 || event.CreatedAt.IsZero()) {
 				return refuse("Cannot verify label history: missing label event identity or time.")
 			}
 			previous := latest[name]
@@ -163,7 +163,7 @@ func (c *Client) verifyIssueTrust(ctx context.Context, repo string, issue Issue,
 	labels := []string{ready}
 	for _, label := range issue.Labels {
 		name := strings.ToLower(label.Name)
-		if isHarnessOverrideLabel(name) {
+		if isRoleSettingsLabel(name) {
 			labels = append(labels, label.Name)
 		}
 	}
@@ -300,8 +300,9 @@ func sameEditTime(a, b *time.Time) bool {
 	return a.Equal(*b)
 }
 
-func isHarnessOverrideLabel(name string) bool {
-	return strings.HasPrefix(name, "mergeyard:implementer=") || strings.HasPrefix(name, "mergeyard:reviewer=")
+func isRoleSettingsLabel(name string) bool {
+	return strings.HasPrefix(name, "mergeyard:implementer=") || strings.HasPrefix(name, "mergeyard:reviewer=") ||
+		strings.HasPrefix(name, "mergeyard:implementer-tier=") || strings.HasPrefix(name, "mergeyard:reviewer-tier=")
 }
 
 const TrustRefusalMarker = "<!-- mergeyard:trust:refused -->"
@@ -320,7 +321,7 @@ func (c *Client) EnsureTrustRefusalComment(ctx context.Context, repo string, num
 		return err
 	}
 	prefix := TrustRefusalMarker + "\nMergeyard refused to claim this issue: "
-	_, err = c.ensureComment(ctx, repo, number, prefix+reason+"\n\nA trusted maintainer must review the issue and its harness override labels, then reapply the ready label.", func(comment Comment) bool {
+	_, err = c.ensureComment(ctx, repo, number, prefix+reason+"\n\nA trusted maintainer must review the issue and its harness override and tier labels, then reapply the ready label.", func(comment Comment) bool {
 		return comment.User != nil && strings.EqualFold(comment.User.Login, login) && strings.HasPrefix(comment.Body, prefix)
 	})
 	return err

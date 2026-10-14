@@ -154,7 +154,7 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 		return s.attention(ctx, repo, run, err)
 	}
 	if pr == nil {
-		pr, err = s.deps.GitHub.CreateDraftPullRequest(ctx, repo.Repo, gitRun.Branch, gitRun.BaseBranch, github.PullRequestContent{IssueNumber: issue.Number, IssueTitle: issue.Title, Summary: result.Summary, RunID: run.ID, Verification: result.Verification})
+		pr, err = s.deps.GitHub.CreateDraftPullRequest(ctx, repo.Repo, gitRun.Branch, gitRun.BaseBranch, github.PullRequestContent{IssueNumber: issue.Number, IssueTitle: issue.Title, Summary: result.Summary, RunID: run.ID, Verification: result.Verification, RoleSettings: run.RoleSettings})
 		if err != nil {
 			return s.attention(ctx, repo, run, err)
 		}

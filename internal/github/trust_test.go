@@ -146,15 +146,15 @@ func TestTrustReadsLaterEditPages(t *testing.T) {
 	}
 }
 
-func TestUntrustedLatestLabelAndHarnessOverrides(t *testing.T) {
-	for _, label := range []string{"ready-for-agent", "mergeyard:implementer=codex", "mergeyard:reviewer=claude"} {
+func TestUntrustedLatestLabelAndRoleSelections(t *testing.T) {
+	for _, label := range []string{"ready-for-agent", "mergeyard:implementer=codex", "mergeyard:reviewer=claude", "mergeyard:implementer-tier=medium", "MERGEYARD:REVIEWER-TIER=HIGH", "mergeyard:implementer-tier=unknown"} {
 		t.Run(label, func(t *testing.T) {
 			issue := trustIssue(t)
 			if label != "ready-for-agent" {
 				issue.Labels = append(issue.Labels, github.Label{Name: label})
 			}
 			later := `[{"id":40000000000,"event":"labeled","actor":{"login":"outsider"},"label":{"name":"` + label + `"},"created_at":"2026-10-09T00:00:00Z"}]`
-			runner := &recordedGH{responses: []response{{stdout: append(fixture(t, "trust-label-events"), []byte(later)...)}}}
+			runner := &recordedGH{responses: []response{{stdout: append(fixture(t, "trust-label-events"), []byte(later)...)}, {stdout: fixture(t, "trust-content-edits")}}}
 			decision, err := github.New(runner).VerifyIssueTrust(context.Background(), "rcpassos/mergeyard", issue, "ready-for-agent", []string{"rcpassos"})
 			if err != nil || decision.Allowed || !strings.Contains(decision.Reason, label) || !strings.Contains(decision.Reason, "@outsider") {
 				t.Fatalf("decision: %+v, %v", decision, err)
@@ -218,12 +218,34 @@ func TestRefusalCommentReplayAfterAmbiguousWrite(t *testing.T) {
 }
 
 func TestMalformedRelevantLabelEventFailsClosed(t *testing.T) {
+	for _, label := range []string{"ready-for-agent", "mergeyard:implementer-tier=low", "MERGEYARD:REVIEWER-TIER=HIGH"} {
+		t.Run(label, func(t *testing.T) {
+			issue := trustIssue(t)
+			later := `[{"id":40000000000,"event":"labeled","actor":{"login":"outsider"},"label":{"name":"` + label + `"}}]`
+			runner := &recordedGH{responses: []response{{stdout: append(fixture(t, "trust-label-events"), []byte(later)...)}, {stdout: fixture(t, "trust-content-edits")}}}
+			decision, err := github.New(runner).VerifyIssueTrust(context.Background(), "rcpassos/mergeyard", issue, "ready-for-agent", []string{"rcpassos"})
+			if err != nil || decision.Allowed || decision.Reason == "" {
+				t.Fatalf("malformed new label must not reuse older authorization: %+v %v", decision, err)
+			}
+		})
+	}
+}
+
+func TestTierTrustRecheckRejectsReappliedCaseVariant(t *testing.T) {
 	issue := trustIssue(t)
-	later := `[{"id":40000000000,"event":"labeled","actor":{"login":"outsider"},"label":{"name":"ready-for-agent"}}]`
-	runner := &recordedGH{responses: []response{{stdout: append(fixture(t, "trust-label-events"), []byte(later)...)}, {stdout: fixture(t, "trust-content-edits")}}}
-	decision, err := github.New(runner).VerifyIssueTrust(context.Background(), "rcpassos/mergeyard", issue, "ready-for-agent", []string{"rcpassos"})
-	if err != nil || decision.Allowed || decision.Reason == "" {
-		t.Fatalf("malformed new label must not reuse older authorization: %+v %v", decision, err)
+	issue.Labels = append(issue.Labels, github.Label{Name: "mergeyard:implementer-tier=high"}, github.Label{Name: "MERGEYARD:IMPLEMENTER-TIER=HIGH"})
+	trustedEvent := `[{"id":40000000000,"event":"labeled","actor":{"login":"rcpassos"},"label":{"name":"mergeyard:implementer-tier=high"},"created_at":"2026-10-09T00:00:00Z"}]`
+	runner := &recordedGH{responses: []response{{stdout: append(fixture(t, "trust-label-events"), []byte(trustedEvent)...)}, {stdout: fixture(t, "trust-content-edits")}}}
+	client := github.New(runner)
+	decision, err := client.VerifyIssueTrust(context.Background(), "rcpassos/mergeyard", issue, "ready-for-agent", []string{"rcpassos"})
+	if err != nil || !decision.Allowed {
+		t.Fatalf("trusted repeated tier: %+v %v", decision, err)
+	}
+	untrustedEvent := `[{"id":40000000001,"event":"labeled","actor":{"login":"outsider"},"label":{"name":"MERGEYARD:IMPLEMENTER-TIER=HIGH"},"created_at":"2026-10-12T09:01:48Z"}]`
+	runner.responses = []response{{stdout: append(fixture(t, "trust-label-events"), []byte(trustedEvent[:len(trustedEvent)-1]+","+untrustedEvent[1:])...)}}
+	decision, err = client.RecheckIssueTrust(context.Background(), "rcpassos/mergeyard", issue, "ready-for-agent", []string{"rcpassos"})
+	if err != nil || decision.Allowed || !strings.Contains(decision.Reason, "@outsider") {
+		t.Fatalf("claim reused cached tier authorization: %+v %v", decision, err)
 	}
 }
 

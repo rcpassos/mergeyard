@@ -58,6 +58,7 @@ type Role struct {
 	Model       string // empty means the harness default
 	Effort      string // empty means the harness default
 	Skills      []string
+	Tiers       map[string]map[string]TierSettings
 	MaxAttempts int `yaml:"max_attempts"`
 }
 
@@ -263,6 +264,10 @@ func Parse(data []byte) (Config, *Document, error) {
 
 func cloneRole(r Role) Role {
 	r.Skills = slices.Clone(r.Skills)
+	r.Tiers = maps.Clone(r.Tiers)
+	for agent, tiers := range r.Tiers {
+		r.Tiers[agent] = maps.Clone(tiers)
+	}
 	return r
 }
 
@@ -315,6 +320,7 @@ func readRole(m mapping, r *Role) {
 	m.readNullableString("model", &r.Model)
 	m.readNullableString("effort", &r.Effort)
 	m.read("skills", &r.Skills)
+	readTiers(m, &r.Tiers)
 	m.readPositiveInt("max_attempts", &r.MaxAttempts, "config.invalid_max_attempts")
 	m.finish()
 }

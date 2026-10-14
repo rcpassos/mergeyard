@@ -470,9 +470,15 @@ func printHumanAction(out io.Writer, run workflow.Run) {
 
 // printStoredRole keeps harness provenance beside the fixed run settings.
 func printStoredRole(out io.Writer, name string, settings config.RoleSettings) {
-	fmt.Fprintf(out, "    %s: %s · source %s · model %s · effort %s · skills %s\n", name,
+	fmt.Fprintf(out, "    %s: %s · source %s · model %s · effort %s · skills %s", name,
 		terminalText(settings.Agent), terminalText(settings.HarnessSource),
 		defaultSetting(settings.Model), defaultSetting(settings.Effort), terminalText(strings.Join(settings.Skills, ", ")))
+	if settings.Tier == "" {
+		fmt.Fprint(out, " · tier none")
+	} else {
+		fmt.Fprintf(out, " · tier %s · labels %s", terminalText(settings.Tier), terminalText(strings.Join(settings.TierLabels, ", ")))
+	}
+	fmt.Fprintln(out)
 }
 func defaultSetting(value string) string {
 	if value == "" {
