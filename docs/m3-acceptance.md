@@ -10,7 +10,7 @@ tickets. The approved scheduler/runtime seams and safety rules come from
 
 | Harness | Temporary-limit detection | Exhausted-credit detection | Same-conversation manual handback |
 | --- | --- | --- | --- |
-| Claude | Disabled; failures consume the ordinary attempt budget. [#61](https://github.com/rcpassos/mergeyard/issues/61) evidence and [#81](https://github.com/rcpassos/mergeyard/issues/81) binding remain open. | Disabled; failures consume the ordinary attempt budget. [#80](https://github.com/rcpassos/mergeyard/issues/80) evidence and [#83](https://github.com/rcpassos/mergeyard/issues/83) binding remain open. | Prior [Q10 observations](research/harness-spikes.md#q10--interactive-takeover-and-headless-handback). |
+| Claude | Enabled for #61's observed headless weekly rejection; [rejection and post-reset resume evidence](research/claude-m3/report.md). Unknown variants consume the ordinary attempt budget. | Disabled; failures consume the ordinary attempt budget. [#80](https://github.com/rcpassos/mergeyard/issues/80) evidence and [#83](https://github.com/rcpassos/mergeyard/issues/83) binding remain open. | Prior [Q10 observations](research/harness-spikes.md#q10--interactive-takeover-and-headless-handback). |
 | Codex | Disabled; failures consume the ordinary attempt budget. [#62](https://github.com/rcpassos/mergeyard/issues/62) evidence and [#82](https://github.com/rcpassos/mergeyard/issues/82) binding remain open. | Disabled; failures consume the ordinary attempt budget. [#80](https://github.com/rcpassos/mergeyard/issues/80) evidence and [#83](https://github.com/rcpassos/mergeyard/issues/83) binding remain open. | [#63 report](research/codex-m3/report.md), [sanitized native evidence](research/codex-m3/evidence.json), and [reproduction recipe](research/codex-m3/README.md). |
 
 Codex's captured observation used `codex-cli 0.156.1`, one disposable linked
@@ -21,17 +21,24 @@ marker under explicitly reapplied headless settings. Normal interactive
 `on-request` / `workspace-write` permissions were observed. This is continuity
 evidence for that version and fixture, not a new usage-limit or credit capture.
 
-M3 uses the detection-disabled alternative explicitly accepted by #72. Neither
-production adapter currently enters automatic usage-limit waiting or a credit
-block. `usage_limits` settings do not enable native detection. Check availability
-and Retry-as-probe stay unavailable. Successful Claude `allowed_warning`
-records, synthetic failures, and documentation-only formats are not rejected
-request evidence and do not satisfy the open native binding gates.
+M3 shipped the detection-disabled alternative explicitly accepted by #72.
+The post-M3 Claude binding now enters automatic waiting for the captured weekly
+rejection. `usage_limits` settings configure waiting, without expanding native
+detection. Both adapters' exhausted-credit detection remains disabled, so Check
+availability and Retry-as-probe stay unavailable. Successful Claude
+`allowed_warning` records, synthetic failures, and documentation-only formats
+are not rejected-request evidence and never trigger waiting.
 
-`TestProductionHarnessLimitFailuresConsumeAttemptBudget` verifies both shipped
-adapters in implement, review, and fix: two unsuccessful executions spend a
-configured two-attempt budget, require attention, leave harness availability
+`TestProductionHarnessLimitFailuresConsumeAttemptBudget` verifies unknown
+diagnostic text in both shipped adapters in implement, review, and fix: two
+unsuccessful executions spend a configured two-attempt budget, require attention, leave harness availability
 unchanged, and cannot invoke Check availability.
+
+`TestClaudeWeeklyLimitBindingWaitsAndRecovers` replays the real rejected fixture
+through the production adapter in implement, review, and fix. It verifies a
+durable wait across scheduler restart, the weekly reset, configured cooldown
+when reset evidence is absent, preserved partial work, same-session resume,
+and bounded missing-session recovery without spending the ordinary attempt budget.
 
 ## Combined offline acceptance
 
@@ -107,4 +114,4 @@ make lint
 Normal tests require no credentials, network service, or paid model calls. The
 preflight rejects inherited live integration flags. Existing opt-in live GitHub
 acceptance checks require a dedicated test repository. No live GitHub acceptance
-or paid harness capture is needed for this detection-disabled acceptance path.
+or paid harness capture is needed for this offline acceptance path.

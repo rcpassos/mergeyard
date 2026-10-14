@@ -1,6 +1,6 @@
 # Claude headless usage-limit evidence — M3
 
-Updated: 2026-10-13. Scope: [#61](https://github.com/rcpassos/mergeyard/issues/61),
+Updated: 2026-10-14. Scope: [#61](https://github.com/rcpassos/mergeyard/issues/61),
 parent [M3 specification #60](https://github.com/rcpassos/mergeyard/issues/60).
 
 **Release gate: observed weekly rejection captured.** On 2026-10-13, a bounded
@@ -90,9 +90,8 @@ completion. This was a naturally rejected request with an error result and
 nonzero exit, not a watchdog cancellation, budget exhaustion, or turn-bound
 failure. Identity is available in init, limit, assistant, and final records.
 Files were inspected after exit, so exact delivery timing to a streaming
-consumer was not measured. Resuming this limited session after reset was not
-tested; an emitted/preassigned UUID alone does not prove resumability. The
-earlier M1 evidence establishes ordinary continuity, not this failure variant.
+consumer was not measured. Resumability was subsequently observed after reset
+on 2026-10-14, as recorded below; the UUID alone was not treated as proof.
 
 ### Reset source, units, and accompanying overage fields
 
@@ -146,6 +145,44 @@ breakdowns are omitted. See each `run.json` for raw/retained event counts. Only
 this probe's prompt and diagnostics are retained; credentials, account
 identifiers, and unrelated conversations are excluded.
 
+## Observed post-reset resume — 2026-10-14
+
+The user authorized continuation of #81 after the recorded reset. One bounded
+print-mode call resumed the exact weekly-rejected session from its original,
+still-present private workspace. The capture reused [probe.py](probe.py)'s
+supervisor and arguments with `--resume` replacing `--session-id`, the captured
+UUID replacing the fresh UUID, and the original workspace replacing a new one.
+No credentials or unrelated transcripts were read or copied. There was no
+automatic retry and no new quota-exhaustion call.
+
+The exact invocation and outcome are preserved in
+[weekly-resumed/run.json](fixtures/weekly-resumed/run.json), with selected native
+records in [events.jsonl](fixtures/weekly-resumed/events.jsonl).
+
+| Observation | Captured value |
+|---|---|
+| CLI version | `2.1.288 (Claude Code)` |
+| UTC start | `2026-10-14T12:07:16.670725+00:00`, after the weekly reset at `10:00:00Z` |
+| Session | `--resume 46f8963c-6b42-491e-9924-85fad092ecad`; all four native records carry that same ID |
+| Prompt / assistant / result | `Reply exactly OK. Do not use tools.` / `OK` / `OK` |
+| Event order | `system/init`, `assistant`, `rate_limit_event`, `result` |
+| Exit / elapsed / signals | `0` / `4.59` seconds / no watchdog signal |
+| Limit status | `allowed`, `rateLimitType: five_hour`, `isUsingOverage: false` |
+| Completion | `subtype: success`, `is_error: false`, `terminal_reason: completed`, `api_error_status: null`, `stop_reason: end_turn`, `num_turns: 1` |
+| Cost estimate / stderr | `total_cost_usd: 0.005351`; empty stderr |
+
+This establishes that the captured limited session is resumable after reset
+under the reapplied probe settings. It does not establish other limit variants
+or continuity of an engineering phase with `--json-schema`. The successful
+control still includes `overageDisabledReason: out_of_credits`; that field alone
+is not an exhausted-credit block. Selection/redaction follows the existing
+fixture policy; the cwd placeholder denotes the original capture workspace.
+
+Production classification now binds only the observed weekly rejection. Offline
+tests replay the positive and negative fixtures and cover configured cooldown
+and the existing bounded missing-session recovery if a resumed session later
+becomes unavailable. Normal CI does not execute these live probes.
+
 ## Documentation-derived expectations
 
 Current official documentation was queried through Context7 and checked against
@@ -191,11 +228,10 @@ engineering-phase result.
 
 #81 should bind only the observed limit signal to the adapter-owned classifier
 and test it against these offline positive and negative fixtures. Unknown
-variants remain ordinary failures. Confirmation of this limited session's
-resumability remains a downstream requirement; do not make another request
-before reset merely to test availability. A startup failure, budget/turn-bound
+variants remain ordinary failures. The limited session's post-reset resume is
+now observed above; do not make another request before reset merely to test
+availability. A startup failure, budget/turn-bound
 failure, forced fake error, or successful warning is not a positive limit signal.
 The existing [Claude M1 continuity results](../harness-spikes.md#6-issue-9-live-m1-adapter-verification-2026-10-04)
-remain the evidence for ordinary resume/interactive handback. This work changes
-research evidence only; production classification belongs to the dependent
-M3 adapter work.
+remain the evidence for ordinary resume/interactive handback. The #81 adapter
+binding uses this observed rejection and post-reset resume evidence.

@@ -194,7 +194,7 @@ func TestClaudeResumeFailureContract(t *testing.T) {
 func TestClaudeCapabilitiesAndConfigValidation(t *testing.T) {
 	adapter := harness.NewClaude(config.Claude{})
 	want := harness.HarnessCapabilities{ModelSelection: true, EffortSelection: true, SkillSelection: true,
-		StructuredOutput: true, SessionResume: true, SessionIDSource: harness.Preassigned}
+		StructuredOutput: true, SessionResume: true, TemporaryLimitDetection: true, SessionIDSource: harness.Preassigned}
 	if adapter.Type() != "claude" || adapter.Capabilities() != want {
 		t.Fatalf("type = %s, capabilities = %+v", adapter.Type(), adapter.Capabilities())
 	}

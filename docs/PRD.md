@@ -560,7 +560,9 @@ Sessions created headlessly do not appear in either harness's interactive sessio
 
 Subscription-backed harnesses enforce usage limits. With verified adapter detection, a temporary limit enters the waiting flow below without consuming the ordinary attempt budget.
 
-**Shipped capability status:** both production adapters disable temporary-limit and exhausted-credit detection. Their limit failures are ordinary phase failures and consume `max_attempts`. The recovery core is verified offline through normalized fake adapters; enabling native detection is deferred to [#81](https://github.com/rcpassos/mergeyard/issues/81), [#82](https://github.com/rcpassos/mergeyard/issues/82), and [#83](https://github.com/rcpassos/mergeyard/issues/83). M3 may ship with this documented restriction, as accepted in [#72](https://github.com/rcpassos/mergeyard/issues/72). See [M3 acceptance](m3-acceptance.md) for evidence and coverage.
+**Shipped capability status:** Claude enables temporary-limit detection for the observed headless weekly rejection preserved in [the Claude M3 evidence](research/claude-m3/report.md). It waits until the reliable reported weekly reset or the configured cooldown, then resumes the same phase without consuming the ordinary attempt budget. Unknown Claude variants and all Codex limit failures remain ordinary phase failures and consume `max_attempts`. Codex temporary-limit detection and exhausted-credit detection for both adapters remain disabled, pending [#82](https://github.com/rcpassos/mergeyard/issues/82) and [#83](https://github.com/rcpassos/mergeyard/issues/83).
+
+M3 shipped with native detection disabled, as accepted in [#72](https://github.com/rcpassos/mergeyard/issues/72); the Claude weekly binding is the post-M3 work from [#81](https://github.com/rcpassos/mergeyard/issues/81). The recovery core and native classifier are verified offline. See [M3 acceptance](m3-acceptance.md) for evidence and coverage.
 
 ### Detection
 
@@ -1946,7 +1948,7 @@ After approval and passing CI, the PR is marked ready for review, the run stops 
 
 When a harness reports a usage limit during a phase:
 
-These waiting criteria apply to an adapter with verified temporary-limit detection. Both shipped adapters currently treat limit failures as ordinary failures. The normalized core is exercised offline; the native bindings remain post-M3 work.
+These waiting criteria apply to an adapter with verified temporary-limit detection. Claude detects the headless weekly rejection preserved in [the Claude M3 evidence](research/claude-m3/report.md), using the reported weekly reset or configured cooldown. Unknown Claude variants and all Codex limit failures remain ordinary failures that consume the attempt budget. Exhausted-credit detection remains disabled for both adapters. Native classifier and normalized core tests run offline.
 
 - the run moves to `WAITING_FOR_HARNESS`, not `NEEDS_ATTENTION`;
 - no new issue whose implementer uses that harness is claimed until the limit expires;
