@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">Mergeyard — Give your issues a way forward.</title>
+  <desc id="description">Local coding agents take a ready GitHub issue through implementation, independent review, and CI checks. The final merge decision stays with you.</desc>
+  <rect width="1200" height="630" fill="#edf3f8"/>
+  <g font-family="Avenir Next, Avenir, Segoe UI, sans-serif" fill="#193b4d">
+    <g transform="translate(62 62)" fill="none" stroke="#1769e8" stroke-width="3.5" stroke-linecap="round">
+      <path d="M7 4v12c0 10 25 0 25 12v9M32 4v8c0 10-25 0-25 12v13"/>
+      <circle cx="7" cy="4" r="4" fill="#edf3f8"/>
+      <circle cx="32" cy="4" r="4" fill="#edf3f8"/>
+      <circle cx="7" cy="37" r="4" fill="#edf3f8"/>
+      <circle cx="32" cy="37" r="4" fill="#edf3f8"/>
+    </g>
+    <text x="112" y="94" font-size="34" font-weight="700" letter-spacing="-1.2">Mergeyard</text>
+    <text x="64" y="242" font-size="68" font-weight="650" letter-spacing="-3.6">Give your issues</text>
+    <text x="64" y="318" font-size="68" font-weight="650" letter-spacing="-3.6">a way forward.</text>
+    <text x="66" y="388" font-size="24" fill="#536b7a">Local coding agents. Independent review.</text>
+    <text x="66" y="424" font-size="24" fill="#536b7a">You decide what merges.</text>
+    <text x="66" y="548" font-size="19" fill="#536b7a">Works with Claude Code and Codex</text>
+    <rect x="738" y="62" width="398" height="506" rx="18" fill="#e3edf5" stroke="#cfdeea"/>
+    <path d="M787 148v342m8-342v342" fill="none" stroke="#83a9c5" stroke-width="2"/>
+    <path d="M1057 320h24a18 18 0 0 0 18-18v-46a18 18 0 0 0-18-18h-24m10-7-10 7 10 7" fill="none" stroke="#7797ad" stroke-width="2" stroke-dasharray="4 5"/>
+    <g font-size="21" font-weight="600">
+      <circle cx="791" cy="151" r="15" fill="#edf3f8" stroke="#83a9c5" stroke-width="2"/>
+      <circle cx="791" cy="151" r="5" fill="#1769e8"/>
+      <text x="825" y="159">Ready issue</text>
+      <circle cx="791" cy="236" r="15" fill="#edf3f8" stroke="#83a9c5" stroke-width="2"/>
+      <path d="m787 230-6 6 6 6m8-12 6 6-6 6" fill="none" stroke="#326579" stroke-width="2"/>
+      <text x="825" y="244">Implement</text>
+      <rect x="758" y="290" width="322" height="62" rx="8" fill="#ffffff" stroke="#ccdae5"/>
+      <circle cx="791" cy="321" r="16" fill="#1769e8"/>
+      <path d="m784 321 5 5 9-10" fill="none" stroke="#ffffff" stroke-width="2.5"/>
+      <text x="825" y="329" font-size="20">Independent review</text>
+      <circle cx="791" cy="406" r="15" fill="#edf3f8" stroke="#83a9c5" stroke-width="2"/>
+      <path d="m784 406 5 5 9-10" fill="none" stroke="#326579" stroke-width="2"/>
+      <text x="825" y="414">CI checks</text>
+      <circle cx="791" cy="491" r="15" fill="#e3f0e9" stroke="#85b3a3" stroke-width="2"/>
+      <path d="M787 484v14m8-14v3c0 5-8 2-8 8" fill="none" stroke="#28745b" stroke-width="2.5"/>
+      <text x="825" y="499" fill="#28745b">Your merge decision</text>
+    </g>
+  </g>
+</svg>
