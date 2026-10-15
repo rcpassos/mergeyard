@@ -147,6 +147,10 @@ make build  # rebuild dashboard assets with Node.js 24, then compile Go
 
 Commit generated `web/static/` files with dashboard source changes.
 
+The public project website is maintained separately in `site/` and deployed to
+GitHub Pages. See [website development and deployment](docs/website.md) for
+local preview and the one-time Pages setup.
+
 `make test` requires Go meeting `go.mod`, Python 3.9+, Git, tmux, writable
 temporary/build-cache paths, executable temporary files, localhost ports, and
 process inspection. Its preflight checks these before Go compilation, including
