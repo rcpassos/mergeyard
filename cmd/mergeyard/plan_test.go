@@ -95,7 +95,7 @@ func TestPlanUsesOwningControlPlane(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "never-created")
 	var requests []string
-	report := scheduler.Plan{SchemaVersion: 1, Paused: true, Issues: []scheduler.PlanIssue{{Repository: "owner/runtime", Number: 8, Title: "Runtime settings", Decision: "would_claim", RoleSettings: &config.RunRoleSettings{Implementer: config.RoleSettings{Agent: "codex", HarnessSource: "label", Skills: []string{"implement"}}, Reviewer: config.RoleSettings{Agent: "claude", HarnessSource: "config", Model: "runtime-model", Skills: []string{}}}}}}
+	report := scheduler.Plan{SchemaVersion: 1, Paused: true, Issues: []scheduler.PlanIssue{{Repository: "owner/runtime", Number: 8, Title: "Runtime settings", Decision: "would_claim", RoleSettings: &config.RunRoleSettings{Implementer: config.RoleSettings{Agent: "codex", HarnessSource: "label", Skills: []string{"implement"}, Tier: "high", TierLabels: []string{"MERGEYARD:IMPLEMENTER-TIER=HIGH"}}, Reviewer: config.RoleSettings{Agent: "claude", HarnessSource: "config", Model: "runtime-model", Skills: []string{}}}}}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.String())
 		if r.Method != "GET" {
@@ -126,7 +126,7 @@ func TestPlanUsesOwningControlPlane(t *testing.T) {
 		t.Fatalf("requests=%v", requests)
 	}
 	code, out, stderr = runCLI("plan", "--config", path)
-	if code != 0 || stderr != "" || !strings.Contains(out, "source label") || !strings.Contains(out, "runtime-model") {
+	if code != 0 || stderr != "" || !strings.Contains(out, "source label") || !strings.Contains(out, "runtime-model") || !strings.Contains(out, "tier high") || !strings.Contains(out, "MERGEYARD:IMPLEMENTER-TIER=HIGH") || !strings.Contains(out, "tier none") {
 		t.Fatalf("text=%d %s %s", code, out, stderr)
 	}
 	if _, err := os.Stat(workspace); !os.IsNotExist(err) {

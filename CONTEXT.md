@@ -17,3 +17,5 @@ _Avoid_: Native limit format, limit error
 
 **Harness override**: An issue label that selects which configured harness performs one role for that issue's run, in place of the repository's configured harness.
 _Avoid_: Agent label, harness label
+
+**Tier**: One of `low`, `medium`, or `high`, with model and effort settings specific to a role and harness. An issue label selects the implementer's or reviewer's tier independently; role configuration or a harness override selects the harness.

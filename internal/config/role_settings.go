@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -13,6 +14,8 @@ type RoleSettings struct {
 	Effort        string   `json:"effort"`
 	Skills        []string `json:"skills"`
 	HarnessSource string   `json:"harness_source"`
+	Tier          string   `json:"tier,omitempty"`
+	TierLabels    []string `json:"tier_labels,omitempty"`
 }
 
 type RunRoleSettings struct {
@@ -21,7 +24,7 @@ type RunRoleSettings struct {
 }
 
 // ResolveRoleSettings is shared by claiming and discovery diagnostics.
-// Label spelling is fixed; model and effort belong to the configured harness.
+// Label spelling is fixed; tier settings belong to the selected harness.
 func ResolveRoleSettings(repo Repository, labels []string) (*RunRoleSettings, error) {
 	implementer, implementErr := resolveRole("implementer", repo.Implementer, labels)
 	reviewer, reviewErr := resolveRole("reviewer", repo.Reviewer, labels)
@@ -34,19 +37,7 @@ func ResolveRoleSettings(repo Repository, labels []string) (*RunRoleSettings, er
 func resolveRole(name string, configured Role, labels []string) (RoleSettings, error) {
 	settings := RoleSettings{Agent: configured.Agent, Model: configured.Model, Effort: configured.Effort, Skills: append([]string{}, configured.Skills...), HarnessSource: "config"}
 	prefix := "mergeyard:" + name + "="
-	var overrides []string
-	selected, invalid := "", false
-	for _, label := range labels {
-		if !strings.HasPrefix(strings.ToLower(label), prefix) {
-			continue
-		}
-		overrides = append(overrides, label)
-		agent := strings.ToLower(label[len(prefix):])
-		if (agent != "claude" && agent != "codex") || (selected != "" && selected != agent) {
-			invalid = true
-		}
-		selected = agent
-	}
+	selected, overrides, invalid := selectRoleLabel(labels, prefix, "claude", "codex")
 	if invalid {
 		return RoleSettings{}, fmt.Errorf("Invalid %s harness override labels: %s. Valid values are %sclaude and %scodex. Fix the labels and remove the needs-attention label to allow another claim.", name, strings.Join(overrides, ", "), prefix, prefix)
 	}
@@ -56,7 +47,36 @@ func resolveRole(name string, configured Role, labels []string) (RoleSettings, e
 			settings.Model, settings.Effort = "", ""
 		}
 	}
+	prefix = "mergeyard:" + name + "-tier="
+	tier, matching, invalid := selectRoleLabel(labels, prefix, "low", "medium", "high")
+	if invalid {
+		return RoleSettings{}, fmt.Errorf("Invalid %s tier labels: %s. Valid values are %slow, %smedium and %shigh; select only one tier. Fix the labels and remove the needs-attention label to allow another claim.", name, strings.Join(matching, ", "), prefix, prefix, prefix)
+	}
+	if len(matching) > 0 {
+		preset, ok := configured.Tiers[settings.Agent][tier]
+		if !ok {
+			return RoleSettings{}, fmt.Errorf("Undefined %s tier %q for %s, selected by labels: %s. Configure %s.tiers.%s.%s or correct the labels, then remove the needs-attention label to allow another claim.", name, tier, settings.Agent, strings.Join(matching, ", "), name, settings.Agent, tier)
+		}
+		settings.Model, settings.Effort = preset.Model, preset.Effort
+		settings.Tier, settings.TierLabels = tier, matching
+	}
 	return settings, nil
+}
+
+func selectRoleLabel(labels []string, prefix string, choices ...string) (selected string, matching []string, invalid bool) {
+	for _, label := range labels {
+		if !strings.HasPrefix(strings.ToLower(label), prefix) {
+			continue
+		}
+		matching = append(matching, label)
+		value := strings.ToLower(label[len(prefix):])
+		if !slices.Contains(choices, value) || (selected != "" && selected != value) {
+			invalid = true
+		}
+		selected = value
+	}
+	slices.Sort(matching)
+	return
 }
 
 // Apply preserves execution policy (such as max_attempts), freezing only the

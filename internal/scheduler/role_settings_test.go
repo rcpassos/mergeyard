@@ -405,6 +405,11 @@ func TestPerIssueHarnessGateSkipsOnlyRestrictedImplementers(t *testing.T) {
 					other = "claude"
 				}
 				_, runtime, api, _, cfg, r := pairingFlow(t, "claude", limited, disputedReport)
+				cfg.Repositories[0].Implementer.Tiers = map[string]map[string]config.TierSettings{
+					"claude": {"high": {Model: "implement-model", Effort: "medium"}},
+					"codex":  {"high": {Model: "implement-model", Effort: "medium"}},
+				}
+				api.issues["owner/repo"][0].Labels = append(api.issues["owner/repo"][0].Labels, github.Label{Name: "mergeyard:implementer-tier=high"})
 				cfg.Concurrency, cfg.Repositories[0].Concurrency = 3, 3
 				api.issues["owner/repo"][0].Labels = append(api.issues["owner/repo"][0].Labels, github.Label{Name: "mergeyard:implementer=" + limited})
 				script := `exit 1`
@@ -435,6 +440,7 @@ func TestPerIssueHarnessGateSkipsOnlyRestrictedImplementers(t *testing.T) {
 					skipped.Labels = append(skipped.Labels, github.Label{Name: "mergeyard:implementer=" + limited})
 				}
 				available.Labels = append(available.Labels, github.Label{Name: "mergeyard:implementer=" + other})
+				available.Labels = append(available.Labels, github.Label{Name: "mergeyard:implementer-tier=high"})
 				api.issues["owner/repo"] = append(api.issues["owner/repo"], skipped, available)
 				if limited == "claude" {
 					if err := os.WriteFile(cfg.Agents.Codex.Executable, []byte("#!/bin/sh\n"+codexImplementation), 0700); err != nil {
@@ -480,6 +486,9 @@ func TestStoredRoleSettingsSurviveUsageResumeAndCreditRetry(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				_, runtime, api, _, cfg, r := pairingFlow(t, agent, agent, disputedReport)
+				cfg.Repositories[0].Implementer.Tiers = map[string]map[string]config.TierSettings{agent: {"low": {Model: "implement-model", Effort: "medium"}}}
+				cfg.Repositories[0].Implementer.Model = "ordinary-model"
+				api.issues["owner/repo"][0].Labels = append(api.issues["owner/repo"][0].Labels, github.Label{Name: "mergeyard:implementer-tier=low"})
 				replacePhaseScript(t, cfg, workflow.Implement, `case "$*" in *implement-0-1*) printf partial > partial.txt; exit 1;; esac
 `+successfulScript)
 				adapter := harness.HarnessAdapter(harness.NewClaude(cfg.Agents.Claude))
@@ -528,7 +537,7 @@ func TestStoredRoleSettingsSurviveUsageResumeAndCreditRetry(t *testing.T) {
 					}
 				}
 				done := finish(t, s, workflow.Active, workflow.Review)
-				if done.Implementer.Agent != agent || done.Implementer.Model != "implement-model" || done.Implementer.Effort != "medium" || strings.Join(done.Implementer.Skills, ",") != "implement" || done.Implementer.SessionID != waiting.Implementer.SessionID || done.Implementer.Attempt != 2 {
+				if done.Implementer.Agent != agent || done.Implementer.Model != "implement-model" || done.Implementer.Effort != "medium" || strings.Join(done.Implementer.Skills, ",") != "implement" || done.Implementer.SessionID != waiting.Implementer.SessionID || done.Implementer.Attempt != 2 || done.RoleSettings.Implementer.Tier != "low" || strings.Join(done.RoleSettings.Implementer.TierLabels, ",") != "mergeyard:implementer-tier=low" {
 					t.Fatalf("resume changed settings: %+v", done.Implementer)
 				}
 			})

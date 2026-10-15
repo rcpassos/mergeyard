@@ -21,7 +21,7 @@ func (s *Scheduler) publishVerification(ctx context.Context) error {
  AND json_type(e.payload_json,'$.result.verification')='array'
  AND (COALESCE(json_extract(e.payload_json,'$.error'),'')='' OR json_extract(e.payload_json,'$.error') LIKE 'phase.blocked:%' OR json_extract(e.payload_json,'$.error') LIKE 'phase.failed:%')
 )
-SELECT e.id,e.run_id,r.repository,r.pr_number,c.issue_json,e.report
+SELECT e.id,e.run_id,r.repository,r.pr_number,c.issue_json,e.report,COALESCE(r.role_settings_json,'null')
 FROM evidence e JOIN runs r ON r.id=e.run_id JOIN scheduler_runs c ON c.run_id=r.id
 WHERE r.pr_number>0 AND e.id=(SELECT MAX(n.id) FROM evidence n WHERE n.run_id=e.run_id)
 AND NOT EXISTS (SELECT 1 FROM events p WHERE p.run_id=e.run_id AND p.type='verification.published' AND json_extract(p.payload_json,'$.source_event')=e.id)
@@ -40,8 +40,8 @@ ORDER BY COALESCE((SELECT MAX(p.id) FROM events p
 	var pending []publication
 	for rows.Next() {
 		var p publication
-		var issueJSON, reportJSON string
-		if err := rows.Scan(&p.event, &p.runID, &p.repo, &p.pr, &issueJSON, &reportJSON); err != nil {
+		var issueJSON, reportJSON, settingsJSON string
+		if err := rows.Scan(&p.event, &p.runID, &p.repo, &p.pr, &issueJSON, &reportJSON, &settingsJSON); err != nil {
 			rows.Close()
 			return err
 		}
@@ -56,6 +56,10 @@ ORDER BY COALESCE((SELECT MAX(p.id) FROM events p
 			return err
 		}
 		p.content = github.PullRequestContent{IssueNumber: issue.Number, IssueTitle: issue.Title, Summary: report.Summary, RunID: p.runID, Verification: report.Verification}
+		if err := json.Unmarshal([]byte(settingsJSON), &p.content.RoleSettings); err != nil {
+			rows.Close()
+			return err
+		}
 		pending = append(pending, p)
 	}
 	err = rows.Err()

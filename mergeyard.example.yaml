@@ -43,13 +43,24 @@ implementer:
   effort: null # harness default; passed through without a catalog
   skills: []
   max_attempts: 1
+  # Optional presets: selected only by mergeyard:implementer-tier=<tier>.
+  # tiers:
+  #   claude:
+  #     low: {model: sonnet, effort: medium}
+  #     high: {model: opus, effort: max}
+  #   codex:
+  #     high: {} # omitted/null model and effort use harness defaults
 
 reviewer:
-  agent: claude # review currently requires Claude
+  agent: claude # claude | codex for review
   model: null
   effort: null
   skills: []
   max_attempts: 1
+  # Independent presets: mergeyard:reviewer-tier=<tier>.
+  # tiers:
+  #   codex:
+  #     medium: {effort: high} # model uses the harness default
 
 max_rounds: 5
 pr_comments: true
@@ -81,3 +92,4 @@ repositories:
     reviewer: # only supplied fields override the global reviewer
       agent: codex
       effort: high
+      # tiers: {} # supplied map replaces the entire global reviewer tier map
