@@ -26,6 +26,49 @@ type HarnessLimit struct {
 	notifiedUntil   string
 }
 
+// Available describes the harness as a whole. A selected recovery probe may
+// launch while this remains false; it is not evidence of account recovery.
+func (v *HarnessLimit) Available(now time.Time) bool {
+	return v == nil || (!v.CreditBlocked() && !v.WaitingForReset(now))
+}
+
+func (v *HarnessLimit) CreditBlocked() bool {
+	return v != nil && v.Reason == "credits_exhausted"
+}
+
+func (v *HarnessLimit) WaitingForReset(now time.Time) bool {
+	return v != nil && now.Before(v.ResetAt)
+}
+
+// RecoveryEligible permits requesting recovery, including Retry during a timed
+// wait. Launch and standalone checks must additionally respect the reset.
+func (v *HarnessLimit) RecoveryEligible(creditDetection bool) bool {
+	return v.CreditBlocked() && v.ProbeID == "" && creditDetection
+}
+
+func (v *HarnessLimit) CheckEligible(now time.Time, creditDetection bool) bool {
+	return v.RecoveryEligible(creditDetection) && !v.WaitingForReset(now)
+}
+
+// ProbeReady admits only the selected run's still-unbound physical execution.
+// Workflow launch transactions revalidate this against current durable state.
+func (v *HarnessLimit) ProbeReady(runID string, now time.Time, creditDetection bool) bool {
+	return v.CreditBlocked() && v.ProbeID != "" && runID != "" && v.ProbeRunID == runID && v.ProbeAttemptID == "" && !v.WaitingForReset(now) && creditDetection
+}
+
+func (v *HarnessLimit) OwnsProbe(p CreditProbe) bool {
+	return v.CreditBlocked() && v.RestrictionID == p.RestrictionID && v.ProbeID == p.ID
+}
+
+// Gate retains reset authority for control-plane decisions. Display callers use
+// HarnessWait.Display to omit expired credit delays without changing that authority.
+func (v *HarnessLimit) Gate(now time.Time) *HarnessWait {
+	if v.Available(now) {
+		return nil
+	}
+	return &HarnessWait{Harness: v.Harness, Reason: v.Reason, ResetAt: v.ResetAt, ResetTimeSource: v.ResetTimeSource, Source: v.Source, DetectedAt: now.UTC()}
+}
+
 func LoadHarnessLimit(ctx context.Context, db queryer, harness string) (*HarnessLimit, error) {
 	v := HarnessLimit{Harness: harness}
 	var reset string
