@@ -132,7 +132,7 @@ func TestCodexUnreliableResetUsesCoreCooldown(t *testing.T) {
 		observed    time.Time
 	}{
 		{"stale", "1:52 PM", time.Date(2026, 10, 16, 14, 0, 0, 0, time.UTC)},
-		{"previous day clock", "1:52 PM", time.Date(2026, 10, 16, 23, 59, 0, 0, time.UTC)},
+		{"stale late-day observation", "1:52 PM", time.Date(2026, 10, 16, 23, 59, 0, 0, time.UTC)},
 		{"malformed clock", "25:52 PM", time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,5 +168,44 @@ func TestCodexMissingCaptureDateUsesCooldown(t *testing.T) {
 	got := harness.NewCodex(config.Codex{}).ClassifyFailure(artifacts, observed)
 	if got.Kind != harness.TemporaryLimit || !got.ResetAt.IsZero() {
 		t.Fatalf("undated capture = %+v", got)
+	}
+}
+
+func TestCodexLimitToleratesUsageURLChanges(t *testing.T) {
+	artifacts, observed := codexLimitFixture(t)
+	artifacts.Stdout = []byte(strings.ReplaceAll(string(artifacts.Stdout), "https://chatgpt.com/codex/settings/usage", "https://chatgpt.com/settings/usage"))
+	if got := harness.NewCodex(config.Codex{}).ClassifyFailure(artifacts, observed); got.Kind != harness.TemporaryLimit {
+		t.Fatalf("changed URL = %+v", got)
+	}
+}
+
+func TestCodexResetClockTransitions(t *testing.T) {
+	zone, err := time.LoadLocation("Europe/Lisbon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := time.Local
+	time.Local = zone
+	t.Cleanup(func() { time.Local = previous })
+	for _, tc := range []struct {
+		name, clock       string
+		started, observed time.Time
+		want              time.Time
+	}{
+		{"spring gap", "1:30 AM", time.Date(2026, 3, 29, 0, 0, 0, 0, time.UTC), time.Date(2026, 3, 29, 0, 5, 0, 0, time.UTC), time.Time{}},
+		{"fall repeated hour", "1:30 AM", time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 25, 0, 5, 0, 0, time.UTC), time.Time{}},
+		{"after spring gap", "2:30 AM", time.Date(2026, 3, 29, 0, 0, 0, 0, time.UTC), time.Date(2026, 3, 29, 0, 5, 0, 0, time.UTC), time.Date(2026, 3, 29, 1, 31, 0, 0, time.UTC)},
+		{"after fall repeated hour", "2:30 AM", time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 25, 0, 5, 0, 0, time.UTC), time.Date(2026, 10, 25, 2, 31, 0, 0, time.UTC)},
+		{"future start", "1:52 PM", time.Date(2026, 10, 16, 12, 30, 0, 0, time.UTC), time.Date(2026, 10, 16, 12, 23, 0, 0, time.UTC), time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			artifacts, _ := codexLimitFixture(t)
+			artifacts.StartedAt = tc.started
+			artifacts.Stdout = []byte(strings.ReplaceAll(string(artifacts.Stdout), "1:52 PM", tc.clock))
+			got := harness.NewCodex(config.Codex{}).ClassifyFailure(artifacts, tc.observed)
+			if got.Kind != harness.TemporaryLimit || !got.ResetAt.Equal(tc.want) {
+				t.Fatalf("reset = %+v, want %s", got, tc.want)
+			}
+		})
 	}
 }

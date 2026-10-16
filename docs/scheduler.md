@@ -458,7 +458,10 @@ block. See the [captured rejection and post-reset resume](research/claude-m3/rep
 
 Codex advertises `TemporaryLimitDetection` for #62's observed Plus-plan rejection:
 exit 1 with matching native `error.message` and `turn.failed.error.message` in
-the captured same-day `You’ve hit your usage limit` template. The adapter converts
+the captured same-day `You’ve hit your usage limit` Plus-plan template, allowing
+changes to the upgrade and usage URLs. The same signal is recognized on fresh
+and resumed executions; a native resume-limit capture remains unobserved, and
+offline tests replay the captured signal on the resume path. The adapter converts
 the text's 12-hour clock using the CLI host's local time zone and observation
 date (checked against the persisted execution start date), then adds one minute because the text truncates reset seconds. Invalid,
 stale, or DST-ambiguous reset times, and executions reconciled across a local

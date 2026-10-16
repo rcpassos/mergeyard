@@ -53,7 +53,7 @@ func (w *Workflow) ReserveHarnessCheck(ctx context.Context, c HarnessCheck, now 
 		if limit.WaitingForReset(now) {
 			return events.Draft{}, &fault.Error{Code: "harness.check_waiting", Message: "Wait for the temporary usage-limit reset before checking availability"}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO harness_checks(id,harness,restriction_id,request_json,process_session,phase_dir,status) VALUES(?,?,?,?,?,?,'reserved')`, c.ID, c.Harness, c.RestrictionID, c.RequestJSON, c.ProcessSession, c.PhaseDir); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO harness_checks(id,harness,restriction_id,request_json,process_session,phase_dir,status,requested_at) VALUES(?,?,?,?,?,?,'reserved',?)`, c.ID, c.Harness, c.RestrictionID, c.RequestJSON, c.ProcessSession, c.PhaseDir, now.UTC().Format(time.RFC3339Nano)); err != nil {
 			return events.Draft{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO credit_probes(id,harness,restriction_id,check_id,status) VALUES(?,?,?,?,'reserved')`, c.ID, c.Harness, c.RestrictionID, c.ID); err != nil {

@@ -11,7 +11,7 @@ import (
 // Only #62's observed Plus-plan same-day rejection is bound. In particular,
 // credit offers in this message do not establish exhausted credits, and neither
 // tool text nor generic HTTP errors establish a temporary limit.
-var codexLimitMessage = regexp.MustCompile(`^You’ve hit your usage limit\. Upgrade to Pro \(https://chatgpt\.com/explore/pro\), visit https://chatgpt\.com/codex/settings/usage to purchase more credits or try again at ([0-9]{1,2}:[0-9]{2} [AP]M)\.$`)
+var codexLimitMessage = regexp.MustCompile(`^You’ve hit your usage limit\. Upgrade to Pro \(https://[^[:space:]()]+\), visit https://[^[:space:]()]+ to purchase more credits or try again at ([0-9]{1,2}:[0-9]{2} [AP]M)\.$`)
 
 func (*Codex) ClassifyFailure(artifacts PhaseArtifacts, observedAt time.Time) FailureClassification {
 	ordinary := FailureClassification{Kind: Ordinary}
@@ -51,7 +51,8 @@ func (*Codex) ClassifyFailure(artifacts PhaseArtifacts, observedAt time.Time) Fa
 			}
 			failed = true
 		default:
-			// Mid-turn, resume, and other shapes need their own captured evidence.
+			// Mid-turn and other event shapes need their own captured evidence.
+			// Fresh and resumed executions share this native event contract.
 			return ordinary
 		}
 	}
@@ -77,7 +78,10 @@ func (*Codex) ClassifyFailure(artifacts PhaseArtifacts, observedAt time.Time) Fa
 	reset := time.Date(local.Year(), local.Month(), local.Day(), clock.Hour(), clock.Minute(), 0, 0, time.Local)
 	// The captured message truncates seconds (12:52:00Z vs 12:52:10Z). Wait
 	// through the displayed minute, and reject stale or DST-ambiguous clocks.
-	if !reset.Add(time.Minute).After(observedAt) || reset.Hour() != clock.Hour() || reset.Minute() != clock.Minute() || reset.Add(time.Hour).Format("15:04") == reset.Format("15:04") || reset.Add(-time.Hour).Format("15:04") == reset.Format("15:04") {
+	stale := !reset.Add(time.Minute).After(observedAt)
+	nonexistentClock := reset.Hour() != clock.Hour() || reset.Minute() != clock.Minute()
+	repeatedClock := reset.Add(time.Hour).Format("15:04") == reset.Format("15:04") || reset.Add(-time.Hour).Format("15:04") == reset.Format("15:04")
+	if stale || nonexistentClock || repeatedClock {
 		return outcome
 	}
 	outcome.ResetAt, outcome.Source = reset.Add(time.Minute).UTC(), "turn.failed.error.message.reset_time"

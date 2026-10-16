@@ -21,10 +21,10 @@ func TestCodexCapturedLimitWaitsAndRecovers(t *testing.T) {
 	time.Local = zone
 	t.Cleanup(func() { time.Local = previous })
 	for _, tc := range []struct {
-		name                           string
-		stale, missingIdentity, replay bool
+		name                                        string
+		stale, missingIdentity, replay, resumeLimit bool
 	}{
-		{name: "reported reset"}, {name: "configured cooldown", stale: true}, {name: "replayed next day", replay: true}, {name: "missing identity", missingIdentity: true},
+		{name: "reported reset"}, {name: "limit on resume", resumeLimit: true}, {name: "configured cooldown", stale: true}, {name: "replayed next day", replay: true}, {name: "missing identity", missingIdentity: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture, err := os.ReadFile("../../docs/research/codex-m3/fixtures/usage-limit-first-request/events.jsonl")
@@ -42,6 +42,9 @@ func TestCodexCapturedLimitWaitsAndRecovers(t *testing.T) {
 			script := `case "$*" in *implement-0-1*) printf partial > partial.txt; cat '` + path + `'; exit 1;; esac
 case "$*" in *"resume -- ` + codexID + ` "*) ;; *) exit 9;; esac
 ` + codexImplementation
+			if tc.resumeLimit {
+				script = strings.Replace(script, "\n"+codexImplementation, "\n"+`case "$*" in *implement-0-2*) cat '`+path+`'; exit 1;; esac`+"\n"+codexImplementation, 1)
+			}
 			_, runtime, api, _, cfg, r := codexFlow(t, script)
 			cfg.UsageLimits.Cooldown = 7 * time.Minute
 			now := time.Date(2026, 10, 16, 12, 23, 36, 0, time.UTC)
@@ -115,8 +118,17 @@ case "$*" in *"resume -- ` + codexID + ` "*) ;; *) exit 9;; esac
 				}
 				return
 			}
+			wantAttempt, wantWaits := 2, 1
+			if tc.resumeLimit {
+				second := finish(t, s, workflow.WaitingForHarness, workflow.Implement)
+				if second.Implementer.Attempt != 2 || second.Implementer.SessionID != codexID || second.HarnessWait.Consecutive != 2 {
+					t.Fatalf("resumed limit = %+v", second)
+				}
+				now = second.HarnessWait.ResetAt
+				wantAttempt, wantWaits = 3, 2
+			}
 			done := finish(t, s, workflow.Active, workflow.Review)
-			if done.Implementer.Attempt != 2 || done.Implementer.SessionID != codexID || len(done.HarnessWaitHistory) != 1 || api.creations != 1 {
+			if done.Implementer.Attempt != wantAttempt || done.Implementer.SessionID != codexID || len(done.HarnessWaitHistory) != wantWaits || api.creations != 1 {
 				t.Fatalf("resume = %+v", done)
 			}
 		})
