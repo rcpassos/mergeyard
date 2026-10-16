@@ -3,16 +3,14 @@ package scheduler
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -20,89 +18,20 @@ import (
 
 const waitsExhausted = "harness.usage_limit_waits_exhausted"
 
-type temporaryLimitError struct {
-	outcome harness.FailureClassification
-	exit    int
-}
+type temporaryLimitError = durable.TemporaryLimitError
+type creditLimitError = durable.CreditLimitError
 
-func (*temporaryLimitError) Error() string {
-	return "harness.temporary_limit: Execution interrupted by a temporary usage limit"
-}
-
-// Parse semantic results first. Valid blocked/failed task reports and successful
-// native completion never enter the classifier, even when tool text names limits.
 func (s *Scheduler) parseExecution(ctx context.Context, runID, attemptID, agent string, phase harness.PhaseContext, artifacts harness.PhaseArtifacts) (harness.PhaseResult, error) {
-	// Every in-flight phase uses its saved schema after upgrade. Fresh native
-	// adapter calls default to the current contract.
-	if phase.PhaseDir != "" {
-		schema, err := s.deps.Runner.ReadFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"))
-		if err != nil {
-			return harness.PhaseResult{}, err
-		}
-		var contract struct {
-			Properties struct {
-				SchemaVersion struct {
-					Const int `json:"const"`
-				} `json:"schema_version"`
-			} `json:"properties"`
-		}
-		if err := json.Unmarshal(schema, &contract); err != nil {
-			return harness.PhaseResult{}, err
-		}
-		if contract.Properties.SchemaVersion.Const < 1 {
-			return harness.PhaseResult{}, &fault.Error{Code: "phase.result_invalid", Message: "Saved schema version is missing"}
-		}
-		phase.ResultSchemaVersion = contract.Properties.SchemaVersion.Const
-	}
-	result, err := s.harnesses[agent].ParseResult(phase, artifacts)
-	if err == nil && phase.PhaseDir != "" && ((phase.Phase == workflow.Review && result.SchemaVersion >= 4) || (phase.Phase != workflow.Review && result.SchemaVersion >= 3)) {
-		raw, readErr := s.deps.Runner.ReadFile(ctx, filepath.Join(phase.PhaseDir, "criteria.json"))
-		if readErr != nil {
-			return result, readErr
-		}
-		var criteria []acceptance.Criterion
-		if decodeErr := json.Unmarshal(raw, &criteria); decodeErr != nil {
-			return result, decodeErr
-		}
-		if validationErr := acceptance.ValidateIDs(result.Criteria, criteria); validationErr != nil {
-			err = &fault.Error{Code: "phase.result_invalid", Message: "Result does not match acceptance criteria", Err: validationErr}
-		}
-	}
-	completed := s.harnesses[agent].NativeSucceeded(artifacts)
-	if completed {
-		if proofErr := s.workflow.RecordCreditProof(ctx, runID, attemptID, s.deps.Now().UTC()); proofErr != nil {
-			return result, proofErr
-		}
-	}
-	if err == nil || completed {
-		return result, err
-	}
-	outcome := s.harnesses[agent].ClassifyFailure(artifacts, s.deps.Now().UTC())
-	if outcome.Kind == harness.TemporaryLimit {
-		return result, &temporaryLimitError{outcome: outcome, exit: artifacts.ExitCode}
-	}
-	// The core consumes classified outcomes; native credit signals belong to #83.
-	if outcome.Kind == harness.CreditsExhausted {
-		return result, &creditLimitError{outcome: outcome, exit: artifacts.ExitCode}
-	}
-	return result, err
+	return s.execution().Parse(ctx, runID, attemptID, agent, phase, artifacts)
 }
 
-type creditLimitError struct {
-	outcome harness.FailureClassification
-	exit    int
-}
-
-func (*creditLimitError) Error() string {
-	return "harness.credits_exhausted: Harness credits are exhausted; explicit recovery is required"
-}
 func isHarnessLimit(err error) bool {
 	var temporary *temporaryLimitError
 	var credit *creditLimitError
 	return errors.As(err, &temporary) || errors.As(err, &credit)
 }
 func (s *Scheduler) creditExecution(ctx context.Context, repo config.Repository, run workflow.Run, a attempt, cause *creditLimitError) error {
-	wait := workflow.HarnessWait{Harness: a.agent, Reason: "credits_exhausted", Phase: run.Phase, Round: phaseRound(run, run.Phase), AttemptID: a.id, Attempt: a.number, ExitCode: &cause.exit, DetectedAt: s.deps.Now().UTC(), Source: cause.outcome.Source}
+	wait := workflow.HarnessWait{Harness: a.agent, Reason: "credits_exhausted", Phase: run.Phase, Round: phaseRound(run, run.Phase), AttemptID: a.id, Attempt: a.number, ExitCode: &cause.Exit, DetectedAt: s.deps.Now().UTC(), Source: cause.Outcome.Source}
 	_, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.OperationFailed, Failure: &fault.Error{Code: "harness.credits_exhausted", Message: "Harness credits are exhausted; restore credits and explicitly Retry to probe recovery"}, Metadata: workflow.MetadataPatch{HarnessWait: &wait}})
 	if err != nil {
 		return err
@@ -120,9 +49,9 @@ func (s *Scheduler) limitExecution(ctx context.Context, repo config.Repository, 
 		return cause
 	}
 	now := s.deps.Now().UTC()
-	wait := workflow.HarnessWait{Harness: a.agent, Reason: "temporary_limit", Phase: run.Phase, Round: phaseRound(run, run.Phase), AttemptID: a.id, Attempt: a.number, ExitCode: &limit.exit, DetectedAt: now, ResetAt: now.Add(s.cfg.UsageLimits.Cooldown), ResetTimeSource: "default_cooldown", Source: limit.outcome.Source, Allowance: s.cfg.UsageLimits.MaxWaits}
-	if limit.outcome.ResetAt.After(now) {
-		wait.ResetAt = limit.outcome.ResetAt.UTC()
+	wait := workflow.HarnessWait{Harness: a.agent, Reason: "temporary_limit", Phase: run.Phase, Round: phaseRound(run, run.Phase), AttemptID: a.id, Attempt: a.number, ExitCode: &limit.Exit, DetectedAt: now, ResetAt: now.Add(s.cfg.UsageLimits.Cooldown), ResetTimeSource: "default_cooldown", Source: limit.Outcome.Source, Allowance: s.cfg.UsageLimits.MaxWaits}
+	if limit.Outcome.ResetAt.After(now) {
+		wait.ResetAt = limit.Outcome.ResetAt.UTC()
 		wait.ResetTimeSource = "reported"
 	}
 	var lastOrdinary int

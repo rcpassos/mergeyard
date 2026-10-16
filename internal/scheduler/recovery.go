@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/rcpassos/mergeyard/internal/events"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -62,7 +63,5 @@ func (s *Scheduler) retryPhase(ctx context.Context, run workflow.Run, phase work
 // reserveRecovery is part of the replacement's launch transaction. A crash after
 // commit leaves a running deterministic identity for observation, never replay.
 func reserveRecovery(ctx context.Context, tx *sql.Tx, run workflow.Run, phase workflow.Phase, previous attempt, replacement, session string) (events.Draft, error) {
-	role := phase.Role()
-	_, err := tx.ExecContext(ctx, `INSERT INTO session_recoveries(run_id,phase,role,round,failed_attempt_id,replacement_attempt_id,previous_session_id) VALUES (?,?,?,?,?,?,?)`, run.ID, phase, role, phaseRound(run, phase), previous.id, replacement, previous.sessionID)
-	return events.Draft{RunID: run.ID, Type: "harness.session_resume_failed", Payload: map[string]any{"agent": previous.agent, "phase": phase, "role": role, "round": phaseRound(run, phase), "attempt": previous.number, "replacement_attempt": previous.number + 1, "previous_session_id": previous.sessionID, "session_id": session, "error": previous.failure, "warning": "Saved conversation is missing; continuing once in a fresh session"}}, err
+	return durable.ReserveRecovery(ctx, tx, run, phase, durableAttempt(previous), replacement, session)
 }
