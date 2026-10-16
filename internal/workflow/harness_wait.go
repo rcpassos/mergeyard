@@ -28,6 +28,16 @@ type HarnessWait struct {
 	Allowance       int       `json:"allowance"`
 }
 
+// Display returns current presentation metadata without modifying reset authority
+// or the original interruption observation.
+func (v HarnessWait) Display(now time.Time) HarnessWait {
+	if v.Reason == "credits_exhausted" && !now.Before(v.ResetAt) {
+		v.ResetAt = time.Time{}
+		v.ResetTimeSource = ""
+	}
+	return v
+}
+
 func LoadHarnessWaits(ctx context.Context, db queryer, id string) ([]HarnessWait, error) {
 	rows, err := db.QueryContext(ctx, "SELECT snapshot_json FROM harness_waits WHERE run_id=? ORDER BY id", id)
 	if err != nil {

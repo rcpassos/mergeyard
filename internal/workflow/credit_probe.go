@@ -66,10 +66,10 @@ func BindCreditProbe(ctx context.Context, tx *sql.Tx, runID, harness, attemptID 
 	if err != nil {
 		return err
 	}
-	if limit == nil || limit.Reason != "credits_exhausted" {
+	if !limit.CreditBlocked() {
 		return nil
 	}
-	if limit.ProbeRunID != runID || limit.ProbeAttemptID != "" || now.Before(limit.ResetAt) {
+	if !limit.ProbeReady(runID, now, true) {
 		return &fault.Error{Code: "harness.probe_unavailable", Message: "Credit restriction changed before launch; explicitly select a recovery probe"}
 	}
 
@@ -173,7 +173,7 @@ func finishCreditProbe(ctx context.Context, tx *sql.Tx, p CreditProbe, now time.
 	if err != nil {
 		return events.Draft{}, err
 	}
-	if proven && limit != nil && limit.Reason == "credits_exhausted" && limit.RestrictionID == p.RestrictionID && limit.ProbeID == p.ID {
+	if proven && limit.OwnsProbe(p) {
 		var result sql.Result
 		if limit.ResetAt.IsZero() {
 			result, err = tx.ExecContext(ctx, `DELETE FROM harness_limits WHERE harness_type=? AND restriction_id=? AND probe_id=?`, p.Harness, p.RestrictionID, p.ID)
@@ -182,7 +182,7 @@ func finishCreditProbe(ctx context.Context, tx *sql.Tx, p CreditProbe, now time.
 			reset := limit.ResetAt.Format(time.RFC3339Nano)
 			marker := reset
 			event = "harness.credit_recovered"
-			if !now.Before(limit.ResetAt) {
+			if !limit.WaitingForReset(now) {
 				marker = "available:" + reset
 				event = "harness.available"
 			}
