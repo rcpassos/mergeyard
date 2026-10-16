@@ -8,6 +8,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 	"path/filepath"
+	"time"
 )
 
 type TemporaryLimitError struct {
@@ -66,6 +67,15 @@ func (e Executor) Parse(ctx context.Context, runID, attemptID, agent string, pha
 	}
 	if err == nil || completed {
 		return result, err
+	}
+	// A date-less reset clock needs durable execution timing on offline replay.
+	// Calls without a persisted attempt leave the date unavailable for cooldown.
+	if attemptID != "" {
+		var started string
+		if err := e.DB.QueryRowContext(ctx, "SELECT started_at FROM phase_attempts WHERE id=?", attemptID).Scan(&started); err != nil {
+			return result, err
+		}
+		artifacts.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
 	}
 	outcome := e.Harnesses[agent].ClassifyFailure(artifacts, e.Now().UTC())
 	if outcome.Kind == harness.TemporaryLimit {

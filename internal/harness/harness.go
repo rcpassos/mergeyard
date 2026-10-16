@@ -81,6 +81,10 @@ type PhaseContext struct {
 // PhaseArtifacts is a completed attempt's captured stream and process exit.
 // Live or incomplete logs must not be passed as a completed attempt.
 type PhaseArtifacts struct {
+	// StartedAt bounds the capture date for date-less native diagnostics. A zero
+	// value means the execution date is unavailable; observation time alone is
+	// insufficient when replaying artifacts after a control-plane restart.
+	StartedAt time.Time
 	// LastMessage is the native Codex -o artifact from this unique attempt.
 	LastMessage []byte
 	Stdout      []byte

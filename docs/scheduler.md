@@ -456,11 +456,30 @@ or conflicting weekly reset leaves cooldown selection to the core. Unavailable
 overage credits accompanying this subscription limit do not produce a credit
 block. See the [captured rejection and post-reset resume](research/claude-m3/report.md).
 
-Unknown Claude variants and all Codex usage limits remain ordinary failures
-that consume the configured attempt budget. Codex's `TemporaryLimitDetection`
-and both adapters' `CreditExhaustionDetection` remain disabled. Core fixtures
-supply classified outcomes directly; Claude binding tests replay sanitized
-native fixtures offline. Normal CI makes no paid harness calls.
+Codex advertises `TemporaryLimitDetection` for #62's observed Plus-plan rejection:
+exit 1 with matching native `error.message` and `turn.failed.error.message` in
+the captured same-day `You’ve hit your usage limit` Plus-plan template, allowing
+changes to the upgrade and usage URLs. The same signal is recognized on fresh
+and resumed executions; a native resume-limit capture remains unobserved, and
+offline tests replay the captured signal on the resume path. The adapter converts
+the text's 12-hour clock using the CLI host's local time zone and observation
+date (checked against the persisted execution start date), then adds one minute because the text truncates reset seconds. Invalid,
+stale, or DST-ambiguous reset times, and executions reconciled across a local
+date boundary, leave cooldown selection to the core; a past
+clock is never assumed to mean tomorrow. No rollout reset was available in the
+captured first-request failure, so account metadata and unrelated sessions are
+not reset sources. See [the Codex evidence](research/codex-m3/limit-report.md).
+
+Codex persists `thread.started` identity during execution. A limited execution
+without identity retains its wait and requires attention at resumption with
+`harness.session_missing`; it never invents a conversation ID. A discovered ID
+allows a resume attempt, but does not prove the native session is resumable.
+
+Unknown variants for either adapter remain ordinary failures that consume the
+configured attempt budget. Both adapters' `CreditExhaustionDetection` remains
+disabled. Core fixtures supply classified outcomes directly; adapter binding
+tests replay sanitized native fixtures offline. Normal CI makes no paid harness
+calls.
 
 A temporary limit saves the interrupted execution as `usage_limited` and records
 `WAITING_FOR_HARNESS`, the same phase/round, and reset provenance atomically. A

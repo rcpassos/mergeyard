@@ -174,7 +174,8 @@ func (s *Scheduler) reconcileHarnessCheck(ctx context.Context, c workflow.Harnes
 		if err != nil {
 			return s.failHarnessCheck(ctx, c, err, "Availability execution ended, but its output could not be read; fix missing captures or workspace permissions and check again.")
 		}
-		artifacts := harness.PhaseArtifacts{Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode}
+		started, _ := time.Parse(time.RFC3339Nano, c.RequestedAt)
+		artifacts := harness.PhaseArtifacts{Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode, StartedAt: started}
 		adapter := s.harnesses[c.Harness]
 		proven = adapter.NativeSucceeded(artifacts)
 		if proven {

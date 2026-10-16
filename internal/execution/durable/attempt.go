@@ -112,7 +112,7 @@ func (e Executor) LaunchImplement(ctx context.Context, run workflow.Run, role co
 		if _, err := tx.ExecContext(ctx, "UPDATE runs SET implementer_session_id=? WHERE id=?", phase.SessionID, run.ID); err != nil {
 			return nil, err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions,session_id,check_retry_of) VALUES (?,?,'implement','implementer',0,?,?,?,?,'running',?,?,?,?,?,?,?,?,?)`, a.ID, run.ID, a.Number, role.Agent, role.Model, role.Effort, phase.Resume, a.Ref.Name, input, filepath.Join(req.PhaseDir, "result.json"), filepath.Join(req.PhaseDir, "events.jsonl"), string(skills), permissions, phase.SessionID, checkID)
+		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions,session_id,check_retry_of,started_at) VALUES (?,?,'implement','implementer',0,?,?,?,?,'running',?,?,?,?,?,?,?,?,?,?)`, a.ID, run.ID, a.Number, role.Agent, role.Model, role.Effort, phase.Resume, a.Ref.Name, input, filepath.Join(req.PhaseDir, "result.json"), filepath.Join(req.PhaseDir, "events.jsonl"), string(skills), permissions, phase.SessionID, checkID, e.Now().UTC().Format(time.RFC3339Nano))
 		if err != nil {
 			return nil, err
 		}
