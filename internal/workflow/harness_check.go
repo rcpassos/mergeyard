@@ -47,10 +47,10 @@ func (w *Workflow) ReserveHarnessCheck(ctx context.Context, c HarnessCheck, now 
 		if err != nil {
 			return events.Draft{}, err
 		}
-		if limit == nil || limit.Reason != "credits_exhausted" || limit.RestrictionID != c.RestrictionID || limit.ProbeID != "" {
+		if !limit.RecoveryEligible(true) || limit.RestrictionID != c.RestrictionID {
 			return events.Draft{}, &fault.Error{Code: "harness.probe_unavailable", Message: "Check availability requires an exhausted-credit block with no other recovery probe; refresh status"}
 		}
-		if now.Before(limit.ResetAt) {
+		if limit.WaitingForReset(now) {
 			return events.Draft{}, &fault.Error{Code: "harness.check_waiting", Message: "Wait for the temporary usage-limit reset before checking availability"}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO harness_checks(id,harness,restriction_id,request_json,process_session,phase_dir,status) VALUES(?,?,?,?,?,?,'reserved')`, c.ID, c.Harness, c.RestrictionID, c.RequestJSON, c.ProcessSession, c.PhaseDir); err != nil {
@@ -71,7 +71,7 @@ func (w *Workflow) StartHarnessCheck(ctx context.Context, c HarnessCheck, now ti
 		if err != nil {
 			return events.Draft{}, err
 		}
-		if limit == nil || limit.ProbeID != c.ID || limit.RestrictionID != c.RestrictionID || now.Before(limit.ResetAt) {
+		if !limit.OwnsProbe(CreditProbe{ID: c.ID, RestrictionID: c.RestrictionID}) || limit.WaitingForReset(now) {
 			return events.Draft{}, &fault.Error{Code: "harness.probe_unavailable", Message: "Restriction changed before the availability request; check status again"}
 		}
 		updated, err := tx.ExecContext(ctx, `UPDATE credit_probes SET status='running' WHERE id=? AND status='reserved'`, c.ID)
@@ -109,7 +109,7 @@ func (w *Workflow) CompleteHarnessCheck(ctx context.Context, c HarnessCheck, now
 			return nil, err
 		}
 		var drafts []events.Draft
-		if wait != nil && limit != nil && limit.ProbeID == p.ID && limit.RestrictionID == p.RestrictionID {
+		if wait != nil && limit.OwnsProbe(p) {
 			if wait.Reason == "credits_exhausted" {
 				_, err = tx.ExecContext(ctx, `UPDATE harness_limits SET restriction_id=?,detected_at=?,signal_source=? WHERE harness_type=?`, c.ID, now.Format(time.RFC3339Nano), wait.Source, c.Harness)
 				drafts = append(drafts, events.Draft{Type: "harness.credits_exhausted", Payload: wait})

@@ -39,7 +39,7 @@ func (s *Scheduler) CheckHarness(ctx context.Context, name string) (workflow.Har
 	if err != nil {
 		return workflow.HarnessCheck{}, err
 	}
-	if limit == nil || limit.Reason != "credits_exhausted" {
+	if !limit.CreditBlocked() {
 		return workflow.HarnessCheck{}, &fault.Error{Code: "harness.probe_unavailable", Message: "Check availability is only available for an exhausted-credit block"}
 	}
 	id := uuid.NewString()

@@ -3,16 +3,14 @@ package scheduler
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -20,97 +18,20 @@ import (
 
 const waitsExhausted = "harness.usage_limit_waits_exhausted"
 
-type temporaryLimitError struct {
-	outcome harness.FailureClassification
-	exit    int
-}
+type temporaryLimitError = durable.TemporaryLimitError
+type creditLimitError = durable.CreditLimitError
 
-func (*temporaryLimitError) Error() string {
-	return "harness.temporary_limit: Execution interrupted by a temporary usage limit"
-}
-
-// Parse semantic results first. Valid blocked/failed task reports and successful
-// native completion never enter the classifier, even when tool text names limits.
 func (s *Scheduler) parseExecution(ctx context.Context, runID, attemptID, agent string, phase harness.PhaseContext, artifacts harness.PhaseArtifacts) (harness.PhaseResult, error) {
-	// Every in-flight phase uses its saved schema after upgrade. Fresh native
-	// adapter calls default to the current contract.
-	if phase.PhaseDir != "" {
-		schema, err := s.deps.Runner.ReadFile(ctx, filepath.Join(phase.PhaseDir, "schema.json"))
-		if err != nil {
-			return harness.PhaseResult{}, err
-		}
-		var contract struct {
-			Properties struct {
-				SchemaVersion struct {
-					Const int `json:"const"`
-				} `json:"schema_version"`
-			} `json:"properties"`
-		}
-		if err := json.Unmarshal(schema, &contract); err != nil {
-			return harness.PhaseResult{}, err
-		}
-		if contract.Properties.SchemaVersion.Const < 1 {
-			return harness.PhaseResult{}, &fault.Error{Code: "phase.result_invalid", Message: "Saved schema version is missing"}
-		}
-		phase.ResultSchemaVersion = contract.Properties.SchemaVersion.Const
-	}
-	result, err := s.harnesses[agent].ParseResult(phase, artifacts)
-	if err == nil && phase.PhaseDir != "" && ((phase.Phase == workflow.Review && result.SchemaVersion >= 4) || (phase.Phase != workflow.Review && result.SchemaVersion >= 3)) {
-		raw, readErr := s.deps.Runner.ReadFile(ctx, filepath.Join(phase.PhaseDir, "criteria.json"))
-		if readErr != nil {
-			return result, readErr
-		}
-		var criteria []acceptance.Criterion
-		if decodeErr := json.Unmarshal(raw, &criteria); decodeErr != nil {
-			return result, decodeErr
-		}
-		if validationErr := acceptance.ValidateIDs(result.Criteria, criteria); validationErr != nil {
-			err = &fault.Error{Code: "phase.result_invalid", Message: "Result does not match acceptance criteria", Err: validationErr}
-		}
-	}
-	completed := s.harnesses[agent].NativeSucceeded(artifacts)
-	if completed {
-		if proofErr := s.workflow.RecordCreditProof(ctx, runID, attemptID, s.deps.Now().UTC()); proofErr != nil {
-			return result, proofErr
-		}
-	}
-	if err == nil || completed {
-		return result, err
-	}
-	// Date-less diagnostics need the durable execution date, including when an
-	// offline finish is reconciled on a later day. Invalid legacy timing leaves
-	// reset derivation to the adapter's cooldown fallback.
-	var started string
-	if err := s.db.QueryRowContext(ctx, "SELECT started_at FROM phase_attempts WHERE id=?", attemptID).Scan(&started); err != nil {
-		return result, err
-	}
-	artifacts.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
-	outcome := s.harnesses[agent].ClassifyFailure(artifacts, s.deps.Now().UTC())
-	if outcome.Kind == harness.TemporaryLimit {
-		return result, &temporaryLimitError{outcome: outcome, exit: artifacts.ExitCode}
-	}
-	// The core consumes classified outcomes; native credit signals belong to #83.
-	if outcome.Kind == harness.CreditsExhausted {
-		return result, &creditLimitError{outcome: outcome, exit: artifacts.ExitCode}
-	}
-	return result, err
+	return s.execution().Parse(ctx, runID, attemptID, agent, phase, artifacts)
 }
 
-type creditLimitError struct {
-	outcome harness.FailureClassification
-	exit    int
-}
-
-func (*creditLimitError) Error() string {
-	return "harness.credits_exhausted: Harness credits are exhausted; explicit recovery is required"
-}
 func isHarnessLimit(err error) bool {
 	var temporary *temporaryLimitError
 	var credit *creditLimitError
 	return errors.As(err, &temporary) || errors.As(err, &credit)
 }
 func (s *Scheduler) creditExecution(ctx context.Context, repo config.Repository, run workflow.Run, a attempt, cause *creditLimitError) error {
-	wait := workflow.HarnessWait{Harness: a.agent, Reason: "credits_exhausted", Phase: run.Phase, Round: phaseRound(run, run.Phase), AttemptID: a.id, Attempt: a.number, ExitCode: &cause.exit, DetectedAt: s.deps.Now().UTC(), Source: cause.outcome.Source}
+	wait := workflow.HarnessWait{Harness: a.agent, Reason: "credits_exhausted", Phase: run.Phase, Round: phaseRound(run, run.Phase), AttemptID: a.id, Attempt: a.number, ExitCode: &cause.Exit, DetectedAt: s.deps.Now().UTC(), Source: cause.Outcome.Source}
 	_, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.OperationFailed, Failure: &fault.Error{Code: "harness.credits_exhausted", Message: "Harness credits are exhausted; restore credits and explicitly Retry to probe recovery"}, Metadata: workflow.MetadataPatch{HarnessWait: &wait}})
 	if err != nil {
 		return err
@@ -128,9 +49,9 @@ func (s *Scheduler) limitExecution(ctx context.Context, repo config.Repository, 
 		return cause
 	}
 	now := s.deps.Now().UTC()
-	wait := workflow.HarnessWait{Harness: a.agent, Reason: "temporary_limit", Phase: run.Phase, Round: phaseRound(run, run.Phase), AttemptID: a.id, Attempt: a.number, ExitCode: &limit.exit, DetectedAt: now, ResetAt: now.Add(s.cfg.UsageLimits.Cooldown), ResetTimeSource: "default_cooldown", Source: limit.outcome.Source, Allowance: s.cfg.UsageLimits.MaxWaits}
-	if limit.outcome.ResetAt.After(now) {
-		wait.ResetAt = limit.outcome.ResetAt.UTC()
+	wait := workflow.HarnessWait{Harness: a.agent, Reason: "temporary_limit", Phase: run.Phase, Round: phaseRound(run, run.Phase), AttemptID: a.id, Attempt: a.number, ExitCode: &limit.Exit, DetectedAt: now, ResetAt: now.Add(s.cfg.UsageLimits.Cooldown), ResetTimeSource: "default_cooldown", Source: limit.Outcome.Source, Allowance: s.cfg.UsageLimits.MaxWaits}
+	if limit.Outcome.ResetAt.After(now) {
+		wait.ResetAt = limit.Outcome.ResetAt.UTC()
 		wait.ResetTimeSource = "reported"
 	}
 	var lastOrdinary int
@@ -192,16 +113,14 @@ func (s *Scheduler) HarnessAvailability(ctx context.Context) ([]HarnessAvailabil
 		if err != nil {
 			return nil, err
 		}
+		now := s.deps.Now()
+		v.Available = limit.Available(now)
 		if limit != nil {
-			v.ResetAt, v.ResetTimeSource, v.Source = limit.ResetAt, limit.ResetTimeSource, limit.Source
-			if limit.Reason == "credits_exhausted" && !s.deps.Now().Before(limit.ResetAt) {
-				v.ResetAt = time.Time{}
-				v.ResetTimeSource = ""
-			}
+			current := (workflow.HarnessWait{Reason: limit.Reason, ResetAt: limit.ResetAt, ResetTimeSource: limit.ResetTimeSource}).Display(now)
+			v.ResetAt, v.ResetTimeSource, v.Source = current.ResetAt, current.ResetTimeSource, limit.Source
 			v.Reason, v.ProbeID, v.ProbeRunID, v.ProbeAttemptID = limit.Reason, limit.ProbeID, limit.ProbeRunID, limit.ProbeAttemptID
-			v.Available = limit.Reason != "credits_exhausted" && !s.deps.Now().Before(limit.ResetAt)
 		}
-		v.CheckEligible = limit != nil && limit.Reason == "credits_exhausted" && limit.ProbeID == "" && !s.deps.Now().Before(limit.ResetAt) && caps.CreditExhaustionDetection
+		v.CheckEligible = limit.CheckEligible(now, caps.CreditExhaustionDetection)
 		checks, err := workflow.LoadHarnessChecks(ctx, s.db, name, false)
 		if err != nil {
 			return nil, err
@@ -219,28 +138,18 @@ func (s *Scheduler) harnessGate(ctx context.Context, agent string) (*workflow.Ha
 	if err != nil {
 		return nil, err
 	}
-	if limit == nil || (limit.Reason != "credits_exhausted" && !s.deps.Now().Before(limit.ResetAt)) {
-		return nil, nil
-	}
-	return &workflow.HarnessWait{Harness: agent, Reason: limit.Reason, ResetAt: limit.ResetAt, ResetTimeSource: limit.ResetTimeSource, Source: limit.Source, DetectedAt: s.deps.Now().UTC()}, nil
+	return limit.Gate(s.deps.Now()), nil
 }
 
 func (s *Scheduler) gatePhase(ctx context.Context, run workflow.Run, agent string) (bool, error) {
-	wait, err := s.harnessGate(ctx, agent)
+	limit, err := workflow.LoadHarnessLimit(ctx, s.db, agent)
 	if err != nil {
 		return false, err
 	}
-	if wait == nil {
+	now := s.deps.Now()
+	wait := limit.Gate(now)
+	if wait == nil || limit.ProbeReady(run.ID, now, s.harnesses[agent].Capabilities().CreditExhaustionDetection) {
 		return false, nil
-	}
-	if wait.Reason == "credits_exhausted" {
-		limit, err := workflow.LoadHarnessLimit(ctx, s.db, agent)
-		if err != nil {
-			return false, err
-		}
-		if s.creditProbeReady(limit, run.ID) {
-			return false, nil
-		}
 	}
 	wait.Phase, wait.Round = run.Phase, phaseRound(run, run.Phase)
 	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.HarnessLimited, Metadata: workflow.MetadataPatch{HarnessWait: wait}})
@@ -252,18 +161,13 @@ func (s *Scheduler) resumeHarnessWait(ctx context.Context, run workflow.Run) err
 	if wait == nil || wait.Phase != run.Phase || wait.Round != phaseRound(run, run.Phase) {
 		return &fault.Error{Code: "harness.wait_missing", Message: "Harness wait metadata is unavailable; inspect preserved work"}
 	}
-	gate, err := s.harnessGate(ctx, wait.Harness)
+	limit, err := workflow.LoadHarnessLimit(ctx, s.db, wait.Harness)
 	if err != nil {
 		return err
 	}
-	if gate != nil {
-		limit, err := workflow.LoadHarnessLimit(ctx, s.db, wait.Harness)
-		if err != nil {
-			return err
-		}
-		if !s.creditProbeReady(limit, run.ID) {
-			return nil
-		}
+	now := s.deps.Now()
+	if !limit.Available(now) && !limit.ProbeReady(run.ID, now, s.harnesses[wait.Harness].Capabilities().CreditExhaustionDetection) {
+		return nil
 	}
 	if s.deps.Now().Before(wait.ResetAt) {
 		return nil
@@ -305,7 +209,7 @@ func (s *Scheduler) selectCreditProbe(ctx context.Context, run workflow.Run, rep
 	if err != nil {
 		return err
 	}
-	if limit == nil || limit.Reason != "credits_exhausted" {
+	if !limit.CreditBlocked() {
 		return nil
 	}
 	if !s.harnesses[agent].Capabilities().CreditExhaustionDetection {
@@ -373,14 +277,10 @@ func (s *Scheduler) RetryEligible(ctx context.Context, run workflow.Run) (bool, 
 	if err != nil {
 		return false, err
 	}
-	if limit != nil && limit.Reason == "credits_exhausted" {
-		return limit.ProbeID == "" && s.harnesses[agent].Capabilities().CreditExhaustionDetection, nil
+	if limit.CreditBlocked() {
+		return limit.RecoveryEligible(s.harnesses[agent].Capabilities().CreditExhaustionDetection), nil
 	}
 	return true, nil
-}
-
-func (s *Scheduler) creditProbeReady(limit *workflow.HarnessLimit, runID string) bool {
-	return limit != nil && limit.Reason == "credits_exhausted" && limit.ProbeRunID == runID && limit.ProbeAttemptID == "" && !s.deps.Now().Before(limit.ResetAt) && s.harnesses[limit.Harness].Capabilities().CreditExhaustionDetection
 }
 
 // Publication and saved fix completion reuse evidence; they cannot prove credit
@@ -420,10 +320,8 @@ func (s *Scheduler) retryStartsAgent(ctx context.Context, run workflow.Run, v wo
 // runSnapshot keeps current credit-wait JSON consistent with harness availability.
 // Copy the wait so control-plane reset authority and observation history survive.
 func (s *Scheduler) runSnapshot(run workflow.Run) workflow.Run {
-	if wait := run.HarnessWait; wait != nil && wait.Reason == "credits_exhausted" && !s.deps.Now().Before(wait.ResetAt) {
-		current := *wait
-		current.ResetAt = time.Time{}
-		current.ResetTimeSource = ""
+	if run.HarnessWait != nil {
+		current := run.HarnessWait.Display(s.deps.Now())
 		run.HarnessWait = &current
 	}
 	return run
