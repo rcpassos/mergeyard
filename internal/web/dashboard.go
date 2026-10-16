@@ -12,16 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/doctor"
-	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/harness"
-	"github.com/rcpassos/mergeyard/internal/maintenance"
-	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 	"github.com/rcpassos/mergeyard/internal/workspace"
@@ -312,41 +308,22 @@ func emptySections() []queueSection {
 }
 
 func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
-	query := `SELECT r.id,r.repository,r.issue_number,r.state,COALESCE(r.current_phase,''),r.review_round,r.created_at,r.updated_at,
- COALESCE(r.last_error_code,''),COALESCE(r.last_error_message,''),COALESCE(r.human_action_json,'null'),COALESCE(r.branch,''),COALESCE(r.worktree_path,''),
- CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_agent,'') ELSE COALESCE(r.implementer_agent,'') END,CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_session_id,'') ELSE COALESCE(r.implementer_session_id,'') END,COALESCE(s.issue_json,'{}'),COALESCE(s.pr_url,''),COALESCE(r.pr_number,0),
- COALESCE(a.attempt,0),COALESCE(a.round,0),COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.process_session,''),COALESCE(a.log_path,''),COALESCE(a.skills_json,''),r.stop_requested,r.takeover_status,COALESCE(r.approved_sha,''),COALESCE(r.role_settings_json,'null')
- FROM runs r LEFT JOIN scheduler_runs s ON s.run_id=r.id
- LEFT JOIN phase_attempts a ON a.id=(SELECT id FROM phase_attempts WHERE run_id=r.id AND phase=r.current_phase ORDER BY started_at DESC,rowid DESC, round DESC,attempt DESC LIMIT 1)`
-	var args []any
-	if id != "" {
-		query += " WHERE r.id=?"
-		args = append(args, id)
-	} else {
-		query += ` WHERE r.state NOT IN ('FAILED','STOPPED','COMPLETED') OR r.id IN
- (SELECT id FROM runs WHERE state IN ('FAILED','STOPPED','COMPLETED') ORDER BY updated_at DESC,id LIMIT 20)`
-	}
-	query += " ORDER BY r.updated_at DESC,r.id"
-	rows, err := d.DB.QueryContext(ctx, query, args...)
+	observations, err := workflow.ObserveRecentRuns(ctx, d.DB, id)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var runs []runView
-	for rows.Next() {
-		var run runView
-		var issueJSON, skillsJSON, actionJSON, roleSettingsJSON string
-		if err := rows.Scan(&run.ID, &run.Repository, &run.IssueNumber, &run.State, &run.Phase, &run.ReviewRound, &run.CreatedAt, &run.UpdatedAt,
-			&run.LastErrorCode, &run.LastErrorMessage, &actionJSON, &run.Branch, &run.Worktree, &run.Agent, &run.SessionID, &issueJSON, &run.PRURL, &run.PRNumber,
-			&run.Attempt, &run.Round, &run.Model, &run.Effort, &run.ProcessSession, &run.LogPath, &skillsJSON, &run.Stopping, &run.TakeoverStatus, &run.ApprovedSHA, &roleSettingsJSON); err != nil {
-			return nil, err
+	for _, observation := range observations {
+		run := runView{
+			Run:    observation.Run,
+			Branch: observation.Branch, Worktree: observation.Worktree,
+			Agent: observation.Agent, SessionID: observation.SessionID,
+			PRURL: observation.PRURL, Attempt: observation.Attempt, Round: observation.Round,
+			Model: observation.Model, Effort: observation.Effort,
+			ProcessSession: observation.ProcessSession, LogPath: observation.LogPath,
+			Stopping: observation.StopRequested,
 		}
-		if err := json.Unmarshal([]byte(actionJSON), &run.HumanAction); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(roleSettingsJSON), &run.RoleSettings); err != nil {
-			return nil, err
-		}
+		issueJSON, skillsJSON := observation.IssueJSON, observation.SkillsJSON
 		var issue github.Issue
 		if err := json.Unmarshal([]byte(issueJSON), &issue); err != nil {
 			return nil, err
@@ -397,78 +374,9 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		run.Stopping = run.Stopping && run.CanStop
 		runs = append(runs, run)
 	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
-	}
 	for i := range runs {
-		runs[i].HarnessWaitHistory, err = workflow.LoadHarnessWaits(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].HarnessWait, err = workflow.CurrentHarnessWait(ctx, d.DB, runs[i].HarnessWaitHistory)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].Merge, err = maintenance.Load(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
 		runs[i].Stopping = runs[i].Stopping && runs[i].Merge == nil
-		runs[i].CreditProbes, err = workflow.LoadCreditProbes(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].Handbacks, err = workflow.LoadHandbacks(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
 		runs[i].CanHandback = runs[i].State == workflow.Manual && runs[i].TakeoverStatus == workflow.TakeoverManual && !runs[i].Stopping && runs[i].Merge == nil
-		runs[i].Retries, err = workflow.LoadRetries(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].CI, err = ci.Load(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].Escalation, err = escalation.Load(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].SessionRecoveries, err = workflow.LoadSessionRecoveries(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].Implementer, err = workflow.LoadImplementSnapshot(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].ImplementHistory, err = workflow.LoadImplementHistory(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-
-		runs[i].FixHistory, err = review.LoadFixHistory(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].Publications, err = review.LoadPublications(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].ReviewHistory, err = review.LoadHistory(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		runs[i].Review, err = review.LoadSnapshot(ctx, d.DB, runs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		if len(runs[i].FixHistory) > 0 {
-			runs[i].Fix = &runs[i].FixHistory[len(runs[i].FixHistory)-1]
-		}
 		runs[i].CanRetry, err = d.Scheduler.RetryEligible(ctx, runs[i].Run)
 		if err != nil {
 			return nil, err
