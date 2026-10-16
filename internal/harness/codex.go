@@ -27,7 +27,7 @@ func NewCodex(cfg config.Codex) *Codex {
 }
 func (*Codex) Type() string { return "codex" }
 func (*Codex) Capabilities() HarnessCapabilities {
-	return HarnessCapabilities{ModelSelection: true, EffortSelection: true, SkillSelection: true, StructuredOutput: true, SessionResume: true, SessionIDSource: Discovered}
+	return HarnessCapabilities{ModelSelection: true, EffortSelection: true, SkillSelection: true, StructuredOutput: true, SessionResume: true, TemporaryLimitDetection: true, SessionIDSource: Discovered}
 }
 func (c *Codex) ValidateConfig(role RoleConfig) error {
 	if role.Agent != "" && role.Agent != c.Type() {

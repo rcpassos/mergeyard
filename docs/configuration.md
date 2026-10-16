@@ -527,10 +527,12 @@ first wait start and deadline with reviewer approval. Pending/unknown changes,
 restarts, and later configuration changes do not renew that deadline.
 
 `usage_limits.cooldown` (default `30m`) and `usage_limits.max_waits` (default `3`)
-apply only when a harness adapter classifies a temporary limit. Both production
-adapters currently have this detection disabled, so these settings do not turn
-native usage-limit failures into waits. Those failures consume the role's normal
-`max_attempts` budget. Credit detection is also disabled; Check availability and
+apply when a harness adapter classifies a temporary limit. Claude detects its
+captured weekly rejection; Codex detects its captured Plus-plan same-day
+rejection. Unknown variants consume the role's normal `max_attempts` budget.
+Codex uses the CLI host's local time zone and adds one minute to the reported
+reset clock; an unreliable reset uses the configured cooldown. Credit detection
+remains disabled; Check availability and
 Retry-as-probe require its evidence-backed capability. See
 [M3 acceptance](m3-acceptance.md) for the gates and current evidence.
 

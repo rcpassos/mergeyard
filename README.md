@@ -120,8 +120,10 @@ prepared worktree and a recorded implementer session. Exit the interactive
 harness before handback. `open` remains reserved.
 
 Claude detects the observed headless weekly usage-limit rejection and waits
-until its reported reset or the configured cooldown before resuming. Unknown
-Claude variants and all Codex limits consume the ordinary attempt budget.
+until its reported reset or the configured cooldown before resuming. Codex
+detects its captured Plus-plan same-day rejection, using the host-local reset
+clock plus one minute or the configured cooldown. Unknown variants consume the
+ordinary attempt budget.
 Exhausted-credit detection and credit recovery controls stay unavailable for
 both harnesses until their native evidence bindings land. See [M3 acceptance and evidence](docs/m3-acceptance.md)
 for the verified recovery core, current capability gates, and offline checks.

@@ -77,6 +77,14 @@ func (s *Scheduler) parseExecution(ctx context.Context, runID, attemptID, agent 
 	if err == nil || completed {
 		return result, err
 	}
+	// Date-less diagnostics need the durable execution date, including when an
+	// offline finish is reconciled on a later day. Invalid legacy timing leaves
+	// reset derivation to the adapter's cooldown fallback.
+	var started string
+	if err := s.db.QueryRowContext(ctx, "SELECT started_at FROM phase_attempts WHERE id=?", attemptID).Scan(&started); err != nil {
+		return result, err
+	}
+	artifacts.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
 	outcome := s.harnesses[agent].ClassifyFailure(artifacts, s.deps.Now().UTC())
 	if outcome.Kind == harness.TemporaryLimit {
 		return result, &temporaryLimitError{outcome: outcome, exit: artifacts.ExitCode}

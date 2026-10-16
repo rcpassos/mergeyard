@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rcpassos/mergeyard/internal/config"
@@ -498,8 +499,8 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		if _, err := tx.ExecContext(ctx, "UPDATE runs SET implementer_session_id=? WHERE id=?", sessionID, run.ID); err != nil {
 			return events.Draft{}, err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions,session_id,check_retry_of)
- VALUES (?,?,'implement','implementer',0,?,?,?,?,'running',?,?,?,?,?,?,?,?,?)`, id, run.ID, number, repo.Implementer.Agent, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills), s.rolePermissions(repo.Implementer.Agent), sessionID, checkID)
+		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions,session_id,check_retry_of,started_at)
+ VALUES (?,?,'implement','implementer',0,?,?,?,?,'running',?,?,?,?,?,?,?,?,?,?)`, id, run.ID, number, repo.Implementer.Agent, repo.Implementer.Model, repo.Implementer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills), s.rolePermissions(repo.Implementer.Agent), sessionID, checkID, s.deps.Now().UTC().Format(time.RFC3339Nano))
 		if err != nil {
 			return events.Draft{}, err
 		}

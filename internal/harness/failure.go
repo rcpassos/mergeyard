@@ -19,8 +19,3 @@ type FailureClassification struct {
 	ResetAt time.Time `json:"reset_at,omitempty"`
 	Source  string    `json:"source,omitempty"`
 }
-
-// Codex's native binding remains deferred to its captured-evidence slice.
-func (*Codex) ClassifyFailure(PhaseArtifacts, time.Time) FailureClassification {
-	return FailureClassification{Kind: Ordinary}
-}
