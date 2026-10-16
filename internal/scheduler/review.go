@@ -301,6 +301,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		warning = "harness.session_resume_failed"
 	}
 	previousSession := savedPrevious.SessionID
+	if phase.Resume {
+		previousSession = phase.SessionID
+	}
 	env, err := s.phaseEnvironment(ctx, run.ID, workflow.Review)
 	if err != nil {
 		return fail(err)
