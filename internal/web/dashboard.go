@@ -308,53 +308,22 @@ func emptySections() []queueSection {
 }
 
 func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
-	query := `SELECT r.id,COALESCE(r.branch,''),COALESCE(r.worktree_path,''),
- CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_agent,'') ELSE COALESCE(r.implementer_agent,'') END,CASE WHEN r.current_phase='review' THEN COALESCE(r.reviewer_session_id,'') ELSE COALESCE(r.implementer_session_id,'') END,COALESCE(s.issue_json,'{}'),COALESCE(s.pr_url,''),
- COALESCE(a.attempt,0),COALESCE(a.round,0),COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.process_session,''),COALESCE(a.log_path,''),COALESCE(a.skills_json,''),r.stop_requested
- FROM runs r LEFT JOIN scheduler_runs s ON s.run_id=r.id
- LEFT JOIN phase_attempts a ON a.id=(SELECT id FROM phase_attempts WHERE run_id=r.id AND phase=r.current_phase ORDER BY started_at DESC,rowid DESC, round DESC,attempt DESC LIMIT 1)`
-	var args []any
-	if id != "" {
-		query += " WHERE r.id=?"
-		args = append(args, id)
-	} else {
-		query += ` WHERE r.state NOT IN ('FAILED','STOPPED','COMPLETED') OR r.id IN
- (SELECT id FROM runs WHERE state IN ('FAILED','STOPPED','COMPLETED') ORDER BY updated_at DESC,id LIMIT 20)`
-	}
-	query += " ORDER BY r.updated_at DESC,r.id"
-	rows, err := d.DB.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	// Close selection rows before observing runs: SQLite may have one connection.
-	type selectedRun struct {
-		view                  runView
-		issueJSON, skillsJSON string
-	}
-	var selected []selectedRun
-	for rows.Next() {
-		var item selectedRun
-		run := &item.view
-		if err := rows.Scan(&run.ID, &run.Branch, &run.Worktree, &run.Agent, &run.SessionID, &item.issueJSON, &run.PRURL,
-			&run.Attempt, &run.Round, &run.Model, &run.Effort, &run.ProcessSession, &run.LogPath, &item.skillsJSON, &run.Stopping); err != nil {
-			return nil, err
-		}
-		selected = append(selected, item)
-	}
-	err = rows.Err()
-	rows.Close()
+	observations, err := workflow.ObserveRecentRuns(ctx, d.DB, id)
 	if err != nil {
 		return nil, err
 	}
 	var runs []runView
-	for _, item := range selected {
-		run := item.view
-		run.Run, err = workflow.ObserveRun(ctx, d.DB, run.ID)
-		if err != nil {
-			return nil, err
+	for _, observation := range observations {
+		run := runView{
+			Run:    observation.Run,
+			Branch: observation.Branch, Worktree: observation.Worktree,
+			Agent: observation.Agent, SessionID: observation.SessionID,
+			PRURL: observation.PRURL, Attempt: observation.Attempt, Round: observation.Round,
+			Model: observation.Model, Effort: observation.Effort,
+			ProcessSession: observation.ProcessSession, LogPath: observation.LogPath,
+			Stopping: observation.StopRequested,
 		}
-		issueJSON, skillsJSON := item.issueJSON, item.skillsJSON
+		issueJSON, skillsJSON := observation.IssueJSON, observation.SkillsJSON
 		var issue github.Issue
 		if err := json.Unmarshal([]byte(issueJSON), &issue); err != nil {
 			return nil, err

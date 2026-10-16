@@ -2,6 +2,7 @@ package workflow_test
 
 import (
 	"context"
+	"database/sql"
 	"reflect"
 	"testing"
 	"time"
@@ -58,5 +59,61 @@ func TestObservationRetainsApprovalHistoryAndCurrentWait(t *testing.T) {
 	transactional, err := workflow.ObserveRun(ctx, tx, run.ID)
 	if err != nil || transactional.ApprovedSHA != "transaction-head" {
 		t.Fatalf("observation lost caller transaction: %+v, %v", transactional, err)
+	}
+}
+
+// transitionAfterSelection advances the real SQLite workflow at the first
+// evidence read, after the selection statement has released its rows.
+type transitionAfterSelection struct {
+	*sql.DB
+	transition func()
+}
+
+func (db *transitionAfterSelection) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if transition := db.transition; transition != nil {
+		db.transition = nil
+		transition()
+	}
+	return db.DB.QueryRowContext(ctx, query, args...)
+}
+
+func TestRecentObservationKeepsPhaseAndExecutionTogetherAcrossTransition(t *testing.T) {
+	for _, selectedID := range []string{"", "run"} {
+		t.Run("selected="+selectedID, func(t *testing.T) {
+			w, _, db := newWorkflow(t)
+			seed(t, w, workflow.Active, workflow.Implement)
+			if _, err := db.Exec(`UPDATE runs SET implementer_agent='claude',implementer_session_id='implement-session',reviewer_agent='codex',reviewer_session_id='review-session',pr_number=42;
+    INSERT INTO phase_attempts(id,run_id,phase,role,round,attempt,agent,status,model,effort,skills_json,session_id,process_session,log_path)
+    VALUES ('implement-attempt','run','implement','implementer',0,1,'claude','succeeded','implement-model','high','["implement-skill"]','implement-session','implement-process','implement.log')`); err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			boundary := &transitionAfterSelection{DB: db, transition: func() {
+				if _, err := w.Transition(ctx, "run", workflow.Request{Trigger: workflow.ImplementSucceeded}); err != nil {
+					t.Fatal(err)
+				}
+			}}
+			observations, err := workflow.ObserveRecentRuns(ctx, boundary, selectedID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(observations) != 1 {
+				t.Fatalf("observations=%+v", observations)
+			}
+			before := observations[0]
+			if before.Phase != workflow.Implement || before.Attempt != 1 || before.Agent != "claude" || before.Model != "implement-model" || before.Effort != "high" || before.SkillsJSON != `["implement-skill"]` || before.SessionID != "implement-session" || before.ProcessSession != "implement-process" || before.LogPath != "implement.log" {
+				t.Fatalf("mixed lifecycle and execution across transition: %+v", before)
+			}
+			observations, err = workflow.ObserveRecentRuns(ctx, db, selectedID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after := observations[0]
+			// The next read must identify a review with no attempt, which drives the
+			// dashboard's Review pending display rather than borrowing implement data.
+			if after.Phase != workflow.Review || after.State != workflow.Active || after.Attempt != 0 || after.PRNumber != 42 || after.Agent != "codex" || after.SessionID != "review-session" || after.Model != "" || after.Effort != "" || after.SkillsJSON != "" || after.ProcessSession != "" || after.LogPath != "" {
+				t.Fatalf("review pending inherited implement execution: %+v", after)
+			}
+		})
 	}
 }
