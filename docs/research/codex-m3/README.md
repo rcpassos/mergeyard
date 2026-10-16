@@ -1,4 +1,46 @@
-# Manual Codex M3 continuity probe
+# Manual Codex M3 probes
+
+## Usage-limit capture
+
+Evidence for [issue #62](https://github.com/rcpassos/mergeyard/issues/62).
+Read [limit-report.md](limit-report.md) before using
+[fixtures/usage-limit-first-request](fixtures/usage-limit-first-request/run.json):
+a real headless first-request limit was captured on 2026-10-16. Production
+classifier work is tracked in [#82](https://github.com/rcpassos/mergeyard/issues/82).
+
+Run only when an account limit is already suspected. This performs one
+authenticated model invocation and can consume quota:
+
+```sh
+python3 docs/research/codex-m3/limit_probe.py --live
+```
+
+Requirements: Python 3.9+, an authenticated Codex CLI with file-based
+`auth.json`, and outbound access. The recorded binary was 0.156.1; `--codex`
+selects a binary and `--model` a model (default `gpt-6-luna`). The script makes
+a private temporary directory, prints its path, and stages only `auth.json` into
+a fresh `CODEX_HOME`, removing it on exit. The child runs `exec --json` in an
+empty workspace with no stdin, read-only sandbox, approval `never`, user config,
+rules, shell, plugins, apps, hooks, multi-agent, web search, and project docs
+disabled, plus the M2 implement `--output-schema` and `-o`. The session persists
+so its rollout can be inspected. One call, a 90-second watchdog, then SIGTERM
+and a five-second SIGKILL grace; descendants are stopped on exit. SIGTERM or
+SIGHUP to the supervisor is latched: it stops the child's process group, removes
+staged auth, finalizes `run.json` with `signal_sent: supervisor_<SIGNAL>`, and
+exits 128+signal. SIGKILL of the supervisor bypasses cleanup; then remove
+`codex-home/auth.json` from the printed directory by hand. There is no
+retry, wait, or exhaustion loop: never repeat a successful request to
+manufacture a failure.
+
+The probe records version, exact argv, UTC start, `thread_id`, exit code,
+elapsed time, watchdog signal, and persisted rollout paths in `run.json`, with
+stdout JSONL and stderr beside it. Inspect the raw directory privately. Keep
+exec JSONL whole; select rollout records (`session_meta`, `turn_context`, the
+prompt, `token_count`, `task_complete`) and replace private paths. Never publish
+`auth.json`, the raw `codex-home`, or personal sessions. Normal CI and
+`make test` never run this script.
+
+## Continuity probe
 
 This is the opt-in live reproduction for
 [issue #63](https://github.com/rcpassos/mergeyard/issues/63).
@@ -13,7 +55,7 @@ terminal. The observed version was Codex 0.156.1. `--live` acknowledges model
 calls that consume account quota. No dependencies are installed. Keep stages
 sequential, inspect results, and do not retry automatically.
 
-## 1. Prepare and interrupt headless execution
+### 1. Prepare and interrupt headless execution
 
 From the repository root:
 
@@ -30,7 +72,7 @@ and the CLI is no longer running before continuing. The fixture input holding
 the seed marker is removed by the supervisor. Exit 1 and missing native
 completion were observed; never interpret the interrupted turn as success.
 
-## 2. Resume the exact conversation interactively
+### 2. Resume the exact conversation interactively
 
 ```sh
 /usr/bin/script -q "$PROBE_ROOT/evidence/interactive.terminal.log" \
@@ -76,7 +118,7 @@ If a watchdog/cancellation occurs, retain it as failed evidence and do not
 claim a successful interactive exit. Never resume concurrently, clear, branch,
 or select another conversation.
 
-## 3. Hand back to headless execution
+### 3. Hand back to headless execution
 
 Only after the interactive process has exited, replace the external handback
 input without repeating either conversation marker:
@@ -98,7 +140,7 @@ model explicitly with `--model` on headless runs and the interactive wrapper
 if reproducing on another account; record that difference from the observed
 run. Do not substitute another identity.
 
-## 4. Check and preserve evidence
+### 4. Check and preserve evidence
 
 The existing offline checker makes no model request:
 

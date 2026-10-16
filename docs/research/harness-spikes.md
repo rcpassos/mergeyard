@@ -51,6 +51,17 @@ resumability remain [#81](https://github.com/rcpassos/mergeyard/issues/81) work.
 Earlier tables/proposals below retain their original research context; use the
 M3 report for this observed headless failure contract.
 
+Update (2026-10-16): [issue #62's Codex capture](codex-m3/limit-report.md)
+preserves a genuine first-request usage limit on Codex 0.156.1: exec JSONL
+`thread.started`, `turn.started`, `error`, `turn.failed` with the Plus-plan
+`hit your usage limit … try again at 1:52 PM` text, exit 1, no `-o` file, and
+rollout `codex_error_info: usage_limit_exceeded`. Q2 below is answered only in
+part: the rollout `token_count` is written before the failure, but its
+`premium` snapshot has null windows and no `resets_at`. The text is the only
+reset source on a first-limited thread; it agreed to the minute with the
+operator's Desktop five-hour `resets_at`. Production binding and limited-thread
+resumability remain [#82](https://github.com/rcpassos/mergeyard/issues/82) work.
+
 ---
 
 ## 1. Summary table
