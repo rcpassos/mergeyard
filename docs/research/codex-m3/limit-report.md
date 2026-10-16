@@ -120,8 +120,11 @@ snapshot, and the failed completion. Omitted: developer/skill/multi-agent
 instructions, environment context, world state, item echo, message IDs, runtime
 roots, permission profile, and collaboration metadata. Private paths are
 replaced with `<private temporary workspace>`, `<private temporary root>`, and
-`<repository>`. No credentials, account identifiers, or unrelated content are
-included. The raw temporary directory and Desktop sessions are not published.
+`<repository>`. Each retained rollout record also carries a curator-added,
+non-native top-level `ordinal`: its zero-based line index in the raw rollout.
+Native records have only `timestamp`, `type`, and `payload`; replay tests must
+not treat `ordinal` as part of the Codex format. No credentials, account
+identifiers, or unrelated content are included. The raw temporary directory and Desktop sessions are not published.
 
 ## Negative controls
 
@@ -129,10 +132,13 @@ No new negative controls were spent. The existing
 [Codex M2 evidence](../codex-m2/evidence.json) already preserves ordinary
 `exec --json` failures with exit 1 and `error`/`turn.failed`: unsupported model
 (`fix`), invalid reasoning effort (`bad-config`), missing authentication with
-reconnect errors (`no-auth`), non-strict schema (`bad-schema`), and an unknown
-resume ID with no identity (`unknown`), plus SIGINT/SIGTERM interruptions.
-None contains `hit your usage limit`. Together with this fixture they show that
-exit 1, `turn.failed`, or a thread ID alone is not a usage-limit signal.
+reconnect errors (`no-auth`), and non-strict schema (`bad-schema`), plus
+SIGINT/SIGTERM interruptions. The unknown resume ID (`unknown`) differs: exit 1
+with **no JSONL events** and no identity, only a stderr
+`thread/resume failed: no rollout found` diagnostic. That is the missing-session
+shape #82 must keep apart from a usage limit. None contains
+`hit your usage limit`. Together with this fixture they show that exit 1,
+`turn.failed`, or a thread ID alone is not a usage-limit signal.
 
 ## Unobserved variants and downstream requirement
 

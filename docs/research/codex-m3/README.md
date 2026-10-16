@@ -24,7 +24,11 @@ empty workspace with no stdin, read-only sandbox, approval `never`, user config,
 rules, shell, plugins, apps, hooks, multi-agent, web search, and project docs
 disabled, plus the M2 implement `--output-schema` and `-o`. The session persists
 so its rollout can be inspected. One call, a 90-second watchdog, then SIGTERM
-and a five-second SIGKILL grace; descendants are stopped on exit. There is no
+and a five-second SIGKILL grace; descendants are stopped on exit. SIGTERM or
+SIGHUP to the supervisor is latched: it stops the child's process group, removes
+staged auth, finalizes `run.json` with `signal_sent: supervisor_<SIGNAL>`, and
+exits 128+signal. SIGKILL of the supervisor bypasses cleanup; then remove
+`codex-home/auth.json` from the printed directory by hand. There is no
 retry, wait, or exhaustion loop: never repeat a successful request to
 manufacture a failure.
 

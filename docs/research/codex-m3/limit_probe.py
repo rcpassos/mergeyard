@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--codex", default="codex")
     parser.add_argument("--model", default="gpt-6-luna")
     args = parser.parse_args()
+    version = subprocess.run([args.codex, "--version"], capture_output=True,
+                             text=True, timeout=10, check=True).stdout.strip()
     root = Path(tempfile.mkdtemp(prefix="mergeyard-codex-m3-limit-")).resolve()
     root.chmod(0o700)
     workspace = root / "workspace"
@@ -38,8 +40,6 @@ def main():
     env = dict(os.environ, CODEX_HOME=str(home))
     for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL"):
         env.pop(key, None)
-    version = subprocess.run([args.codex, "--version"], capture_output=True,
-                             text=True, timeout=10, check=True).stdout.strip()
     # Mirrors the production exec contract (JSONL, native schema, last message)
     # with tools, rules, user configuration, and discovery disabled.
     command = [args.codex, "exec", "--json", "--ignore-user-config", "--ignore-rules",
@@ -59,6 +59,7 @@ def main():
     write_json(root / "run.json", record)
     process = None
     start = time.monotonic()
+    termination_requested = None
 
     def stop_group(signum):
         try:
@@ -66,15 +67,32 @@ def main():
         except ProcessLookupError:
             pass
 
+    def cancelled(signum, frame):
+        nonlocal termination_requested
+        # Latch cancellation so Popen can return its child handle before cleanup.
+        termination_requested = signum
+        record["signal_sent"] = "supervisor_" + signal.Signals(signum).name
+
+    def abort_if_cancelled():
+        if termination_requested:
+            raise SystemExit(128 + termination_requested)
+
+    previous = {s: signal.signal(s, cancelled) for s in (signal.SIGTERM, signal.SIGHUP)}
     try:
         source = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
         shutil.copyfile(source / "auth.json", auth)
         auth.chmod(0o600)
+        abort_if_cancelled()
         with (root / "events.jsonl").open("wb") as stdout, (root / "stderr.log").open("wb") as stderr:
             process = subprocess.Popen(command, cwd=workspace, env=env, stdin=subprocess.DEVNULL,
                                        stdout=stdout, stderr=stderr, start_new_session=True)
             try:
-                process.wait(timeout=90)
+                while process.poll() is None and time.monotonic() - start < 90:
+                    abort_if_cancelled()
+                    time.sleep(0.2)
+                abort_if_cancelled()
+                if process.poll() is None:
+                    raise subprocess.TimeoutExpired(command, 90)
             except subprocess.TimeoutExpired:
                 record["signal_sent"] = "watchdog_SIGTERM"
                 stop_group(signal.SIGTERM)
@@ -92,8 +110,12 @@ def main():
                 record["exit_code"] = process.wait(timeout=5)
         finally:
             auth.unlink(missing_ok=True)
+            # Cleanup is done; freeze cancellation state while publishing it.
+            for signum in previous:
+                signal.signal(signum, signal.SIG_IGN)
             record["elapsed_seconds"] = round(time.monotonic() - start, 2)
-            for line in (root / "events.jsonl").read_text().splitlines():
+            events = root / "events.jsonl"
+            for line in (events.read_text().splitlines() if events.exists() else []):
                 try:
                     event = json.loads(line)
                 except ValueError:
@@ -105,6 +127,8 @@ def main():
                                         for p in (home / "sessions").rglob("*.jsonl"))
             write_json(root / "run.json", record)
             print(root, flush=True)
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
 
 
 if __name__ == "__main__":

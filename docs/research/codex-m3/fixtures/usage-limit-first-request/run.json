@@ -58,6 +58,7 @@
     "event_count_retained": 4,
     "rollout_count_raw": 12,
     "rollout_count_retained": 6,
-    "last_message_written": false
+    "last_message_written": false,
+    "rollout_ordinal": "Curator-added, not native: each retained rollout record's top-level `ordinal` is its zero-based line index in the raw rollout file."
   }
 }
