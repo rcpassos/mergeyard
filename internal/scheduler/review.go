@@ -6,22 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/runner"
-	"github.com/rcpassos/mergeyard/internal/sessions"
 	"github.com/rcpassos/mergeyard/internal/verification"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -42,12 +40,16 @@ type reviewAttempt struct {
 
 func (s *Scheduler) lastReview(ctx context.Context, run workflow.Run) (reviewAttempt, error) {
 	var a reviewAttempt
-	var input, snapshot string
-	err := s.db.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),a.input_path,a.resumed_session,COALESCE(a.error,''),v.session_id,v.target_sha,v.snapshot_json,v.restoration_started,v.restored,v.contaminated,a.agent FROM phase_attempts a JOIN review_attempts v ON v.attempt_id=a.id WHERE a.run_id=? AND a.phase='review' AND a.round=? ORDER BY a.attempt DESC LIMIT 1`, run.ID, run.ReviewRound).Scan(&a.id, &a.number, &a.status, &a.ref.Name, &input, &a.resumed, &a.failure, &a.sessionID, &a.target, &snapshot, &a.restoring, &a.restored, &a.contaminated, &a.agent)
+	saved, err := s.execution().Load(ctx, run.ID, workflow.Review, run.ReviewRound)
 	if err != nil {
 		return a, err
 	}
-	a.ref.PhaseDir = filepath.Dir(input)
+	a.attempt = schedulerAttempt(saved)
+	var snapshot string
+	err = s.db.QueryRowContext(ctx, `SELECT target_sha,snapshot_json,restoration_started,restored,contaminated FROM review_attempts WHERE attempt_id=?`, a.id).Scan(&a.target, &snapshot, &a.restoring, &a.restored, &a.contaminated)
+	if err != nil {
+		return a, err
+	}
 	err = json.Unmarshal([]byte(snapshot), &a.snapshot)
 	return a, err
 }
@@ -63,7 +65,7 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if err != nil {
 		return s.recordAttention(ctx, repo, run, err)
 	}
-	if a.restoring && !a.restored {
+	if (a.restoring || a.status == "failed") && !a.restored {
 		if err := s.restoreReview(ctx, gitRun, &a); err != nil {
 			return s.recordAttention(ctx, repo, run, err)
 		}
@@ -99,16 +101,15 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	if !reviewHeadMatches(pr, repo, run, gitRun, a.target) {
 		return s.abortReview(ctx, repo, run, gitRun, &a, &fault.Error{Code: "review.head_changed", Message: "PR head changed during review; stale verdict discarded. Inspect preserved work before continuing"})
 	}
-	status, err := s.deps.Runner.SessionStatus(ctx, a.ref)
+	executionAttempt := durableAttempt(a.attempt)
+	observation, err := s.execution().ObserveProcess(ctx, run.ID, workflow.Review, &executionAttempt)
+	a.attempt = schedulerAttempt(executionAttempt)
 	if err != nil {
-		return s.abortReview(ctx, repo, run, gitRun, &a, err)
+		return err
 	}
-
-	if err := s.discoverSession(ctx, run.ID, workflow.Review, &a.attempt); err != nil {
-		if !invalidSessionDiscovery(err) {
-			return err
-		}
-		return s.abortReview(ctx, repo, run, gitRun, &a, err)
+	status := observation.Status
+	if observation.Failure != nil && invalidSessionDiscovery(observation.Failure) {
+		return s.abortReview(ctx, repo, run, gitRun, &a, observation.Failure)
 	}
 	if status.State == runner.SessionRunning {
 		return nil
@@ -120,23 +121,12 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 		return s.recordAttention(ctx, repo, run, err)
 	}
 	var report *review.Report
-	var cause error
-	if status.State != runner.SessionExited || status.ExitCode == nil {
-		cause = &fault.Error{Code: "phase.session_missing", Message: "Review session has no exit metadata; inspect before retrying"}
-	} else {
-		stdout, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.ref.PhaseDir, "events.jsonl"))
-		cause = err
-		stderr, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.ref.PhaseDir, "stderr.log"))
+	cause := observation.Failure
+	if cause == nil {
+		observation = s.execution().ReadArtifacts(ctx, executionAttempt, observation)
+		cause = observation.Failure
 		if cause == nil {
-			cause = err
-		}
-
-		var lastMessage []byte
-		if cause == nil && a.agent == "codex" {
-			lastMessage, cause = s.readLastMessage(ctx, a.ref.PhaseDir)
-		}
-		if cause == nil {
-			result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Review, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, harness.PhaseArtifacts{LastMessage: lastMessage, Stdout: stdout, Stderr: stderr, ExitCode: *status.ExitCode})
+			result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Review, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, observation.Artifacts)
 			cause = err
 			if err == nil {
 				report = &review.Report{HumanAction: result.HumanAction, SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Findings: result.Findings, PriorFindings: result.PriorFindings}
@@ -222,14 +212,6 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		return err
 	}
 
-	var sessionAgent string
-	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(reviewer_agent,'') FROM runs WHERE id=?", run.ID).Scan(&sessionAgent); err != nil {
-		return err
-	}
-	if err := validateRoleHarness("reviewer", sessionAgent, repo.Reviewer.Agent); err != nil {
-		return fail(err)
-	}
-	adapter := s.harnesses[repo.Reviewer.Agent]
 	g, ok := s.deps.Git.(ReviewGit)
 	if !ok {
 		return fail(&fault.Error{Code: "git.review_unsupported", Message: "Git adapter cannot protect reviewer changes"})
@@ -308,42 +290,22 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if err != nil {
 		return fail(err)
 	}
-	phaseDir := filepath.Join(s.workspace.Root, "runs", run.ID, "phases", fmt.Sprintf("review-%d-%d", run.ReviewRound, number))
-	if err := os.MkdirAll(phaseDir, 0700); err != nil {
-		return fail(err)
-	}
-	if err := sessions.RequireProcessJournal(phaseDir); err != nil {
-		return fail(err)
-	}
-	var sessionID string
-	err = s.db.QueryRowContext(ctx, "SELECT COALESCE(reviewer_session_id,'') FROM runs WHERE id=?", run.ID).Scan(&sessionID)
+	phase, savedPrevious, err := s.execution().Prepare(ctx, s.workspace.Root, run, workflow.Review, repo.Reviewer, number)
 	if err != nil {
-		return err
+		return fail(err)
 	}
-	resume := number > 1 || run.ReviewRound > 1
+	phaseDir := phase.PhaseDir
+	sessionID := phase.SessionID
 	warning := ""
-	previousSession := sessionID
-	if number > 1 {
-		if previous.status == "usage_limited" && sessionID == "" {
-			return fail(&fault.Error{Code: "harness.session_missing", Message: "Interrupted reviewer conversation identity is unavailable; inspect preserved work"})
-		}
-		if strings.HasPrefix(previous.failure, "harness.session_resume_failed: ") {
-			sessionID = ""
-			resume = false
-			warning = "harness.session_resume_failed"
-		}
+	if strings.HasPrefix(savedPrevious.Failure, "harness.session_resume_failed: ") {
+		warning = "harness.session_resume_failed"
 	}
-	if sessionID == "" {
-		if adapter.Capabilities().SessionIDSource == harness.Preassigned {
-			sessionID = uuid.NewString()
-		}
-		resume = false
-	}
+	previousSession := savedPrevious.SessionID
 	env, err := s.phaseEnvironment(ctx, run.ID, workflow.Review)
 	if err != nil {
 		return fail(err)
 	}
-	phase := harness.PhaseContext{Phase: workflow.Review, WorktreePath: gitRun.Path, PhaseDir: phaseDir, SessionID: sessionID, Resume: resume, Env: env}
+	phase.WorktreePath, phase.Env = gitRun.Path, env
 	if previous.target == snapshot.Head {
 		phase.Interruption = interruptionContext(previous.attempt, phase)
 	}
@@ -410,42 +372,18 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		return fail(err)
 	}
 	req := runner.SessionRequest{RunID: run.ID, Phase: "review", Round: run.ReviewRound, Attempt: number, PhaseDir: phaseDir, Command: command}
-	id := uuid.NewString()
 	snapshotJSON, err := json.Marshal(snapshot)
 	if err != nil {
 		return err
 	}
-	skills, _ := json.Marshal(repo.Reviewer.Skills)
 	permission, allowedTools := s.roleSettings(repo.Reviewer.Agent)
 	tools, _ := json.Marshal(allowedTools)
-	_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-		if _, err := tx.ExecContext(ctx, "UPDATE runs SET reviewer_agent=?,reviewer_session_id=? WHERE id=?", repo.Reviewer.Agent, sessionID, run.ID); err != nil {
-			return events.Draft{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts(id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions,started_at) VALUES (?,?,'review','reviewer',?,?,?,?,?,'running',?,?,?,?,?,?,?,?)`, id, run.ID, run.ReviewRound, number, repo.Reviewer.Agent, repo.Reviewer.Model, repo.Reviewer.Effort, phase.Resume, sessions.Name(req), input, filepath.Join(phaseDir, "result.json"), filepath.Join(phaseDir, "events.jsonl"), string(skills), s.rolePermissions(repo.Reviewer.Agent), s.deps.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			return events.Draft{}, err
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,?,?,?,?,?,?)`, id, snapshot.Head, diff, string(snapshotJSON), sessionID, permission, string(tools))
-		if err != nil {
-			return events.Draft{}, err
-		}
-		if err := workflow.BindCreditProbe(ctx, tx, run.ID, repo.Reviewer.Agent, id, s.deps.Now().UTC()); err != nil {
-			return events.Draft{}, err
-		}
-		if warning != "" {
-			return reserveRecovery(ctx, tx, run, workflow.Review, previous.attempt, id, sessionID)
-		}
-		return events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: map[string]any{"agent": repo.Reviewer.Agent, "resumed_session": resume, "permissions": s.rolePermissions(repo.Reviewer.Agent), "phase": workflow.Review, "round": run.ReviewRound, "attempt": number, "target_sha": snapshot.Head, "session_id": sessionID, "model": repo.Reviewer.Model, "effort": repo.Reviewer.Effort, "skills": repo.Reviewer.Skills, "permission_mode": permission, "allowed_tools": allowedTools, "warning_code": warning, "previous_session_id": previousSession}}, err
-	})
-	if err != nil {
+	launched, err := s.execution().Launch(ctx, run, repo.Reviewer, s.rolePermissions(repo.Reviewer.Agent), phase, savedPrevious, req, input, "", func(tx *sql.Tx, a durable.Attempt) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,?,?,?,?,?,?)`, a.ID, snapshot.Head, diff, string(snapshotJSON), sessionID, permission, string(tools))
 		return err
-	}
-	ref, err := s.deps.Runner.StartSession(ctx, req)
-	if err != nil && ref.Name != "" && ctx.Err() == nil {
-		return nil
-	}
-	if err != nil && ctx.Err() == nil {
-		a := reviewAttempt{attempt: attempt{id: id, agent: repo.Reviewer.Agent, number: number}, target: snapshot.Head, snapshot: snapshot}
+	}, map[string]any{"agent": repo.Reviewer.Agent, "permissions": s.rolePermissions(repo.Reviewer.Agent), "target_sha": snapshot.Head, "session_id": sessionID, "model": repo.Reviewer.Model, "effort": repo.Reviewer.Effort, "skills": repo.Reviewer.Skills, "permission_mode": permission, "allowed_tools": allowedTools, "warning_code": warning, "previous_session_id": previousSession})
+	if err != nil && launched.ID != "" && launched.Status == "failed" && ctx.Err() == nil {
+		a := reviewAttempt{attempt: schedulerAttempt(launched), target: snapshot.Head, snapshot: snapshot}
 		if restoreErr := s.restoreReview(ctx, gitRun, &a); restoreErr != nil {
 			return fail(restoreErr)
 		}
