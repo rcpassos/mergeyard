@@ -66,10 +66,7 @@ func (e Executor) PrepareImplement(ctx context.Context, root string, run workflo
 // Prepare establishes the role identity and process journal shared by coding phases.
 func (e Executor) Prepare(ctx context.Context, root string, run workflow.Run, kind workflow.Phase, role config.Role, number int) (harness.PhaseContext, Attempt, error) {
 	var phase harness.PhaseContext
-	round := run.ReviewRound
-	if kind == workflow.Implement {
-		round = 0
-	}
+	round := attemptRound(run, kind)
 	var previous Attempt
 	var sessionID, agent string
 	if err := e.DB.QueryRowContext(ctx, "SELECT COALESCE("+kind.Role()+"_session_id,''),COALESCE("+kind.Role()+"_agent,'') FROM runs WHERE id=?", run.ID).Scan(&sessionID, &agent); err != nil {
@@ -118,6 +115,10 @@ func (e Executor) LaunchImplement(ctx context.Context, run workflow.Run, role co
 // Launch commits phase facts alongside executable intent, probe binding, recovery
 // reservation and the launch event. The hook must only write through this transaction.
 func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role, permissions string, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string, facts func(*sql.Tx, Attempt) error, payload map[string]any) (Attempt, error) {
+	round := attemptRound(run, phase.Phase)
+	if req.RunID != run.ID || req.Phase != string(phase.Phase) || req.Round != round || req.PhaseDir != phase.PhaseDir || req.Attempt < 1 || filepath.Base(phase.PhaseDir) != fmt.Sprintf("%s-%d-%d", phase.Phase, round, req.Attempt) {
+		return Attempt{}, &fault.Error{Code: "phase.invalid_request", Message: "Launch request does not match the prepared phase attempt"}
+	}
 	skills, err := json.Marshal(role.Skills)
 	if err != nil {
 		return Attempt{}, err
@@ -171,13 +172,19 @@ func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role
 	return a, err
 }
 
+// attemptRound keeps preparation, launch validation and recovery reservation on
+// the same round: implementation uses zero; review and fix use the review round.
+func attemptRound(run workflow.Run, phase workflow.Phase) int {
+	if phase == workflow.Implement {
+		return 0
+	}
+	return run.ReviewRound
+}
+
 // ReserveRecovery belongs to the replacement's launch transaction. A crash
 // after commit leaves one deterministic identity to observe, never replay.
 func ReserveRecovery(ctx context.Context, tx *sql.Tx, run workflow.Run, phase workflow.Phase, previous Attempt, replacement, session string) (events.Draft, error) {
-	round := run.ReviewRound
-	if phase == workflow.Implement {
-		round = 0
-	}
+	round := attemptRound(run, phase)
 	role := phase.Role()
 	_, err := tx.ExecContext(ctx, `INSERT INTO session_recoveries(run_id,phase,role,round,failed_attempt_id,replacement_attempt_id,previous_session_id) VALUES (?,?,?,?,?,?,?)`, run.ID, phase, role, round, previous.ID, replacement, previous.SessionID)
 	return events.Draft{RunID: run.ID, Type: "harness.session_resume_failed", Payload: map[string]any{"agent": previous.Agent, "phase": phase, "role": role, "round": round, "attempt": previous.Number, "replacement_attempt": previous.Number + 1, "previous_session_id": previous.SessionID, "session_id": session, "error": previous.Failure, "warning": "Saved conversation is missing; continuing once in a fresh session"}}, err

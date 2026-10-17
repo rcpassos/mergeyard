@@ -105,7 +105,15 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 	observation, err := s.execution().ObserveProcess(ctx, run.ID, workflow.Review, &executionAttempt)
 	a.attempt = schedulerAttempt(executionAttempt)
 	if err != nil {
-		return err
+		var coded *fault.Error
+		canceled := ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &coded) && coded.Code == "phase.canceled")
+		if canceled || observation.Failure != nil {
+			// Discovery and owned-stop errors retain their observation handling.
+			return err
+		}
+		// A process-status error must stop and restore the review before the
+		// run can reject it; returning it raw strands the running attempt.
+		return s.abortReview(ctx, repo, run, gitRun, &a, err)
 	}
 	status := observation.Status
 	if observation.Failure != nil && invalidSessionDiscovery(observation.Failure) {
