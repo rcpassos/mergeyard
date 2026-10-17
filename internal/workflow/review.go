@@ -66,8 +66,10 @@ func (r ReviewRejection) apply(ctx context.Context, tx *sql.Tx, id string, failu
 			return invalid(err.Error())
 		}
 	}
+	// A definite launch failure is already journaled by durable execution. It
+	// still needs restoration and the same atomic rejection/attention transition.
 	var restored bool
-	err := tx.QueryRowContext(ctx, `SELECT v.restored FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.id=? AND a.run_id=? AND a.phase='review' AND a.status='running' AND a.round=(SELECT review_round FROM runs WHERE id=a.run_id)`, r.AttemptID, id).Scan(&restored)
+	err := tx.QueryRowContext(ctx, `SELECT v.restored FROM review_attempts v JOIN phase_attempts a ON a.id=v.attempt_id WHERE a.id=? AND a.run_id=? AND a.phase='review' AND a.status IN ('running','failed') AND a.round=(SELECT review_round FROM runs WHERE id=a.run_id)`, r.AttemptID, id).Scan(&restored)
 	if err != nil || !restored {
 		return invalid("Rejected review must belong to this run and have completed restoration")
 	}
