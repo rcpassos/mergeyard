@@ -93,7 +93,14 @@ func TestGeneratedWrapperLogsAndMetadataWithoutTmux(t *testing.T) {
 	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := exec.Command("/bin/sh", append([]string{path}, command.Environment()...)...).Run(); err == nil {
+	if err := writeEnvironment(command, environmentPath(phaseDir)); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(environmentPath(phaseDir))
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("environment file must be owner-only: info=%v, err=%v", info, err)
+	}
+	if err := exec.Command("/bin/sh", path).Run(); err == nil {
 		t.Fatal("wrapper discarded exit 7")
 	} else {
 		var exit *exec.ExitError
@@ -104,6 +111,9 @@ func TestGeneratedWrapperLogsAndMetadataWithoutTmux(t *testing.T) {
 	out, err := os.ReadFile(filepath.Join(phaseDir, "events.jsonl"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(environmentPath(phaseDir)); !os.IsNotExist(err) {
+		t.Fatalf("environment file survived execution: %v", err)
 	}
 	if string(out) != value+"\n"+value+"\ninput data\n" {
 		t.Fatalf("stdout = %q", out)
@@ -167,7 +177,9 @@ func TestManagerObservesWrapperLaunchedBeforeEnvironmentUpgrade(t *testing.T) {
 		Executable: "/bin/sh", Dir: dir, Env: map[string]string{"OLD_VALUE": "retained"},
 		Args: []string{"-c", `printf ready; while [ ! -f release ]; do /bin/sleep 0.02; done; [ "$OLD_VALUE" = retained ]`},
 	}}
-	script, err := wrapper(req.Command, dir)
+	legacyCommand := req.Command
+	legacyCommand.Env = nil
+	script, err := wrapper(legacyCommand, dir)
 	if err != nil {
 		t.Fatal(err)
 	}

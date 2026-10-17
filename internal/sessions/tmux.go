@@ -113,7 +113,7 @@ func Name(req Request) string {
 	return fmt.Sprintf("mergeyard-%s-%s-%d-%d", short, sanitize(req.Phase, 16), req.Round, req.Attempt)
 }
 
-func (m *Manager) Start(ctx context.Context, req Request) (Ref, error) {
+func (m *Manager) Start(ctx context.Context, req Request) (result Ref, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return Ref{}, failure("phase.canceled", "", err)
 	}
@@ -180,23 +180,32 @@ func (m *Manager) Start(ctx context.Context, req Request) (Ref, error) {
 	if err := RequireProcessJournal(phaseDir); err != nil {
 		return Ref{}, err
 	}
-	// Multiple shell-command arguments make tmux exec directly, without parsing
-	// the wrapper path as a shell command.
-	// Environment values travel only in the launch arguments, never in phase files.
-	// The wrapper forwards these opaque assignments to env without shell parsing.
-	args := []string{"new-session", "-d", "-s", ref.Name, "--", "/bin/sh", path}
-	args = append(args, req.Command.Environment()...)
-	if _, err := m.tmux(ctx, args...); err != nil {
+	envPath := environmentPath(phaseDir)
+	if len(req.Command.Env) > 0 {
+		if err := writeEnvironment(req.Command, envPath); err != nil {
+			return Ref{}, failure("phase.environment_failed", envPath, err)
+		}
+		defer func() { resultErr = errors.Join(resultErr, removeEnvironment(envPath)) }()
+	}
+	// Multiple shell-command arguments make tmux exec directly. Only the
+	// wrapper path is sent; environment values never enter tmux/pane argv.
+	if _, err := m.tmux(ctx, "new-session", "-d", "-s", ref.Name, "--", "/bin/sh", path); err != nil {
 		// The server may have committed the launch before its client was
 		// cancelled. Reconcile independently of the cancelled caller context.
 		probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
 		status, probeErr := m.Status(probeCtx, ref)
-		if probeErr == nil && status.State != Missing {
-			return ref, nil
+		if probeErr != nil || status.State == Missing {
+			// Preserve the attempt identity even when the outcome is uncertain.
+			return ref, failure("phase.session_start_failed", ref.Name, errors.Join(err, probeErr))
 		}
-		// Preserve the attempt identity even when the outcome is uncertain.
-		return ref, failure("phase.session_start_failed", ref.Name, errors.Join(err, probeErr))
+	}
+	if len(req.Command.Env) > 0 {
+		if err := waitEnvironment(ctx, envPath); err != nil {
+			stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*m.options.GracePeriod+time.Second)
+			defer cancel()
+			return ref, failure("phase.environment_failed", envPath, errors.Join(err, m.Stop(stopCtx, ref)))
+		}
 	}
 	return ref, nil
 }
@@ -228,6 +237,10 @@ func (m *Manager) Status(ctx context.Context, ref Ref) (Status, error) {
 		if metadata.ExitCode == nil {
 			return Status{}, failure("phase.exit_invalid", filepath.Join(ref.PhaseDir, "exit.json"), errors.New("exit metadata has no exit_code"))
 		}
+		// A control-plane crash can bypass Start's deferred cleanup.
+		if err := removeEnvironment(environmentPath(ref.PhaseDir)); err != nil {
+			return Status{}, err
+		}
 		return Status{State: Exited, ExitCode: metadata.ExitCode, TimedOut: metadata.TimedOut}, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -244,12 +257,16 @@ func (m *Manager) Status(ctx context.Context, ref Ref) (Status, error) {
 	if _, err := os.Stat(filepath.Join(ref.PhaseDir, "exit.json")); err == nil {
 		return m.Status(ctx, ref)
 	}
+	if err := removeEnvironment(environmentPath(ref.PhaseDir)); err != nil {
+		return Status{}, err
+	}
 	return Status{State: Missing}, nil
 }
 
 // Stop signals the whole pane process group, including the harness's children.
 // A forced kill cannot be observed by the wrapper, so it may leave no metadata.
-func (m *Manager) Stop(ctx context.Context, ref Ref) error {
+func (m *Manager) Stop(ctx context.Context, ref Ref) (resultErr error) {
+	defer func() { resultErr = errors.Join(resultErr, removeEnvironment(environmentPath(ref.PhaseDir))) }()
 	exists, err := m.exists(ctx, ref.Name)
 	if err != nil {
 		return err
@@ -411,6 +428,10 @@ func wrapperTimeout(command Command, phaseDir string, timeout time.Duration) (st
 	// any other descendants after the foreground result has been published.
 	fmt.Fprintf(&b, "timer=\nfinish() {\n code=$1\n trap - EXIT\n if [ -n \"$timer\" ]; then kill -KILL \"$timer\" 2>/dev/null; wait \"$timer\" 2>/dev/null; fi\n printf '{\"exit_code\":%%s}\\n' \"$code\" >%s &&\n /bin/mv -f %s %s\n%s exit \"$code\"\n}\ntrap 'finish \"$?\"' EXIT\ntrap ':' INT TERM HUP\n", quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")), completionCleanup)
 	fmt.Fprintf(&b, "exec >%s 2>%s\n", quote(filepath.Join(phaseDir, "events.jsonl")), quote(filepath.Join(phaseDir, "stderr.log")))
+	b.WriteString("set --\n")
+	if len(command.Env) > 0 {
+		fmt.Fprintf(&b, ". %s || exit 1\n/bin/rm -f %s || exit 1\n", quote(environmentPath(phaseDir)), quote(environmentPath(phaseDir)))
+	}
 	if timeout > 0 {
 		// The watchdog and its sleep belong to the pane group, which is removed
 		// on normal completion or timeout. Timeout metadata precedes the kill.

@@ -93,10 +93,13 @@ See [agent isolation configuration](configuration.md#agent-ports-and-session-iso
 The `start` and `reconcile` CLI commands explicitly populate `Dependencies.Env`
 with their full inherited environment; there is no CLI environment allowlist.
 System steps receive `Dependencies.Env` as supplied. All tmux launches, including
-harness checks, pass environment assignments as launch arguments. The wrapper
-forwards them to `env -i` without embedding their values in scripts or temporary
-environment files. Environment values are not persisted by this launch path;
-harness output remains unredacted. Restart/reconciliation still uses the same
+harness checks, deliver quoted environment assignments through a transient
+owner-only (`0600`) `environment.sh` file in the phase directory. The wrapper
+loads and unlinks it before invoking `env -i`; values never enter tmux or
+long-lived wrapper argv, and bypass tmux's command-size limit. Start waits for
+consumption; failure, Stop, and reconciliation of exited/missing sessions clean
+up leftovers. Generated wrappers contain no environment values; harness output
+remains unredacted. Restart/reconciliation still uses the same
 session references and process/exit journals, including for sessions launched
 with older wrappers. Older wrappers are not scrubbed by this change.
 
