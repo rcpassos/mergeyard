@@ -40,7 +40,7 @@ import json, os, pathlib, sys
 with pathlib.Path(os.environ["PREFLIGHT_TEST_LOG"]).open("a") as f:
     f.write("go " + " ".join(sys.argv[1:]) + "\\n")
 if sys.argv[1] == "version":
-    print("go version go1.24.6 linux/amd64")
+    print("go version go1.26.9 linux/amd64")
 elif sys.argv[1] == "env":
     assert os.environ["GOTOOLCHAIN"] == "local"
     assert os.environ["GOWORK"] == "off"
@@ -130,7 +130,7 @@ if "-D" in sys.argv:
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Go", result.stderr)
-        self.assertIn("1.24", result.stderr)
+        self.assertIn("1.26.0", result.stderr)
         self.assertIn("install", result.stderr.lower())
 
     def test_configured_cache_and_temp_paths_fail_with_a_remedy(self):
@@ -171,7 +171,7 @@ if "-D" in sys.argv:
         self.assertEqual(list(self.tmp.iterdir()), [], "Failed preflight leaked its temporary resources")
 
     def test_deadline_stops_a_slow_probe_and_cleans_resources(self):
-        self.tool("go", 'import time\ntime.sleep(1.5)\nprint("go version go1.24.6 linux/amd64")\n')
+        self.tool("go", 'import time\ntime.sleep(1.5)\nprint("go version go1.26.9 linux/amd64")\n')
         started = time.monotonic()
         result = self.run_script("--timeout", "0.2")
         self.assertNotEqual(result.returncode, 0)
@@ -242,7 +242,7 @@ if "-D" in sys.argv:
     def test_unreadable_go_environment_has_a_capability_and_remedy(self):
         for output in ("not JSON", "[]", '{"GOCACHE":false}', '{}'):
             with self.subTest(output=output):
-                self.tool("go", 'import sys\nif sys.argv[1] == "version": print("go version go1.24.6 linux/amd64")\nelse: print(' + repr(output) + ')\n')
+                self.tool("go", 'import sys\nif sys.argv[1] == "version": print("go version go1.26.9 linux/amd64")\nelse: print(' + repr(output) + ')\n')
                 result = self.run_script()
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Go environment", result.stderr)
