@@ -848,17 +848,19 @@ Names are sanitized and kept below tmux limits. System steps use the same naming
 Mergeyard starts a generated wrapper script inside tmux. The wrapper:
 
 1. changes to the run worktree;
-2. applies only the environment explicitly configured;
+2. applies the complete environment supplied by the caller, plus the reserved Mergeyard variables for agent launches;
 3. executes the harness invocation with stdin closed or fed from a file;
 4. writes stdout (the harness's machine-readable event stream) to `events.jsonl` and stderr to `stderr.log`, as separate files in the phase directory;
 5. records the exit code in phase metadata;
 6. exits when the harness exits.
 
+The CLI captures the environment of `mergeyard start` (or `mergeyard reconcile`) and supplies it to the scheduler; it does not filter it to an allowlist. Agent launches add `MERGEYARD_RUN_ID`, `MERGEYARD_PHASE`, `MERGEYARD_PORT_BASE`, and `MERGEYARD_PORT_COUNT`, overriding inherited values. System steps receive the caller-supplied environment. The wrapper applies that environment with `env -i`. Environment assignments are written to a transient owner-only (`0600`) file in the phase directory. The wrapper reads the quoted assignments and unlinks the file before launching the child; values never enter tmux or long-lived wrapper command lines. Launch failure, Stop, and reconciliation of exited or missing sessions remove leftovers. Environment size is limited by the operating system rather than tmux’s command-size limit. Generated wrappers contain no environment values. Existing running sessions, wrapper files and process journals remain usable after upgrade or restart. This does not scrub older wrappers that already contain environment values, or redact credentials a harness writes to its own output.
+
 The adapter parses `events.jsonl`; the Codex adapter tails it during the run to capture the session ID. Mergeyard determines completion from exit metadata plus the structured result. It does not infer completion from terminal text.
 
 ### System steps
 
-Configured command lists reuse the phase wrapper and process journal. Each setup or checks list runs as one `bash --login` script in the worktree with `set -e` and `set -o pipefail`, using only the explicitly configured environment. All commands share one subshell which inherits login startup variables and functions, and execution stops on the first failing command or pipeline. The outer login shell ends at EOF, so logout hooks cannot replace configured command exit codes. Output and exit metadata are saved with the system step; agent result validation does not apply to system steps.
+Configured command lists reuse the phase wrapper and process journal. Each setup or checks list runs as one `bash --login` script in the worktree with `set -e` and `set -o pipefail`, using the caller-supplied environment described above. All commands share one subshell which inherits login startup variables and functions, and execution stops on the first failing command or pipeline. The outer login shell ends at EOF, so logout hooks cannot replace configured command exit codes. Output and exit metadata are saved with the system step; agent result validation does not apply to system steps.
 
 The repository's `command_timeout` is a positive duration, defaulting to `20m`, for the entire script. The wrapper owns its timeout watchdog so the deadline remains enforced while the control plane is offline. Timeout and Stop end the whole owned process group, including descendants, while preserving the worktree. On foreground completion, the wrapper records the result and stops any remaining background processes in that bounded system step's owned group. Scripts must finish required work before returning; they cannot leave a background service running. Untimed agent invocations retain their existing process behavior.
 

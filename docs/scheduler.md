@@ -90,6 +90,19 @@ control-plane environment. Agent launches additionally receive `MERGEYARD_RUN_ID
 `MERGEYARD_PHASE`, `MERGEYARD_PORT_BASE`, and `MERGEYARD_PORT_COUNT` from the run's
 persisted port block; these reserved values override entries in `Dependencies.Env`.
 See [agent isolation configuration](configuration.md#agent-ports-and-session-isolation).
+The `start` and `reconcile` CLI commands explicitly populate `Dependencies.Env`
+with their full inherited environment; there is no CLI environment allowlist.
+System steps receive `Dependencies.Env` as supplied. All tmux launches, including
+harness checks, deliver quoted environment assignments through a transient
+owner-only (`0600`) `environment.sh` file in the phase directory. The wrapper
+loads and unlinks it before invoking `env -i`; values never enter tmux or
+long-lived wrapper argv, and bypass tmux's command-size limit. Start waits for
+consumption; failure, Stop, and reconciliation of exited/missing sessions clean
+up leftovers. Generated wrappers contain no environment values; harness output
+remains unredacted. Restart/reconciliation still uses the same
+session references and process/exit journals, including for sessions launched
+with older wrappers. Older wrappers are not scrubbed by this change.
+
 Dependencies default to the real GitHub, managed Git,
 and local tmux adapters.
 

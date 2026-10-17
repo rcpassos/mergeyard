@@ -2,8 +2,10 @@ package runner_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,6 +160,111 @@ func TestSessionUsesOnlyExplicitEnvironmentAndClosedStdin(t *testing.T) {
 	status = awaitExit(t, r, ref)
 	if status.ExitCode == nil || *status.ExitCode != 0 {
 		t.Fatalf("stdin was not closed: %+v", status)
+	}
+}
+
+// Hash rather than echo the sentinel: harness output is deliberately retained,
+// so a harness that prints credentials would create its own disclosure.
+func TestSessionEnvironmentReachesProcessWithoutPersistingSecrets(t *testing.T) {
+	secret := "sentinel ' \" ; $(touch injected) `touch injected` = 界\nsecond line"
+	t.Setenv("MERGEYARD_SENTINEL_SECRET", secret)
+	plain := "mergeyard_plain_sentinel_no_shell_escaping"
+	t.Setenv("MERGEYARD_PLAIN_SENTINEL", plain)
+	for _, phase := range []string{"implement", "setup", "checks", "harness-check"} {
+		t.Run(phase, func(t *testing.T) {
+			r, options := localSessions(t)
+			req := phaseRequest(t, `
+[ "$EMPTY" = "" ] && [ "${EMPTY+x}" = x ] || exit 10
+[ "$MERGEYARD_RUN_ID" = run-123456789 ] || exit 11
+[ "$MERGEYARD_PHASE" = "$1" ] || exit 12
+[ "$MERGEYARD_PORT_BASE" = 42000 ] && [ "$MERGEYARD_PORT_COUNT" = 10 ] || exit 13
+[ ! -e "$2" ] || exit 14
+printf '%s' "$MERGEYARD_SENTINEL_SECRET" "$MERGEYARD_PLAIN_SENTINEL" | /usr/bin/shasum -a 256
+`)
+			req.Phase = phase
+			req.Command.Args = []string{phase, filepath.Join(req.PhaseDir, "environment.sh")}
+			req.Command.Env = map[string]string{}
+			for _, entry := range os.Environ() {
+				key, value, _ := strings.Cut(entry, "=")
+				req.Command.Env[key] = value
+			}
+			req.Command.Env["EMPTY"] = ""
+			req.Command.Env["MERGEYARD_RUN_ID"] = req.RunID
+			req.Command.Env["MERGEYARD_PHASE"] = phase
+			req.Command.Env["MERGEYARD_PORT_BASE"] = "42000"
+			req.Command.Env["MERGEYARD_PORT_COUNT"] = "10"
+			if phase == "setup" || phase == "checks" {
+				req.Timeout = time.Minute
+			}
+			ref, err := r.StartSession(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := awaitExit(t, runner.NewLocal(options), ref)
+			if status.ExitCode == nil || *status.ExitCode != 0 {
+				t.Fatalf("environment was not delivered: %+v", status)
+			}
+			out, err := os.ReadFile(filepath.Join(ref.PhaseDir, "events.jsonl"))
+			if err != nil || string(out) != fmt.Sprintf("%x  -\n", sha256.Sum256([]byte(secret+plain))) {
+				t.Fatalf("sentinel digest = %q, err=%v", out, err)
+			}
+			err = filepath.WalkDir(req.Command.Dir, func(path string, entry fs.DirEntry, err error) error {
+				if err != nil || entry.IsDir() {
+					return err
+				}
+				data, err := os.ReadFile(path)
+				if err == nil && (strings.Contains(string(data), secret) || strings.Contains(string(data), plain)) {
+					t.Errorf("environment secret persisted in %s", path)
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(req.Command.Dir, "injected")); !os.IsNotExist(err) {
+				t.Fatalf("environment value executed as shell text: %v", err)
+			}
+		})
+	}
+}
+
+func TestSessionEnvironmentStaysOutOfProcessArguments(t *testing.T) {
+	r, _ := localSessions(t)
+	req := phaseRequest(t, `printf ready; while [ ! -f release ]; do /bin/sleep 0.02; done`)
+	secret := fmt.Sprintf("argv_sentinel_%d", time.Now().UnixNano())
+	req.Command.Env = map[string]string{"SECRET": secret}
+	ref, err := r.StartSession(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.StopSession(context.Background(), ref) })
+	awaitLog(t, r, ref, "ready")
+	out, err := exec.Command("ps", "-axww", "-o", "command=").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), secret) {
+		t.Error("environment secret is visible in a long-lived process command line")
+	}
+	if err := os.WriteFile(filepath.Join(req.Command.Dir, "release"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	awaitExit(t, r, ref)
+}
+
+func TestSessionDeliversLargeEnvironment(t *testing.T) {
+	r, _ := localSessions(t)
+	req := phaseRequest(t, `printf '%s' "$LARGE_VALUE" | /usr/bin/shasum -a 256`)
+	value := strings.Repeat("large-environment-value-", 3000)
+	req.Command.Env = map[string]string{"LARGE_VALUE": value}
+	ref, err := r.StartSession(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := awaitExit(t, r, ref)
+	out, err := os.ReadFile(filepath.Join(ref.PhaseDir, "events.jsonl"))
+	if err != nil || status.ExitCode == nil || *status.ExitCode != 0 || string(out) != fmt.Sprintf("%x  -\n", sha256.Sum256([]byte(value))) {
+		t.Fatalf("large environment delivery: status=%+v, stdout=%q, err=%v", status, out, err)
 	}
 }
 
@@ -468,7 +575,8 @@ exec "$REAL_TMUX" "$@"
 		}
 		cancel()
 	}()
-	req := phaseRequest(t, "printf 'ready\\n'; while [ ! -f release ]; do sleep 0.02; done")
+	req := phaseRequest(t, "[ \"$VALUE\" = recovered ] || exit 9; printf 'ready\\n'; while [ ! -f release ]; do sleep 0.02; done")
+	req.Command.Env = map[string]string{"VALUE": "recovered"}
 	ref, err := r.StartSession(ctx, req)
 	if err != nil {
 		t.Fatalf("created session became untracked: ref=%+v, err=%v", ref, err)
