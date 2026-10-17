@@ -49,6 +49,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y tmux
       - name: Lint
         run: make lint
+      - name: Check reachable vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Python tests
         run: make test-python
       - name: Build
