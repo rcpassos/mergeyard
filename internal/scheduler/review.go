@@ -304,14 +304,6 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	}
 	phaseDir := phase.PhaseDir
 	sessionID := phase.SessionID
-	warning := ""
-	if strings.HasPrefix(savedPrevious.Failure, "harness.session_resume_failed: ") {
-		warning = "harness.session_resume_failed"
-	}
-	previousSession := savedPrevious.SessionID
-	if phase.Resume {
-		previousSession = phase.SessionID
-	}
 	env, err := s.phaseEnvironment(ctx, run.ID, workflow.Review)
 	if err != nil {
 		return fail(err)
@@ -389,10 +381,10 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	}
 	permission, allowedTools := s.roleSettings(repo.Reviewer.Agent)
 	tools, _ := json.Marshal(allowedTools)
-	launched, err := s.execution().Launch(ctx, run, repo.Reviewer, s.rolePermissions(repo.Reviewer.Agent), phase, savedPrevious, req, input, "", func(tx *sql.Tx, a durable.Attempt) error {
+	launched, err := s.execution().Launch(ctx, run, repo.Reviewer, durable.Permissions{Summary: s.rolePermissions(repo.Reviewer.Agent), Mode: permission, AllowedTools: allowedTools}, phase, savedPrevious, req, input, "", func(tx *sql.Tx, a durable.Attempt) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,?,?,?,?,?,?)`, a.ID, snapshot.Head, diff, string(snapshotJSON), sessionID, permission, string(tools))
 		return err
-	}, map[string]any{"agent": repo.Reviewer.Agent, "permissions": s.rolePermissions(repo.Reviewer.Agent), "target_sha": snapshot.Head, "session_id": sessionID, "model": repo.Reviewer.Model, "effort": repo.Reviewer.Effort, "skills": repo.Reviewer.Skills, "permission_mode": permission, "allowed_tools": allowedTools, "warning_code": warning, "previous_session_id": previousSession})
+	}, map[string]any{"target_sha": snapshot.Head})
 	if err != nil && launched.ID != "" && launched.Status == "failed" && ctx.Err() == nil {
 		a := reviewAttempt{attempt: schedulerAttempt(launched), target: snapshot.Head, snapshot: snapshot}
 		if restoreErr := s.restoreReview(ctx, gitRun, &a); restoreErr != nil {

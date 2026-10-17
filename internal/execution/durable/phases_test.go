@@ -3,9 +3,11 @@ package durable_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/config"
@@ -23,7 +25,7 @@ func launchPhase(t *testing.T, e durable.Executor, run workflow.Run, root, agent
 	if err != nil {
 		return durable.Attempt{}, err
 	}
-	return e.Launch(ctx, run, config.Role{Agent: agent, Model: "saved-model", Effort: "high", Skills: []string{"review"}}, "saved permissions", phase, previous, runner.SessionRequest{RunID: run.ID, Phase: string(kind), Round: run.ReviewRound, Attempt: number, PhaseDir: phase.PhaseDir}, filepath.Join(phase.PhaseDir, "input.md"), "", func(tx *sql.Tx, a durable.Attempt) error {
+	return e.Launch(ctx, run, config.Role{Agent: agent, Model: "saved-model", Effort: "high", Skills: []string{"review"}}, durable.Permissions{Summary: "saved permissions", Mode: "saved-mode", AllowedTools: []string{"Read"}}, phase, previous, runner.SessionRequest{RunID: run.ID, Phase: string(kind), Round: run.ReviewRound, Attempt: number, PhaseDir: phase.PhaseDir}, filepath.Join(phase.PhaseDir, "input.md"), "", func(tx *sql.Tx, a durable.Attempt) error {
 		if kind == workflow.Fix {
 			_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,target_sha,findings_json,session_id,permission_mode,allowed_tools_json,ci_json) VALUES (?,'pinned-head','[]',?,'read-write','[]','{"repair_cause":"ci.check_failed"}')`, a.ID, a.SessionID)
 			return err
@@ -31,6 +33,35 @@ func launchPhase(t *testing.T, e durable.Executor, run workflow.Run, root, agent
 		_, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,'pinned-head','saved diff','{}',?,'read-only','[]')`, a.ID, a.SessionID)
 		return err
 	}, map[string]any{"target_sha": "pinned-head"})
+}
+
+func assertPhaseLaunchMetadata(t *testing.T, e durable.Executor, a durable.Attempt, kind workflow.Phase, round int, previousSession, warning string) {
+	t.Helper()
+	history, err := e.Events.History(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest := history[len(history)-1]
+	if latest.Type != "phase.attempt_started" {
+		t.Fatalf("latest event: %s", latest.Type)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(latest.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"agent": a.Agent, "phase": string(kind), "round": float64(round),
+		"attempt": float64(a.Number), "resumed_session": a.Resumed,
+		"session_id": a.SessionID, "previous_session_id": previousSession,
+		"warning_code": warning, "check_retry_of": "",
+		"model": "saved-model", "effort": "high", "skills": []any{"review"},
+		"permissions": "saved permissions", "permission_mode": "saved-mode", "allowed_tools": []any{"Read"},
+		"target_sha": "pinned-head",
+	} {
+		if !reflect.DeepEqual(payload[key], want) {
+			t.Errorf("launch metadata %s = %#v; want %#v", key, payload[key], want)
+		}
+	}
 }
 
 func TestPhaseLaunchCommitsFactsProbeRecoveryAndEventTogether(t *testing.T) {
@@ -54,6 +85,7 @@ func TestPhaseLaunchCommitsFactsProbeRecoveryAndEventTogether(t *testing.T) {
 				if err == nil || !first.Resumed {
 					t.Fatalf("first: %+v %v", first, err)
 				}
+				assertPhaseLaunchMetadata(t, e, first, kind, run.ReviewRound, "lost-session", "")
 				for _, statement := range []string{
 					`INSERT INTO harness_limits(harness_type,reason,restriction_id,probe_id) VALUES('` + agent + `','credits_exhausted','restriction','probe')`,
 					`INSERT INTO credit_probes(id,harness,restriction_id,run_id,status) VALUES('probe','` + agent + `','restriction','run-141','reserved')`,
@@ -92,6 +124,7 @@ func TestPhaseLaunchCommitsFactsProbeRecoveryAndEventTogether(t *testing.T) {
 					if err != nil || saved.ID == first.ID || saved.SessionID == "lost-session" || saved.Resumed {
 						t.Fatalf("replacement: %+v %v", saved, err)
 					}
+					assertPhaseLaunchMetadata(t, e, saved, kind, run.ReviewRound, "lost-session", "harness.session_resume_failed")
 					var target string
 					if err := e.DB.QueryRowContext(ctx, fmt.Sprintf("SELECT target_sha FROM %s_attempts WHERE attempt_id=?", kind), saved.ID).Scan(&target); err != nil || target != "pinned-head" {
 						t.Fatalf("phase facts before startup: %s %v", target, err)
@@ -167,6 +200,11 @@ func TestPhaseRestartObservation(t *testing.T) {
 				if err != nil || a.Status != "running" {
 					t.Fatalf("ambiguous launch: %+v %v", a, err)
 				}
+				previousSession := ""
+				if a.Resumed {
+					previousSession = a.SessionID
+				}
+				assertPhaseLaunchMetadata(t, e, a, kind, run.ReviewRound, previousSession, "")
 				if err := e.DB.Close(); err != nil {
 					t.Fatal(err)
 				}

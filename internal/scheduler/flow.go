@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
@@ -401,7 +402,8 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		return err
 	}
 	req := runner.SessionRequest{RunID: run.ID, Phase: "implement", Round: 0, Attempt: number, PhaseDir: phaseDir, Command: command}
-	launched, err := s.execution().LaunchImplement(ctx, run, repo.Implementer, s.rolePermissions(repo.Implementer.Agent), phase, savedPrevious, req, input, checkID)
+	permission, allowedTools := s.roleSettings(repo.Implementer.Agent)
+	launched, err := s.execution().LaunchImplement(ctx, run, repo.Implementer, durable.Permissions{Summary: s.rolePermissions(repo.Implementer.Agent), Mode: permission, AllowedTools: allowedTools}, phase, savedPrevious, req, input, checkID)
 	if err != nil && launched.ID != "" && launched.Status == "failed" && ctx.Err() == nil {
 		retry, retryErr := s.retryPhase(ctx, run, workflow.Implement, schedulerAttempt(launched), err, repo.Implementer.MaxAttempts)
 		if retryErr != nil {

@@ -399,14 +399,6 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		return fail(err)
 	}
 	phaseDir, sessionID := phase.PhaseDir, phase.SessionID
-	warning := ""
-	if strings.HasPrefix(previous.Failure, "harness.session_resume_failed: ") {
-		warning = "harness.session_resume_failed"
-	}
-	previousSession := previous.SessionID
-	if phase.Resume {
-		previousSession = phase.SessionID
-	}
 	env, err := s.phaseEnvironment(ctx, run.ID, workflow.Fix)
 	if err != nil {
 		return fail(err)
@@ -438,10 +430,10 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		}
 		diagnostics = string(data)
 	}
-	launched, err := s.execution().Launch(ctx, run, repo.Implementer, s.rolePermissions(repo.Implementer.Agent), phase, previous, req, input, checkID, func(tx *sql.Tx, a durable.Attempt) error {
+	launched, err := s.execution().Launch(ctx, run, repo.Implementer, durable.Permissions{Summary: s.rolePermissions(repo.Implementer.Agent), Mode: permission, AllowedTools: allowedTools}, phase, previous, req, input, checkID, func(tx *sql.Tx, a durable.Attempt) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,ci_json) VALUES (?,?,?,?,?,?,?)`, a.ID, sessionID, target, string(encoded), permission, string(tools), diagnostics)
 		return err
-	}, map[string]any{"agent": repo.Implementer.Agent, "permissions": s.rolePermissions(repo.Implementer.Agent), "session_id": sessionID, "model": repo.Implementer.Model, "effort": repo.Implementer.Effort, "skills": repo.Implementer.Skills, "permission_mode": permission, "allowed_tools": allowedTools, "warning_code": warning, "previous_session_id": previousSession, "ci": repair})
+	}, map[string]any{"ci": repair})
 	if err != nil && launched.ID != "" && launched.Status == "failed" && ctx.Err() == nil {
 		return s.finishFixAttempt(ctx, repo, run, fixAttempt{attempt: schedulerAttempt(launched)}, nil, nil, err)
 	}
