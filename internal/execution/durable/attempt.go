@@ -52,7 +52,7 @@ func (e Executor) LoadImplement(ctx context.Context, id string) (Attempt, error)
 func (e Executor) Load(ctx context.Context, id string, phase workflow.Phase, round int) (Attempt, error) {
 	var a Attempt
 	var input string
-	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,COALESCE(a.session_id,(SELECT session_id FROM review_attempts WHERE attempt_id=a.id),(SELECT `+phase.Role()+`_session_id FROM runs WHERE id=a.run_id),''),a.check_retry_of FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf)
+	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,COALESCE(a.session_id,(SELECT session_id FROM review_attempts WHERE attempt_id=a.id),(SELECT session_id FROM fix_attempts WHERE attempt_id=a.id),(SELECT `+phase.Role()+`_session_id FROM runs WHERE id=a.run_id),''),a.check_retry_of FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf)
 	a.Ref.PhaseDir = filepath.Dir(input)
 	return a, err
 }
@@ -75,6 +75,9 @@ func (e Executor) Prepare(ctx context.Context, root string, run workflow.Run, ki
 	if agent != "" && agent != role.Agent {
 		return phase, previous, &fault.Error{Code: "harness.session_agent_changed", Message: "Persisted " + kind.Role() + " belongs to " + agent + "; restore that role harness before resuming"}
 	}
+	if kind == workflow.Fix && sessionID == "" && number == 1 {
+		return phase, previous, &fault.Error{Code: "harness.session_missing", Message: "Original implementer session is unavailable; inspect before fixing"}
+	}
 	resume := sessionID != ""
 	if kind == workflow.Review && number == 1 && round == 1 {
 		resume = false
@@ -84,6 +87,11 @@ func (e Executor) Prepare(ctx context.Context, root string, run workflow.Run, ki
 		previous, err = e.Load(ctx, run.ID, kind, round)
 		if err != nil {
 			return phase, previous, err
+		}
+		// A fresh discovered-identity replacement may fail before starting a
+		// conversation. An established fix conversation must never be lost silently.
+		if kind == workflow.Fix && sessionID == "" && (previous.Resumed || previous.SessionID != "" || e.Harnesses[role.Agent].Capabilities().SessionIDSource != harness.Discovered) {
+			return phase, previous, &fault.Error{Code: "harness.session_missing", Message: "Persisted fix conversation is unavailable; inspect before retrying"}
 		}
 		if previous.Status == "usage_limited" && sessionID == "" {
 			return phase, previous, &fault.Error{Code: "harness.session_missing", Message: "Interrupted conversation identity is unavailable; inspect preserved work"}

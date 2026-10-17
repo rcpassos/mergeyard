@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -478,12 +477,4 @@ func (s *Scheduler) roleSettings(agent string) (string, []string) {
 		permission = "bypassPermissions"
 	}
 	return permission, s.cfg.Agents.Claude.AllowedTools
-}
-
-func (s *Scheduler) readLastMessage(ctx context.Context, phaseDir string) ([]byte, error) {
-	data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(phaseDir, "last-message.json"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	return data, err
 }
