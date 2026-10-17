@@ -2,8 +2,10 @@ package runner_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,6 +160,68 @@ func TestSessionUsesOnlyExplicitEnvironmentAndClosedStdin(t *testing.T) {
 	status = awaitExit(t, r, ref)
 	if status.ExitCode == nil || *status.ExitCode != 0 {
 		t.Fatalf("stdin was not closed: %+v", status)
+	}
+}
+
+// Hash rather than echo the sentinel: harness output is deliberately retained,
+// so a harness that prints credentials would create its own disclosure.
+func TestSessionEnvironmentReachesProcessWithoutPersistingSecrets(t *testing.T) {
+	secret := "sentinel ' \" ; $(touch injected) `touch injected` = 界\nsecond line"
+	t.Setenv("MERGEYARD_SENTINEL_SECRET", secret)
+	for _, phase := range []string{"implement", "setup", "checks", "harness-check"} {
+		t.Run(phase, func(t *testing.T) {
+			r, options := localSessions(t)
+			req := phaseRequest(t, `
+[ "$EMPTY" = "" ] && [ "${EMPTY+x}" = x ] || exit 10
+[ "$MERGEYARD_RUN_ID" = run-123456789 ] || exit 11
+[ "$MERGEYARD_PHASE" = "$1" ] || exit 12
+[ "$MERGEYARD_PORT_BASE" = 42000 ] && [ "$MERGEYARD_PORT_COUNT" = 10 ] || exit 13
+printf '%s' "$MERGEYARD_SENTINEL_SECRET" | /usr/bin/shasum -a 256
+`)
+			req.Phase = phase
+			req.Command.Args = []string{phase}
+			req.Command.Env = map[string]string{}
+			for _, entry := range os.Environ() {
+				key, value, _ := strings.Cut(entry, "=")
+				req.Command.Env[key] = value
+			}
+			req.Command.Env["EMPTY"] = ""
+			req.Command.Env["MERGEYARD_RUN_ID"] = req.RunID
+			req.Command.Env["MERGEYARD_PHASE"] = phase
+			req.Command.Env["MERGEYARD_PORT_BASE"] = "42000"
+			req.Command.Env["MERGEYARD_PORT_COUNT"] = "10"
+			if phase == "setup" || phase == "checks" {
+				req.Timeout = time.Minute
+			}
+			ref, err := r.StartSession(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := awaitExit(t, runner.NewLocal(options), ref)
+			if status.ExitCode == nil || *status.ExitCode != 0 {
+				t.Fatalf("environment was not delivered: %+v", status)
+			}
+			out, err := os.ReadFile(filepath.Join(ref.PhaseDir, "events.jsonl"))
+			if err != nil || string(out) != fmt.Sprintf("%x  -\n", sha256.Sum256([]byte(secret))) {
+				t.Fatalf("sentinel digest = %q, err=%v", out, err)
+			}
+			err = filepath.WalkDir(req.Command.Dir, func(path string, entry fs.DirEntry, err error) error {
+				if err != nil || entry.IsDir() {
+					return err
+				}
+				data, err := os.ReadFile(path)
+				if err == nil && strings.Contains(string(data), secret) {
+					t.Errorf("environment secret persisted in %s", path)
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(req.Command.Dir, "injected")); !os.IsNotExist(err) {
+				t.Fatalf("environment value executed as shell text: %v", err)
+			}
+		})
 	}
 }
 

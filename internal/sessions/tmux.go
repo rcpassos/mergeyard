@@ -182,7 +182,11 @@ func (m *Manager) Start(ctx context.Context, req Request) (Ref, error) {
 	}
 	// Multiple shell-command arguments make tmux exec directly, without parsing
 	// the wrapper path as a shell command.
-	if _, err := m.tmux(ctx, "new-session", "-d", "-s", ref.Name, "--", "/bin/sh", path); err != nil {
+	// Environment values travel only in the launch arguments, never in phase files.
+	// The wrapper forwards these opaque assignments to env without shell parsing.
+	args := []string{"new-session", "-d", "-s", ref.Name, "--", "/bin/sh", path}
+	args = append(args, req.Command.Environment()...)
+	if _, err := m.tmux(ctx, args...); err != nil {
 		// The server may have committed the launch before its client was
 		// cancelled. Reconcile independently of the cancelled caller context.
 		probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
@@ -413,10 +417,7 @@ func wrapperTimeout(command Command, phaseDir string, timeout time.Duration) (st
 		fmt.Fprintf(&b, "(\n sleeper=\n trap 'if [ -n \"$sleeper\" ]; then kill -TERM \"$sleeper\" 2>/dev/null; wait \"$sleeper\" 2>/dev/null; fi; exit 0' INT TERM HUP\n /bin/sleep %s &\n sleeper=$!\n wait \"$sleeper\" || exit 0\n printf '{\"exit_code\":124,\"timed_out\":true}\\n' >%s && /bin/mv -f %s %s\n kill -KILL -$$\n) &\ntimer=$!\n", strconv.FormatFloat(timeout.Seconds(), 'f', 9, 64), quote(filepath.Join(phaseDir, "timeout.json.tmp")), quote(filepath.Join(phaseDir, "timeout.json.tmp")), quote(filepath.Join(phaseDir, "exit.json")))
 	}
 
-	fmt.Fprintf(&b, "cd %s || exit 1\n/usr/bin/env -i", quote(command.Dir))
-	for _, value := range command.Environment() {
-		fmt.Fprintf(&b, " %s", quote(value))
-	}
+	fmt.Fprintf(&b, "cd %s || exit 1\n/usr/bin/env -i \"$@\"", quote(command.Dir))
 	fmt.Fprintf(&b, " %s", quote(command.Executable))
 	for _, arg := range command.Args {
 		fmt.Fprintf(&b, " %s", quote(arg))

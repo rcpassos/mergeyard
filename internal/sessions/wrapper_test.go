@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -80,10 +81,11 @@ func TestGeneratedWrapperLogsAndMetadataWithoutTmux(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := "literal ' ; $(echo injected)\nsecond line"
-	script, err := wrapper(Command{
+	command := Command{
 		Executable: "/bin/sh", Args: []string{"-c", `printf '%s\n' "$VALUE" "$1"; /bin/cat; printf 'diagnostic' >&2; exit 7`, "fixture", value},
 		Dir: dir, Env: map[string]string{"VALUE": value}, StdinPath: input,
-	}, phaseDir)
+	}
+	script, err := wrapper(command, phaseDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +93,7 @@ func TestGeneratedWrapperLogsAndMetadataWithoutTmux(t *testing.T) {
 	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := exec.Command("/bin/sh", path).Run(); err == nil {
+	if err := exec.Command("/bin/sh", append([]string{path}, command.Environment()...)...).Run(); err == nil {
 		t.Fatal("wrapper discarded exit 7")
 	} else {
 		var exit *exec.ExitError
@@ -152,4 +154,66 @@ func TestGeneratedWrapperCompletesDuringWatchdogStartup(t *testing.T) {
 	if err != nil || status.State != Exited || status.ExitCode == nil || *status.ExitCode != 7 || status.TimedOut {
 		t.Fatalf("completion metadata=%+v, err=%v", status, err)
 	}
+}
+
+func TestManagerObservesWrapperLaunchedBeforeEnvironmentUpgrade(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is required for session integration tests")
+	}
+	dir := t.TempDir()
+	options := Options{SocketName: "my-upgrade-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)}
+	t.Cleanup(func() { exec.Command("tmux", "-L", options.SocketName, "kill-server").Run() })
+	req := Request{RunID: "old-run", Phase: "implement", Attempt: 1, PhaseDir: dir, Command: Command{
+		Executable: "/bin/sh", Dir: dir, Env: map[string]string{"OLD_VALUE": "retained"},
+		Args: []string{"-c", `printf ready; while [ ! -f release ]; do /bin/sleep 0.02; done; [ "$OLD_VALUE" = retained ]`},
+	}}
+	script, err := wrapper(req.Command, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce the old on-disk launch contract: assignments in the wrapper,
+	// no environment arguments supplied when tmux starts it.
+	script = strings.Replace(script, `/usr/bin/env -i "$@"`, `/usr/bin/env -i 'OLD_VALUE=retained'`, 1)
+	path := filepath.Join(dir, "wrapper.sh")
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ref := Ref{Name: Name(req), PhaseDir: dir}
+	if out, err := exec.Command("tmux", "-L", options.SocketName, "-f", "/dev/null", "new-session", "-d", "-s", ref.Name, "--", "/bin/sh", path).CombinedOutput(); err != nil {
+		t.Fatalf("start old wrapper: %v: %s", err, out)
+	}
+	manager := New(options)
+	t.Cleanup(func() { manager.Stop(context.Background(), ref) })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, err := os.ReadFile(filepath.Join(dir, "events.jsonl"))
+		if err == nil && string(data) == "ready" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("old wrapper did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	status, err := manager.Status(context.Background(), ref)
+	if err != nil || status.State != Running {
+		t.Fatalf("old running session: %+v, err=%v", status, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for time.Now().Before(deadline) {
+		status, err = manager.Status(context.Background(), ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.State == Exited {
+			if status.ExitCode == nil || *status.ExitCode != 0 {
+				t.Fatalf("old wrapper lost environment: %+v", status)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("old wrapper did not complete: %+v", status)
 }
