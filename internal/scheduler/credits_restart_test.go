@@ -58,6 +58,17 @@ func TestCreditProbeSurvivesControlPlaneKill(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// Recovery may already have launched the independent reviewer. Stop
+				// its owned process group before closing SQLite, killing tmux, or
+				// removing temporary worktrees; killing the server alone can race
+				// with a reviewer that is still writing files.
+				t.Cleanup(func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					if err := restarted.Stop(ctx, attention.ID); err != nil {
+						t.Errorf("stop recovered run before cleanup: %v", err)
+					}
+				})
 				saved, err := rt.Workflow.Get(context.Background(), attention.ID)
 				if err != nil || len(saved.CreditProbes) != 1 {
 					t.Fatalf("durable owner: %+v %v", saved, err)
