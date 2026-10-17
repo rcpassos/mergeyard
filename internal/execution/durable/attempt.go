@@ -44,6 +44,17 @@ type Attempt struct {
 	Failure, CheckRetryOf string
 }
 
+// Permissions records the effective harness permissions alongside launch intent.
+type Permissions struct {
+	Summary      string
+	Mode         string
+	AllowedTools []string
+}
+
+func (a Attempt) resumeFailed() bool {
+	return strings.HasPrefix(a.Failure, "harness.session_resume_failed: ")
+}
+
 func (e Executor) LoadImplement(ctx context.Context, id string) (Attempt, error) {
 	return e.Load(ctx, id, workflow.Implement, 0)
 }
@@ -52,7 +63,7 @@ func (e Executor) LoadImplement(ctx context.Context, id string) (Attempt, error)
 func (e Executor) Load(ctx context.Context, id string, phase workflow.Phase, round int) (Attempt, error) {
 	var a Attempt
 	var input string
-	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,COALESCE(a.session_id,(SELECT session_id FROM review_attempts WHERE attempt_id=a.id),(SELECT `+phase.Role()+`_session_id FROM runs WHERE id=a.run_id),''),a.check_retry_of FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf)
+	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,COALESCE(a.session_id,(SELECT session_id FROM review_attempts WHERE attempt_id=a.id),(SELECT session_id FROM fix_attempts WHERE attempt_id=a.id),(SELECT `+phase.Role()+`_session_id FROM runs WHERE id=a.run_id),''),a.check_retry_of FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf)
 	a.Ref.PhaseDir = filepath.Dir(input)
 	return a, err
 }
@@ -75,6 +86,9 @@ func (e Executor) Prepare(ctx context.Context, root string, run workflow.Run, ki
 	if agent != "" && agent != role.Agent {
 		return phase, previous, &fault.Error{Code: "harness.session_agent_changed", Message: "Persisted " + kind.Role() + " belongs to " + agent + "; restore that role harness before resuming"}
 	}
+	if kind == workflow.Fix && sessionID == "" && number == 1 {
+		return phase, previous, &fault.Error{Code: "harness.session_missing", Message: "Original implementer session is unavailable; inspect before fixing"}
+	}
 	resume := sessionID != ""
 	if kind == workflow.Review && number == 1 && round == 1 {
 		resume = false
@@ -85,10 +99,15 @@ func (e Executor) Prepare(ctx context.Context, root string, run workflow.Run, ki
 		if err != nil {
 			return phase, previous, err
 		}
+		// A fresh discovered-identity replacement may fail before starting a
+		// conversation. An established fix conversation must never be lost silently.
+		if kind == workflow.Fix && sessionID == "" && (previous.Resumed || previous.SessionID != "" || e.Harnesses[role.Agent].Capabilities().SessionIDSource != harness.Discovered) {
+			return phase, previous, &fault.Error{Code: "harness.session_missing", Message: "Persisted fix conversation is unavailable; inspect before retrying"}
+		}
 		if previous.Status == "usage_limited" && sessionID == "" {
 			return phase, previous, &fault.Error{Code: "harness.session_missing", Message: "Interrupted conversation identity is unavailable; inspect preserved work"}
 		}
-		if strings.HasPrefix(previous.Failure, "harness.session_resume_failed: ") {
+		if previous.resumeFailed() {
 			sessionID, resume = "", false
 		}
 	}
@@ -108,13 +127,14 @@ func (e Executor) Prepare(ctx context.Context, root string, run workflow.Run, ki
 // LaunchImplement commits all executable intent before invoking the runner.
 // An ambiguous launch remains running and is observed through its saved ref.
 // A returned attempt with an error denotes a definite, durably failed startup.
-func (e Executor) LaunchImplement(ctx context.Context, run workflow.Run, role config.Role, permissions string, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string) (Attempt, error) {
+func (e Executor) LaunchImplement(ctx context.Context, run workflow.Run, role config.Role, permissions Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string) (Attempt, error) {
 	return e.Launch(ctx, run, role, permissions, phase, previous, req, input, checkID, nil, nil)
 }
 
 // Launch commits phase facts alongside executable intent, probe binding, recovery
-// reservation and the launch event. The hook must only write through this transaction.
-func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role, permissions string, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string, facts func(*sql.Tx, Attempt) error, payload map[string]any) (Attempt, error) {
+// reservation and the launch event. Common event fields come from launch intent;
+// payload adds only phase-specific facts. The hook must only write through this transaction.
+func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role, permissions Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string, facts func(*sql.Tx, Attempt) error, payload map[string]any) (Attempt, error) {
 	round := attemptRound(run, phase.Phase)
 	if req.RunID != run.ID || req.Phase != string(phase.Phase) || req.Round != round || req.PhaseDir != phase.PhaseDir || req.Attempt < 1 || filepath.Base(phase.PhaseDir) != fmt.Sprintf("%s-%d-%d", phase.Phase, round, req.Attempt) {
 		return Attempt{}, &fault.Error{Code: "phase.invalid_request", Message: "Launch request does not match the prepared phase attempt"}
@@ -128,7 +148,7 @@ func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role
 		if _, err := tx.ExecContext(ctx, "UPDATE runs SET "+phase.Phase.Role()+"_agent=?,"+phase.Phase.Role()+"_session_id=? WHERE id=?", role.Agent, phase.SessionID, run.ID); err != nil {
 			return nil, err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions,session_id,check_retry_of,started_at) VALUES (?,?,?,?,?,?,?,?,?,'running',?,?,?,?,?,?,?,?,?,?)`, a.ID, run.ID, phase.Phase, phase.Phase.Role(), req.Round, a.Number, role.Agent, role.Model, role.Effort, phase.Resume, a.Ref.Name, input, filepath.Join(req.PhaseDir, "result.json"), filepath.Join(req.PhaseDir, "events.jsonl"), string(skills), permissions, phase.SessionID, checkID, e.Now().UTC().Format(time.RFC3339Nano))
+		_, err := tx.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,model,effort,status,resumed_session,process_session,input_path,result_path,log_path,skills_json,permissions,session_id,check_retry_of,started_at) VALUES (?,?,?,?,?,?,?,?,?,'running',?,?,?,?,?,?,?,?,?,?)`, a.ID, run.ID, phase.Phase, phase.Phase.Role(), req.Round, a.Number, role.Agent, role.Model, role.Effort, phase.Resume, a.Ref.Name, input, filepath.Join(req.PhaseDir, "result.json"), filepath.Join(req.PhaseDir, "events.jsonl"), string(skills), permissions.Summary, phase.SessionID, checkID, e.Now().UTC().Format(time.RFC3339Nano))
 		if err != nil {
 			return nil, err
 		}
@@ -141,16 +161,27 @@ func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role
 			return nil, err
 		}
 		drafts := []events.Draft{}
-		if strings.HasPrefix(previous.Failure, "harness.session_resume_failed: ") {
+		warning := ""
+		if previous.resumeFailed() {
 			recovery, err := ReserveRecovery(ctx, tx, run, phase.Phase, previous, a.ID, phase.SessionID)
 			if err != nil {
 				return nil, err
 			}
 			drafts = append(drafts, recovery)
+			warning = "harness.session_resume_failed"
 		}
 		if payload == nil {
 			payload = map[string]any{}
 		}
+		previousSession := previous.SessionID
+		if phase.Resume {
+			previousSession = phase.SessionID
+		}
+		payload["agent"], payload["permissions"] = role.Agent, permissions.Summary
+		payload["session_id"], payload["previous_session_id"] = phase.SessionID, previousSession
+		payload["model"], payload["effort"], payload["skills"] = role.Model, role.Effort, role.Skills
+		payload["permission_mode"], payload["allowed_tools"] = permissions.Mode, permissions.AllowedTools
+		payload["warning_code"] = warning
 		payload["phase"], payload["round"], payload["attempt"] = phase.Phase, req.Round, a.Number
 		payload["check_retry_of"], payload["resumed_session"] = checkID, phase.Resume
 		drafts = append(drafts, events.Draft{RunID: run.ID, Type: "phase.attempt_started", Payload: payload})

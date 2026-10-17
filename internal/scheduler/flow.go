@@ -5,12 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
@@ -402,7 +402,8 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 		return err
 	}
 	req := runner.SessionRequest{RunID: run.ID, Phase: "implement", Round: 0, Attempt: number, PhaseDir: phaseDir, Command: command}
-	launched, err := s.execution().LaunchImplement(ctx, run, repo.Implementer, s.rolePermissions(repo.Implementer.Agent), phase, savedPrevious, req, input, checkID)
+	permission, allowedTools := s.roleSettings(repo.Implementer.Agent)
+	launched, err := s.execution().LaunchImplement(ctx, run, repo.Implementer, durable.Permissions{Summary: s.rolePermissions(repo.Implementer.Agent), Mode: permission, AllowedTools: allowedTools}, phase, savedPrevious, req, input, checkID)
 	if err != nil && launched.ID != "" && launched.Status == "failed" && ctx.Err() == nil {
 		retry, retryErr := s.retryPhase(ctx, run, workflow.Implement, schedulerAttempt(launched), err, repo.Implementer.MaxAttempts)
 		if retryErr != nil {
@@ -478,12 +479,4 @@ func (s *Scheduler) roleSettings(agent string) (string, []string) {
 		permission = "bypassPermissions"
 	}
 	return permission, s.cfg.Agents.Claude.AllowedTools
-}
-
-func (s *Scheduler) readLastMessage(ctx context.Context, phaseDir string) ([]byte, error) {
-	data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(phaseDir, "last-message.json"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	return data, err
 }

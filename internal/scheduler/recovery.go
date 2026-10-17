@@ -2,11 +2,8 @@ package scheduler
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 
-	"github.com/rcpassos/mergeyard/internal/events"
-	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -58,10 +55,4 @@ func (s *Scheduler) retryPhase(ctx context.Context, run workflow.Run, phase work
 		return canRetryImplementAttempt(cause, number, max), nil
 	}
 	return canRetryAttempt(cause, number, max), nil
-}
-
-// reserveRecovery is part of the replacement's launch transaction. A crash after
-// commit leaves a running deterministic identity for observation, never replay.
-func reserveRecovery(ctx context.Context, tx *sql.Tx, run workflow.Run, phase workflow.Phase, previous attempt, replacement, session string) (events.Draft, error) {
-	return durable.ReserveRecovery(ctx, tx, run, phase, durableAttempt(previous), replacement, session)
 }
