@@ -561,15 +561,17 @@ repositories:
 With no nonempty list, the actor must have `write`, `maintain`, or `admin`
 repository permission. `triage` and `read` do not authorize execution. The GitHub
 account running Mergeyard must be able to read collaborator permissions, issue
-label events and GraphQL content edit history. If those reads fail or omit required
-information, Mergeyard refuses the issue.
+label and rename events and GraphQL content edit history. If those reads fail or
+omit required information, Mergeyard refuses the issue.
 
 Mergeyard checks the most recent ready-label event, plus each present
 `mergeyard:implementer=<agent>`, `mergeyard:reviewer=<agent>`,
 `mergeyard:implementer-tier=<tier>` and `mergeyard:reviewer-tier=<tier>` label event.
-It also checks every body edit at or after the ready-label event. An edit by an
-untrusted actor prevents claim, even if a later edit has a trusted editor. Edits
-before approval are accepted: a trusted maintainer reviews that content when
+It also checks every title and body edit at or after the ready-label event. Title
+edits use issue `renamed` events; a rename with no visible actor or timestamp
+refuses the claim. The current title and body must match the issue snapshot
+throughout authorization. An edit by an untrusted actor prevents claim, even if a
+later edit has a trusted editor. Edits before approval are accepted: a trusted maintainer reviews that content when
 applying the ready label. Equal timestamps are treated conservatively as after
 approval because GitHub timestamps do not establish ordering within a second.
 
@@ -577,7 +579,7 @@ A refusal creates no run. Mergeyard persists the reason, posts one comment with
 `<!-- mergeyard:trust:refused -->`, and removes the ready label. Pending comment
 and label operations survive restarts. The dashboard lists the issue under
 **Needs attention**, including its refusal reason after the ready label is gone.
-A trusted maintainer should review the body, harness override labels and tier
+A trusted maintainer should review the title, body, harness override labels and tier
 labels, remove or reapply any untrusted selections, then reapply the ready label.
 The historical comment is retained, and a newly trusted decision clears the
 dashboard refusal.

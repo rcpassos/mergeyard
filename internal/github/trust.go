@@ -132,6 +132,7 @@ func (c *Client) verifyIssueTrust(ctx context.Context, repo string, issue Issue,
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	latest := map[string]labelEvent{}
+	var renames []labelEvent
 	pages := 0
 	for {
 		var page []labelEvent
@@ -144,6 +145,10 @@ func (c *Client) verifyIssueTrust(ctx context.Context, repo string, issue Issue,
 		}
 		pages++
 		for _, event := range page {
+			if event.Event == "renamed" {
+				renames = append(renames, event)
+				continue
+			}
 			if event.Event != "labeled" && event.Event != "unlabeled" {
 				continue
 			}
@@ -197,11 +202,29 @@ func (c *Client) verifyIssueTrust(ctx context.Context, repo string, issue Issue,
 			return refuse(fmt.Sprintf("Label %q was applied by untrusted actor @%s.", label, event.Actor.Login))
 		}
 	}
+	for _, event := range renames {
+		if event.CreatedAt.IsZero() {
+			return refuse("Cannot verify issue title edit history: missing edit time.")
+		}
+		if event.Actor == nil || event.Actor.Login == "" {
+			return refuse("Cannot verify the actor of an issue title edit.")
+		}
+		if event.CreatedAt.Before(readyAt) {
+			continue
+		}
+		allowed, err := isTrusted(event.Actor.Login)
+		if err != nil {
+			return decision, err
+		}
+		if !allowed {
+			return refuse(fmt.Sprintf("Issue title was edited after authorization by untrusted actor @%s.", event.Actor.Login))
+		}
+	}
 	owner, name, _ := strings.Cut(repo, "/")
 	cursor := ""
 	var lastEdited *time.Time
 	for {
-		query := `query($owner:String!,$name:String!,$number:Int!,$cursor:String) { repository(owner:$owner,name:$name) { issue(number:$number) { body lastEditedAt editor { login } userContentEdits(first:100,after:$cursor) { nodes { editedAt editor { login } } pageInfo { hasNextPage endCursor } } } } }`
+		query := `query($owner:String!,$name:String!,$number:Int!,$cursor:String) { repository(owner:$owner,name:$name) { issue(number:$number) { title body lastEditedAt editor { login } userContentEdits(first:100,after:$cursor) { nodes { editedAt editor { login } } pageInfo { hasNextPage endCursor } } } } }`
 		variables := map[string]any{"owner": owner, "name": name, "number": issue.Number, "cursor": nil}
 		if cursor != "" {
 			variables["cursor"] = cursor
@@ -216,6 +239,7 @@ func (c *Client) verifyIssueTrust(ctx context.Context, repo string, issue Issue,
 			Data   struct {
 				Repository *struct {
 					Issue *struct {
+						Title        *string    `json:"title"`
 						Body         *string    `json:"body"`
 						LastEditedAt *time.Time `json:"lastEditedAt"`
 						Editor       *Actor     `json:"editor"`
@@ -237,6 +261,9 @@ func (c *Client) verifyIssueTrust(ctx context.Context, repo string, issue Issue,
 			return refuse("Cannot verify issue body edit history: GitHub did not return readable content edits.")
 		}
 		content := result.Data.Repository.Issue
+		if content.Title == nil || *content.Title != issue.Title {
+			return refuse("Issue title changed during authorization; a trusted maintainer must apply the ready label again.")
+		}
 		if content.Body == nil || *content.Body != issue.Body {
 			return refuse("Issue body changed during authorization; a trusted maintainer must apply the ready label again.")
 		}
@@ -321,7 +348,7 @@ func (c *Client) EnsureTrustRefusalComment(ctx context.Context, repo string, num
 		return err
 	}
 	prefix := TrustRefusalMarker + "\nMergeyard refused to claim this issue: "
-	_, err = c.ensureComment(ctx, repo, number, prefix+reason+"\n\nA trusted maintainer must review the issue and its harness override and tier labels, then reapply the ready label.", func(comment Comment) bool {
+	_, err = c.ensureComment(ctx, repo, number, prefix+reason+"\n\nA trusted maintainer must review the issue title, body, and its harness override and tier labels, then reapply the ready label.", func(comment Comment) bool {
 		return comment.User != nil && strings.EqualFold(comment.User.Login, login) && strings.HasPrefix(comment.Body, prefix)
 	})
 	return err

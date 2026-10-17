@@ -140,6 +140,11 @@ Captured read-only with authenticated `gh api` on 2026-10-12:
   name:"mergeyard").issue(number:105)` with body, lastEditedAt, editor and
   `userContentEdits(first:100)` nodes (editedAt/editor) and pageInfo.
 
+The title in `trust-content-edits.json` was added from a read-only
+`gh issue view 105 --repo rcpassos/mergeyard --json title` observation on
+2026-10-17; the remaining fields retain the 2026-10-12 capture. Rename events
+and title changes in tests are synthetic policy cases.
+
 Admin/read are recorded observations. Write, maintain, triage and legacy
 push/pull responses in `trust_test.go` are synthetic policy cases, not recorded
 permission observations. Later label events, body edits, pagination, malformed

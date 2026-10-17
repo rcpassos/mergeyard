@@ -43,7 +43,7 @@ func (s *Scheduler) applyTrustDecision(ctx context.Context, repo config.Reposito
 		if errors.As(err, &coded) {
 			code = coded.Code
 		}
-		decision = github.TrustDecision{Reason: fmt.Sprintf("Cannot verify label actors or issue body edit history (%s).", code)}
+		decision = github.TrustDecision{Reason: fmt.Sprintf("Cannot verify label actors or issue title and body edit history (%s).", code)}
 	}
 	if decision.Allowed {
 		_, err = s.db.ExecContext(ctx, "DELETE FROM issue_refusals WHERE repository=? AND issue_number=?", strings.ToLower(repo.Repo), issue.Number)

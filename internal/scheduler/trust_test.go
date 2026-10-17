@@ -330,3 +330,25 @@ func TestPendingRefusalPreservesTrustedRelabelAfterRestart(t *testing.T) {
 		}
 	}
 }
+
+func TestUntrustedTitleEditRefusesClaimWithExplanation(t *testing.T) {
+	reason := "Issue title was edited after authorization by untrusted actor @outsider."
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}, trust: func(github.Issue) (github.TrustDecision, error) {
+		return github.TrustDecision{Reason: reason}, nil
+	}}
+	s, _ := fixture(t, api)
+	ctx := context.Background()
+	if err := s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.Runs(ctx)
+	if err != nil || len(runs) != 0 {
+		t.Fatalf("title edit claimed: %+v %v", runs, err)
+	}
+	if has(api.issues["owner/repo"][0], "ready-for-agent") || has(api.issues["owner/repo"][0], "agent-running") {
+		t.Fatal("refusal must remove ready without adding running")
+	}
+	if api.trustComments[7] != reason {
+		t.Fatalf("title edit explanation: %s", api.trustComments[7])
+	}
+}
