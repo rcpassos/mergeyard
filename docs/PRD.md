@@ -225,10 +225,12 @@ Detailed phase state lives in Mergeyard/SQLite, not in labels.
 ### 7.3 Claim transition
 
 Before creating a run, Mergeyard reads the issue events API to verify the latest
-ready-label and harness override actors. It reads GraphQL `lastEditedAt`, `editor`
+ready-label and harness override actors, and checks `renamed` events for title
+edits at or after approval using the same actor rule. A rename without an actor
+or timestamp refuses the claim. It reads GraphQL `lastEditedAt`, `editor`
 and paginated `userContentEdits` to reject any body edit at or after approval by
 an untrusted actor. Missing or unreadable authorization/edit history fails closed.
-The body observed through GraphQL must match the snapshot that will be executed.
+The title and body observed through GraphQL must match the snapshot that will be executed.
 That persisted issue snapshot is used for every implementation, review, fix and
 resumed attempt. Live lifecycle observations never replace executable issue text.
 
@@ -1681,10 +1683,10 @@ The MVP binds only to loopback addresses. Remote dashboard exposure is unsupport
 
 ### Issue trust boundary
 
-Agents run with the user's local permissions. An issue body is effectively executable intent once it receives the ready label. The ready label is a trusted-maintainer authorization boundary.
+Agents run with the user's local permissions. An issue title and body are effectively executable intent once the issue receives the ready label. The ready label is a trusted-maintainer authorization boundary.
 
 This boundary is enforced before claim for ready labels, harness override and
-tier labels, and body edits after approval (sections 7.2–7.3). Explicit `trusted_labelers` narrow
+tier labels, and title and body edits after approval (sections 7.2–7.3). Explicit `trusted_labelers` narrow
 authorization; otherwise write/maintain/admin permission is trusted. `doctor`
 warns for public repositories without an explicit allowlist. Unreadable history
 refuses execution. Issue trust decisions are cached per observed snapshot for quiet polling; an

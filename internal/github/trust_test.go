@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,8 @@ func trustIssue(t *testing.T) github.Issue {
 		Data struct {
 			Repository struct {
 				Issue struct {
-					Body string `json:"body"`
+					Title string `json:"title"`
+					Body  string `json:"body"`
 				} `json:"issue"`
 			} `json:"repository"`
 		} `json:"data"`
@@ -25,7 +27,7 @@ func trustIssue(t *testing.T) github.Issue {
 	if err := json.Unmarshal(fixture(t, "trust-content-edits"), &edits); err != nil {
 		t.Fatal(err)
 	}
-	return github.Issue{Number: 105, State: github.Open, Body: edits.Data.Repository.Issue.Body, Labels: []github.Label{{Name: "ready-for-agent"}}, UpdatedAt: time.Date(2026, 10, 12, 9, 1, 48, 0, time.UTC)}
+	return github.Issue{Number: 105, State: github.Open, Title: edits.Data.Repository.Issue.Title, Body: edits.Data.Repository.Issue.Body, Labels: []github.Label{{Name: "ready-for-agent"}}, UpdatedAt: time.Date(2026, 10, 12, 9, 1, 48, 0, time.UTC)}
 }
 
 func TestRecordedTrustAuthorizationAndQuietPollCache(t *testing.T) {
@@ -89,7 +91,7 @@ func TestExplicitActorTrustReplacesPermissions(t *testing.T) {
 
 func editResponse(body string, edits []map[string]any, last any, editor any, next bool, cursor string) []byte {
 	data, _ := json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{"issue": map[string]any{
-		"body": body, "lastEditedAt": last, "editor": editor, "userContentEdits": map[string]any{"nodes": edits, "pageInfo": map[string]any{"hasNextPage": next, "endCursor": cursor}},
+		"title": "[Post-M3] Only claim issues whose ready label came from a trusted user", "body": body, "lastEditedAt": last, "editor": editor, "userContentEdits": map[string]any{"nodes": edits, "pageInfo": map[string]any{"hasNextPage": next, "endCursor": cursor}},
 	}}}})
 	return data
 }
@@ -197,7 +199,7 @@ func TestUnreadableHistoryNeverAuthorizes(t *testing.T) {
 func TestRefusalCommentReplayAfterAmbiguousWrite(t *testing.T) {
 	runner := &recordedGH{responses: []response{{stdout: []byte(`{"login":"mergeyard-user"}`)}, {stdout: []byte(`[]`)}, {stderr: []byte("connection reset"), err: errors.New("failed")}}}
 	client := github.New(runner)
-	err := client.EnsureTrustRefusalComment(context.Background(), "owner/repo", 7, "Untrusted actor.")
+	err := client.EnsureTrustRefusalComment(context.Background(), "owner/repo", 7, "Issue title was edited after authorization by untrusted actor @outsider.")
 	if err == nil || len(runner.calls) != 3 {
 		t.Fatalf("ambiguous comment must not retry POST: %v", err)
 	}
@@ -206,6 +208,9 @@ func TestRefusalCommentReplayAfterAmbiguousWrite(t *testing.T) {
 	}
 	if json.Unmarshal(runner.calls[2].input, &posted) != nil {
 		t.Fatal("invalid post")
+	}
+	if !strings.Contains(posted.Body, "Issue title was edited") || !strings.Contains(posted.Body, "title, body") {
+		t.Fatalf("refusal must explain the title edit: %s", posted.Body)
 	}
 	existing, _ := json.Marshal([]github.Comment{{ID: 1, URL: "https://github.com/owner/repo/issues/7#issuecomment-1", Body: posted.Body, User: &github.Actor{Login: "mergeyard-user"}}})
 	runner.responses = []response{{stdout: append([]byte("[]"), existing...)}}
@@ -316,5 +321,64 @@ func TestCopiedTrustMarkersCannotSuppressExplanation(t *testing.T) {
 		if err != nil || runner.posts != 1 {
 			t.Fatalf("copied marker suppressed explanation: posts=%d err=%v", runner.posts, err)
 		}
+	}
+}
+
+func TestTitleEditsAfterAuthorization(t *testing.T) {
+	issue := trustIssue(t)
+	for _, tc := range []struct {
+		name    string
+		at      string
+		actor   any
+		allowed bool
+		reason  string
+	}{
+		{"untrusted after", "2026-10-09T00:00:00Z", map[string]any{"login": "outsider"}, false, "title was edited after authorization by untrusted actor @outsider"},
+		{"untrusted same second", "2026-10-08T13:07:09Z", map[string]any{"login": "outsider"}, false, "title was edited"},
+		{"trusted after", "2026-10-09T00:00:00Z", map[string]any{"login": "RCPASSOS"}, true, ""},
+		{"untrusted before", "2026-10-08T13:07:08Z", map[string]any{"login": "outsider"}, true, ""},
+		{"missing actor", "2026-10-09T00:00:00Z", nil, false, "actor of an issue title edit"},
+		{"empty actor", "2026-10-09T00:00:00Z", map[string]any{"login": ""}, false, "actor of an issue title edit"},
+		{"missing time", "", map[string]any{"login": "rcpassos"}, false, "title edit history: missing edit time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := map[string]any{"event": "renamed", "actor": tc.actor}
+			if tc.at != "" {
+				event["created_at"] = tc.at
+			}
+			later, _ := json.Marshal([]any{event})
+			runner := &recordedGH{responses: []response{
+				{stdout: append(fixture(t, "trust-label-events"), later...)},
+				{stdout: fixture(t, "trust-content-edits")},
+			}}
+			decision, err := github.New(runner).VerifyIssueTrust(context.Background(), "rcpassos/mergeyard", issue, "ready-for-agent", []string{"rcpassos"})
+			if err != nil || decision.Allowed != tc.allowed || !strings.Contains(decision.Reason, tc.reason) {
+				t.Fatalf("decision: %+v, %v", decision, err)
+			}
+		})
+	}
+}
+
+func TestTitleChangedDuringAuthorization(t *testing.T) {
+	for _, laterPage := range []bool{false, true} {
+		t.Run(fmt.Sprint("later page=", laterPage), func(t *testing.T) {
+			issue := trustIssue(t)
+			changed := editResponse(issue.Body, []map[string]any{}, nil, nil, false, "")
+			var payload map[string]any
+			if err := json.Unmarshal(changed, &payload); err != nil {
+				t.Fatal(err)
+			}
+			payload["data"].(map[string]any)["repository"].(map[string]any)["issue"].(map[string]any)["title"] = "Changed title"
+			changed, _ = json.Marshal(payload)
+			runner := &recordedGH{responses: []response{{stdout: fixture(t, "trust-label-events")}}}
+			if laterPage {
+				runner.responses = append(runner.responses, response{stdout: editResponse(issue.Body, []map[string]any{}, nil, nil, true, "page2")})
+			}
+			runner.responses = append(runner.responses, response{stdout: changed})
+			decision, err := github.New(runner).VerifyIssueTrust(context.Background(), "rcpassos/mergeyard", issue, "ready-for-agent", []string{"rcpassos"})
+			if err != nil || decision.Allowed || !strings.Contains(decision.Reason, "title changed during authorization") {
+				t.Fatalf("decision: %+v, %v", decision, err)
+			}
+		})
 	}
 }

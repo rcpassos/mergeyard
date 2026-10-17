@@ -105,7 +105,7 @@ Ready-label authorization is enforced by default. Actors with only `triage` or
 `read` permission can no longer authorize agent execution. With no configured
 `trusted_labelers`, only `write`, `maintain`, and `admin` permission is trusted.
 Use a global or per-repository allowlist to explicitly authorize other actors.
-Untrusted harness override labels and untrusted body edits after approval also
+Untrusted harness override labels and untrusted title or body edits after approval also
 prevent claim. Refusals remove the ready label and appear in the dashboard.
 All run phases retain the authorized issue snapshot; later edits no longer
 silently refresh implementation, review, fix or resumed inputs.
