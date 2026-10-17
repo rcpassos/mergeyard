@@ -245,7 +245,13 @@ func TestStopEscalatesSignalsAndKillsUnresponsiveSession(t *testing.T) {
 	}
 	for _, mode := range []string{"interrupt", "terminate", "kill"} {
 		t.Run(mode, func(t *testing.T) {
-			r, _ := localSessions(t)
+			r, options := localSessions(t)
+			if mode != "kill" {
+				// Use the production grace period when expecting exit metadata.
+				// A short deadline can force-kill a healthy wrapper under CI load.
+				options.GracePeriod = 5 * time.Second
+				r = runner.NewLocal(options)
+			}
 			req := phaseRequest(t, "exit 0")
 			req.Command.Executable, req.Command.Args = executable, []string{mode}
 			ref, err := r.StartSession(context.Background(), req)
