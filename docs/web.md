@@ -47,9 +47,12 @@ is not sent to the browser. Uncoded or malformed errors use
 SSE carries the event type as `event`, the durable numeric ID as `id`, and the
 complete JSON event as `data`. Fresh connections start with live events.
 Reconnects with `Last-Event-ID` replay durable history and deduplicate live
-events. Streams send heartbeat comments and disconnect slow consumers, allowing
-the browser to reconnect and replay. The browser refreshes scheduler state when
-the stream connects and on pause/resume events.
+events. UI-only notifications (`queue.updated`, `diagnostics.updated`) are
+transient: they are delivered live without an `id` frame, are never written to
+SQLite, and never advance the replay cursor. Streams send heartbeat comments
+and disconnect slow consumers, allowing the browser to reconnect and replay.
+The browser refreshes scheduler state when the stream connects, on pause/resume
+events, and on discovery notifications for the visible queue or settings page.
 
 ## Assets
 
