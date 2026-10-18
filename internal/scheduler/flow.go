@@ -64,19 +64,17 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 	if run.State != workflow.Claiming && run.State != workflow.Preparing && !(run.State == workflow.Active && run.Phase == workflow.Implement) {
 		return nil
 	}
+	// A claim interrupted before saving issue context is reconstructed from the
+	// known run identity. The listing's label filter cannot answer whether the
+	// issue is open, so read it directly.
 	issue, gitRun, err := s.context(ctx, run)
 	if errors.Is(err, sql.ErrNoRows) && run.State == workflow.Claiming {
-		var issues []github.Issue
-		issues, err = s.deps.GitHub.ListOpenIssues(ctx, repo.Repo)
-		if err == nil {
+		issue, err = s.deps.GitHub.GetIssue(ctx, repo.Repo, run.IssueNumber)
+		if err == nil && issue.State != github.Open {
 			err = &fault.Error{Code: "github.issue_closed", Message: "Claimed issue is no longer open"}
-			for _, candidate := range issues {
-				if candidate.Number == run.IssueNumber && candidate.State == github.Open {
-					issue = candidate
-					err = s.recoverIssueSnapshot(ctx, repo, run.ID, issue)
-					break
-				}
-			}
+		}
+		if err == nil {
+			err = s.recoverIssueSnapshot(ctx, repo, run.ID, issue)
 		}
 	}
 	if err != nil {

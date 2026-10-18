@@ -36,6 +36,8 @@ type PlanIssue struct {
 func (s *Scheduler) Plan(ctx context.Context, repository string) (Plan, error) {
 	s.tick.Lock()
 	defer s.tick.Unlock()
+	// An explicit plan read starts its own poll so it observes current labels.
+	s.beginPoll()
 	report := Plan{SchemaVersion: 1, Paused: s.control.Paused(), Issues: []PlanIssue{}}
 	if repository != "" {
 		if _, ok := s.repository(repository); !ok {
@@ -54,7 +56,7 @@ func (s *Scheduler) Plan(ctx context.Context, repository string) (Plan, error) {
 	for _, repo := range s.cfg.Repositories {
 		// Filtering is a projection of the whole queue, so earlier repositories
 		// still reserve their would-claim slots against the global concurrency cap.
-		issues, err := s.deps.GitHub.ListOpenIssues(ctx, repo.Repo)
+		issues, err := s.listIssues(ctx, repo)
 		if err != nil {
 			return report, err
 		}

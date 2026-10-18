@@ -38,6 +38,7 @@ type ReconcileReport struct {
 func (s *Scheduler) Reconcile(ctx context.Context) (ReconcileReport, error) {
 	s.tick.Lock()
 	defer s.tick.Unlock()
+	s.beginPoll()
 	return s.reconcile(ctx)
 }
 
@@ -95,7 +96,7 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 	}
 	// Scan all configured repositories, even when paused, disabled, or full.
 	for _, repo := range s.cfg.Repositories {
-		issues, err := s.deps.GitHub.ListOpenIssues(ctx, repo.Repo)
+		issues, err := s.listIssues(ctx, repo)
 		if err != nil {
 			failures = append(failures, err)
 			continue

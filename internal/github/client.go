@@ -102,18 +102,50 @@ func issuePath(repo string, number int) (string, error) {
 	return path, nil
 }
 
-// ListOpenIssues reads every page; GitHub's issues endpoint also returns PRs,
-// which are excluded from the work queue.
-func (c *Client) ListOpenIssues(ctx context.Context, repo string) ([]Issue, error) {
+// ListLabeledIssues reads every open issue carrying any of the labels. GitHub
+// ANDs the labels of one request, so each label is read separately with its own
+// pagination and the results merge by issue number. PRs are excluded; requests
+// stay proportional to labelled issues instead of every open issue and PR.
+func (c *Client) ListLabeledIssues(ctx context.Context, repo string, labels []string) ([]Issue, error) {
 	path, err := issuePath(repo, 0)
 	if err != nil {
 		return nil, err
 	}
-	data, err := c.request(ctx, nil, "GET", path+"?state=open&per_page=100", true)
-	if err != nil {
-		return nil, err
+	unique := make([]string, 0, len(labels))
+	seen := make(map[string]bool, len(labels))
+	for _, label := range labels {
+		if strings.TrimSpace(label) == "" {
+			return nil, codedError("github.invalid_input", "expected nonempty labels", nil)
+		}
+		name := strings.ToLower(label)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		unique = append(unique, label)
 	}
-	return decodeOpenIssues(data)
+	if len(unique) == 0 {
+		return nil, codedError("github.invalid_input", "expected at least one label", nil)
+	}
+	issues := make([]Issue, 0)
+	numbers := make(map[int]bool)
+	for _, label := range unique {
+		data, err := c.request(ctx, nil, "GET", path+"?state=open&per_page=100&labels="+url.QueryEscape(label), true)
+		if err != nil {
+			return nil, err
+		}
+		page, err := decodeOpenIssues(data)
+		if err != nil {
+			return nil, err
+		}
+		for _, issue := range page {
+			if !numbers[issue.Number] {
+				numbers[issue.Number] = true
+				issues = append(issues, issue)
+			}
+		}
+	}
+	return issues, nil
 }
 
 type apiIssue struct {

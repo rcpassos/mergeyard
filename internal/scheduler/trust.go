@@ -128,3 +128,17 @@ func (s *Scheduler) refusalReason(ctx context.Context, repo string, number int) 
 	}
 	return reason, err
 }
+
+// forgetRefusal removes a refusal whose issue is gone: pending or not, no label
+// can be removed and nothing can be shown, so the row would only be re-read.
+func (s *Scheduler) forgetRefusal(ctx context.Context, repo string, number int) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM issue_refusals WHERE repository=? AND issue_number=?", strings.ToLower(repo), number)
+	return err
+}
+
+// forgetSettledRefusal removes a settled refusal whose issue is closed. Pending
+// rows stay for reconciliation to finish their label removal.
+func (s *Scheduler) forgetSettledRefusal(ctx context.Context, repo string, number int) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM issue_refusals WHERE repository=? AND issue_number=? AND pending=0", strings.ToLower(repo), number)
+	return err
+}
