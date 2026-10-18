@@ -16,6 +16,12 @@ shorter or longer ones. A caller-supplied deadline always wins, including while
 waiting for another managed operation to finish, so the scheduler's
 five-second publication and cleanup budgets stay authoritative.
 
+An operation that commits and publishes keeps a budget per phase: `Worktree`
+for the commit and its hooks, `Remote` for the push or `ls-remote`, and an outer
+bound that covers both, so a slow hook cannot consume the push's deadline.
+`CommitAndPush`, `CommitFix`, and `CommitHandback` behave this way; the checks
+path calls `CommitImplement` and `PushImplement`, which each bound one phase.
+
 A command that reaches its deadline is killed with its owned process group, and
 the call returns once its output pipes are drained, so a repository hook or
 transport helper that outlives Git cannot extend the operation; a command that
@@ -29,8 +35,11 @@ Git never prompts from an unattended control plane. `GIT_TERMINAL_PROMPT=0` is
 always set, `LC_ALL=C` keeps diagnostics stable, and SSH defaults to
 `ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4`,
 so a missing credential or a dead connection fails instead of hanging. A
-`GIT_SSH` or `GIT_SSH_COMMAND` already present in the environment is preserved
-and wins over that default.
+`GIT_SSH` or `GIT_SSH_COMMAND` already present in the environment, or a
+`core.sshCommand` configured in the machine's global or system Git
+configuration, is the machine's own transport choice and is preserved. The
+configuration probe runs outside any repository, once per configuration source;
+a repository-local `core.sshCommand` is not consulted.
 
 ## Preparing a run
 

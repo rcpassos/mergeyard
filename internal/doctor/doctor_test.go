@@ -90,7 +90,8 @@ func TestGitProbesAreIsolatedAndNeverPushChanges(t *testing.T) {
 				t.Fatal("push probe must never update remote refs or run hooks")
 			}
 		}
-		if call.Dir != "" {
+		// The machine-configuration probe runs outside any probe repository.
+		if call.Dir != "" && !strings.Contains(strings.Join(call.Args, " "), "config --get core.sshCommand") {
 			if _, err := os.Stat(call.Dir); !os.IsNotExist(err) {
 				t.Fatalf("temporary probe repository was not removed: %v", err)
 			}
@@ -98,6 +99,42 @@ func TestGitProbesAreIsolatedAndNeverPushChanges(t *testing.T) {
 	}
 	if !seenPush {
 		t.Fatal("Git push transport was not checked")
+	}
+}
+
+func TestSSHProbesAreNonInteractiveUnlessTheMachineChooses(t *testing.T) {
+	const managed = "ssh -o BatchMode=yes"
+	cases := []struct{ name, configured, want string }{
+		{"managed default", "", managed},
+		{"configured core.sshCommand wins", "ssh -i from-config", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path, fake, opts := repositorySetup(t, "")
+			t.Setenv("GIT_SSH", "")
+			t.Setenv("GIT_SSH_COMMAND", "")
+			fake.responses["git config --get core.sshCommand"] = runner.ExecResult{Stdout: []byte(tc.configured)}
+			report := doctor.Check(context.Background(), path, opts)
+			if report.HasErrors() {
+				t.Fatalf("probe failed: %+v", report)
+			}
+			checked := 0
+			for _, call := range fake.calls {
+				if call.Executable != "git" || strings.Contains(strings.Join(call.Args, " "), "config --get core.sshCommand") {
+					continue
+				}
+				checked++
+				if tc.want == "" && call.Env["GIT_SSH_COMMAND"] != "" {
+					t.Fatalf("managed default replaced core.sshCommand: %q", call.Env["GIT_SSH_COMMAND"])
+				}
+				if tc.want != "" && !strings.HasPrefix(call.Env["GIT_SSH_COMMAND"], tc.want) {
+					t.Fatalf("SSH probes are not non-interactive: %q", call.Env["GIT_SSH_COMMAND"])
+				}
+			}
+			if checked == 0 {
+				t.Fatal("no git probe ran")
+			}
+		})
 	}
 }
 
@@ -164,6 +201,7 @@ func setup(t *testing.T, extra string) (string, *fakeCommands, doctor.Options) {
 	fake := &fakeCommands{t: t, responses: map[string]runner.ExecResult{}}
 	for command, output := range map[string]string{
 		"git --version":                        "git version 2.50.0",
+		"git config --get core.sshCommand":     "",
 		"tmux -V":                              "tmux 3.5a",
 		"gh --version":                         "gh version 2.70.0",
 		"gh auth status --hostname github.com": "Logged in",

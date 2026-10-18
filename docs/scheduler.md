@@ -17,10 +17,12 @@ interval. Cancelling the scheduler leaves agent sessions running.
 
 Every `gh` and `git` call on the scheduler path has a deadline. A publication
 push, fetch, or repository hook gets the longest budget; local reads get the
-shortest. A deadline ends the owned process group and surfaces as `git.timeout`
-or `github.timeout`, which the existing retry and attention paths handle. Git
-never prompts: SSH uses batch mode with connect timeout and keepalive options.
-See [git.md](git.md) for the operation budgets.
+shortest, and a commit keeps its own budget while the push keeps the remote one.
+`gh` shares one two-minute budget across a request's retries. A deadline ends
+the owned process group and surfaces as `git.timeout` or `github.timeout`, which
+the existing retry and attention paths handle. Git never prompts: SSH uses batch
+mode with connect timeout and keepalive options unless the machine selects its
+own transport. See [git.md](git.md) for the operation budgets.
 
 `Pause(ctx, true)` prevents new claims; existing implementations continue.
 `Pause(ctx, false)` resumes dispatch. These operations publish scheduler events.

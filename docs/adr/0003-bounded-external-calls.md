@@ -40,15 +40,21 @@ stops waiting instead of queueing behind an operation it no longer needs.
 - An expired deadline is `git.timeout` or `github.timeout`, naming the stalled
   operation or the serialized wait, so the existing retry and attention paths
   handle it and a later tick proceeds. It stays distinct from `git.canceled`
-  and `github.canceled`, which mean the caller's context ended.
+  and `github.canceled`, which mean the context was cancelled rather than
+  expired; a caller's own deadline is still a timeout.
 - A command that reaches its deadline ends its owned process group, and output
   draining is bounded, so a hook or transport child that outlives the killed
-  process cannot keep the invocation waiting. A command that exited
-  successfully still reports its own exit status when such a child lingers.
+  process cannot keep the invocation waiting. One process policy covers managed
+  Git, `gh`, and phase/system-step commands: every command that does not drain
+  cleanly stops its group, and a command that exited successfully still reports
+  its own exit status when such a child lingers.
+- A commit and its push keep a budget per phase: the operation's outer bound
+  covers every phase, so a slow hook or repository read cannot consume the
+  push's deadline.
 - Unattended SSH is non-interactive and keepalive-aware by default (batch mode,
   connect timeout), so a missing credential or dead connection fails instead of
-  prompting. A `GIT_SSH` or `GIT_SSH_COMMAND` already in the environment is an
-  explicit transport choice and is left alone; the same default applies to
+  prompting. A `GIT_SSH`, `GIT_SSH_COMMAND`, or configured `core.sshCommand` is
+  an explicit transport choice and is left alone; the same policy applies to
   `mergeyard doctor`'s remote probes.
 - Timeouts are per operation, not per process: a caller with a shorter deadline
   keeps it, and one stalled call does not consume the budget of the calls that

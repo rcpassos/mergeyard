@@ -10,8 +10,9 @@ import (
 // CommitFix is replayable after a crash: already-created implementer or
 // Mergeyard commits are retained, and a clean index never creates a new commit.
 func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target string) (CommitResult, error) {
-	// The fix target is re-observed on the remote before the commit.
-	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	// The fix target is re-observed on the remote before the commit; the
+	// publication budget covers both phases.
+	ctx, release, err := m.begin(ctx, m.timeouts.publication())
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -39,7 +40,7 @@ func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target st
 	if _, err := command(ctx, run.Path, "git.fix_diverged", "merge-base", "--is-ancestor", target, "HEAD"); err != nil {
 		return CommitResult{}, failure("git.fix_diverged", run.Path, err)
 	}
-	commitCtx, commitCancel := m.worktree(ctx)
+	commitCtx, commitCancel := m.worktreeDeadline(ctx)
 	result, err := commit(commitCtx, run, phase)
 	commitCancel()
 	if err != nil {

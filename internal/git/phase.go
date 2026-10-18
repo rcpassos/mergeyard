@@ -12,9 +12,9 @@ import (
 // commits, and pushes only the run branch without force. RequireChanges compares
 // the resulting tree with the base pinned when the run was first prepared.
 func (m *Manager) CommitAndPush(ctx context.Context, run Run, phase Phase) (CommitResult, error) {
-	// One publication budget covers validation, the worktree-bounded commit,
-	// and the remote-bounded push.
-	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	// Validation, the commit, and the push each keep their class deadline; the
+	// outer budget covers every phase, so a slow commit cannot starve the push.
+	ctx, release, err := m.begin(ctx, m.timeouts.publication())
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -29,7 +29,7 @@ func (m *Manager) CommitAndPush(ctx context.Context, run Run, phase Phase) (Comm
 	if err != nil {
 		return CommitResult{}, err
 	}
-	commitCtx, commitCancel := m.worktree(ctx)
+	commitCtx, commitCancel := m.worktreeDeadline(ctx)
 	result, err := commit(commitCtx, run, phase)
 	commitCancel()
 	if err != nil {

@@ -14,10 +14,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/proc"
 	"github.com/rcpassos/mergeyard/internal/repository"
 )
 
@@ -59,25 +59,19 @@ type CommandRunner interface {
 type ghRunner struct{}
 
 func (ghRunner) Run(ctx context.Context, input []byte, args ...string) ([]byte, []byte, error) {
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	cmd.Stdin = bytes.NewReader(input)
 	// Never wait on an interactive prompt from an unattended control plane.
-	cmd.Env = append(os.Environ(), "GH_PROMPT_DISABLED=1")
-	// A credential helper can outlive gh and keep its output pipes open. Bound
-	// the owned process group and the pipe drain so the call still returns.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		} else {
-			return err
-		}
+	result, err := proc.Run(ctx, proc.Request{
+		Executable: "gh",
+		Args:       args,
+		Env:        append(os.Environ(), "GH_PROMPT_DISABLED=1"),
+		Stdin:      bytes.NewReader(input),
+	})
+	if errors.Is(err, exec.ErrWaitDelay) && result.ExitCode == 0 {
+		// gh exited successfully; a credential helper outlived it holding the
+		// output pipes. The request itself completed.
+		err = nil
 	}
-	cmd.WaitDelay = time.Second
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
+	return result.Stdout, result.Stderr, err
 }
 
 // Client wraps the authenticated gh CLI and caches issue authorization snapshots.

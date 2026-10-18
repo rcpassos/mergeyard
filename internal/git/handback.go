@@ -48,7 +48,8 @@ func (m *Manager) inspectHandbackAncestry(ctx context.Context, run Run) (string,
 
 // CommitHandback is replayable after committing but before saving the new SHA.
 func (m *Manager) CommitHandback(ctx context.Context, run Run, previous string) (CommitResult, error) {
-	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	// Publication covers the ancestry read and the manual commit.
+	ctx, release, err := m.begin(ctx, m.timeouts.publication())
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -60,7 +61,7 @@ func (m *Manager) CommitHandback(ctx context.Context, run Run, previous string) 
 	if remote != previous {
 		return CommitResult{}, failure("handback.head_ambiguous", run.Path, errors.New("remote changed before manual commit"))
 	}
-	commitCtx, commitCancel := m.worktree(ctx)
+	commitCtx, commitCancel := m.worktreeDeadline(ctx)
 	result, err := commit(commitCtx, run, Phase{Title: "manual handback"})
 	commitCancel()
 	return result, err

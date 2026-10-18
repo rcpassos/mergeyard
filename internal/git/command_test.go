@@ -30,9 +30,17 @@ func managerWithTimeouts(t *testing.T, f fixture, timeouts managedgit.Timeouts) 
 }
 
 // installFakeGit replaces the Git executable with a script whose only bound is
-// the context deadline. It must run after any real Git setup.
+// the context deadline. It must run after any real Git setup. Unless the body
+// answers it, the script resolves the SSH policy's configuration probe with the
+// real Git so a hanging fake does not stall that read.
 func installFakeGit(t *testing.T, body string) {
 	t.Helper()
+	if !strings.Contains(body, "config --get core.sshCommand") {
+		if real, err := exec.LookPath("git"); err == nil {
+			body = `case " $* " in *" config --get core.sshCommand "*) exec ` + real + ` "$@";; esac
+` + body
+		}
+	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\n"+body+"\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -137,6 +145,61 @@ exec `+gitPath+` "$@"`)
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("hung hook held the manager for %s", elapsed)
+	}
+}
+
+func TestConfiguredCoreSSHCommandIsPreserved(t *testing.T) {
+	f := newFixture(t)
+	// A distinct configuration source so the SSH policy resolves it fresh.
+	config := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(config, []byte("[core]\n\tsshCommand = ssh -i from-config\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", config)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_SSH", "")
+	t.Setenv("GIT_SSH_COMMAND", "")
+	dump := filepath.Join(t.TempDir(), "environment")
+	gitPath := realGit(t)
+	installFakeGit(t, `case " $* " in *" config --get core.sshCommand "*) exec `+gitPath+` "$@";; esac
+{ printf 'GIT_SSH_COMMAND=%s\n' "$GIT_SSH_COMMAND"; } > `+dump+`
+exit 1`)
+	manager := managerWithTimeouts(t, f, shortTimeouts(time.Second))
+	_, prepareErr := manager.Prepare(context.Background(), f.request)
+	if prepareErr == nil {
+		t.Fatal("expected the fake Git to fail")
+	}
+	data, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("%v (prepare: %v)", err, prepareErr)
+	}
+	if got := strings.TrimSpace(string(data)); got != "GIT_SSH_COMMAND=" {
+		t.Fatalf("managed default replaced a configured core.sshCommand: %q", got)
+	}
+}
+
+func TestPublicationKeepsAPhaseBudgetPerStep(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	write(t, run.Path, "feature.txt", "implemented\n")
+	gitPath := realGit(t)
+	// The commit and the push together exceed either class budget; each phase
+	// must still keep its own deadline.
+	installFakeGit(t, `case " $* " in
+  *" commit "*) /bin/sleep 2; exec `+gitPath+` "$@";;
+  *" push "*) /bin/sleep 2; exec `+gitPath+` "$@";;
+esac
+exec `+gitPath+` "$@"`)
+	manager := managerWithTimeouts(t, f, managedgit.Timeouts{Metadata: 30 * time.Second, Worktree: 3 * time.Second, Remote: 3 * time.Second})
+	result, err := manager.CommitAndPush(context.Background(), run, managedgit.Phase{Title: "two phases", RequireChanges: true})
+	if err != nil {
+		t.Fatalf("commit and push shared one budget: %v", err)
+	}
+	if !result.Committed || result.SHA == "" {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := git(t, f.remote, "rev-parse", "refs/heads/"+run.Branch); got != result.SHA {
+		t.Fatalf("push landed %s, want %s", got, result.SHA)
 	}
 }
 

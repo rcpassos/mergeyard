@@ -83,8 +83,9 @@ or alters a managed checkout. Temporary probes are removed. Git hooks are
 disabled, shell repository/index overrides are cleared, existing credential
 helpers and transport URL rewrites remain available, and Git never prompts:
 SSH probes use batch mode with keepalive options so a missing credential or a
-dead connection fails instead of hanging. Every external command has a
-30-second timeout; SIGINT/SIGTERM cancels the checks.
+dead connection fails instead of hanging, unless the machine chooses its own
+transport through `GIT_SSH`, `GIT_SSH_COMMAND`, or `core.sshCommand`. Every
+external command has a 30-second timeout; SIGINT/SIGTERM cancels the checks.
 
 ## Verification
 

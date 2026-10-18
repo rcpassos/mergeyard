@@ -1,7 +1,6 @@
 package git
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,18 +8,23 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/proc"
 )
 
 // NonInteractiveSSH is the SSH command Mergeyard uses whenever it runs Git
 // without a terminal: BatchMode fails instead of prompting, ConnectTimeout
 // bounds the handshake, and the keepalive options detect a dead connection.
-// GIT_SSH and GIT_SSH_COMMAND already present in the environment still win, so
-// a machine with a custom transport keeps it.
+// GIT_SSH, GIT_SSH_COMMAND, and a configured core.sshCommand are the machine's
+// explicit transport choice and win over that default.
 const NonInteractiveSSH = "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+
+// sshProbeTimeout bounds the one configuration read that resolves the machine's
+// SSH transport choice.
+const sshProbeTimeout = 5 * time.Second
 
 // Execute Git directly, with the machine's identity and credentials. Disable
 // terminal prompts so an unattended run reports failures instead of hanging.
@@ -28,44 +32,83 @@ func command(ctx context.Context, dir, code string, args ...string) (string, err
 	return commandWithEnv(ctx, dir, code, nil, args...)
 }
 
+// sshEnvironment keeps unattended SSH non-interactive without replacing a
+// transport the machine already selected. Git ranks GIT_SSH_COMMAND above
+// core.sshCommand, so a configured core.sshCommand must be resolved before the
+// default is applied.
+func sshEnvironment() []string {
+	if os.Getenv("GIT_SSH_COMMAND") != "" || os.Getenv("GIT_SSH") != "" {
+		return nil
+	}
+	if configuredSSHCommand() != "" {
+		return nil
+	}
+	return []string{"GIT_SSH_COMMAND=" + NonInteractiveSSH}
+}
+
+// sshProbe caches the resolved core.sshCommand per configuration source. The
+// environment is read on every call, so a process that changes its
+// configuration paths resolves them again.
+var sshProbe struct {
+	mu    sync.Mutex
+	key   string
+	value string
+	valid bool
+}
+
+// configuredSSHCommand reads core.sshCommand from the machine's global and
+// system configuration, outside any repository, so one checked-out repository
+// cannot answer for the machine.
+func configuredSSHCommand() string {
+	key := sshConfigKey()
+	sshProbe.mu.Lock()
+	defer sshProbe.mu.Unlock()
+	if sshProbe.valid && sshProbe.key == key {
+		return sshProbe.value
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sshProbeTimeout)
+	defer cancel()
+	result, _ := proc.Run(ctx, proc.Request{
+		Executable: "git",
+		Args:       []string{"config", "--get", "core.sshCommand"},
+		Dir:        os.TempDir(),
+		Env:        append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"),
+	})
+	sshProbe.key, sshProbe.value, sshProbe.valid = key, strings.TrimSpace(string(result.Stdout)), true
+	return sshProbe.value
+}
+
+// sshConfigKey identifies the configuration the probe reads.
+func sshConfigKey() string {
+	var key strings.Builder
+	for _, name := range []string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "XDG_CONFIG_HOME", "HOME"} {
+		key.WriteString(os.Getenv(name))
+		key.WriteByte(0)
+	}
+	return key.String()
+}
+
 func commandWithEnv(ctx context.Context, dir, code string, env []string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), env...)
-	if os.Getenv("GIT_SSH_COMMAND") == "" && os.Getenv("GIT_SSH") == "" {
-		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND="+NonInteractiveSSH)
-	}
-	// A repository hook or credential helper can outlive Git and keep its
-	// output pipes open. Bound the owned process group and the pipe drain so a
-	// stalled operation still returns on its deadline.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		} else {
-			return err
-		}
-	}
-	cmd.WaitDelay = time.Second
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	commandEnv := append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), env...)
+	commandEnv = append(commandEnv, sshEnvironment()...)
+	result, err := proc.Run(ctx, proc.Request{Executable: "git", Args: args, Dir: dir, Env: commandEnv})
 	if ctx.Err() != nil {
-		return stdout.String(), contextFailure(code, dir, ctx.Err())
+		return string(result.Stdout), contextFailure(code, dir, ctx.Err())
 	}
-	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+	if errors.Is(err, exec.ErrWaitDelay) && result.ExitCode == 0 {
 		// Git exited successfully; a hook or helper outlived it holding the
 		// output pipes. The command itself completed, and Git wrote its own
 		// output before exiting.
 		err = nil
 	}
 	if err != nil {
-		return stdout.String(), failure(code, dir, fmt.Errorf("%s: %w", strings.TrimSpace(stderr.String()), err))
+		return string(result.Stdout), failure(code, dir, fmt.Errorf("%s: %w", strings.TrimSpace(string(result.Stderr)), err))
 	}
-	if strings.ContainsRune(stdout.String(), 0) {
-		return stdout.String(), nil
+	stdout := string(result.Stdout)
+	if strings.ContainsRune(stdout, 0) {
+		return stdout, nil
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return strings.TrimSpace(stdout), nil
 }
 
 // contextFailure reports why a managed operation stopped. A deadline is a
