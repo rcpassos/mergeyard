@@ -10,6 +10,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -45,7 +46,7 @@ func TestLaunchRejectsMismatchedPreparedIntent(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				a, err := e.Launch(ctx, run, config.Role{Agent: "claude"}, durable.Permissions{}, phase, previous, req, filepath.Join(phase.PhaseDir, "input.md"), "", func(*sql.Tx, durable.Attempt) error {
+				a, err := e.Launch(ctx, run, config.Role{Agent: "claude"}, harness.Permissions{}, phase, previous, req, filepath.Join(phase.PhaseDir, "input.md"), "", func(*sql.Tx, durable.Attempt) error {
 					t.Fatal("mismatched attempt reached transaction hook")
 					return nil
 				}, nil)

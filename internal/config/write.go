@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -26,11 +28,11 @@ func (d *Document) SetRoleAgents(implementer, reviewer string) error {
 	roleTargets, agentTargets := make(map[*yaml.Node]bool), make(map[*yaml.Node]bool)
 	var changes []struct{ role, agent string }
 	for _, choice := range []struct{ role, agent string }{{"implementer", implementer}, {"reviewer", reviewer}} {
-		if choice.agent != "claude" && choice.agent != "codex" {
-			return &Error{Code: "config.invalid_agent", Path: choice.role + ".agent", Err: errors.New("expected claude or codex")}
+		if !registry.Known(choice.agent) {
+			return &Error{Code: "config.invalid_agent", Path: choice.role + ".agent", Err: errors.New("expected " + strings.Join(registry.Names(), " or "))}
 		}
 		role := root.child(choice.role)
-		current := "claude"
+		current := registry.Claude
 		role.read("agent", &current)
 		if current == choice.agent {
 			continue

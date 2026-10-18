@@ -17,6 +17,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/repository"
 )
 
@@ -144,14 +145,15 @@ func initialize(ctx context.Context, path string, input io.Reader, output io.Wri
 		return "", err
 	}
 	var agents, missing []string
-	for _, tool := range []string{"git", "gh", "tmux", "claude", "codex"} {
+	tools := append([]string{"git", "gh", "tmux"}, registry.Names()...)
+	for _, tool := range tools {
 		_, err := exec.LookPath(tool)
 		state := "installed"
 		if err != nil {
 			state = "missing"
 		}
 		fmt.Fprintf(output, "%s: %s\n", tool, state)
-		if tool == "claude" || tool == "codex" {
+		if registry.Known(tool) {
 			if err == nil {
 				agents = append(agents, tool)
 			}

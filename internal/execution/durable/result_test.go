@@ -50,7 +50,7 @@ func TestNativeCompletionPrecedesLimitClassification(t *testing.T) {
 	e.Harnesses["codex"] = adapter
 	phase := harness.PhaseContext{Phase: workflow.Implement}
 	// Native completion remains authoritative even with an invalid task report.
-	_, err := e.Parse(context.Background(), run.ID, "", "codex", phase, harness.PhaseArtifacts{Stdout: []byte("{\"type\":\"turn.completed\"}\n"), LastMessage: []byte(`{"status":"invalid"}`)})
+	_, err := e.Parse(context.Background(), run.ID, "", "codex", phase, harness.PhaseArtifacts{Stdout: []byte("{\"type\":\"turn.completed\"}\n"), Files: map[string][]byte{"last-message.json": []byte(`{"status":"invalid"}`)}})
 	var limit *durable.TemporaryLimitError
 	if err == nil || errors.As(err, &limit) || adapter.calls != 0 {
 		t.Fatalf("completion precedence: err=%v classifications=%d", err, adapter.calls)

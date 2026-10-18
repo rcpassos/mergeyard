@@ -46,7 +46,7 @@ func launch(t *testing.T, e durable.Executor, run workflow.Run, root string, rol
 	if err := e.Runner.WriteFile(ctx, input, []byte(`{}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	a, err := e.LaunchImplement(ctx, run, role, durable.Permissions{Summary: "test permissions"}, phase, previous, runner.SessionRequest{RunID: run.ID, Phase: "implement", Attempt: number, PhaseDir: phase.PhaseDir, Command: runner.ExecRequest{Executable: "/bin/sh", Args: []string{"-c", script}, Dir: root, Env: map[string]string{"PATH": "/usr/bin:/bin"}}}, input, "")
+	a, err := e.LaunchImplement(ctx, run, role, harness.Permissions{Summary: "test permissions"}, phase, previous, runner.SessionRequest{RunID: run.ID, Phase: "implement", Attempt: number, PhaseDir: phase.PhaseDir, Command: runner.ExecRequest{Executable: "/bin/sh", Args: []string{"-c", script}, Dir: root, Env: map[string]string{"PATH": "/usr/bin:/bin"}}}, input, "")
 	return phase, a, err
 }
 

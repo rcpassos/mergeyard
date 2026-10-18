@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 )
 
 func (c *checker) api(endpoint string, paginate bool) ([]byte, error) {
@@ -35,12 +36,12 @@ func (c *checker) repository(repo config.Repository) {
 		c.report.add(Unverifiable, "harness.instructions_unverifiable", repo.Repo, "instruction-file symlink targets leave the repository and cannot be verified for the future worktree")
 	}
 	for _, role := range []config.Role{repo.Implementer, repo.Reviewer} {
-		if role.Agent == "codex" && files["CLAUDE.md"] == fileRegular && files["AGENTS.md"] != fileRegular && files["AGENTS.md"] != fileUnverifiable {
+		if role.Agent == registry.Codex && files["CLAUDE.md"] == fileRegular && files["AGENTS.md"] != fileRegular && files["AGENTS.md"] != fileUnverifiable {
 			c.report.add(Warning, "harness.instructions_missing", repo.Repo, "Codex is assigned but the base branch has CLAUDE.md without AGENTS.md; add AGENTS.md for repository instructions")
 			break
 		}
 	}
-	if v, known := c.versions["claude"]; known && v.less(claudeMinimum) && files["AGENTS.md"] == fileRegular && files["CLAUDE.md"] != fileRegular && files["CLAUDE.md"] != fileUnverifiable && (repo.Implementer.Agent == "claude" || repo.Reviewer.Agent == "claude") {
+	if v, known := c.versions[registry.Claude]; known && v.less(claudeMinimum) && files["AGENTS.md"] == fileRegular && files["CLAUDE.md"] != fileRegular && files["CLAUDE.md"] != fileUnverifiable && (repo.Implementer.Agent == registry.Claude || repo.Reviewer.Agent == registry.Claude) {
 		c.report.add(Warning, "harness.instructions_missing", repo.Repo, "Claude below 2.1.277 cannot read AGENTS.md without CLAUDE.md; upgrade Claude or add CLAUDE.md")
 	}
 }

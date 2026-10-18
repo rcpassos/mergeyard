@@ -20,13 +20,37 @@ type HarnessAdapter interface {
 	Type() string
 	Capabilities() HarnessCapabilities
 	ValidateConfig(RoleConfig) error
-	BuildInvocation(PhaseContext, RoleConfig) (Invocation, error)
+	// BuildInvocation returns the phase command together with the effective
+	// permissions the adapter applies to it, so attempts record what runs.
+	BuildInvocation(PhaseContext, RoleConfig) (PhaseInvocation, error)
+	// ResultArtifacts names the adapter-owned files a completed attempt must
+	// capture for ParseResult, relative to the attempt directory.
+	ResultArtifacts() []string
 	BuildInteractiveInvocation(sessionID, worktree string) (InteractiveCommand, error)
 	BuildCheckInvocation(dir string, env map[string]string) (Invocation, error)
 	ParseResult(PhaseContext, PhaseArtifacts) (PhaseResult, error)
 	// NativeSucceeded is adapter-owned completion evidence, independent of the task report.
 	NativeSucceeded(PhaseArtifacts) bool
 	ClassifyFailure(PhaseArtifacts, time.Time) FailureClassification
+}
+
+// Permissions is one adapter's effective permission surface for a built
+// command. Summary is the attempt's audit record. Mode and AllowedTools are
+// the values recorded with review and fix rows: the harness-native permission
+// mode and tool list where the harness has them, and the command's sandbox and
+// network surface where it does not.
+type Permissions struct {
+	Summary      string
+	Mode         string
+	AllowedTools []string
+}
+
+// PhaseInvocation is one adapter-built command and the permissions the adapter
+// applies to it. Building the two together is what keeps each attempt's
+// recorded permissions from drifting from the command that ran.
+type PhaseInvocation struct {
+	Command     Invocation
+	Permissions Permissions
 }
 
 // CheckConfigurator inspects effective local configuration without a model call.
@@ -86,11 +110,11 @@ type PhaseArtifacts struct {
 	// value means the execution date is unavailable; observation time alone is
 	// insufficient when replaying artifacts after a control-plane restart.
 	StartedAt time.Time
-	// LastMessage is the native Codex -o artifact from this unique attempt.
-	LastMessage []byte
-	Stdout      []byte
-	Stderr      []byte
-	ExitCode    int
+	// Files holds the adapter's ResultArtifacts, keyed by the reported name.
+	Files    map[string][]byte
+	Stdout   []byte
+	Stderr   []byte
+	ExitCode int
 }
 
 // PhaseResult is the schema-validated report. Blocked and failed reports are

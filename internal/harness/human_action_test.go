@@ -45,7 +45,7 @@ func TestHumanActionNativeContracts(t *testing.T) {
 					artifacts := harness.PhaseArtifacts{Stdout: []byte(`{"type":"result","is_error":false,"structured_output":` + string(raw) + `}`)}
 					if adapter.Type() == "codex" {
 						artifacts.Stdout = []byte(`{"type":"thread.started","thread_id":"01a10c5c-8a43-7c52-ba89-5a6d6ec1e22c"}` + "\n" + `{"type":"turn.completed"}`)
-						artifacts.LastMessage = raw
+						artifacts.Files = map[string][]byte{"last-message.json": raw}
 					}
 					result, err := adapter.ParseResult(harness.PhaseContext{Phase: phase}, artifacts)
 					if (err == nil) != tc.valid {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/runner"
 )
 
@@ -192,7 +193,7 @@ func (c *checker) machine(cfg config.Config) {
 	for _, assignedRole := range roles(cfg) {
 		assigned[assignedRole.role.Agent] = true
 	}
-	for _, agent := range []string{"claude", "codex"} {
+	for _, agent := range registry.Names() {
 		if !assigned[agent] {
 			continue
 		}
@@ -205,7 +206,7 @@ func (c *checker) machine(cfg config.Config) {
 		c.tools[agent] = true
 		minimum := claudeMinimum
 		auth := []string{"auth", "status"}
-		if agent == "codex" {
+		if agent == registry.Codex {
 			minimum, auth = codexMinimum, []string{"login", "status"}
 		}
 		v, ok := parseVersion(string(result.Stdout) + " " + string(result.Stderr))
@@ -221,7 +222,7 @@ func (c *checker) machine(cfg config.Config) {
 			c.report.add(Error, "harness.not_logged_in", agent, "harness login check failed; log in with the configured executable: "+err.Error())
 		}
 	}
-	if assigned["claude"] && cfg.Agents.Claude.PermissionMode == "bypassPermissions" && c.options.EffectiveUID() == 0 {
-		c.report.add(Error, "harness.root_bypass_permissions", "claude", "bypassPermissions cannot run as root; run as a non-root user or change agents.claude.permission_mode")
+	if assigned[registry.Claude] && cfg.Agents.Claude.PermissionMode == "bypassPermissions" && c.options.EffectiveUID() == 0 {
+		c.report.add(Error, "harness.root_bypass_permissions", registry.Claude, "bypassPermissions cannot run as root; run as a non-root user or change agents.claude.permission_mode")
 	}
 }

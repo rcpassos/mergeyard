@@ -9,13 +9,14 @@ import (
 	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 )
 
 var skillName = regexp.MustCompile(`^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?$`)
 
 func repositorySkillPath(agent, skill string) string {
 	dir := ".claude"
-	if agent == "codex" {
+	if agent == registry.Codex {
 		dir = ".agents"
 	}
 	return dir + "/skills/" + skill + "/SKILL.md"
@@ -23,7 +24,7 @@ func repositorySkillPath(agent, skill string) string {
 
 func (c *checker) skills(role config.Role, scope string, files map[string]repositoryFileType) {
 	for _, skill := range role.Skills {
-		if !skillName.MatchString(skill) || (role.Agent != "claude" && strings.Contains(skill, ":")) {
+		if !skillName.MatchString(skill) || (role.Agent != registry.Claude && strings.Contains(skill, ":")) {
 			c.report.add(Error, "harness.skill_invalid", scope, fmt.Sprintf("%q is not a supported skill name", skill))
 			continue
 		}
@@ -83,7 +84,7 @@ func personalSkillRoots(agent string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if agent == "claude" {
+	if agent == registry.Claude {
 		root := os.Getenv("CLAUDE_CONFIG_DIR")
 		if root == "" {
 			root = filepath.Join(home, ".claude")

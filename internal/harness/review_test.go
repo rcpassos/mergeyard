@@ -75,10 +75,11 @@ func TestReviewInvocationKeepsTestsAvailableAndReappliesSettings(t *testing.T) {
 	ctx.Phase = workflow.Review
 	ctx.Resume = true
 	role := config.Role{Agent: "claude", Model: "review-model", Effort: "high", Skills: []string{"review-skill"}}
-	command, err := harness.NewClaude(config.Claude{PermissionMode: "acceptEdits", AllowedTools: []string{"Read", "Bash(go test *)"}}).BuildInvocation(ctx, role)
+	built, err := harness.NewClaude(config.Claude{PermissionMode: "acceptEdits", AllowedTools: []string{"Read", "Bash(go test *)"}}).BuildInvocation(ctx, role)
 	if err != nil {
 		t.Fatal(err)
 	}
+	command := built.Command
 	args := strings.Join(command.Args, "\n")
 	for _, text := range []string{"--resume\n" + ctx.SessionID, "--model\nreview-model", "--effort\nhigh", "--permission-mode\nacceptEdits", "--allowedTools\nRead\nBash(go test *)", "--disallowedTools\nEdit\nWrite\nNotebookEdit", "/review-skill", "changes_required"} {
 		if !strings.Contains(args, text) {

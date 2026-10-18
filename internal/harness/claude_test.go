@@ -59,10 +59,11 @@ func TestClaudeRejectsIncompleteOrInvalidResults(t *testing.T) {
 			ctx := phase(t)
 			ctx.Env = map[string]string{"FAKE_OUTPUT": tc.output, "FAKE_EXIT": tc.exit}
 			adapter := harness.NewClaude(config.Claude{Executable: fakeClaude(t, `printf '%s\n' "$FAKE_OUTPUT"; exit "$FAKE_EXIT"`)})
-			invocation, err := adapter.BuildInvocation(ctx, config.Role{})
+			built, err := adapter.BuildInvocation(ctx, config.Role{})
 			if err != nil {
 				t.Fatal(err)
 			}
+			invocation := built.Command
 			artifacts, err := runner.NewLocal(runner.Options{}).Exec(context.Background(), invocation)
 			if err != nil {
 				t.Fatal(err)
@@ -86,10 +87,11 @@ func TestClaudeImplementContract(t *testing.T) {
 	executable := fakeClaude(t, "read unexpected && exit 91\nprintf '%s\\n' '"+successEvent+"'")
 	adapter := harness.NewClaude(config.Claude{Executable: executable})
 	ctx := phase(t)
-	invocation, err := adapter.BuildInvocation(ctx, config.Role{Agent: "claude"})
+	built, err := adapter.BuildInvocation(ctx, config.Role{Agent: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	invocation := built.Command
 	want := []string{"-p", "--session-id", sessionID, "--output-format", "stream-json", "--verbose",
 		"--json-schema", string(harness.ImplementSchema()), "--permission-mode", "bypassPermissions", "--add-dir", ctx.PhaseDir,
 		"--", "Read " + filepath.Join(ctx.PhaseDir, "input.md") + " and follow it. Do not commit."}
@@ -113,10 +115,11 @@ printf '%s\n' '`+successEvent+`'`)
 	ctx := phase(t)
 	ctx.Resume = true
 	ctx.Env = map[string]string{"EXPECTED_SESSION": sessionID}
-	invocation, err := adapter.BuildInvocation(ctx, config.Role{Agent: "claude", Model: "future-model", Effort: "future-effort", Skills: []string{"implement", "plugin:check"}})
+	built, err := adapter.BuildInvocation(ctx, config.Role{Agent: "claude", Model: "future-model", Effort: "future-effort", Skills: []string{"implement", "plugin:check"}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	invocation := built.Command
 	want := []string{"-p", "--resume", sessionID, "--output-format", "stream-json", "--verbose",
 		"--json-schema", string(harness.ImplementSchema()), "--allowedTools", "Read", "Bash(go test *)",
 		"--permission-mode", "acceptEdits", "--add-dir", ctx.PhaseDir, "--model", "future-model", "--effort", "future-effort",
@@ -178,10 +181,11 @@ func TestClaudeResumeFailureContract(t *testing.T) {
 			ctx := phase(t)
 			ctx.Resume = true
 			adapter := harness.NewClaude(config.Claude{Executable: fakeClaude(t, script)})
-			invocation, err := adapter.BuildInvocation(ctx, config.Role{})
+			built, err := adapter.BuildInvocation(ctx, config.Role{})
 			if err != nil {
 				t.Fatal(err)
 			}
+			invocation := built.Command
 			artifacts, err := runner.NewLocal(runner.Options{}).Exec(context.Background(), invocation)
 			if err != nil {
 				t.Fatal(err)

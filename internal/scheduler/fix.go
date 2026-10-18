@@ -412,13 +412,12 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	if err != nil {
 		return fail(err)
 	}
-	command, err := s.harnesses[repo.Implementer.Agent].BuildInvocation(phase, repo.Implementer)
+	built, err := s.harnesses[repo.Implementer.Agent].BuildInvocation(phase, repo.Implementer)
 	if err != nil {
 		return fail(err)
 	}
-	req := runner.SessionRequest{RunID: run.ID, Phase: "fix", Round: run.ReviewRound, Attempt: number, PhaseDir: phaseDir, Command: command}
-	permission, allowedTools := s.roleSettings(repo.Implementer.Agent)
-	tools, _ := json.Marshal(allowedTools)
+	req := runner.SessionRequest{RunID: run.ID, Phase: "fix", Round: run.ReviewRound, Attempt: number, PhaseDir: phaseDir, Command: built.Command}
+	tools, _ := json.Marshal(built.Permissions.AllowedTools)
 	encoded, _ := json.Marshal(findings)
 	var diagnostics any
 	if repair != nil {
@@ -428,8 +427,8 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		}
 		diagnostics = string(data)
 	}
-	launched, err := s.execution().Launch(ctx, run, repo.Implementer, durable.Permissions{Summary: s.rolePermissions(repo.Implementer.Agent), Mode: permission, AllowedTools: allowedTools}, phase, previous, req, input, checkID, func(tx *sql.Tx, a durable.Attempt) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,ci_json) VALUES (?,?,?,?,?,?,?)`, a.ID, sessionID, target, string(encoded), permission, string(tools), diagnostics)
+	launched, err := s.execution().Launch(ctx, run, repo.Implementer, built.Permissions, phase, previous, req, input, checkID, func(tx *sql.Tx, a durable.Attempt) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,ci_json) VALUES (?,?,?,?,?,?,?)`, a.ID, sessionID, target, string(encoded), built.Permissions.Mode, string(tools), diagnostics)
 		return err
 	}, map[string]any{"ci": repair})
 	if err != nil && launched.ID != "" && launched.Status == "failed" && ctx.Err() == nil {

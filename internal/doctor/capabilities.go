@@ -4,6 +4,7 @@ import (
 	"regexp"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 )
 
 type assignedRole struct {
@@ -23,7 +24,7 @@ func roles(cfg config.Config) []assignedRole {
 }
 
 func executable(cfg config.Config, agent string) string {
-	if agent == "codex" {
+	if agent == registry.Codex {
 		return cfg.Agents.Codex.Executable
 	}
 	return cfg.Agents.Claude.Executable
@@ -50,7 +51,7 @@ func (c *checker) capabilities(cfg config.Config) {
 			continue
 		}
 		effortFlag := "--effort"
-		if role.Agent == "codex" {
+		if role.Agent == registry.Codex {
 			effortFlag = "--config"
 		}
 		for _, request := range []struct{ value, name, flag string }{{role.Model, "model", "--model"}, {role.Effort, "effort", effortFlag}} {
