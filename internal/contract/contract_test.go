@@ -36,24 +36,24 @@ func TestTablesCoverEveryVersion(t *testing.T) {
 
 // Every persisted version keeps exactly the fields its parser has always read.
 func TestRequirementsByPhaseAndVersion(t *testing.T) {
-	want := map[contract.Phase][][]string{
+	want := map[contract.Phase][][]contract.Field{
 		contract.Implement: {
-			{"schema_version", "status", "summary"},
-			{"schema_version", "status", "summary", "human_action"},
-			{"schema_version", "status", "summary", "human_action", "criteria"},
-			{"schema_version", "status", "summary", "human_action", "criteria", "verification"},
+			{contract.SchemaVersion, contract.Status, contract.Summary},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.HumanAction},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.HumanAction, contract.Criteria},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.HumanAction, contract.Criteria, contract.Verification},
 		},
 		contract.Review: {
-			{"schema_version", "status", "summary", "findings"},
-			{"schema_version", "status", "summary", "findings", "prior_findings"},
-			{"schema_version", "status", "summary", "findings", "prior_findings", "human_action"},
-			{"schema_version", "status", "summary", "findings", "prior_findings", "human_action", "criteria"},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.Findings},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.Findings, contract.PriorFindings},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.Findings, contract.PriorFindings, contract.HumanAction},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.Findings, contract.PriorFindings, contract.HumanAction, contract.Criteria},
 		},
 		contract.Fix: {
-			{"schema_version", "status", "summary", "responses"},
-			{"schema_version", "status", "summary", "responses", "human_action"},
-			{"schema_version", "status", "summary", "responses", "human_action", "criteria"},
-			{"schema_version", "status", "summary", "responses", "human_action", "criteria", "verification"},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.Responses},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.Responses, contract.HumanAction},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.Responses, contract.HumanAction, contract.Criteria},
+			{contract.SchemaVersion, contract.Status, contract.Summary, contract.Responses, contract.HumanAction, contract.Criteria, contract.Verification},
 		},
 	}
 	if len(want[contract.Implement]) != contract.CurrentVersion {
@@ -87,7 +87,7 @@ func TestRequirementMatchesExactFields(t *testing.T) {
 			}
 		})
 	}
-	if !implement.Requires("human_action") || implement.Requires("criteria") {
+	if !implement.Requires(contract.HumanAction) || implement.Requires(contract.Criteria) {
 		t.Fatal("Requires does not read the required fields")
 	}
 }

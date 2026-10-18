@@ -3,6 +3,8 @@ package scheduler_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
+	"github.com/rcpassos/mergeyard/internal/web"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -124,6 +127,16 @@ func TestHarnessPairingsReconcileV1ReviewAfterUpgrade(t *testing.T) {
 				run = finish(t, restarted, workflow.WaitingForCI, workflow.Review)
 				if run.ReviewRound != 2 || run.Review.Report.SchemaVersion != 4 || len(run.Review.Report.PriorFindings) != 2 || len(run.ReviewHistory) != 2 || run.ReviewHistory[0].Report.PriorFindings == nil || api.creations != 1 {
 					t.Fatalf("v1 history failed v2 continuation: %+v", run)
+				}
+				server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: restarted, Config: cfg})
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := httptest.NewRecorder()
+				server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+				body := response.Body.String()
+				if response.Code != 200 || !strings.Contains(body, "Criteria were not recorded by this schema version.") {
+					t.Fatal("dashboard did not render the v1 review contract")
 				}
 			})
 		}

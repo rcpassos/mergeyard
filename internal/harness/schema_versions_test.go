@@ -30,14 +30,18 @@ func TestSchemasMatchCurrentRequirements(t *testing.T) {
 				t.Fatal(err)
 			}
 			requirement, ok := contract.For(tc.phase, contract.CurrentVersion)
-			if !ok || !slices.Equal(schema.Required, requirement.Fields) {
-				t.Fatalf("required = %v, want %v", schema.Required, requirement.Fields)
+			required := make([]string, len(requirement.Fields))
+			for i, field := range requirement.Fields {
+				required[i] = string(field)
+			}
+			if !ok || !slices.Equal(schema.Required, required) {
+				t.Fatalf("required = %v, want %v", schema.Required, required)
 			}
 			if len(schema.Properties) != len(requirement.Fields) {
 				t.Fatalf("schema has %d properties, contract requires %d", len(schema.Properties), len(requirement.Fields))
 			}
 			for _, field := range requirement.Fields {
-				if schema.Properties[field] == nil {
+				if schema.Properties[string(field)] == nil {
 					t.Fatalf("schema lacks required property %s", field)
 				}
 			}

@@ -45,6 +45,12 @@ type OutcomeCounts struct {
 	NoLongerApplies int
 }
 
+// HasCriteria reports whether the saved contract records acceptance criteria.
+func (r Report) HasCriteria() bool {
+	requirement, ok := contract.For(contract.Review, r.SchemaVersion)
+	return ok && requirement.Requires(contract.Criteria)
+}
+
 func (r Report) PriorCounts() OutcomeCounts {
 	var counts OutcomeCounts
 	for _, f := range r.PriorFindings {
@@ -107,7 +113,7 @@ func ParseVersion(data []byte, expectedVersion int) (Report, error) {
 	if !ok || version.Cmp(big.NewRat(int64(expectedVersion), 1)) != 0 {
 		return Report{}, fmt.Errorf("schema_version must be %d", expectedVersion)
 	}
-	if requirement.Requires("prior_findings") {
+	if requirement.Requires(contract.PriorFindings) {
 		if bytes.Equal(bytes.TrimSpace(fields["prior_findings"]), []byte("null")) {
 			return Report{}, fmt.Errorf("prior_findings cannot be null")
 		}
@@ -140,19 +146,19 @@ func ParseVersion(data []byte, expectedVersion int) (Report, error) {
 			}
 		}
 	}
-	if requirement.Requires("human_action") {
+	if requirement.Requires(contract.HumanAction) {
 		if _, err := fault.ParseHumanAction(fields["human_action"], stringValue(fields["status"])); err != nil {
 			return Report{}, err
 		}
 	}
-	if requirement.Requires("criteria") {
+	if requirement.Requires(contract.Criteria) {
 		if _, err := acceptance.ParseVerdicts(fields["criteria"]); err != nil {
 			return Report{}, err
 		}
 	}
 	// Normalize equivalent numeric spellings after checking the exact value.
 	fields["schema_version"] = json.RawMessage(fmt.Sprint(expectedVersion))
-	if !requirement.Requires("prior_findings") {
+	if !requirement.Requires(contract.PriorFindings) {
 		fields["prior_findings"] = json.RawMessage("[]")
 	}
 	normalized, _ := json.Marshal(fields)
@@ -165,10 +171,10 @@ func ParseVersion(data []byte, expectedVersion int) (Report, error) {
 
 func (r Report) Validate() error {
 	requirement, ok := contract.For(contract.Review, r.SchemaVersion)
-	if !ok || r.Findings == nil || (requirement.Requires("prior_findings") && r.PriorFindings == nil) {
+	if !ok || r.Findings == nil || (requirement.Requires(contract.PriorFindings) && r.PriorFindings == nil) {
 		return fmt.Errorf("invalid review version or findings")
 	}
-	if requirement.Requires("human_action") {
+	if requirement.Requires(contract.HumanAction) {
 		if err := r.HumanAction.Validate(r.Status); err != nil {
 			return err
 		}
@@ -204,7 +210,7 @@ func (r Report) Validate() error {
 	if (r.Status == "approved" && blocking) || (r.Status == "changes_required" && !blocking) {
 		return fmt.Errorf("verdict contradicts blocking findings")
 	}
-	if requirement.Requires("criteria") {
+	if requirement.Requires(contract.Criteria) {
 		if err := acceptance.ValidateVerdicts(r.Criteria); err != nil {
 			return err
 		}
@@ -234,7 +240,7 @@ func (r Report) ValidatePriorFindings(round int, previous []Finding, fix *FixRep
 		return err
 	}
 	requirement, ok := contract.For(contract.Review, r.SchemaVersion)
-	if !ok || !requirement.Requires("prior_findings") {
+	if !ok || !requirement.Requires(contract.PriorFindings) {
 		return nil
 	}
 	remaining := map[string]bool{}

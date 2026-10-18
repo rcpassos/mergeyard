@@ -98,7 +98,7 @@ type CreditLimitError struct {
 // which is what makes the saved criteria file mandatory.
 func requiresCriteria(phase workflow.Phase, version int) bool {
 	requirement, ok := contract.For(contractPhase(phase), version)
-	return ok && requirement.Requires("criteria")
+	return ok && requirement.Requires(contract.Criteria)
 }
 
 // contractPhase maps a workflow phase to its result contract; only review and

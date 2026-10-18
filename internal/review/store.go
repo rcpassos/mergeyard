@@ -62,7 +62,7 @@ func scanReview(row interface{ Scan(...any) error }) (*Snapshot, error) {
 			return nil, err
 		}
 		// Versions without prior findings, including v1, display an empty list.
-		if requirement, ok := contract.For(contract.Review, v.Report.SchemaVersion); ok && !requirement.Requires("prior_findings") {
+		if requirement, ok := contract.For(contract.Review, v.Report.SchemaVersion); ok && !requirement.Requires(contract.PriorFindings) {
 			v.Report.PriorFindings = []PriorFinding{}
 		}
 	}

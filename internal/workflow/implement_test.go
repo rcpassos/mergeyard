@@ -6,9 +6,25 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
+
+// The dashboard's implement criteria and verification sections follow the
+// version's contract rather than hard-coded version comparisons.
+func TestImplementReportContractPresenceByVersion(t *testing.T) {
+	for version := 1; version <= contract.CurrentVersion; version++ {
+		criteria, verification := version >= 3, version >= 4
+		report := workflow.ImplementReport{SchemaVersion: version}
+		if got := report.HasCriteria(); got != criteria {
+			t.Fatalf("implement v%d HasCriteria = %v, want %v", version, got, criteria)
+		}
+		if got := report.HasVerification(); got != verification {
+			t.Fatalf("implement v%d HasVerification = %v, want %v", version, got, verification)
+		}
+	}
+}
 
 func TestImplementationHistoryKeepsRecordedReportsAndSessions(t *testing.T) {
 	ctx := context.Background()

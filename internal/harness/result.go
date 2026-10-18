@@ -39,20 +39,20 @@ func parseImplementResult(data []byte, expectedVersion int64) (PhaseResult, erro
 		return PhaseResult{}, phaseError("phase.result_invalid", "Implement result summary must be a string", err)
 	}
 	var action *fault.HumanAction
-	if requirement.Requires("human_action") {
+	if requirement.Requires(contract.HumanAction) {
 		var err error
 		action, err = fault.ParseHumanAction(fields["human_action"], *status)
 		if err != nil {
 			return PhaseResult{}, phaseError("phase.result_invalid", "Invalid human action", err)
 		}
 	}
-	if requirement.Requires("criteria") {
+	if requirement.Requires(contract.Criteria) {
 		if _, err := acceptance.ParseEvidence(fields["criteria"]); err != nil {
 			return PhaseResult{}, phaseError("phase.result_invalid", "Invalid acceptance criteria evidence", err)
 		}
 	}
 	var evidence []verification.Entry
-	if requirement.Requires("verification") {
+	if requirement.Requires(contract.Verification) {
 		var err error
 		evidence, err = verification.Parse(fields["verification"])
 		if err != nil {

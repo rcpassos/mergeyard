@@ -53,12 +53,12 @@ func ParseFixVersion(data []byte, expectedVersion int64) (FixReport, error) {
 	if !ok || version.Cmp(big.NewRat(expectedVersion, 1)) != 0 {
 		return FixReport{}, fmt.Errorf("unsupported fix schema_version")
 	}
-	if requirement.Requires("human_action") {
+	if requirement.Requires(contract.HumanAction) {
 		if _, err := fault.ParseHumanAction(fields["human_action"], stringValue(fields["status"])); err != nil {
 			return FixReport{}, err
 		}
 	}
-	if requirement.Requires("criteria") {
+	if requirement.Requires(contract.Criteria) {
 		if _, err := acceptance.ParseEvidence(fields["criteria"]); err != nil {
 			return FixReport{}, err
 		}
@@ -78,7 +78,7 @@ func ParseFixVersion(data []byte, expectedVersion int64) (FixReport, error) {
 	if err := json.Unmarshal(normalized, &report); err != nil {
 		return report, err
 	}
-	if requirement.Requires("verification") {
+	if requirement.Requires(contract.Verification) {
 		var err error
 		report.Verification, err = verification.Parse(fields["verification"])
 		if err != nil {
@@ -88,22 +88,34 @@ func ParseFixVersion(data []byte, expectedVersion int64) (FixReport, error) {
 	return report, report.Validate()
 }
 
+// HasCriteria reports whether the saved contract records acceptance criteria.
+func (r FixReport) HasCriteria() bool {
+	requirement, ok := contract.For(contract.Fix, r.SchemaVersion)
+	return ok && requirement.Requires(contract.Criteria)
+}
+
+// HasVerification reports whether the saved contract records verification.
+func (r FixReport) HasVerification() bool {
+	requirement, ok := contract.For(contract.Fix, r.SchemaVersion)
+	return ok && requirement.Requires(contract.Verification)
+}
+
 func (r FixReport) Validate() error {
 	requirement, ok := contract.For(contract.Fix, r.SchemaVersion)
 	if !ok || (r.Status != "success" && r.Status != "blocked" && r.Status != "failed") || strings.TrimSpace(r.Summary) == "" || r.Responses == nil {
 		return fmt.Errorf("invalid fix version, status, summary, or responses")
 	}
-	if requirement.Requires("human_action") {
+	if requirement.Requires(contract.HumanAction) {
 		if err := r.HumanAction.Validate(r.Status); err != nil {
 			return err
 		}
 	}
-	if requirement.Requires("criteria") {
+	if requirement.Requires(contract.Criteria) {
 		if err := acceptance.ValidateEvidence(r.Criteria); err != nil {
 			return err
 		}
 	}
-	if requirement.Requires("verification") {
+	if requirement.Requires(contract.Verification) {
 		if err := verification.Validate(r.Verification); err != nil {
 			return err
 		}

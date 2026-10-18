@@ -77,7 +77,7 @@ ORDER BY a.run_id,a.round,CASE a.phase WHEN 'review' THEN 0 ELSE 1 END,a.attempt
 				rows.Close()
 				return err
 			}
-			if requirement, ok := contract.For(contract.Review, r.SchemaVersion); ok && requirement.Requires("criteria") {
+			if requirement, ok := contract.For(contract.Review, r.SchemaVersion); ok && requirement.Requires(contract.Criteria) {
 				outcomes = "\n\nAcceptance criteria:"
 				if len(r.Criteria) == 0 {
 					outcomes += " no acceptance criteria found."
