@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/rcpassos/mergeyard/internal/events"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -20,7 +21,7 @@ func (s *Scheduler) recordStagingDiagnostics(ctx context.Context, run workflow.R
 	}
 	var input string
 	var attempt int
-	err := s.db.QueryRowContext(ctx, `SELECT input_path,attempt FROM phase_attempts WHERE run_id=? AND phase=? AND round=? AND step='' ORDER BY attempt DESC LIMIT 1`, run.ID, run.Phase, phaseRound(run, run.Phase)).Scan(&input, &attempt)
+	err := s.db.QueryRowContext(ctx, `SELECT input_path,attempt FROM phase_attempts WHERE run_id=? AND phase=? AND round=? AND step='' ORDER BY attempt DESC LIMIT 1`, run.ID, run.Phase, durable.AttemptRound(run, run.Phase)).Scan(&input, &attempt)
 	if err != nil {
 		return err
 	}
@@ -33,7 +34,7 @@ func (s *Scheduler) recordStagingDiagnostics(ctx context.Context, run workflow.R
 		return err
 	}
 	_, err = s.bus.Publish(ctx, events.Draft{RunID: run.ID, Type: "git.staging_diagnostics", Payload: map[string]any{
-		"phase": run.Phase, "round": phaseRound(run, run.Phase), "attempt": attempt, "path": path, "diagnostics": result.Diagnostics,
+		"phase": run.Phase, "round": durable.AttemptRound(run, run.Phase), "attempt": attempt, "path": path, "diagnostics": result.Diagnostics,
 	}})
 	return err
 }

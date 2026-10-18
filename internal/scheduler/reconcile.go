@@ -298,7 +298,7 @@ func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, ru
 	if inconsistency != nil {
 		if run.State == workflow.Active && run.Phase == workflow.Review {
 			a, err := s.lastReview(ctx, run)
-			if err == nil && a.status == "running" {
+			if err == nil && a.Status == "running" {
 				return s.abortReview(ctx, repo, run, gitRun, &a, inconsistency)
 			}
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
