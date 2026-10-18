@@ -12,6 +12,9 @@ import (
 func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target string) (CommitResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// The fix target is re-observed on the remote before the commit.
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	if err := m.validateRun(run); err != nil {
 		return CommitResult{}, err
 	}
@@ -58,6 +61,8 @@ func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target st
 func (m *Manager) PushFix(ctx context.Context, run Run, previous, target string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}
@@ -92,6 +97,8 @@ func (m *Manager) PushFix(ctx context.Context, run Run, previous, target string)
 func (m *Manager) InspectFixTarget(ctx context.Context, run Run, target string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.metadata(ctx)
+	defer cancel()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}

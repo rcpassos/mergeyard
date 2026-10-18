@@ -15,6 +15,9 @@ import (
 func (m *Manager) Cleanup(ctx context.Context, run Run) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Completion checks may observe the remote, so allow the remote budget.
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}
@@ -29,6 +32,8 @@ func (m *Manager) Cleanup(ctx context.Context, run Run) error {
 func (m *Manager) CleanupWorktree(ctx context.Context, run Run) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	return m.cleanupWorktree(ctx, run)
 }
 func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
@@ -82,6 +87,8 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 func (m *Manager) CleanupBranch(ctx context.Context, run Run) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	return m.cleanupBranch(ctx, run)
 }
 func (m *Manager) cleanupBranch(ctx context.Context, run Run) error {

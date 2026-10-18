@@ -36,7 +36,9 @@ type ReconcileReport struct {
 // Reconcile observes and advances existing runs without claiming any new work.
 // Run's first tick and every later Tick use this same gate before dispatch.
 func (s *Scheduler) Reconcile(ctx context.Context) (ReconcileReport, error) {
-	s.tick.Lock()
+	if err := s.tick.Lock(ctx); err != nil {
+		return ReconcileReport{}, err
+	}
 	defer s.tick.Unlock()
 	s.beginPoll()
 	return s.reconcile(ctx)

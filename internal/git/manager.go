@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/pathspec"
@@ -20,11 +21,62 @@ import (
 // workspace lock and supply persisted run ownership when preparing a run.
 // Operations are serialized so base checkout and worktree metadata cannot race.
 type Manager struct {
-	root string
-	mu   sync.Mutex
+	root     string
+	timeouts Timeouts
+	mu       sync.Mutex
 }
 
-func New(w *workspace.Workspace) *Manager { return &Manager{root: w.Root} }
+// Timeouts bound each managed operation class so one stalled remote, hook, or
+// repository read cannot hold the scheduler's tick indefinitely. A caller that
+// supplies its own deadline keeps the earlier one.
+type Timeouts struct {
+	// Metadata bounds quick local reads of refs, the index, or single paths.
+	Metadata time.Duration
+	// Worktree bounds operations that may run repository hooks, stage or
+	// restore the worktree, or create and remove one.
+	Worktree time.Duration
+	// Remote bounds operations that contact the configured remote.
+	Remote time.Duration
+}
+
+// Defaults for Timeouts fields left unset.
+const (
+	DefaultMetadataTimeout = 2 * time.Minute
+	DefaultWorktreeTimeout = 10 * time.Minute
+	DefaultRemoteTimeout   = 10 * time.Minute
+)
+
+func New(w *workspace.Workspace) *Manager { return NewWithTimeouts(w, Timeouts{}) }
+
+// NewWithTimeouts selects operation deadlines; tests use shorter ones.
+func NewWithTimeouts(w *workspace.Workspace, timeouts Timeouts) *Manager {
+	if timeouts.Metadata <= 0 {
+		timeouts.Metadata = DefaultMetadataTimeout
+	}
+	if timeouts.Worktree <= 0 {
+		timeouts.Worktree = DefaultWorktreeTimeout
+	}
+	if timeouts.Remote <= 0 {
+		timeouts.Remote = DefaultRemoteTimeout
+	}
+	return &Manager{root: w.Root, timeouts: timeouts}
+}
+
+// metadata bounds quick local reads; callers must call the returned cancel.
+func (m *Manager) metadata(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, m.timeouts.Metadata)
+}
+
+// worktree bounds operations that may run repository hooks or touch the whole
+// worktree.
+func (m *Manager) worktree(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, m.timeouts.Worktree)
+}
+
+// remote bounds operations that contact the configured remote.
+func (m *Manager) remote(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, m.timeouts.Remote)
+}
 
 // PrepareRequest describes a new or reconcilable run. RemoteURL defaults to
 // https://github.com/<Repository>.git; an override supports local mirrors.
@@ -83,6 +135,8 @@ var shaPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	run, err := m.newRun(req)
 	if err != nil {
 		return Run{}, err

@@ -14,6 +14,10 @@ import (
 func (m *Manager) CommitAndPush(ctx context.Context, run Run, phase Phase) (CommitResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// One publication budget covers validation, the worktree-bounded commit,
+	// and the remote-bounded push.
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	if err := m.validateRun(run); err != nil {
 		return CommitResult{}, err
 	}
@@ -24,7 +28,9 @@ func (m *Manager) CommitAndPush(ctx context.Context, run Run, phase Phase) (Comm
 	if err != nil {
 		return CommitResult{}, err
 	}
-	result, err := commit(ctx, run, phase)
+	commitCtx, commitCancel := m.worktree(ctx)
+	result, err := commit(commitCtx, run, phase)
+	commitCancel()
 	if err != nil {
 		return result, err
 	}

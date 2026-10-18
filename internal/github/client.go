@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -59,6 +60,10 @@ type ghRunner struct{}
 func (ghRunner) Run(ctx context.Context, input []byte, args ...string) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Stdin = bytes.NewReader(input)
+	// Never wait on an interactive prompt from an unattended control plane.
+	cmd.Env = append(os.Environ(), "GH_PROMPT_DISABLED=1")
+	// A credential helper can outlive gh and keep its output pipes open.
+	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -68,17 +73,33 @@ func (ghRunner) Run(ctx context.Context, input []byte, args ...string) ([]byte, 
 // Client wraps the authenticated gh CLI and caches issue authorization snapshots.
 type Client struct {
 	runner     CommandRunner
+	timeout    time.Duration
 	trustMu    sync.Mutex
 	trustCache map[string]trustCacheEntry
 	login      string // authenticated comment author; protected by trustMu
 }
 
+// Options configures the gh CLI adapter. Zero fields use the defaults.
+type Options struct {
+	// Timeout bounds one gh invocation, including its internal retries.
+	Timeout time.Duration
+}
+
+// DefaultTimeout bounds a gh invocation when Options leaves Timeout unset.
+const DefaultTimeout = 2 * time.Minute
+
 // New uses the installed gh executable when runner is nil.
-func New(runner CommandRunner) *Client {
+func New(runner CommandRunner) *Client { return NewWithOptions(runner, Options{}) }
+
+// NewWithOptions selects the request deadline.
+func NewWithOptions(runner CommandRunner, options Options) *Client {
 	if runner == nil {
 		runner = ghRunner{}
 	}
-	return &Client{runner: runner}
+	if options.Timeout <= 0 {
+		options.Timeout = DefaultTimeout
+	}
+	return &Client{runner: runner, timeout: options.Timeout}
 }
 
 // Error retains the GitHub adapter API while sharing the runtime error type.
@@ -293,16 +314,24 @@ func (c *Client) requestWithAttempts(ctx context.Context, input []byte, method, 
 	if input != nil {
 		args = append(args, "--input", "-")
 	}
+	// One deadline covers the whole request, including its retries, so a hung
+	// gh cannot outlive the budget. A caller-supplied deadline stays earlier.
+	caller := ctx
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 	// Retry-safe operations get three attempts with 250ms then 500ms backoff.
 	// PR creation and body writes get one: replaying an ambiguous write may
 	// create duplicates or overwrite human edits made after the original request.
 	for attempt := 0; attempt < attempts; attempt++ {
-		if err := ctx.Err(); err != nil {
+		if err := caller.Err(); err != nil {
 			return nil, canceled(err)
 		}
 		stdout, stderr, err := c.runner.Run(ctx, input, args...)
+		if caller.Err() != nil {
+			return nil, canceled(caller.Err())
+		}
 		if ctx.Err() != nil {
-			return nil, canceled(ctx.Err())
+			return nil, timedOut(ctx.Err())
 		}
 		if err == nil {
 			return stdout, nil
@@ -315,7 +344,10 @@ func (c *Client) requestWithAttempts(ctx context.Context, input []byte, method, 
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, canceled(ctx.Err())
+			if caller.Err() != nil {
+				return nil, canceled(caller.Err())
+			}
+			return nil, timedOut(ctx.Err())
 		case <-timer.C:
 		}
 	}
@@ -324,6 +356,12 @@ func (c *Client) requestWithAttempts(ctx context.Context, input []byte, method, 
 
 func canceled(err error) *Error {
 	return &Error{Code: "github.canceled", Err: err}
+}
+
+// timedOut reports the adapter's own exhausted deadline, as distinct from a
+// caller that cancelled or gave up.
+func timedOut(err error) *Error {
+	return &Error{Code: "github.timeout", Err: err}
 }
 
 var httpStatusPattern = regexp.MustCompile(`\(HTTP ([0-9]{3})\)`)

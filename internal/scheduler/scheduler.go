@@ -74,6 +74,26 @@ type Dependencies struct {
 	Env map[string]string
 }
 
+// tickGate serializes ticks, lifecycle controls, and dashboard actions. Unlike
+// a mutex, waiting on the gate honors cancellation, so a caller that gives up,
+// disconnects, or shuts down is released even while a tick is stalled.
+type tickGate struct {
+	init  sync.Once
+	token chan struct{}
+}
+
+func (g *tickGate) lock(ctx context.Context) error {
+	g.init.Do(func() { g.token = make(chan struct{}, 1) })
+	select {
+	case g.token <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (g *tickGate) unlock() { <-g.token }
+
 type Scheduler struct {
 	cfg              config.Config
 	db               *sql.DB
@@ -82,7 +102,7 @@ type Scheduler struct {
 	workspace        *workspace.Workspace
 	deps             Dependencies
 	harnesses        map[string]harness.HarnessAdapter
-	tick             sync.Mutex
+	tick             tickGate
 	control          *Control
 	running          atomic.Bool
 	listingFetch     sync.Mutex               // serializes listing fetches so concurrent readers share one
@@ -218,8 +238,10 @@ func (s *Scheduler) Runs(ctx context.Context) ([]workflow.Run, error) {
 // Tick serializes reconciliation and dispatch. It observes running processes
 // once and returns, so long phases do not block new claims or pause/resume.
 func (s *Scheduler) Tick(ctx context.Context) error {
-	s.tick.Lock()
-	defer s.tick.Unlock()
+	if err := s.tick.lock(ctx); err != nil {
+		return err
+	}
+	defer s.tick.unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}

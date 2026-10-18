@@ -191,7 +191,7 @@ func publicationCode(err error) string {
 	var coded *fault.Error
 	if errors.As(err, &coded) {
 		switch coded.Code {
-		case "github.unavailable", "github.rate_limited", "github.forbidden", "github.not_found", "github.not_logged_in", "github.canceled", "github.invalid_response", "github.invalid_input", "publication.multiple_matches", "publication.unsupported":
+		case "github.unavailable", "github.rate_limited", "github.forbidden", "github.not_found", "github.not_logged_in", "github.canceled", "github.timeout", "github.invalid_response", "github.invalid_input", "publication.multiple_matches", "publication.unsupported":
 			return coded.Code
 		}
 	}

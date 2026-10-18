@@ -10,6 +10,8 @@ import (
 func (m *Manager) InspectHandback(ctx context.Context, run Run, target string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	remote, err := m.inspectHandbackAncestry(ctx, run)
 	if err != nil {
 		return "", err
@@ -47,6 +49,8 @@ func (m *Manager) inspectHandbackAncestry(ctx context.Context, run Run) (string,
 func (m *Manager) CommitHandback(ctx context.Context, run Run, previous string) (CommitResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	remote, err := m.inspectHandbackAncestry(ctx, run)
 	if err != nil {
 		return CommitResult{}, err
@@ -62,6 +66,8 @@ func (m *Manager) CommitHandback(ctx context.Context, run Run, previous string) 
 func (m *Manager) PushHandback(ctx context.Context, run Run, previous, target string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	if err := m.inspectReview(ctx, run); err != nil {
 		return err
 	}

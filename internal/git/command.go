@@ -9,7 +9,18 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
+	"time"
+
+	"github.com/rcpassos/mergeyard/internal/fault"
 )
+
+// An unattended Git operation must never wait on a terminal prompt or an
+// unresponsive SSH peer. BatchMode fails instead of prompting, ConnectTimeout
+// bounds the handshake, and the keepalive options detect a dead connection.
+// GIT_SSH and GIT_SSH_COMMAND already present in the environment still win, so
+// a machine with a custom transport keeps it.
+const nonInteractiveSSH = "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
 
 // Execute Git directly, with the machine's identity and credentials. Disable
 // terminal prompts so an unattended run reports failures instead of hanging.
@@ -20,13 +31,27 @@ func command(ctx context.Context, dir, code string, args ...string) (string, err
 func commandWithEnv(ctx context.Context, dir, code string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
-	cmd.Env = append(cmd.Env, env...)
+	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), env...)
+	if os.Getenv("GIT_SSH_COMMAND") == "" && os.Getenv("GIT_SSH") == "" {
+		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND="+nonInteractiveSSH)
+	}
+	// A repository hook or credential helper can outlive Git and keep its
+	// output pipes open. Bound the owned process group and the pipe drain so a
+	// stalled operation still returns on its deadline.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		} else {
+			return err
+		}
+	}
+	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	if ctx.Err() != nil {
-		return stdout.String(), failure("git.canceled", dir, ctx.Err())
+		return stdout.String(), contextFailure(code, dir, ctx.Err())
 	}
 	if err != nil {
 		return stdout.String(), failure(code, dir, fmt.Errorf("%s: %w", strings.TrimSpace(stderr.String()), err))
@@ -35,6 +60,16 @@ func commandWithEnv(ctx context.Context, dir, code string, env []string, args ..
 		return stdout.String(), nil
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// contextFailure reports why a managed operation stopped. A deadline is a
+// distinct, bounded outcome: it names the operation that stalled so the retry
+// and attention paths can report it without leaking command arguments.
+func contextFailure(code, dir string, err error) *fault.Error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return failure("git.timeout", dir, fmt.Errorf("%s timed out: %w", strings.TrimPrefix(code, "git."), err))
+	}
+	return failure("git.canceled", dir, err)
 }
 
 func refExists(ctx context.Context, dir, ref string) (bool, error) {

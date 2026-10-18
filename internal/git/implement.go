@@ -7,6 +7,8 @@ import "context"
 func (m *Manager) CommitImplement(ctx context.Context, run Run, phase Phase) (CommitResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.worktree(ctx)
+	defer cancel()
 	if err := m.validateRun(run); err != nil {
 		return CommitResult{}, err
 	}
@@ -24,6 +26,8 @@ func (m *Manager) CommitImplement(ctx context.Context, run Run, phase Phase) (Co
 func (m *Manager) PushImplement(ctx context.Context, run Run, target string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}

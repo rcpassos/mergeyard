@@ -33,6 +33,8 @@ type ReviewFile struct {
 func (m *Manager) SnapshotReview(ctx context.Context, run Run) (ReviewSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.worktree(ctx)
+	defer cancel()
 	return m.snapshotReview(ctx, run)
 }
 func (m *Manager) snapshotReview(ctx context.Context, run Run) (ReviewSnapshot, error) {
@@ -110,6 +112,8 @@ func (m *Manager) inspectReview(ctx context.Context, run Run) error {
 func (m *Manager) ReviewDiff(ctx context.Context, run Run, head string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.metadata(ctx)
+	defer cancel()
 	if err := m.inspectReview(ctx, run); err != nil {
 		return "", err
 	}
@@ -121,6 +125,8 @@ func (m *Manager) ReviewDiff(ctx context.Context, run Run, head string) (string,
 func (m *Manager) ReviewChanged(ctx context.Context, run Run, before ReviewSnapshot) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.worktree(ctx)
+	defer cancel()
 	if before.RunID != run.ID {
 		return false, failure("git.review_ambiguous", run.Path, errors.New("snapshot belongs to another run"))
 	}
@@ -136,6 +142,8 @@ func (m *Manager) ReviewChanged(ctx context.Context, run Run, before ReviewSnaps
 func (m *Manager) RestoreReview(ctx context.Context, run Run, before ReviewSnapshot) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.worktree(ctx)
+	defer cancel()
 	if err := m.inspectReview(ctx, run); err != nil {
 		return err
 	}

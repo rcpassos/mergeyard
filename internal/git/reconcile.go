@@ -13,6 +13,8 @@ import (
 func (m *Manager) Inspect(ctx context.Context, run Run) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.metadata(ctx)
+	defer cancel()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}
@@ -30,6 +32,8 @@ func (m *Manager) Inspect(ctx context.Context, run Run) error {
 func (m *Manager) ListWorktrees(ctx context.Context) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.metadata(ctx)
+	defer cancel()
 	paths := map[string]bool{}
 	bases, err := filepath.Glob(filepath.Join(m.root, "repos", "*", "base"))
 	if err != nil {

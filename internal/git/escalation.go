@@ -18,6 +18,8 @@ import (
 func (m *Manager) EscalationDiff(ctx context.Context, run Run, head string) ([]escalation.FileChange, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.metadata(ctx)
+	defer cancel()
 	if err := m.inspectReview(ctx, run); err != nil {
 		return nil, err
 	}

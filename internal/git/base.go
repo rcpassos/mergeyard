@@ -23,6 +23,8 @@ type BaseMerge struct {
 func (m *Manager) CheckBase(ctx context.Context, run Run, branch, head string) (BaseMerge, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	v := BaseMerge{BaseBranch: branch, HeadSHA: head}
 	if err := m.validateRun(run); err != nil {
 		return v, err
@@ -76,6 +78,8 @@ func (m *Manager) CheckBase(ctx context.Context, run Run, branch, head string) (
 func (m *Manager) VerificationCommit(ctx context.Context, run Run, v BaseMerge) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.metadata(ctx)
+	defer cancel()
 	if err := m.validateRun(run); err != nil {
 		return "", err
 	}
@@ -102,6 +106,8 @@ func (m *Manager) VerificationRun(run Run, id, commit string) (Run, error) {
 func (m *Manager) EnsureVerification(ctx context.Context, run Run, id, commit string) (Run, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.worktree(ctx)
+	defer cancel()
 	scratch, err := m.VerificationRun(run, id, commit)
 	if err != nil {
 		return Run{}, err
@@ -156,6 +162,8 @@ func inspectVerification(ctx context.Context, scratch Run, commit string, clean 
 func (m *Manager) InspectVerification(ctx context.Context, scratch Run, target string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.metadata(ctx)
+	defer cancel()
 	// Recover original ownership from the deterministic path before inspection.
 	original := scratch
 	original.Path = filepath.Join(filepath.Dir(scratch.Path), scratch.ID)
@@ -188,6 +196,8 @@ func (m *Manager) InspectVerification(ctx context.Context, scratch Run, target s
 func (m *Manager) RemoveVerification(ctx context.Context, run Run, id, commit string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.metadata(ctx)
+	defer cancel()
 	scratch, err := m.VerificationRun(run, id, commit)
 	if err != nil {
 		return err
@@ -212,6 +222,8 @@ func (m *Manager) RemoveVerification(ctx context.Context, run Run, id, commit st
 func (m *Manager) PrepareBaseRepair(ctx context.Context, run Run, target, base string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.worktree(ctx)
+	defer cancel()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}

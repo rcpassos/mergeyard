@@ -10,6 +10,8 @@ import (
 func (m *Manager) InspectRetry(ctx context.Context, run Run, target string, allowEdits bool) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx, cancel := m.remote(ctx)
+	defer cancel()
 	if err := m.inspectReview(ctx, run); err != nil {
 		return "", err
 	}
