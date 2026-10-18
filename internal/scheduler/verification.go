@@ -14,16 +14,19 @@ import (
 // events are the durable intent; publication receipts prevent replay after restart.
 // A new attempt supersedes an older failed delivery. Each retry reads the PR again.
 func (s *Scheduler) publishVerification(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `WITH evidence AS (
- SELECT e.id,e.run_id,json_extract(e.payload_json,'$.result') AS report
+	// Evidence is materialized so the pass reads each completion event once, then
+	// picks the newest report per run in a single pass. Re-deriving that report
+	// per candidate row made the query quadratic in the event history.
+	rows, err := s.db.QueryContext(ctx, `WITH evidence AS MATERIALIZED (
+ SELECT e.id,e.run_id
  FROM events e WHERE e.type IN ('phase.completed','phase.failed')
  AND COALESCE(json_extract(e.payload_json,'$.phase'),'implement') IN ('implement','fix')
  AND json_type(e.payload_json,'$.result.verification')='array'
  AND (COALESCE(json_extract(e.payload_json,'$.error'),'')='' OR json_extract(e.payload_json,'$.error') LIKE 'phase.blocked:%' OR json_extract(e.payload_json,'$.error') LIKE 'phase.failed:%')
-)
-SELECT e.id,e.run_id,r.repository,r.pr_number,c.issue_json,e.report,COALESCE(r.role_settings_json,'null')
-FROM evidence e JOIN runs r ON r.id=e.run_id JOIN scheduler_runs c ON c.run_id=r.id
-WHERE r.pr_number>0 AND e.id=(SELECT MAX(n.id) FROM evidence n WHERE n.run_id=e.run_id)
+), newest AS (SELECT run_id,MAX(id) AS id FROM evidence GROUP BY run_id)
+SELECT e.id,e.run_id,r.repository,r.pr_number,c.issue_json,json_extract(e.payload_json,'$.result'),COALESCE(r.role_settings_json,'null')
+FROM newest n JOIN events e ON e.id=n.id JOIN runs r ON r.id=e.run_id JOIN scheduler_runs c ON c.run_id=r.id
+WHERE r.pr_number>0
 AND NOT EXISTS (SELECT 1 FROM events p WHERE p.run_id=e.run_id AND p.type='verification.published' AND json_extract(p.payload_json,'$.source_event')=e.id)
 ORDER BY COALESCE((SELECT MAX(p.id) FROM events p
  WHERE p.run_id=e.run_id AND p.type='verification.attempted'

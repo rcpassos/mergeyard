@@ -27,15 +27,14 @@ func (s *Scheduler) discoverSession(ctx context.Context, id string, phase workfl
 func (s *Scheduler) observeIdentities(ctx context.Context) error {
 	s.tick.Lock()
 	defer s.tick.Unlock()
-	runs, err := s.Runs(ctx)
+	// Only a run waiting on an unidentified attempt can discover an identity,
+	// so the pass reads candidates instead of reloading the whole history.
+	candidates, err := s.execution().Discoverable(ctx)
 	if err != nil {
 		return err
 	}
-	for _, run := range runs {
-		if run.State != workflow.Active {
-			continue
-		}
-		err := s.workflow.WithRunOperation(ctx, run.ID, func(ctx context.Context, current workflow.Run) error {
+	for _, runID := range candidates {
+		err := s.workflow.WithRunOperation(ctx, runID, func(ctx context.Context, current workflow.Run) error {
 			if current.State != workflow.Active {
 				return nil
 			}

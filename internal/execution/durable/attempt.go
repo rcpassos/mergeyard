@@ -59,13 +59,55 @@ func (e Executor) LoadImplement(ctx context.Context, id string) (Attempt, error)
 	return e.Load(ctx, id, workflow.Implement, 0)
 }
 
+// sessionIdentity chains the columns that record one attempt's conversation:
+// the attempt row, the phase's own journal, then the caller's role identity
+// column expression. Load and Discoverable share it so a candidate filter never
+// narrows below what Discover could still save.
+func sessionIdentity(roleSession string) string {
+	return `COALESCE(a.session_id,
+ (SELECT session_id FROM review_attempts WHERE attempt_id=a.id),
+ (SELECT session_id FROM fix_attempts WHERE attempt_id=a.id),
+ ` + roleSession + `,'')`
+}
+
 // Load recovers the durable process reference and conversation for one phase round.
 func (e Executor) Load(ctx context.Context, id string, phase workflow.Phase, round int) (Attempt, error) {
 	var a Attempt
 	var input string
-	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,COALESCE(a.session_id,(SELECT session_id FROM review_attempts WHERE attempt_id=a.id),(SELECT session_id FROM fix_attempts WHERE attempt_id=a.id),(SELECT `+phase.Role()+`_session_id FROM runs WHERE id=a.run_id),''),a.check_retry_of FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf)
+	identity := sessionIdentity("(SELECT " + phase.Role() + "_session_id FROM runs WHERE id=a.run_id)")
+	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,`+identity+`,a.check_retry_of FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf)
 	a.Ref.PhaseDir = filepath.Dir(input)
 	return a, err
+}
+
+// Discoverable identifies active runs whose current phase is waiting on an
+// attempt that has no conversation identity yet. Observation asks for these
+// instead of the whole run history, so finished runs never reach the pass that
+// repeats while an agent runs. Retries retire earlier running attempts, so a
+// running attempt of the current phase and round is the one Load would return.
+// The phase rules mirror attemptRound and Phase.Role: implementation always
+// uses round zero and the implementer identity, review uses the reviewer.
+func (e Executor) Discoverable(ctx context.Context) ([]string, error) {
+	identity := sessionIdentity("CASE WHEN a.phase='review' THEN r.reviewer_session_id ELSE r.implementer_session_id END")
+	rows, err := e.DB.QueryContext(ctx, `SELECT DISTINCT r.id FROM phase_attempts a
+	JOIN runs r ON r.id=a.run_id
+	WHERE a.status='running' AND a.step='' AND r.state='ACTIVE'
+	AND a.phase=r.current_phase
+	AND a.round=CASE WHEN a.phase='implement' THEN 0 ELSE r.review_round END
+	AND `+identity+`=''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // PrepareImplement establishes identity and a required process journal before
