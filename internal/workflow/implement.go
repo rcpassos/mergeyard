@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/rcpassos/mergeyard/internal/acceptance"
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/verification"
 )
 
@@ -16,6 +17,18 @@ type ImplementReport struct {
 	Status        string                `json:"status"`
 	Summary       string                `json:"summary"`
 	Criteria      []acceptance.Evidence `json:"criteria"`
+}
+
+// HasCriteria reports whether the saved contract records acceptance criteria.
+func (r ImplementReport) HasCriteria() bool {
+	requirement, ok := contract.For(contract.Implement, r.SchemaVersion)
+	return ok && requirement.Requires(contract.Criteria)
+}
+
+// HasVerification reports whether the saved contract records verification.
+func (r ImplementReport) HasVerification() bool {
+	requirement, ok := contract.For(contract.Implement, r.SchemaVersion)
+	return ok && requirement.Requires(contract.Verification)
 }
 
 // ImplementSnapshot is the last durable implement attempt, retained during review.
@@ -34,8 +47,7 @@ type ImplementSnapshot struct {
 	Error          string           `json:"error,omitempty"`
 }
 
-const implementSnapshotQuery = `SELECT a.agent,COALESCE(r.implementer_session_id,''),a.session_id,COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.skills_json,'[]'),COALESCE(a.permissions,'Not recorded for this older attempt'),a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.error,''),a.check_retry_of,
- (SELECT json_extract(e.payload_json,'$.result') FROM events e WHERE e.run_id=a.run_id AND e.type IN ('phase.completed','phase.failed') AND COALESCE(json_extract(e.payload_json,'$.phase'),'implement')='implement' AND json_extract(e.payload_json,'$.attempt')=a.attempt ORDER BY e.id DESC LIMIT 1)
+const implementSnapshotQuery = `SELECT a.agent,COALESCE(r.implementer_session_id,''),a.session_id,COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.skills_json,'[]'),COALESCE(a.permissions,'Not recorded for this older attempt'),a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.error,''),a.check_retry_of,a.report_json
  FROM phase_attempts a JOIN runs r ON r.id=a.run_id WHERE a.run_id=? AND a.phase='implement' AND a.step=''`
 
 // LoadImplementSnapshot reads the latest attempt for active-session controls.
@@ -88,8 +100,8 @@ func scanImplement(row interface{ Scan(...any) error }) (*implementRecord, error
 	if err := json.Unmarshal([]byte(skills), &v.Skills); err != nil {
 		return nil, err
 	}
-	// Completion events persist reports atomically with attempt status. The
-	// query excludes fix/review events; legacy implement events omit phase.
+	// The attempt owns its report; migration 029 backfilled attempts written by
+	// older binaries from their completion events.
 	if raw.Valid {
 		var report ImplementReport
 		if err := json.Unmarshal([]byte(raw.String), &report); err != nil {

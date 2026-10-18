@@ -174,8 +174,13 @@ func (c *Client) MarkReady(ctx context.Context, repo string, number int) error {
 	if !repository.ValidName(repo) || number <= 0 {
 		return codedError("github.invalid_input", "invalid PR identity", nil)
 	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 	_, stderr, err := c.runner.Run(ctx, nil, "pr", "ready", fmt.Sprint(number), "--repo", repo)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return contextError(ctxErr)
+		}
 		failure, _ := commandError(stderr, err)
 		return failure
 	}

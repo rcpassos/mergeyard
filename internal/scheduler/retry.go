@@ -13,6 +13,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/ci"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
@@ -230,7 +231,7 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 	}
 	if v.Cause == waitsExhausted {
 		wait := run.HarnessWait
-		if wait == nil || wait.AttemptID == "" || wait.Phase != run.Phase || wait.Round != phaseRound(run, run.Phase) {
+		if wait == nil || wait.AttemptID == "" || wait.Phase != run.Phase || wait.Round != durable.AttemptRound(run, run.Phase) {
 			return fail("retry.phase_ambiguous", "Cannot identify the interrupted execution")
 		}
 		if pr != nil {
@@ -401,35 +402,35 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 			v.GrantedRound = run.ReviewRound + 1
 		}
 	} else if v.NextState == workflow.Active {
-		var a attempt
+		var a durable.Attempt
 		switch v.NextPhase {
 		case workflow.Implement:
 			a, err = s.lastAttempt(ctx, run.ID)
 		case workflow.Review:
 			var r reviewAttempt
 			r, err = s.lastReview(ctx, run)
-			a = r.attempt
+			a = r.Attempt
 		case workflow.Fix:
 			var f fixAttempt
 			f, err = s.lastFix(ctx, run)
-			a = f.attempt
+			a = f.Attempt
 		default:
 			return fail("retry.phase_ambiguous", "Cannot identify a safe next phase")
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err == nil && (a.status == "failed" || a.status == "stopped" || (a.status == "running" && missingProcesses[a.ref.Name]) || (a.status == "succeeded" && v.NextPhase == workflow.Review)) {
+		if err == nil && (a.Status == "failed" || a.Status == "stopped" || (a.Status == "running" && missingProcesses[a.Ref.Name]) || (a.Status == "succeeded" && v.NextPhase == workflow.Review)) {
 			if missingConversation(attemptCause(a)) {
 				var recovered int
-				if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM session_recoveries WHERE run_id=? AND phase=? AND round=?", run.ID, v.NextPhase, phaseRound(run, v.NextPhase)).Scan(&recovered); err != nil {
+				if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM session_recoveries WHERE run_id=? AND phase=? AND round=?", run.ID, v.NextPhase, durable.AttemptRound(run, v.NextPhase)).Scan(&recovered); err != nil {
 					return err
 				}
-				if recovered > 0 || !a.resumed {
+				if recovered > 0 || !a.Resumed {
 					return fail("harness.session_resume_failed", "Missing-session recovery was already used for this phase and round; inspect the role conversation")
 				}
 			}
-			v.AttemptFrom = a.number + 1
+			v.AttemptFrom = a.Number + 1
 		}
 	}
 	if err := s.selectCreditProbe(ctx, run, repo, v, &patch); err != nil {
@@ -539,8 +540,8 @@ func (s *Scheduler) retryLabels(ctx context.Context, repo config.Repository, run
 	return s.deps.GitHub.RemoveLabel(ctx, repo.Repo, run.IssueNumber, repo.Labels.NeedsAttention)
 }
 
-func attemptCause(a attempt) error {
-	code, message, _ := strings.Cut(a.failure, ": ")
+func attemptCause(a durable.Attempt) error {
+	code, message, _ := strings.Cut(a.Failure, ": ")
 	return &fault.Error{Code: code, Message: message}
 }
 

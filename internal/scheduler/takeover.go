@@ -151,7 +151,7 @@ func (s *Scheduler) prepareTakeover(ctx context.Context, run workflow.Run) error
 		return fail(err)
 	}
 	if err == nil && !a.restored {
-		status, err := s.deps.Runner.SessionStatus(ctx, a.ref)
+		status, err := s.deps.Runner.SessionStatus(ctx, a.Ref)
 		if err != nil {
 			return fail(err)
 		}

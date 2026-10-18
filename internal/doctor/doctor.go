@@ -13,6 +13,8 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	managedgit "github.com/rcpassos/mergeyard/internal/git"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/runner"
 )
 
@@ -118,6 +120,9 @@ func Check(ctx context.Context, path string, options Options) Report {
 		c.env[key] = value
 	}
 	c.env["GIT_TERMINAL_PROMPT"], c.env["GH_PROMPT_DISABLED"], c.env["LC_ALL"] = "0", "1", "C"
+	if command := c.sshCommand(); command != "" {
+		c.env["GIT_SSH_COMMAND"] = command
+	}
 	c.access(cfg)
 	c.machine(cfg)
 	c.capabilities(cfg)
@@ -142,6 +147,23 @@ type checker struct {
 
 func (c *checker) command(dir, executable string, args ...string) (runner.ExecResult, error) {
 	return c.commandInput(dir, "", executable, args...)
+}
+
+// sshCommand keeps unattended SSH probes non-interactive unless the machine
+// already selects its own transport. Git ranks GIT_SSH_COMMAND above
+// core.sshCommand, so a configured core.sshCommand must be resolved before the
+// default is applied.
+func (c *checker) sshCommand() string {
+	if c.env["GIT_SSH_COMMAND"] != "" || c.env["GIT_SSH"] != "" {
+		return ""
+	}
+	// The probe runs outside any repository so one checkout cannot answer for
+	// the machine.
+	result, err := c.command(os.TempDir(), "git", "config", "--get", "core.sshCommand")
+	if err == nil && strings.TrimSpace(string(result.Stdout)) != "" {
+		return ""
+	}
+	return managedgit.NonInteractiveSSH
 }
 
 func (c *checker) commandInput(dir, inputPath, executable string, args ...string) (runner.ExecResult, error) {
@@ -185,43 +207,47 @@ func (c *checker) machine(cfg config.Config) {
 	}
 	if c.tools["gh"] {
 		if _, err := c.command("", "gh", "auth", "status", "--hostname", "github.com"); err != nil {
-			c.report.add(Error, "github.not_logged_in", "gh", "GitHub authentication failed; run gh auth login: "+err.Error())
+			if c.probeUnreachable() {
+				c.report.add(Unverifiable, "github.not_logged_in", "gh", "cannot verify GitHub authentication while GitHub is unreachable: "+err.Error())
+			} else {
+				c.report.add(Error, "github.not_logged_in", "gh", "GitHub authentication failed; run gh auth login: "+err.Error())
+			}
 		}
 	}
 	assigned := make(map[string]bool)
 	for _, assignedRole := range roles(cfg) {
 		assigned[assignedRole.role.Agent] = true
 	}
-	for _, agent := range []string{"claude", "codex"} {
+	for _, agent := range registry.Names() {
 		if !assigned[agent] {
 			continue
 		}
-		execPath := executable(cfg, agent)
+		facts, known := harnesses[agent]
+		if !known {
+			c.report.add(Error, "harness.unsupported", agent, "assigned harness has no supported doctor checks; update Mergeyard before using it")
+			continue
+		}
+		execPath := facts.executable(cfg)
 		result, err := c.command("", execPath, "--version")
 		if err != nil {
 			c.report.add(Error, "harness.not_found", agent, "assigned harness is missing or cannot run: "+err.Error())
 			continue
 		}
 		c.tools[agent] = true
-		minimum := claudeMinimum
-		auth := []string{"auth", "status"}
-		if agent == "codex" {
-			minimum, auth = codexMinimum, []string{"login", "status"}
-		}
 		v, ok := parseVersion(string(result.Stdout) + " " + string(result.Stderr))
 		if !ok {
-			c.report.add(Unverifiable, "harness.version_unverifiable", agent, "cannot parse the installed version; minimum required: "+minimum.String())
+			c.report.add(Unverifiable, "harness.version_unverifiable", agent, "cannot parse the installed version; minimum required: "+facts.minimum.String())
 		} else {
 			c.versions[agent] = v
-			if v.less(minimum) {
-				c.report.add(Error, "harness.version_unsupported", agent, "installed "+v.String()+"; minimum required: "+minimum.String())
+			if v.less(facts.minimum) {
+				c.report.add(Error, "harness.version_unsupported", agent, "installed "+v.String()+"; minimum required: "+facts.minimum.String())
 			}
 		}
-		if _, err := c.command("", execPath, auth...); err != nil {
+		if _, err := c.command("", execPath, facts.auth...); err != nil {
 			c.report.add(Error, "harness.not_logged_in", agent, "harness login check failed; log in with the configured executable: "+err.Error())
 		}
 	}
-	if assigned["claude"] && cfg.Agents.Claude.PermissionMode == "bypassPermissions" && c.options.EffectiveUID() == 0 {
-		c.report.add(Error, "harness.root_bypass_permissions", "claude", "bypassPermissions cannot run as root; run as a non-root user or change agents.claude.permission_mode")
+	if assigned[registry.Claude] && cfg.Agents.Claude.PermissionMode == "bypassPermissions" && c.options.EffectiveUID() == 0 {
+		c.report.add(Error, "harness.root_bypass_permissions", registry.Claude, "bypassPermissions cannot run as root; run as a non-root user or change agents.claude.permission_mode")
 	}
 }

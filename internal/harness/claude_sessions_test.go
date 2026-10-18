@@ -29,10 +29,11 @@ printf '%s\n' '{"type":"result","is_error":true,"subtype":"error_during_executio
 while [ ! -f "$RELEASE_FILE" ]; do /bin/sleep 0.02; done
 printf '%s\n' '`+successEvent+`'
 printf '%s\n' '{"type":"system","subtype":"notification"}'`)})
-	invocation, err := adapter.BuildInvocation(ctx, config.Role{})
+	built, err := adapter.BuildInvocation(ctx, config.Role{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	invocation := built.Command
 	launch, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ref, err := r.StartSession(launch, runner.SessionRequest{RunID: "harness-stream", Phase: "implement", Round: 1, Attempt: 1, PhaseDir: ctx.PhaseDir, Command: invocation})

@@ -95,9 +95,12 @@ is not sent to the browser. Uncoded or malformed errors use
 SSE carries the event type as `event`, the durable numeric ID as `id`, and the
 complete JSON event as `data`. Fresh connections start with live events.
 Reconnects with `Last-Event-ID` replay durable history and deduplicate live
-events. Streams send heartbeat comments and disconnect slow consumers, allowing
-the browser to reconnect and replay. The browser refreshes scheduler state when
-the stream connects and on pause/resume events.
+events. UI-only notifications (`queue.updated`, `diagnostics.updated`) are
+transient: they are delivered live without an `id` frame, are never written to
+SQLite, and never advance the replay cursor. Streams send heartbeat comments
+and disconnect slow consumers, allowing the browser to reconnect and replay.
+The browser refreshes scheduler state when the stream connects, on pause/resume
+events, and on discovery notifications for the visible queue or settings page.
 
 ## Assets
 
@@ -126,9 +129,12 @@ the shared CLI API. `New` remains available for the foundation without runtime d
 
 Run `Server.RunUpdates(ctx)` in a goroutine. It discovers GitHub queue issues
 immediately and at `poll_interval`, including while paused or at capacity.
-Discovery performs no claims. It preserves the last successful snapshot on
-failure and shows a stale-data notice. Discovery errors fail closed: an issue
-with unknown dependency status is never displayed as ready. Run lifecycle data
+Discovery performs no claims and reads the scheduler's shared label-filtered poll
+listing, reusing a snapshot for up to two poll intervals so the dashboard and
+the scheduler do not both fetch at each boundary. Blocker reads are reused while
+an issue's listing snapshot is unchanged. It preserves the last successful
+snapshot on failure and shows a stale-data notice. Discovery errors fail closed:
+an issue with unknown dependency status is never displayed as ready. Run lifecycle data
 always comes from SQLite, so claims and phase/PR transitions immediately
 supersede stale issue snapshots. The doctor callback runs once with a bounded
 context outside HTTP requests. Cancel and join RunUpdates before closing the

@@ -47,9 +47,9 @@ func fixture(t *testing.T, name string) []byte {
 	return data
 }
 
-func TestListOpenIssues(t *testing.T) {
-	runner := &recordedGH{responses: []response{{stdout: fixture(t, "open-issues")}}}
-	issues, err := github.New(runner).ListOpenIssues(context.Background(), "rcpassos/mergeyard")
+func TestListLabeledIssues(t *testing.T) {
+	runner := &recordedGH{responses: []response{{stdout: fixture(t, "open-issues")}, {stdout: []byte("[]")}}}
+	issues, err := github.New(runner).ListLabeledIssues(context.Background(), "rcpassos/mergeyard", []string{"ready-for-agent", "agent-running"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +62,54 @@ func TestListOpenIssues(t *testing.T) {
 	}
 	if issue.Body != "Blocked by: #2\n\n### Context\nPRD §7 (GitHub contract), §8 (eligibility).\n\n### Scope\nThin wrapper over `gh`, with JSON output parsed into typed structs:\n- list open issues for a repository with labels, creation time, and body;\n- read unresolved blockers from GitHub's native issue dependencies (`issue_dependencies_summary.blocked_by` / the dependencies endpoints);\n- add / remove labels;\n- read a single issue's state;\n- `github.*` error codes, bounded retry with backoff for transient failures (§22).\n\nUntrusted issue text is never passed through a shell (§32).\n\n### Acceptance criteria\n- Unit tests with recorded `gh` JSON fixtures, including issues with open and closed blockers.\n- An integration test (opt-in, against a dedicated test repository) lists issues, reads blockers, and adds/removes a label." {
 		t.Fatalf("issue body was changed: %q", issue.Body)
+	}
+	if !contains(runner.calls[0].args, "repos/rcpassos/mergeyard/issues?state=open&per_page=100&labels=ready-for-agent") {
+		t.Fatalf("first label not read server-side: %v", runner.calls[0].args)
+	}
+	if !contains(runner.calls[1].args, "repos/rcpassos/mergeyard/issues?state=open&per_page=100&labels=agent-running") {
+		t.Fatalf("second label not read server-side: %v", runner.calls[1].args)
+	}
+}
+
+// GitHub ANDs the labels of one request, so one query per label is the only way
+// to ask for the union; duplicates across labels merge by issue number.
+func TestListLabeledIssuesQueriesEachLabelOnceAndMergesDuplicates(t *testing.T) {
+	runner := &recordedGH{responses: []response{
+		{stdout: fixture(t, "open-issues")},
+		{stdout: fixture(t, "open-issues")},
+		{stdout: []byte("[]")},
+	}}
+	issues, err := github.New(runner).ListLabeledIssues(context.Background(), "rcpassos/mergeyard", []string{"ready-for-agent", "Ready-For-Agent", "agent-running", "agent-needs-attention"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("got %d issues, want 2 merged by number", len(issues))
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("queries = %d, want one per distinct label", len(runner.calls))
+	}
+	if !contains(runner.calls[2].args, "repos/rcpassos/mergeyard/issues?state=open&per_page=100&labels=agent-needs-attention") {
+		t.Fatalf("last label not read: %v", runner.calls[2].args)
+	}
+}
+
+func TestListLabeledIssuesEscapesLabelsAndRejectsEmptyFilters(t *testing.T) {
+	runner := &recordedGH{responses: []response{{stdout: []byte("[]")}}}
+	label := "needs triage & review"
+	if _, err := github.New(runner).ListLabeledIssues(context.Background(), "rcpassos/mergeyard", []string{label}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(runner.calls[0].args, "repos/rcpassos/mergeyard/issues?state=open&per_page=100&labels=needs+triage+%26+review") {
+		t.Fatalf("label not escaped: %v", runner.calls[0].args)
+	}
+	for _, labels := range [][]string{nil, {}, {""}, {" "}} {
+		if _, err := github.New(runner).ListLabeledIssues(context.Background(), "rcpassos/mergeyard", labels); err == nil {
+			t.Fatalf("empty filter accepted: %#v", labels)
+		}
+	}
+	if len(runner.calls) != 1 {
+		t.Fatal("empty filter invoked gh")
 	}
 }
 
@@ -211,7 +259,7 @@ func TestCancellationStopsBackoff(t *testing.T) {
 	defer cancel()
 	runner := &recordedGH{responses: []response{{stderr: []byte("gh: Bad Gateway (HTTP 502)"), err: errors.New("exit status 1")}}}
 	_, err := github.New(runner).IssueState(ctx, "rcpassos/mergeyard", 2)
-	requireCode(t, err, "github.canceled")
+	requireCode(t, err, "github.timeout")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("lost context error: %v", err)
 	}
@@ -222,7 +270,7 @@ func TestCancellationStopsBackoff(t *testing.T) {
 func TestIssueBodyNeverBecomesCommandInput(t *testing.T) {
 	data := strings.ReplaceAll(string(fixture(t, "open-issues")), "Blocked by: #2", "$(touch /tmp/mergeyard-injected); `id`")
 	runner := &recordedGH{responses: []response{{stdout: []byte(data)}}}
-	issues, err := github.New(runner).ListOpenIssues(context.Background(), "rcpassos/mergeyard")
+	issues, err := github.New(runner).ListLabeledIssues(context.Background(), "rcpassos/mergeyard", []string{"ready-for-agent"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +316,7 @@ func TestPaginationExcludesPullRequestsAndClosedIssues(t *testing.T) {
 	data := append(fixture(t, "open-issues"), []byte(`[ {"number": 19, "state": "open", "pull_request": {"url": "https://api.github.com/repos/rcpassos/mergeyard/pulls/19"}} ]`)...)
 	data = append(data, fixture(t, "closed-blockers")...)
 	runner := &recordedGH{responses: []response{{stdout: data}}}
-	issues, err := github.New(runner).ListOpenIssues(context.Background(), "rcpassos/mergeyard")
+	issues, err := github.New(runner).ListLabeledIssues(context.Background(), "rcpassos/mergeyard", []string{"ready-for-agent"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +331,7 @@ func TestInvalidInputsDoNotInvokeGH(t *testing.T) {
 	runner := &recordedGH{}
 	client := github.New(runner)
 	for _, repo := range []string{"", "owner", "owner/repo/extra", "owner/repo?state=all", "../repo", "owner/..", "owner/.", "--help/repo"} {
-		_, err := client.ListOpenIssues(context.Background(), repo)
+		_, err := client.ListLabeledIssues(context.Background(), repo, []string{"ready-for-agent"})
 		requireCode(t, err, "github.invalid_input")
 	}
 	for _, n := range []int{-1, 0} {
@@ -317,7 +365,7 @@ func TestCanceledContextDoesNotInvokeGH(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	runner := &recordedGH{}
-	_, err := github.New(runner).ListOpenIssues(ctx, "rcpassos/mergeyard")
+	_, err := github.New(runner).ListLabeledIssues(ctx, "rcpassos/mergeyard", []string{"ready-for-agent"})
 	requireCode(t, err, "github.canceled")
 	if len(runner.calls) != 0 {
 		t.Fatal("canceled request invoked gh")
@@ -395,7 +443,7 @@ func TestRepositoryNamesMatchConfiguration(t *testing.T) {
 				t.Fatalf("configuration validity = %v, want %v: %v", configErr == nil, tc.valid, configErr)
 			}
 			runner := &recordedGH{responses: []response{{stdout: []byte("[]")}}}
-			_, err := github.New(runner).ListOpenIssues(context.Background(), tc.repo)
+			_, err := github.New(runner).ListLabeledIssues(context.Background(), tc.repo, []string{"ready-for-agent"})
 			if tc.valid {
 				if err != nil {
 					t.Fatalf("valid repository rejected: %v", err)

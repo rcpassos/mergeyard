@@ -1,5 +1,11 @@
 package config
 
+import (
+	"strings"
+
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
+)
+
 // TierSettings replaces both model and effort; empty fields use harness defaults.
 type TierSettings struct {
 	Model  string
@@ -18,8 +24,8 @@ func readTiers(role mapping, target *map[string]map[string]TierSettings) {
 	harnesses := newMapping(n, role.fieldPath("tiers"), role.err, role.warnings)
 	*target = map[string]map[string]TierSettings{}
 	for _, agent := range harnesses.keys {
-		if agent != "claude" && agent != "codex" {
-			harnesses.fail("config.invalid_agent", agent, "expected claude or codex")
+		if !registry.Known(agent) {
+			harnesses.fail("config.invalid_agent", agent, "expected "+strings.Join(registry.Names(), " or "))
 			return
 		}
 		tiers := harnesses.child(agent)

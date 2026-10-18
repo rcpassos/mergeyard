@@ -34,6 +34,10 @@ type Executor struct {
 	Now       func() time.Time
 }
 
+// Attempt is the journal entry for one phase execution: the harness (agent)
+// that ran it, its persisted session identity, owned process reference and
+// continuation state. It is the single attempt shape shared by durable
+// execution and the scheduler's phase workflows.
 type Attempt struct {
 	ID, Agent             string
 	Number                int
@@ -44,13 +48,6 @@ type Attempt struct {
 	Failure, CheckRetryOf string
 }
 
-// Permissions records the effective harness permissions alongside launch intent.
-type Permissions struct {
-	Summary      string
-	Mode         string
-	AllowedTools []string
-}
-
 func (a Attempt) resumeFailed() bool {
 	return strings.HasPrefix(a.Failure, "harness.session_resume_failed: ")
 }
@@ -59,13 +56,55 @@ func (e Executor) LoadImplement(ctx context.Context, id string) (Attempt, error)
 	return e.Load(ctx, id, workflow.Implement, 0)
 }
 
+// sessionIdentity chains the columns that record one attempt's conversation:
+// the attempt row, the phase's own journal, then the caller's role identity
+// column expression. Load and Discoverable share it so a candidate filter never
+// narrows below what Discover could still save.
+func sessionIdentity(roleSession string) string {
+	return `COALESCE(a.session_id,
+ (SELECT session_id FROM review_attempts WHERE attempt_id=a.id),
+ (SELECT session_id FROM fix_attempts WHERE attempt_id=a.id),
+ ` + roleSession + `,'')`
+}
+
 // Load recovers the durable process reference and conversation for one phase round.
 func (e Executor) Load(ctx context.Context, id string, phase workflow.Phase, round int) (Attempt, error) {
 	var a Attempt
 	var input string
-	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,COALESCE(a.session_id,(SELECT session_id FROM review_attempts WHERE attempt_id=a.id),(SELECT session_id FROM fix_attempts WHERE attempt_id=a.id),(SELECT `+phase.Role()+`_session_id FROM runs WHERE id=a.run_id),''),a.check_retry_of FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf)
+	identity := sessionIdentity("(SELECT " + phase.Role() + "_session_id FROM runs WHERE id=a.run_id)")
+	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,`+identity+`,a.check_retry_of FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf)
 	a.Ref.PhaseDir = filepath.Dir(input)
 	return a, err
+}
+
+// Discoverable identifies active runs whose current phase is waiting on an
+// attempt that has no conversation identity yet. Observation asks for these
+// instead of the whole run history, so finished runs never reach the pass that
+// repeats while an agent runs. Retries retire earlier running attempts, so a
+// running attempt of the current phase and round is the one Load would return.
+// The phase rules mirror attemptRound and Phase.Role: implementation always
+// uses round zero and the implementer identity, review uses the reviewer.
+func (e Executor) Discoverable(ctx context.Context) ([]string, error) {
+	identity := sessionIdentity("CASE WHEN a.phase='review' THEN r.reviewer_session_id ELSE r.implementer_session_id END")
+	rows, err := e.DB.QueryContext(ctx, `SELECT DISTINCT r.id FROM phase_attempts a
+	JOIN runs r ON r.id=a.run_id
+	WHERE a.status='running' AND a.step='' AND r.state='ACTIVE'
+	AND a.phase=r.current_phase
+	AND a.round=CASE WHEN a.phase='implement' THEN 0 ELSE r.review_round END
+	AND `+identity+`=''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // PrepareImplement establishes identity and a required process journal before
@@ -77,7 +116,7 @@ func (e Executor) PrepareImplement(ctx context.Context, root string, run workflo
 // Prepare establishes the role identity and process journal shared by coding phases.
 func (e Executor) Prepare(ctx context.Context, root string, run workflow.Run, kind workflow.Phase, role config.Role, number int) (harness.PhaseContext, Attempt, error) {
 	var phase harness.PhaseContext
-	round := attemptRound(run, kind)
+	round := AttemptRound(run, kind)
 	var previous Attempt
 	var sessionID, agent string
 	if err := e.DB.QueryRowContext(ctx, "SELECT COALESCE("+kind.Role()+"_session_id,''),COALESCE("+kind.Role()+"_agent,'') FROM runs WHERE id=?", run.ID).Scan(&sessionID, &agent); err != nil {
@@ -127,15 +166,15 @@ func (e Executor) Prepare(ctx context.Context, root string, run workflow.Run, ki
 // LaunchImplement commits all executable intent before invoking the runner.
 // An ambiguous launch remains running and is observed through its saved ref.
 // A returned attempt with an error denotes a definite, durably failed startup.
-func (e Executor) LaunchImplement(ctx context.Context, run workflow.Run, role config.Role, permissions Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string) (Attempt, error) {
+func (e Executor) LaunchImplement(ctx context.Context, run workflow.Run, role config.Role, permissions harness.Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string) (Attempt, error) {
 	return e.Launch(ctx, run, role, permissions, phase, previous, req, input, checkID, nil, nil)
 }
 
 // Launch commits phase facts alongside executable intent, probe binding, recovery
 // reservation and the launch event. Common event fields come from launch intent;
 // payload adds only phase-specific facts. The hook must only write through this transaction.
-func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role, permissions Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string, facts func(*sql.Tx, Attempt) error, payload map[string]any) (Attempt, error) {
-	round := attemptRound(run, phase.Phase)
+func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role, permissions harness.Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string, facts func(*sql.Tx, Attempt) error, payload map[string]any) (Attempt, error) {
+	round := AttemptRound(run, phase.Phase)
 	if req.RunID != run.ID || req.Phase != string(phase.Phase) || req.Round != round || req.PhaseDir != phase.PhaseDir || req.Attempt < 1 || filepath.Base(phase.PhaseDir) != fmt.Sprintf("%s-%d-%d", phase.Phase, round, req.Attempt) {
 		return Attempt{}, &fault.Error{Code: "phase.invalid_request", Message: "Launch request does not match the prepared phase attempt"}
 	}
@@ -203,19 +242,36 @@ func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role
 	return a, err
 }
 
-// attemptRound keeps preparation, launch validation and recovery reservation on
-// the same round: implementation uses zero; review and fix use the review round.
-func attemptRound(run workflow.Run, phase workflow.Phase) int {
+// AttemptRound keeps preparation, launch validation, recovery reservation and
+// retry accounting on the same round: implementation uses zero; review and fix
+// use the review round.
+func AttemptRound(run workflow.Run, phase workflow.Phase) int {
 	if phase == workflow.Implement {
 		return 0
 	}
 	return run.ReviewRound
 }
 
+// InvalidDiscovery reports whether a failure invalidates the session discovered
+// for one attempt: its identity or result cannot be trusted, so the owned
+// process must be stopped and the attempt failed.
+func InvalidDiscovery(err error) bool {
+	var coded *fault.Error
+	if !errors.As(err, &coded) {
+		return false
+	}
+	switch coded.Code {
+	case "phase.result_invalid", "harness.session_identity_invalid", "harness.session_resume_failed":
+		return true
+	default:
+		return false
+	}
+}
+
 // ReserveRecovery belongs to the replacement's launch transaction. A crash
 // after commit leaves one deterministic identity to observe, never replay.
 func ReserveRecovery(ctx context.Context, tx *sql.Tx, run workflow.Run, phase workflow.Phase, previous Attempt, replacement, session string) (events.Draft, error) {
-	round := attemptRound(run, phase)
+	round := AttemptRound(run, phase)
 	role := phase.Role()
 	_, err := tx.ExecContext(ctx, `INSERT INTO session_recoveries(run_id,phase,role,round,failed_attempt_id,replacement_attempt_id,previous_session_id) VALUES (?,?,?,?,?,?,?)`, run.ID, phase, role, round, previous.ID, replacement, previous.SessionID)
 	return events.Draft{RunID: run.ID, Type: "harness.session_resume_failed", Payload: map[string]any{"agent": previous.Agent, "phase": phase, "role": role, "round": round, "attempt": previous.Number, "replacement_attempt": previous.Number + 1, "previous_session_id": previous.SessionID, "session_id": session, "error": previous.Failure, "warning": "Saved conversation is missing; continuing once in a fresh session"}}, err
@@ -309,8 +365,7 @@ func (e Executor) ObserveProcess(ctx context.Context, runID string, phase workfl
 	}
 	o.Failure = e.Discover(ctx, runID, phase, a)
 	if o.Failure != nil {
-		var coded *fault.Error
-		if !errors.As(o.Failure, &coded) || (coded.Code != "phase.result_invalid" && coded.Code != "harness.session_identity_invalid" && coded.Code != "harness.session_resume_failed") {
+		if !InvalidDiscovery(o.Failure) {
 			return o, o.Failure
 		}
 		if o.Status.State == runner.SessionRunning {
@@ -340,11 +395,32 @@ func (e Executor) ReadArtifacts(ctx context.Context, a Attempt, o Observation) O
 	if o.Failure == nil {
 		o.Artifacts.Stderr, o.Failure = e.Runner.ReadFile(ctx, filepath.Join(a.Ref.PhaseDir, "stderr.log"))
 	}
-	if o.Failure == nil && a.Agent == "codex" {
-		o.Artifacts.LastMessage, o.Failure = e.Runner.ReadFile(ctx, filepath.Join(a.Ref.PhaseDir, "last-message.json"))
-		if errors.Is(o.Failure, os.ErrNotExist) {
-			o.Failure = nil
-		}
+	// An attempt always has an adapter; a missing one reports no artifacts,
+	// which ParseResult treats like any other unavailable capture.
+	adapter, known := e.Harnesses[a.Agent]
+	if o.Failure != nil || !known {
+		return o
 	}
+	o.Artifacts.Files, o.Failure = e.readResultArtifacts(ctx, a, adapter.ResultArtifacts())
 	return o
+}
+
+// readResultArtifacts captures the files the adapter reported, keyed by the
+// reported name. A missing file is left for ParseResult to judge.
+func (e Executor) readResultArtifacts(ctx context.Context, a Attempt, names []string) (map[string][]byte, error) {
+	var files map[string][]byte
+	for _, name := range names {
+		data, err := e.Runner.ReadFile(ctx, filepath.Join(a.Ref.PhaseDir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if files == nil {
+			files = make(map[string][]byte, len(names))
+		}
+		files[name] = data
+	}
+	return files, nil
 }

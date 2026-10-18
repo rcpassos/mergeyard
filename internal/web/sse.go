@@ -40,7 +40,10 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	emit := func(event events.Event) error {
-		if event.ID <= cursor {
+		// Transient notifications carry no ID and replay no cursor: they are
+		// live-only, so they are emitted wherever they arrive and never stamp
+		// an id frame the browser could send back on reconnect.
+		if event.ID > 0 && event.ID <= cursor {
 			return nil
 		}
 		data, err := json.Marshal(event)
@@ -55,6 +58,9 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				name = "message"
 				break
 			}
+		}
+		if event.ID <= 0 {
+			return write(fmt.Sprintf("event: %s\ndata: %s\n\n", name, data))
 		}
 		if err := write(fmt.Sprintf("id: %d\nevent: %s\ndata: %s\n\n", event.ID, name, data)); err != nil {
 			return err

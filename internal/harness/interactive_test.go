@@ -9,7 +9,7 @@ import (
 )
 
 func TestInteractiveResumeSharesIdentityValidation(t *testing.T) {
-	adapters := harness.Adapters(config.Agents{Claude: config.Claude{Executable: "claude"}, Codex: config.Codex{Executable: "codex"}})
+	adapters := harness.Adapters(config.Config{Agents: config.Agents{Claude: config.Claude{Executable: "claude"}, Codex: config.Codex{Executable: "codex"}}})
 	worktree := t.TempDir()
 	command, err := harness.InteractiveResume(adapters, "claude", sessionID, worktree)
 	if err != nil || command.Executable != "claude" || command.Dir != worktree || !strings.Contains(strings.Join(command.Args, " "), sessionID) {

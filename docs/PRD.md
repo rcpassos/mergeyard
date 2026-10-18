@@ -358,7 +358,11 @@ Blocked issues appear in the dashboard but do not create a run until they become
 
 ### Polling
 
-Default polling interval: `30s`. Only one scheduler reconciliation tick may run at a time.
+Default polling interval: `30s`. Only one scheduler reconciliation tick may run at a time. Waiting for that gate honors cancellation, so a shutdown or a dashboard action like Check availability is never blocked indefinitely by a stalled tick.
+
+### Bounded external calls
+
+Every `gh` and `git` invocation on the scheduler path carries a deadline suited to the operation; push, fetch and repository hooks get the longest budget. A run that reaches a deadline fails with a stable code (`git.timeout`, `github.timeout`) and follows the ordinary retry and attention paths, and the next tick proceeds. Git never prompts: HTTPS credentials and SSH both fail instead of waiting for terminal input, and SSH detects dead connections, unless the machine already selects its own transport through `GIT_SSH`, `GIT_SSH_COMMAND`, or `core.sshCommand`. ADR 0003 records why each invocation is bounded separately and why a timeout is a failure rather than cancellation. See section 16.
 
 ### Concurrency limits
 
@@ -482,10 +486,19 @@ type HarnessAdapter interface {
     Type() string
     Capabilities() HarnessCapabilities
     ValidateConfig(role RoleConfig) error
-    BuildInvocation(ctx PhaseContext, role RoleConfig) (Invocation, error)
+    BuildInvocation(ctx PhaseContext, role RoleConfig) (PhaseInvocation, error)
+    ResultArtifacts() []string
     ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseResult, error)
 }
 ```
+
+`BuildInvocation` returns the command together with the adapter's effective
+permissions for it; Mergeyard records that same report with the attempt, so the
+audit record cannot drift from the command that ran. `ResultArtifacts` names the
+adapter-owned files that completed execution must capture, so shared code reads
+a reported name instead of branching on the harness. One harness registry lists
+the supported harnesses for configuration validation, the doctor, the
+scheduler's adapters and the CLI.
 
 ```text
 Phase (implement / review / fix)
@@ -969,6 +982,10 @@ Default commit message: `mergeyard: #<issue> <issue title>`. The commit uses the
 
 Mergeyard never force-pushes. If the remote branch diverges unexpectedly, the run moves to `NEEDS_ATTENTION`.
 
+Every managed Git operation has a deadline: `2m` for quick local reads of refs, the index, or single paths, and `10m` for operations that may run repository hooks or touch the whole worktree, and for operations that contact the remote. A caller-supplied deadline always wins, including while waiting for another managed operation, and a command that reaches its deadline ends the whole owned process group, so a repository hook or transport helper that keeps output pipes open cannot extend the call. Deadline and cancellation failures use `git.timeout` and `git.canceled`, and the run continues through the normal retry and attention paths.
+
+Git runs unattended. Terminal prompts are disabled; SSH uses `BatchMode=yes` with connect timeout and keepalive options so a missing credential or dead connection fails instead of hanging, for both managed operations and `doctor` probes. A `GIT_SSH`, `GIT_SSH_COMMAND`, or a `core.sshCommand` the configuration resolves for the command's repository (including repository-scoped conditional includes) is the machine's own transport choice and is preserved.
+
 ---
 
 ## 17. Pull Request Contract
@@ -991,7 +1008,7 @@ Default body:
 - a collapsed `<details>` block with the latest implement/fix command verification evidence;
 - a Mergeyard-generated footer with the run ID.
 
-Mergeyard updates its generated section without overwriting user-written content. Each valid implement/fix report replaces the evidence in that section, including blocked/failed reports when a PR exists. An empty verification array displays "no verification reported". Evidence is rendered as literal JSON, escaping HTML, backticks, ownership markers, and mentions, so reported commands and excerpts cannot break the section or trigger mentions. The saved completion event is the publication intent; a receipt records delivery. Failed writes retry from the latest report after restart, reading the current PR body every time and preserving human edits. Body publication serves never-attempted and least-recently-attempted evidence first, recording attempt order durably before each network call so one slow PR cannot monopolize retries across ticks or restarts. It shares a five-second network budget across each batch; warnings and receipts are saved with the caller context so a timed-out write remains retryable. Body publication is independent of `pr_comments`, and failures leave saved evidence available without stopping phase progression. If more than one open PR exists for the branch, the run moves to `NEEDS_ATTENTION`.
+Mergeyard updates its generated section without overwriting user-written content. Each valid implement/fix report replaces the evidence in that section, including blocked/failed reports when a PR exists. An empty verification array displays "no verification reported". Evidence is rendered as literal JSON, escaping HTML, backticks, ownership markers, and mentions, so reported commands and excerpts cannot break the section or trigger mentions. The report saved on the phase attempt is the publication intent, and its eligibility is fixed when it is saved: a later lifecycle rejection of the same attempt never withdraws it. A receipt records delivery. Failed writes retry from the latest report after restart, reading the current PR body every time and preserving human edits. Body publication serves never-attempted and least-recently-attempted evidence first, recording each attempt in one bounded bookkeeping row per run before the network call so one slow PR cannot monopolize retries across ticks or restarts. Failed attempts add no event rows: the stream keeps only the completion event, the once-per-source-and-code warning, and the receipt. A finished run stops retrying only when retrying cannot resolve the failure (a closed or inaccessible PR, invalid input, unsupported writes, or an ambiguous match); transport errors, rate limits, invalid responses, shared-budget expiry, and an interrupted attempt stay retryable after restart. Saved evidence and the warning stay visible either way. It shares a five-second network budget across each batch; warnings and receipts are saved with the caller context so a timed-out write remains retryable. Body publication is independent of `pr_comments`, and failures leave saved evidence available without stopping phase progression. If more than one open PR exists for the branch, the run moves to `NEEDS_ATTENTION`.
 
 ---
 
@@ -1348,7 +1365,7 @@ ci.updated
 
 `scheduler.*` and `harness.*` events are application-wide and have no run ID; `harness.usage_limited` and `harness.available` are emitted once per harness limit, not once per waiting run. Run transitions use `run.*`, `phase.*`, `pr.*`, `review.*`, `fix.*`, and `ci.*` events.
 
-Each event is written to SQLite, the structured application log, and the browser via SSE.
+Each event is written to SQLite, the structured application log, and the browser via SSE. UI-only discovery notifications (`queue.updated`, `diagnostics.updated`) are live-only: they reach the browser over SSE without being saved, so notification traffic cannot grow the table.
 
 Full phase output is written to the phase directory, `~/.mergeyard/runs/<run-id>/phases/<phase>-<round>-<attempt>/`, as `events.jsonl` (harness event stream) and `stderr.log`. The dashboard shows a bounded, human-readable tail rendered from the event stream.
 
@@ -1759,6 +1776,8 @@ git.base_verification_failed
 git.no_changes
 git.branch_conflict
 git.push_rejected
+git.timeout
+github.timeout
 harness.not_logged_in
 harness.version_unsupported
 harness.session_resume_failed
@@ -1783,6 +1802,7 @@ Every `NEEDS_ATTENTION`/`FAILED` run exposes a human-readable message and a stab
 Mergeyard must enforce:
 
 - no unbounded loops: review rounds, phase attempts, check retries, and usage-limit waits are bounded;
+- no unbounded external command: every `gh` and `git` call on the scheduler path has a deadline;
 - no push or review of a committed head before its configured local checks pass;
 - no duplicate active run for one repository + issue;
 - no shared agent session between implementer and reviewer;

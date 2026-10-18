@@ -2,8 +2,12 @@ package scheduler
 
 import (
 	"context"
-	"sort"
+	"errors"
+	"strings"
+	"time"
 
+	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 )
 
@@ -16,25 +20,125 @@ type QueueIssue struct {
 	RefusalReason string
 }
 
+// blockerEntry is the open blockers shown for one queue issue, keyed by the
+// listing snapshot and open-blocker count they were read for. Only an
+// unchanged snapshot makes another dependency read safe to skip; a changed
+// issue or count refreshes it. A same-count replacement of a blocker stays
+// cached until the issue changes, because the listing exposes no finer signal.
+type blockerEntry struct {
+	updatedAt time.Time
+	blockedBy int
+	blockers  []github.Issue
+}
+
+// A missing dependency summary cannot prove the issue is unblocked.
+const blockedByUnknown = -1
+
+// queueBlockers returns the open blockers shown for one ready issue. A listing
+// snapshot that reports no open blockers needs no dependency read, and only a
+// changed snapshot or count spends one again. The returned slice is shared and
+// must not be modified.
+func (s *Scheduler) queueBlockers(ctx context.Context, repo config.Repository, issue github.Issue) ([]github.Issue, error) {
+	blockedBy := blockedByUnknown
+	if issue.Dependencies != nil {
+		blockedBy = issue.Dependencies.BlockedBy
+	}
+	key := issueKey(repo.Repo, issue.Number)
+	if entry, ok := s.blockers.get(key); ok && entry.updatedAt.Equal(issue.UpdatedAt) && entry.blockedBy == blockedBy {
+		return entry.blockers, nil
+	}
+	var blockers []github.Issue
+	if blockedBy != 0 {
+		var err error
+		blockers, err = s.deps.GitHub.UnresolvedBlockers(ctx, repo.Repo, issue.Number)
+		if err != nil {
+			return nil, err
+		}
+	}
+	s.blockers.put(key, blockerEntry{updatedAt: issue.UpdatedAt, blockedBy: blockedBy, blockers: blockers})
+	return blockers, nil
+}
+
+// withRefusedIssues adds refused issues that no longer carry a Mergeyard label,
+// so the dashboard keeps showing them and their reason until a trusted
+// maintainer relabels them. Only refusals missing from the listing are read
+// back. Refusals whose issue is closed or deleted are forgotten, so a stale row
+// cannot be re-read on every refresh forever; the read-back stays bounded by
+// the refusals that can still be shown.
+func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repository, listed []github.Issue) ([]github.Issue, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT issue_number FROM issue_refusals WHERE repository=? ORDER BY issue_number", strings.ToLower(repo.Repo))
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[int]bool, len(listed))
+	for _, issue := range listed {
+		seen[issue.Number] = true
+	}
+	var missing []int
+	for rows.Next() {
+		var number int
+		if err := rows.Scan(&number); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !seen[number] {
+			missing = append(missing, number)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	issues := append([]github.Issue(nil), listed...)
+	for _, number := range missing {
+		issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, number)
+		var coded *fault.Error
+		if errors.As(err, &coded) && coded.Code == "github.not_found" {
+			// The issue is gone: no label can be removed and nothing can be
+			// shown, so drop the row instead of re-reading it forever.
+			if err := s.forgetRefusal(ctx, repo.Repo, number); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if issue.State != github.Open {
+			// The dashboard cannot show closed issues. A settled row would be
+			// re-read on every refresh forever; a pending one stays for
+			// reconciliation to finish its label removal.
+			if err := s.forgetSettledRefusal(ctx, repo.Repo, number); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		issues = append(issues, issue)
+	}
+	return issues, nil
+}
+
 // Queue discovers issues without claiming them, even when paused or at capacity.
-// A dependency failure is returned rather than misrepresenting an issue as ready.
+// It reads the poll's shared label-filtered listing, keeps refused issues
+// visible without their ready label, and reuses blocker reads while an issue is
+// unchanged. A dependency failure is returned rather than misrepresenting an
+// issue as ready.
 func (s *Scheduler) Queue(ctx context.Context) ([]QueueIssue, error) {
 	var queue []QueueIssue
 	for _, repo := range s.cfg.Repositories {
 		if !repo.Enabled {
 			continue
 		}
-		issues, err := s.deps.GitHub.ListOpenIssues(ctx, repo.Repo)
+		issues, err := s.listIssues(ctx, repo)
 		if err != nil {
 			return nil, err
 		}
-		issues = append([]github.Issue(nil), issues...)
-		sort.Slice(issues, func(i, j int) bool {
-			if issues[i].CreatedAt.Equal(issues[j].CreatedAt) {
-				return issues[i].Number < issues[j].Number
-			}
-			return issues[i].CreatedAt.Before(issues[j].CreatedAt)
-		})
+		issues, err = s.withRefusedIssues(ctx, repo, issues)
+		if err != nil {
+			return nil, err
+		}
+		issues = orderedIssues(issues)
 		for _, issue := range issues {
 			if issue.State != github.Open {
 				continue
@@ -49,7 +153,7 @@ func (s *Scheduler) Queue(ctx context.Context) ([]QueueIssue, error) {
 			}
 			item := QueueIssue{Repository: repo.Repo, Issue: issue, Attention: attention, RefusalReason: reason}
 			if !attention {
-				item.Blockers, err = s.deps.GitHub.UnresolvedBlockers(ctx, repo.Repo, issue.Number)
+				item.Blockers, err = s.queueBlockers(ctx, repo, issue)
 				if err != nil {
 					return nil, err
 				}

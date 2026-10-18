@@ -248,7 +248,7 @@ func (s *Scheduler) resumeHandback(ctx context.Context, repo config.Repository, 
 				v.GrantedRound = v.Round
 			}
 		} else if a, err := s.lastAttempt(ctx, run.ID); err == nil {
-			v.AttemptFrom = a.number + 1
+			v.AttemptFrom = a.Number + 1
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}

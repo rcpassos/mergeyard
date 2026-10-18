@@ -11,6 +11,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/pathspec"
 	"github.com/rcpassos/mergeyard/internal/repository"
 	"github.com/rcpassos/mergeyard/internal/workspace"
@@ -112,7 +113,7 @@ type Repository struct {
 type Error = fault.Error
 
 func defaults() Config {
-	role := Role{Agent: "claude", Skills: []string{}, MaxAttempts: 1}
+	role := Role{Agent: registry.Claude, Skills: []string{}, MaxAttempts: 1}
 	return Config{
 		Escalation: escalation.Defaults(),
 		Version:    1, Port: 7331, OpenBrowser: true, Workspace: workspace.DefaultPath,
@@ -121,8 +122,8 @@ func defaults() Config {
 		Labels:          Labels{Ready: "ready-for-agent", Running: "agent-running", NeedsAttention: "agent-needs-attention"},
 		TrustedLabelers: []string{},
 		Agents: Agents{
-			Claude: Claude{Executable: "claude", PermissionMode: "bypassPermissions", AllowedTools: []string{}},
-			Codex:  Codex{Executable: "codex", Sandbox: "workspace-write", NetworkAccess: true},
+			Claude: Claude{Executable: registry.Claude, PermissionMode: "bypassPermissions", AllowedTools: []string{}},
+			Codex:  Codex{Executable: registry.Codex, Sandbox: "workspace-write", NetworkAccess: true},
 		},
 		Implementer: role, Reviewer: role, MaxRounds: 5, PRComments: true,
 		UsageLimits: UsageLimits{Cooldown: 30 * time.Minute, MaxWaits: 3},
@@ -180,12 +181,12 @@ func Parse(data []byte) (Config, *Document, error) {
 	readTrustedLabelers(m, &cfg.TrustedLabelers)
 	readEscalation(m.child("escalation"), &cfg.Escalation)
 	agents := m.child("agents")
-	claude := agents.child("claude")
+	claude := agents.child(registry.Claude)
 	claude.read("executable", &cfg.Agents.Claude.Executable)
 	claude.readEnum("permission_mode", &cfg.Agents.Claude.PermissionMode, "config.invalid_permission_mode", "auto", "acceptEdits", "bypassPermissions")
 	claude.read("allowed_tools", &cfg.Agents.Claude.AllowedTools)
 	claude.finish()
-	codex := agents.child("codex")
+	codex := agents.child(registry.Codex)
 	codex.read("executable", &cfg.Agents.Codex.Executable)
 	codex.readEnum("sandbox", &cfg.Agents.Codex.Sandbox, "config.invalid_sandbox", "workspace-write", "danger-full-access")
 	codex.read("network_access", &cfg.Agents.Codex.NetworkAccess)
@@ -316,7 +317,7 @@ func readTrustedLabelers(m mapping, target *[]string) {
 }
 
 func readRole(m mapping, r *Role) {
-	m.readEnum("agent", &r.Agent, "config.invalid_agent", "claude", "codex")
+	m.readEnum("agent", &r.Agent, "config.invalid_agent", registry.Names()...)
 	m.readNullableString("model", &r.Model)
 	m.readNullableString("effort", &r.Effort)
 	m.read("skills", &r.Skills)

@@ -8,8 +8,11 @@ import (
 // InspectRetry observes ownership, edits, and the published branch without
 // resetting, cleaning, committing, or switching the user's worktree.
 func (m *Manager) InspectRetry(ctx context.Context, run Run, target string, allowEdits bool) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	if err := m.inspectReview(ctx, run); err != nil {
 		return "", err
 	}

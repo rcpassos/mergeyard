@@ -5,6 +5,47 @@ locked `workspace.Workspace`; the manager serializes Git operations. It invokes
 the installed Git executable directly, inherits the machine's Git identity and
 credentials, honors transport URL rewrites, and disables terminal prompts.
 
+## Deadlines and non-interactive transport
+
+Every managed operation carries a deadline. Quick local reads of refs, the
+index, or single paths get `Timeouts.Metadata` (`2m`). Operations that may run
+repository hooks, stage or restore the worktree, or create and remove one get
+`Timeouts.Worktree` (`10m`). Operations that contact the configured remote get
+`Timeouts.Remote` (`10m`). `New` uses those defaults; `NewWithTimeouts` selects
+shorter or longer ones. A caller-supplied deadline always wins, including while
+waiting for another managed operation to finish, so the scheduler's
+five-second publication and cleanup budgets stay authoritative.
+
+An operation that commits and publishes keeps a budget per phase: `Worktree`
+for the commit and its hooks, `Remote` for the push and its remote reads, and
+an outer bound that covers both, so a slow hook cannot consume the push's
+deadline and a stalled push cannot run longer than `Remote`. `CommitAndPush`,
+`CommitFix`, and `CommitHandback` behave this way; the checks path calls
+`CommitImplement` and `PushImplement`, which each bound one phase.
+
+A command that reaches its deadline is killed with its owned process group, and
+the call returns once its output pipes are drained, so a repository hook or
+transport helper that outlives Git cannot extend the operation; a command that
+exited successfully still reports its own exit status. Deadlines are coded
+failures: `git.timeout` names the stalled operation (for example
+`push timed out`) or the serialized wait, with the deadline as its cause. An
+explicitly cancelled context still reports `git.canceled`. Both flow through
+the scheduler's ordinary retry and attention paths, and the next tick proceeds.
+
+Git never prompts from an unattended control plane. `GIT_TERMINAL_PROMPT=0` is
+always set, `LC_ALL=C` keeps diagnostics stable, and SSH defaults to
+`ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4`,
+so a missing credential or a dead connection fails instead of hanging. A
+`GIT_SSH` or `GIT_SSH_COMMAND` already present in the environment, or a
+`core.sshCommand` the machine's configuration resolves for the command's
+repository, is the machine's own transport choice and is preserved. That
+includes repository-scoped conditional includes such as `gitdir:` and
+`hasconfig:remote.*.url:`, because the probe runs in the directory the command
+runs in. Results are cached per directory and configuration source, and an edit
+to a configuration file is picked up on restart. A first clone probes the
+workspace: its repository does not exist yet, exactly as it does not for any
+other `git clone`.
+
 ## Preparing a run
 
 `Manager.Prepare` accepts a repository (`owner/repo`), issue number, and run ID.
@@ -75,7 +116,8 @@ ownership, publication and absence of other dirty work.
 Errors use `fault.Error`, retaining a stable `git.*` code, filesystem path, and
 wrapped cause. Key codes include `git.invalid_input`, `git.base_checkout`,
 `git.origin_mismatch`, `git.dirty_base`, `git.base_branch`, `git.branch_conflict`,
-`git.worktree_mismatch`, `git.no_changes`, `git.push_rejected`, and `git.canceled`.
+`git.worktree_mismatch`, `git.no_changes`, `git.push_rejected`, `git.timeout`,
+and `git.canceled`.
 Operation failures retain codes such as `git.clone`, `git.fetch`, `git.worktree`,
 `git.stage`, `git.commit`, and `git.cleanup`.
 

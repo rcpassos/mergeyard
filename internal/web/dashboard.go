@@ -82,7 +82,8 @@ func NewDashboard(bus *events.Bus, control Scheduler, options DashboardOptions) 
 }
 
 // RunUpdates refreshes GitHub discovery while paused or at capacity and emits
-// SSE notifications. The caller must cancel and join this before closing storage.
+// transient SSE notifications, which are live-only and never persisted. The
+// caller must cancel and join this before closing storage.
 func (s *Server) RunUpdates(ctx context.Context) {
 	if s.dashboard == nil {
 		return
@@ -101,7 +102,7 @@ func (s *Server) RunUpdates(ctx context.Context) {
 			d.mu.Lock()
 			d.diagnostics = result.String()
 			d.mu.Unlock()
-			s.bus.Publish(ctx, events.Draft{Type: "diagnostics.updated", Payload: struct{}{}})
+			s.bus.Notify(ctx, events.Draft{Type: "diagnostics.updated", Payload: struct{}{}})
 		}()
 	}
 	defer checks.Wait()
@@ -133,7 +134,7 @@ func (s *Server) RunUpdates(ctx context.Context) {
 		if err != nil {
 			logDashboardError(ctx, "queue discovery", err)
 		}
-		s.bus.Publish(ctx, events.Draft{Type: "queue.updated", Payload: struct{}{}})
+		s.bus.Notify(ctx, events.Draft{Type: "queue.updated", Payload: struct{}{}})
 		select {
 		case <-ctx.Done():
 			return

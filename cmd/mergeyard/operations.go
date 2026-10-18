@@ -18,6 +18,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/harness"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 	"github.com/rcpassos/mergeyard/internal/web"
@@ -35,7 +36,7 @@ const maxRuntimeResponse = 64 << 20
 type runtimeClient struct {
 	base, token, root string
 	secret            []byte
-	agents            config.Agents
+	harnesses         map[string]harness.HarnessAdapter
 	http              *http.Client
 }
 
@@ -54,7 +55,7 @@ func connect(ctx context.Context, path string) (*runtimeClient, web.Status, erro
 	if err != nil {
 		return nil, web.Status{}, err
 	}
-	client := &runtimeClient{base: fmt.Sprintf("http://127.0.0.1:%d", cfg.Port), root: root, secret: secret, agents: cfg.Agents, http: &http.Client{
+	client := &runtimeClient{base: fmt.Sprintf("http://127.0.0.1:%d", cfg.Port), root: root, secret: secret, harnesses: harness.Adapters(cfg), http: &http.Client{
 		Timeout:       30 * time.Second,
 		Transport:     &http.Transport{Proxy: nil},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
@@ -120,8 +121,8 @@ func (c *runtimeClient) request(ctx context.Context, method, path string, result
 }
 
 func operate(ctx context.Context, path, action string, args []string, stdout, stderr io.Writer) error {
-	if action == "harness check" && args[0] != "claude" && args[0] != "codex" {
-		return fmt.Errorf("harness check requires claude or codex")
+	if action == "harness check" && !registry.Known(args[0]) {
+		return fmt.Errorf("harness check requires %s", strings.Join(registry.Names(), " or "))
 	}
 	client, status, err := connect(ctx, path)
 	if err != nil {
@@ -391,7 +392,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			if prepared.ID != args[0] {
 				return runner.ExecRequest{}, &fault.Error{Code: "runtime.mismatch", Message: "The runtime answered for a different run; stop it, start Mergeyard with this configuration, and retry"}
 			}
-			command, err := localInteractiveCommand(client.agents, client.root, prepared)
+			command, err := localInteractiveCommand(client.harnesses, client.root, prepared)
 			if err != nil {
 				return runner.ExecRequest{}, err
 			}
@@ -428,7 +429,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 // localInteractiveCommand rebuilds the exact interactive resume from the run's
 // stored role settings and the managed workspace layout. It never accepts an
 // executable, argument vector or directory from the runtime's reply.
-func localInteractiveCommand(agents config.Agents, root string, run workflow.Run) (harness.InteractiveCommand, error) {
+func localInteractiveCommand(adapters map[string]harness.HarnessAdapter, root string, run workflow.Run) (harness.InteractiveCommand, error) {
 	agent, session := run.TakeoverResume()
 	worktree, err := managedgit.WorktreePath(root, run.Repository, run.ID)
 	if err != nil {
@@ -437,7 +438,7 @@ func localInteractiveCommand(agents config.Agents, root string, run workflow.Run
 	if info, err := os.Stat(worktree); err != nil || !info.IsDir() {
 		return harness.InteractiveCommand{}, &fault.Error{Code: "takeover.worktree_missing", Path: worktree, Message: "Wait for Mergeyard to prepare this run's worktree before takeover", Err: err}
 	}
-	return harness.InteractiveResume(harness.Adapters(agents), agent, session, worktree)
+	return harness.InteractiveResume(adapters, agent, session, worktree)
 }
 
 func printHarnessWait(out io.Writer, v workflow.HarnessWait) {

@@ -12,12 +12,196 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 )
+
+type safeBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
+}
+
+// startupToolScripts pass every dependency, authentication, and repository
+// doctor check so startup reaches reconciliation. Scripts vary only in the
+// GitHub issue listing and the tmux session inventory.
+func startupToolScripts() map[string]string {
+	return map[string]string{
+		"git": `#!/bin/sh
+case "$*" in
+  *"ls-remote --symref"*) printf 'ref: refs/heads/main\tHEAD\n';;
+  *"ls-remote --exit-code --heads"*) printf '0000000000000000000000000000000000000000\trefs/heads/main\n';;
+  *"cat-file"*) printf 'refs/heads/doctor:CLAUDE.md missing\nrefs/heads/doctor:AGENTS.md missing\n';;
+esac
+exit 0
+`,
+		"tmux":   "#!/bin/sh\ncase \"$1\" in\n  -V) exit 0;;\nesac\necho 'no server running' >&2\nexit 1\n",
+		"claude": "#!/bin/sh\ncase \"$1\" in\n  --version) echo '2.1.277 (Claude Code)';;\n  auth) exit 0;;\n  *) exit 1;;\nesac\n",
+	}
+}
+
+func writeStartupTools(t *testing.T, dir string, scripts map[string]string) {
+	t.Helper()
+	for name, script := range scripts {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+// startupConfig selects the explicit workspace and port and keeps the poll
+// interval short enough to observe later ticks during the test.
+func startupConfig(workspace string, port int, disabled bool) string {
+	return fmt.Sprintf("workspace: %q\nport: %d\npoll_interval: 50ms\nopen_browser: false\nagents: {claude: {permission_mode: acceptEdits}}\nrepositories:\n  - repo: owner/repo\n    enabled: %t\n    base_branch: main\n", workspace, port, !disabled)
+}
+
+func TestStartupServesDashboardAndRetriesWhenGitHubIsUnreachable(t *testing.T) {
+	home, tools := t.TempDir(), t.TempDir()
+	workspace, listings := filepath.Join(home, "workspace"), filepath.Join(home, "listings")
+	scripts := startupToolScripts()
+	// Dependency checks pass, but every GitHub read fails. Doctor reports the
+	// repository and authentication checks as unverifiable, and reconcile fails
+	// on the issue listing the way an outage or rate limit does.
+	scripts["gh"] = `#!/bin/sh
+case "$*" in
+  *"auth status"*) echo 'Failed to log in to github.com account octo. The token in keyring is invalid.' >&2; exit 1;;
+  *"rate_limit"*) echo 'Get "https://api.github.com/rate_limit": dial tcp: lookup api.github.com: no such host' >&2; exit 1;;
+  *"repos/owner/repo/issues?state=open&per_page=100&labels="*) printf 'listing\n' >> '` + listings + `'; echo 'API rate limit exceeded (HTTP 429)' >&2; exit 1;;
+  *"repos/owner/repo"*) echo 'error connecting to api.github.com' >&2; exit 1;;
+esac
+exit 0
+`
+	scripts["git"] = `#!/bin/sh
+case "$*" in
+  *"--version") exit 0;;
+esac
+echo "fatal: unable to access 'https://github.com/owner/repo.git/': Could not resolve host: github.com" >&2
+exit 128
+`
+	writeStartupTools(t, tools, scripts)
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", tools)
+	port := freePort(t)
+	path := filepath.Join(home, "config.yaml")
+	// Only reconcile lists issues: the dashboard queue skips disabled
+	// repositories, so every recorded listing belongs to a reconcile.
+	data := startupConfig(workspace, port, true)
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stdout, stderr := &safeBuffer{}, &safeBuffer{}
+	done := make(chan error, 1)
+	go func() { done <- serve(ctx, path, stdout, stderr) }()
+	address := fmt.Sprintf("http://127.0.0.1:%d/", port)
+	client := &http.Client{Timeout: time.Second}
+	defer client.CloseIdleConnections()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		response, err := client.Get(address)
+		if err == nil {
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("dashboard did not serve while GitHub was unreachable: %v, stderr: %s", err, stderr.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if strings.Contains(stderr.String(), "dependency checks failed") || !strings.Contains(stderr.String(), "unverifiable:") {
+		t.Fatalf("unreachable GitHub still failed dependency checks: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "startup reconcile deferred to later ticks") || !strings.Contains(stderr.String(), "github.rate_limited") {
+		t.Fatalf("startup did not report the deferred reconcile: %s", stderr.String())
+	}
+	// The running loop retries the failed reconcile on later ticks. The startup
+	// reconcile wrote the first listing; a later tick must write another.
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		content, _ := os.ReadFile(listings)
+		if strings.Count(string(content), "listing") >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reconcile was not retried on a later tick: %q, stderr: %s", content, stderr.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("shutdown: %v, stderr: %s", err, stderr.String())
+	}
+}
+
+func TestStartupStopsWhenReconcileFailsOnLocalState(t *testing.T) {
+	home, tools := t.TempDir(), t.TempDir()
+	workspace := filepath.Join(home, "workspace")
+	scripts := startupToolScripts()
+	// GitHub answers; the tmux session inventory is local state that dispatch
+	// depends on.
+	scripts["gh"] = `#!/bin/sh
+case "$*" in
+  *"repos/owner/repo/labels?per_page=100"*) printf '%s\n' '[{"name":"ready-for-agent"},{"name":"agent-running"},{"name":"agent-needs-attention"}]';;
+  *"repos/owner/repo/issues?state=open&per_page=100"*) printf '%s\n' '[]';;
+  *"repos/owner/repo"*) printf '%s\n' '{"private":true,"permissions":{"push":true}}';;
+esac
+exit 0
+`
+	scripts["tmux"] = "#!/bin/sh\ncase \"$1\" in\n  -V) exit 0;;\nesac\necho 'tmux: server socket unavailable' >&2\nexit 1\n"
+	writeStartupTools(t, tools, scripts)
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", tools)
+	port := freePort(t)
+	path := filepath.Join(home, "config.yaml")
+	data := startupConfig(workspace, port, false)
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &safeBuffer{}, &safeBuffer{}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := serve(ctx, path, stdout, stderr)
+	if err == nil || !strings.Contains(err.Error(), "reconcile existing runs") || !strings.Contains(err.Error(), "phase.tmux_failed") {
+		t.Fatalf("startup continued on a local reconcile failure: %v, stderr: %s", err, stderr.String())
+	}
+	client := &http.Client{Timeout: time.Second}
+	response, requestErr := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	if requestErr == nil {
+		response.Body.Close()
+		t.Fatal("dashboard served after a local startup reconcile failure")
+	}
+}
 
 func TestStartProcessesLockAndShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

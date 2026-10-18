@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/web"
@@ -183,7 +185,7 @@ func TestReconcileLegacyImplementAndFixSchemas(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				schema = []byte(strings.Replace(string(schema), `"const":4`, `"const":1`, 1))
+				schema = []byte(strings.Replace(string(schema), `"const":`+strconv.Itoa(contract.CurrentVersion), `"const":1`, 1))
 				// Only the const is read on reconciliation; original outputs retain their strict v1 shape.
 				if err := os.WriteFile(filepath.Join(dir, "schema.json"), schema, 0600); err != nil {
 					t.Fatal(err)

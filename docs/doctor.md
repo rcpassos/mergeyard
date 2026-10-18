@@ -78,11 +78,27 @@ uncommitted local files. If fetching fails, dependent checks are reported as
 unverifiable; personal skills can still be checked. Instruction files also
 must resolve to regular files before counting as available.
 
+When GitHub itself cannot be reached (a transport failure, a rate limit, a
+server error, or a command that outlasts its deadline), every check that needs
+it reports unverifiable instead of an error, and checks that depend on the
+unreachable data follow. The GitHub login check is included: it probes the API
+once, because gh reports a connection failure as an invalid token. Start serves
+and reconciles while the service recovers. Failures GitHub answered stay errors:
+an invalid token, missing labels, denied push permission, and unresolvable base
+branches are setup problems.
+
 Doctor never changes labels, creates remote branches, logs in, invokes a model,
 or alters a managed checkout. Temporary probes are removed. Git hooks are
-disabled, shell repository/index overrides are cleared, and existing credential
-helpers and transport URL rewrites remain available. Every external command
-has a 30-second timeout; SIGINT/SIGTERM cancels the checks.
+disabled, shell repository/index overrides are cleared, existing credential
+helpers and transport URL rewrites remain available, and Git never prompts:
+SSH probes use batch mode with keepalive options so a missing credential or a
+dead connection fails instead of hanging, unless the machine chooses its own
+transport through `GIT_SSH`, `GIT_SSH_COMMAND`, or a `core.sshCommand` the
+machine resolves for the probe. Probe repositories are disposable and have no
+remote of their own, so repository-scoped conditional includes cannot apply to
+them; a multi-account setup that relies on those should set `GIT_SSH_COMMAND`
+for the daemon. Every external command has a 30-second timeout;
+SIGINT/SIGTERM cancels the checks.
 
 ## Verification
 

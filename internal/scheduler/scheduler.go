@@ -16,6 +16,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/gate"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/harness"
@@ -30,7 +31,7 @@ type GitHub interface {
 	RecheckIssueTrust(context.Context, string, github.Issue, string, []string) (github.TrustDecision, error)
 	EnsureTrustRefusalComment(context.Context, string, int, string) error
 	EnsureHarnessOverrideComment(context.Context, string, int, string) error
-	ListOpenIssues(context.Context, string) ([]github.Issue, error)
+	ListLabeledIssues(context.Context, string, []string) ([]github.Issue, error)
 	GetIssue(context.Context, string, int) (github.Issue, error)
 	ListIssueComments(context.Context, string, int, []string) (github.IssueComments, error)
 	GetPullRequest(context.Context, string, int) (*github.PullRequest, error)
@@ -75,17 +76,23 @@ type Dependencies struct {
 }
 
 type Scheduler struct {
-	cfg              config.Config
-	db               *sql.DB
-	bus              *events.Bus
-	workflow         *workflow.Workflow
-	workspace        *workspace.Workspace
-	deps             Dependencies
-	harnesses        map[string]harness.HarnessAdapter
-	tick             sync.Mutex
+	cfg       config.Config
+	db        *sql.DB
+	bus       *events.Bus
+	workflow  *workflow.Workflow
+	workspace *workspace.Workspace
+	deps      Dependencies
+	harnesses map[string]harness.HarnessAdapter
+	// tick serializes ticks, lifecycle controls, and dashboard actions. It
+	// honors cancellation, so a stalled tick never blocks a caller that gives
+	// up, disconnects, or shuts down.
+	tick             gate.Gate
 	control          *Control
 	running          atomic.Bool
-	reportedFindings map[string]bool // protected by tick; unchanged findings emit once per scheduler lifetime
+	listingFetch     sync.Mutex               // serializes listing fetches so concurrent readers share one
+	listings         listingCache             // this poll's label-filtered issue snapshot per repository
+	blockers         keyedCache[blockerEntry] // dashboard blocker reads keyed by unchanged issue snapshots
+	reportedFindings map[string]bool          // protected by tick; unchanged findings emit once per scheduler lifetime
 }
 
 // New requires an exclusively owned runtime workspace.
@@ -124,7 +131,7 @@ func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler,
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	adapters := harness.Adapters(cfg.Agents)
+	adapters := harness.Adapters(cfg)
 	for name, adapter := range deps.Harnesses {
 		if adapter == nil || adapter.Type() != name {
 			return nil, &fault.Error{Code: "config.invalid_agent", Message: "Harness override must match its type"}
@@ -215,11 +222,14 @@ func (s *Scheduler) Runs(ctx context.Context) ([]workflow.Run, error) {
 // Tick serializes reconciliation and dispatch. It observes running processes
 // once and returns, so long phases do not block new claims or pause/resume.
 func (s *Scheduler) Tick(ctx context.Context) error {
-	s.tick.Lock()
+	if err := s.tick.Lock(ctx); err != nil {
+		return err
+	}
 	defer s.tick.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.beginPoll()
 	_, err := s.reconcile(ctx)
 	if err != nil {
 		return err
@@ -237,7 +247,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if s.control.Paused() {
 		return errors.Join(failures...)
 	}
-	runs, err := s.Runs(ctx)
+	runs, err := s.tickRuns(ctx)
 	if err != nil {
 		return errors.Join(append(failures, err)...)
 	}
@@ -246,7 +256,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		if !repo.Enabled || capacity.slots >= s.cfg.Concurrency || s.control.Paused() {
 			continue
 		}
-		issues, err := s.deps.GitHub.ListOpenIssues(ctx, repo.Repo)
+		issues, err := s.listIssues(ctx, repo)
 		if err != nil {
 			failures = append(failures, err)
 			continue

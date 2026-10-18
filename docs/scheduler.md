@@ -7,16 +7,39 @@ application startup. Pass `Runtime.Scheduler` as the control to share the
 dashboard's pause/resume gate. `Run(ctx)` polls immediately and then every
 `poll_interval` (default 30 seconds). `Reconcile(ctx)` advances existing runs and
 returns orphan findings without dispatching new work. Every `Tick(ctx)` reconciles
-before dispatch, including the first tick after startup. Ticks serialize, and run operations coordinate with lifecycle controls so takeover
+before dispatch, including the first tick after startup. Ticks serialize through
+a gate that honors cancellation: callers wait only while their context lives, so
+shutdown and dashboard actions are never blocked indefinitely by a stalled tick.
+Run operations coordinate with lifecycle controls so takeover
 or stop waits for an in-flight operation before changing state. Running tmux agents are observed without waiting
 for them to finish. Tick errors are logged by `Run` and tried again at the next
 interval. Cancelling the scheduler leaves agent sessions running.
+
+Every `gh` and `git` call on the scheduler path has a deadline. A publication
+push, fetch, or repository hook gets the longest budget; local reads get the
+shortest, and a commit keeps its own budget while the push keeps the remote one.
+`gh` shares one two-minute budget across a request's retries. A deadline ends
+the owned process group and surfaces as `git.timeout` or `github.timeout`, which
+the existing retry and attention paths handle. Git never prompts: SSH uses batch
+mode with connect timeout and keepalive options unless the machine selects its
+own transport. See [git.md](git.md) for the operation budgets.
 
 `Pause(ctx, true)` prevents new claims; existing implementations continue.
 `Pause(ctx, false)` resumes dispatch. These operations publish scheduler events.
 `Runs(ctx)` returns durable workflow snapshots. Startup calls `Reconcile(ctx)`
 before enabling new claims and reports its findings. The CLI starts this
 scheduler and shares its controls with the dashboard.
+
+Startup treats a reconcile failure as retryable only when the GitHub boundary
+could not answer cleanly: unreachable, rate limited, cancelled, or an unclean
+response. Listing issues, reading or writing labels, comments, or pull requests
+can fail that way without stopping the dashboard; the failure is printed and the
+running loop retries the same reconcile on later ticks. A coded wrapper
+classifies by its cause, so pending handback publication wrapped around a GitHub
+failure is deferred too. Local-state failures (database, workspace, Git
+ownership) and conclusive GitHub answers (missing repository or permission,
+expired login, invalid input) still abort startup. No issue is claimed before a
+reconcile succeeds.
 
 `Stop(ctx, runID)` serializes with phase advancement and first persists stop
 intent. It interrupts running attempts through the runner, preserves the
@@ -35,6 +58,20 @@ dependency. Global and repository limits count all nonterminal runs except
 `READY_TO_MERGE`, including attention, manual and waiting states. Account-wide
 harness gates withhold new claims and phase launches using the limited harness;
 eligible other-harness work and CI observation continue within capacity.
+
+Each poll reads one listing per repository, filtered server-side to that
+repository's ready, running and needs-attention labels. GitHub ANDs the labels of
+one request, so the adapter reads one query per label and merges the pages by
+issue number; the listing never pages through every open issue and PR.
+Reconcile and dispatch share the poll's snapshot and the dashboard queue reuses
+it, so a repository is listed once per poll instead of once per reader; an
+explicit `Plan` read starts its own poll. Concurrent readers share one fetch per
+repository instead of racing duplicates, and a fetch that began before a new
+poll cannot replace that poll's listing. A snapshot stays reusable for two poll
+intervals: one covers the scheduler's own refresh and the second absorbs timer
+skew between the scheduler and the dashboard. A reader outside a scheduler poll
+(the dashboard without a running scheduler) refreshes its own listing once the
+window expires. Readers never mutate the shared snapshot.
 
 `Plan(ctx, repository)` uses the same read-only candidate inspection and pure
 capacity/label eligibility policy as `Tick`. It reserves prospective slots in
@@ -165,7 +202,9 @@ at capacity. Running labels are never silently reset on orphaned issues. Worktre
 directories, registered worktree metadata, and managed tmux sessions without
 persisted ownership are reported and preserved. Terminal runs' retained artifacts
 remain owned. Startup uses the same boundary before serving the dashboard and
-running the scheduler.
+running the scheduler; its retryable GitHub failures are reported and left for
+later ticks, while local-state failures and conclusive GitHub answers still
+refuse to start.
 
 ## Tests
 
@@ -176,8 +215,11 @@ prevention after restart. They require `git` and `tmux` but no agent credentials
 Reconciliation tests kill a real control-plane subprocess during implement,
 recover agents still running or finished offline, and verify one attempt, commit,
 and PR. They also cover orphan reporting and preservation, unrecoverable claims,
-and missing owned worktrees. CLI tests use fake GitHub/tmux commands to verify
-configuration selection, reporting, and workspace lock release.
+and missing owned worktrees, and that a deferred GitHub failure still gates
+claims until a reconcile succeeds. CLI tests use fake GitHub/tmux commands to
+verify configuration selection, reporting, and workspace lock release, and that
+startup defers a retryable GitHub reconcile failure to later ticks while a
+local-state failure refuses to start.
 
 The live test is opt-in and uses only the issue explicitly provided. Prepare a
 dedicated `owner/mergeyard-integration-test` repository with an initial commit,
@@ -201,7 +243,15 @@ manual removal of these test artifacts.
 ## Dashboard discovery and Stop
 
 `Queue(ctx)` reads ready/blocked/attention issues from enabled repositories in
-configuration and issue creation order. It does not mutate labels or claim runs,
+configuration and issue creation order, from the scheduler's shared poll listing.
+An issue refused earlier no longer carries a Mergeyard label, so it is read back
+individually and stays visible with its reason until a trusted maintainer
+relabels it; refusals whose issue is closed or deleted are forgotten, so a stale
+row is never re-read. Open blockers are reused while the issue's snapshot and
+open-blocker count are unchanged, and a listing summary that reports no open
+blockers needs no dependency read at all; a missing summary falls back to
+reading, so an unknown status is never shown as ready. `Queue(ctx)` does not
+mutate labels or claim runs,
 and works independently of pause and concurrency. Dependency lookup failures
 return an error rather than reporting an issue as unblocked.
 

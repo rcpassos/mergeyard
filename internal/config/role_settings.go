@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 )
 
 // RoleSettings is the claim-time selection, independent of later configuration.
@@ -37,9 +39,10 @@ func ResolveRoleSettings(repo Repository, labels []string) (*RunRoleSettings, er
 func resolveRole(name string, configured Role, labels []string) (RoleSettings, error) {
 	settings := RoleSettings{Agent: configured.Agent, Model: configured.Model, Effort: configured.Effort, Skills: append([]string{}, configured.Skills...), HarnessSource: "config"}
 	prefix := "mergeyard:" + name + "="
-	selected, overrides, invalid := selectRoleLabel(labels, prefix, "claude", "codex")
+	selected, overrides, invalid := selectRoleLabel(labels, prefix, registry.Names()...)
 	if invalid {
-		return RoleSettings{}, fmt.Errorf("Invalid %s harness override labels: %s. Valid values are %sclaude and %scodex. Fix the labels and remove the needs-attention label to allow another claim.", name, strings.Join(overrides, ", "), prefix, prefix)
+		valid := prefix + strings.Join(registry.Names(), " and "+prefix)
+		return RoleSettings{}, fmt.Errorf("Invalid %s harness override labels: %s. Valid values are %s. Fix the labels and remove the needs-attention label to allow another claim.", name, strings.Join(overrides, ", "), valid)
 	}
 	if len(overrides) > 0 {
 		settings.Agent, settings.HarnessSource = selected, "label"

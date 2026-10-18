@@ -59,9 +59,9 @@ func TestAllPhaseInputsIncludeLiteralCommentsOnResume(t *testing.T) {
 				t.Fatal("comments are not oldest first")
 			}
 			for _, adapter := range []harness.HarnessAdapter{harness.NewClaude(config.Claude{}), harness.NewCodex(config.Codex{})} {
-				invocation, err := adapter.BuildInvocation(phase, config.Role{})
-				if err != nil || strings.Contains(strings.Join(invocation.Args, " "), "touch injected") {
-					t.Fatalf("comment reached %s command: %+v %v", adapter.Type(), invocation, err)
+				built, err := adapter.BuildInvocation(phase, config.Role{})
+				if err != nil || strings.Contains(strings.Join(built.Command.Args, " "), "touch injected") {
+					t.Fatalf("comment reached %s command: %+v %v", adapter.Type(), built, err)
 				}
 			}
 			phase.Resume = true

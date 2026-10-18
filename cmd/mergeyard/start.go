@@ -71,7 +71,15 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 		}
 	}
 	if reconcileErr != nil {
-		return fmt.Errorf("reconcile existing runs: %w", reconcileErr)
+		// A GitHub failure at boot is the same error ticks log and retry, so it
+		// must not stop the dashboard. Local state that is unsafe to dispatch on
+		// still refuses to start.
+		if !scheduler.GitHubFailure(reconcileErr) {
+			return fmt.Errorf("reconcile existing runs: %w", reconcileErr)
+		}
+		if _, err := fmt.Fprintf(stderr, "mergeyard: startup reconcile deferred to later ticks: %v\n", reconcileErr); err != nil {
+			return err
+		}
 	}
 	dashboard, err := web.NewDashboard(owner.Events, owner.Scheduler, web.DashboardOptions{
 		DB: owner.DB, Workspace: owner.Workspace, Scheduler: engine, Config: cfg, ConfigPath: doc.Path,

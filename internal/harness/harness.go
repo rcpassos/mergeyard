@@ -7,6 +7,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/execution"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/review"
@@ -19,7 +20,12 @@ type HarnessAdapter interface {
 	Type() string
 	Capabilities() HarnessCapabilities
 	ValidateConfig(RoleConfig) error
-	BuildInvocation(PhaseContext, RoleConfig) (Invocation, error)
+	// BuildInvocation returns the phase command together with the effective
+	// permissions the adapter applies to it, so attempts record what runs.
+	BuildInvocation(PhaseContext, RoleConfig) (PhaseInvocation, error)
+	// ResultArtifacts names the adapter-owned files a completed attempt must
+	// capture for ParseResult, relative to the attempt directory.
+	ResultArtifacts() []string
 	BuildInteractiveInvocation(sessionID, worktree string) (InteractiveCommand, error)
 	BuildCheckInvocation(dir string, env map[string]string) (Invocation, error)
 	ParseResult(PhaseContext, PhaseArtifacts) (PhaseResult, error)
@@ -28,10 +34,23 @@ type HarnessAdapter interface {
 	ClassifyFailure(PhaseArtifacts, time.Time) FailureClassification
 }
 
-// Adapters returns the configured harness adapters by name. Callers may replace
-// entries with instrumented adapters for tests.
-func Adapters(agents config.Agents) map[string]HarnessAdapter {
-	return map[string]HarnessAdapter{"claude": NewClaude(agents.Claude), "codex": NewCodex(agents.Codex)}
+// Permissions is one adapter's effective permission surface for a built
+// command. Summary is the attempt's audit record. Mode and AllowedTools are
+// the values recorded with review and fix rows: the harness-native permission
+// mode and tool list where the harness has them, and the command's sandbox and
+// network surface where it does not.
+type Permissions struct {
+	Summary      string
+	Mode         string
+	AllowedTools []string
+}
+
+// PhaseInvocation is one adapter-built command and the permissions the adapter
+// applies to it. Building the two together is what keeps each attempt's
+// recorded permissions from drifting from the command that ran.
+type PhaseInvocation struct {
+	Command     Invocation
+	Permissions Permissions
 }
 
 // CheckConfigurator inspects effective local configuration without a model call.
@@ -91,11 +110,11 @@ type PhaseArtifacts struct {
 	// value means the execution date is unavailable; observation time alone is
 	// insufficient when replaying artifacts after a control-plane restart.
 	StartedAt time.Time
-	// LastMessage is the native Codex -o artifact from this unique attempt.
-	LastMessage []byte
-	Stdout      []byte
-	Stderr      []byte
-	ExitCode    int
+	// Files holds the adapter's ResultArtifacts, keyed by the reported name.
+	Files    map[string][]byte
+	Stdout   []byte
+	Stderr   []byte
+	ExitCode int
 }
 
 // PhaseResult is the schema-validated report. Blocked and failed reports are
@@ -116,4 +135,7 @@ type PhaseResult struct {
 // ImplementSchema returns a fresh copy of the common OpenAI strict schema.
 func ImplementSchema() json.RawMessage { return json.RawMessage(implementSchema) }
 
-const implementSchema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":4},"status":{"type":"string","enum":["success","blocked","failed"]},"summary":{"type":"string"},"human_action":` + fault.HumanActionSchema + `,"criteria":` + acceptance.EvidenceSchema + `,"verification":` + verification.Schema + `},"required":["schema_version","status","summary","human_action","criteria","verification"],"additionalProperties":false}`
+// implementSchema is the strict implement contract for the current version.
+var implementSchema = contract.Bind(implementSchemaTemplate)
+
+const implementSchemaTemplate = `{"type":"object","properties":{"schema_version":{"type":"integer","const":` + contract.VersionToken + `},"status":{"type":"string","enum":["success","blocked","failed"]},"summary":{"type":"string"},"human_action":` + fault.HumanActionSchema + `,"criteria":` + acceptance.EvidenceSchema + `,"verification":` + verification.Schema + `},"required":["schema_version","status","summary","human_action","criteria","verification"],"additionalProperties":false}`

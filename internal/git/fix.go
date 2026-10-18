@@ -10,8 +10,13 @@ import (
 // CommitFix is replayable after a crash: already-created implementer or
 // Mergeyard commits are retained, and a clean index never creates a new commit.
 func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target string) (CommitResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// The fix target is re-observed on the remote before the commit; the remote
+	// read and the commit each keep their class deadline.
+	ctx, release, err := m.begin(ctx, m.timeouts.publication())
+	if err != nil {
+		return CommitResult{}, err
+	}
+	defer release()
 	if err := m.validateRun(run); err != nil {
 		return CommitResult{}, err
 	}
@@ -25,7 +30,9 @@ func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target st
 	if err != nil {
 		return CommitResult{}, err
 	}
-	remote, err := remoteHead(ctx, run, origin)
+	remoteCtx, remoteCancel := m.remoteDeadline(ctx)
+	remote, err := remoteHead(remoteCtx, run, origin)
+	remoteCancel()
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -35,7 +42,9 @@ func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target st
 	if _, err := command(ctx, run.Path, "git.fix_diverged", "merge-base", "--is-ancestor", target, "HEAD"); err != nil {
 		return CommitResult{}, failure("git.fix_diverged", run.Path, err)
 	}
-	result, err := commit(ctx, run, phase)
+	commitCtx, commitCancel := m.worktreeDeadline(ctx)
+	result, err := commit(commitCtx, run, phase)
+	commitCancel()
 	if err != nil {
 		return result, err
 	}
@@ -56,8 +65,11 @@ func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target st
 // PushFix accepts either the original target or the journaled new commit on the
 // remote, covering a crash after a successful push. Any other head needs attention.
 func (m *Manager) PushFix(ctx context.Context, run Run, previous, target string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}
@@ -90,8 +102,11 @@ func (m *Manager) PushFix(ctx context.Context, run Run, previous, target string)
 // InspectFixTarget prevents a re-review from testing unpublished edits after
 // publication. Ignored build output remains allowed; all other work is preserved.
 func (m *Manager) InspectFixTarget(ctx context.Context, run Run, target string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Metadata)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
@@ -76,7 +77,7 @@ ORDER BY a.run_id,a.round,CASE a.phase WHEN 'review' THEN 0 ELSE 1 END,a.attempt
 				rows.Close()
 				return err
 			}
-			if r.SchemaVersion >= 4 {
+			if requirement, ok := contract.For(contract.Review, r.SchemaVersion); ok && requirement.Requires(contract.Criteria) {
 				outcomes = "\n\nAcceptance criteria:"
 				if len(r.Criteria) == 0 {
 					outcomes += " no acceptance criteria found."
@@ -169,12 +170,28 @@ func (p pendingReport) delivery(s *Scheduler) commentDelivery {
 	}
 }
 
+// persistentPublicationFailure reports whether retrying cannot resolve a
+// returned body-publication failure: the PR is closed or inaccessible, or this
+// runtime cannot write PR bodies at all. Transport errors, rate limits, invalid
+// responses and a shared-budget expiry stay retryable.
+func persistentPublicationFailure(cause error, publicationCtx context.Context) bool {
+	var coded *fault.Error
+	if publicationCtx.Err() != nil || !errors.As(cause, &coded) {
+		return false
+	}
+	switch coded.Code {
+	case "github.not_found", "github.forbidden", "github.invalid_input", "publication.unsupported", "publication.multiple_matches":
+		return true
+	}
+	return false
+}
+
 // Only known, fixed codes cross into events/UI; gh stderr may contain secrets.
 func publicationCode(err error) string {
 	var coded *fault.Error
 	if errors.As(err, &coded) {
 		switch coded.Code {
-		case "github.unavailable", "github.rate_limited", "github.forbidden", "github.not_found", "github.not_logged_in", "github.canceled", "github.invalid_response", "github.invalid_input", "publication.multiple_matches", "publication.unsupported":
+		case "github.unavailable", "github.rate_limited", "github.forbidden", "github.not_found", "github.not_logged_in", "github.canceled", "github.timeout", "github.invalid_response", "github.invalid_input", "publication.multiple_matches", "publication.unsupported":
 			return coded.Code
 		}
 	}

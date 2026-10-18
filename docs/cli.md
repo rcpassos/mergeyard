@@ -32,7 +32,12 @@ lock. Running tmux phases stay alive. The next startup observes those persisted
 attempts and picks up completed results. Reconciliation verifies GitHub labels,
 PRs, Git ownership, and sessions; orphaned claims and artifacts are reported
 without deletion or automatic redispatch. Pending stops finish before normal
-reconciliation can restore labels or advance work.
+reconciliation can restore labels or advance work. A startup reconcile failure
+where GitHub could not answer cleanly is reported and retried on later ticks
+instead of stopping the control plane; local-state failures and conclusive
+GitHub answers still refuse to start. Dependency checks that cannot reach GitHub
+report unverifiable findings rather than errors (see [doctor](doctor.md)), so an
+outage at boot does not stop the dashboard.
 
 `mergeyard plan [--repo owner/repo] [--json]` previews the next claims without
 changing labels, posting comments, creating runs/worktrees, or writing SQLite.

@@ -118,11 +118,10 @@ func TestGitHubIntegration(t *testing.T) {
 	client := github.New(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	issues, err := client.ListOpenIssues(ctx, repo)
+	target, err := client.GetIssue(ctx, repo, number)
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := findIssue(t, issues, number)
 	if hasLabel(target, label) {
 		t.Fatal("test issue already has the test label; refusing to remove an existing label")
 	}
@@ -150,7 +149,7 @@ func TestGitHubIntegration(t *testing.T) {
 	if err := client.AddLabel(ctx, repo, number, label); err != nil {
 		t.Fatal(err)
 	}
-	issues, err = client.ListOpenIssues(ctx, repo)
+	issues, err := client.ListLabeledIssues(ctx, repo, []string{label})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,12 +159,14 @@ func TestGitHubIntegration(t *testing.T) {
 	if err := client.RemoveLabel(ctx, repo, number, label); err != nil {
 		t.Fatal(err)
 	}
-	issues, err = client.ListOpenIssues(ctx, repo)
+	issues, err = client.ListLabeledIssues(ctx, repo, []string{label})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hasLabel(findIssue(t, issues, number), label) {
-		t.Fatal("removed label still present on GitHub")
+	for _, issue := range issues {
+		if issue.Number == number {
+			t.Fatal("removed label still present on GitHub")
+		}
 	}
 }
 func findIssue(t *testing.T, issues []github.Issue, number int) github.Issue {

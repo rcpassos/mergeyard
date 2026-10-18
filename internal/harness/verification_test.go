@@ -41,7 +41,7 @@ func TestVerificationNativeContracts(t *testing.T) {
 					artifacts := harness.PhaseArtifacts{Stdout: []byte(`{"type":"result","is_error":false,"structured_output":` + raw + `}`)}
 					if adapter.Type() == "codex" {
 						artifacts.Stdout = []byte(`{"type":"thread.started","thread_id":"01a10c5c-8a43-7c52-ba89-5a6d6ec1e22c"}` + "\n" + `{"type":"turn.completed"}`)
-						artifacts.LastMessage = []byte(raw)
+						artifacts.Files = map[string][]byte{"last-message.json": []byte(raw)}
 					}
 					result, err := adapter.ParseResult(harness.PhaseContext{Phase: kind}, artifacts)
 					if (err == nil) != tc.valid {

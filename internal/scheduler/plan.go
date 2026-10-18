@@ -34,8 +34,12 @@ type PlanIssue struct {
 // Plan inspects current persisted state and GitHub without reconciliation,
 // publication, workflow transitions, or agent/worktree operations.
 func (s *Scheduler) Plan(ctx context.Context, repository string) (Plan, error) {
-	s.tick.Lock()
+	if err := s.tick.Lock(ctx); err != nil {
+		return Plan{}, err
+	}
 	defer s.tick.Unlock()
+	// An explicit plan read starts its own poll so it observes current labels.
+	s.beginPoll()
 	report := Plan{SchemaVersion: 1, Paused: s.control.Paused(), Issues: []PlanIssue{}}
 	if repository != "" {
 		if _, ok := s.repository(repository); !ok {
@@ -54,7 +58,7 @@ func (s *Scheduler) Plan(ctx context.Context, repository string) (Plan, error) {
 	for _, repo := range s.cfg.Repositories {
 		// Filtering is a projection of the whole queue, so earlier repositories
 		// still reserve their would-claim slots against the global concurrency cap.
-		issues, err := s.deps.GitHub.ListOpenIssues(ctx, repo.Repo)
+		issues, err := s.listIssues(ctx, repo)
 		if err != nil {
 			return report, err
 		}
@@ -85,7 +89,7 @@ func PlanOffline(ctx context.Context, cfg config.Config, db *sql.DB, deps Depend
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	adapters := harness.Adapters(cfg.Agents)
+	adapters := harness.Adapters(cfg)
 	for name, adapter := range deps.Harnesses {
 		adapters[name] = adapter
 	}
@@ -99,8 +103,50 @@ func PlanOffline(ctx context.Context, cfg config.Config, db *sql.DB, deps Depend
 	return s.Plan(ctx, repository)
 }
 
+// tickRuns lists the persisted snapshots one tick still observes: every
+// non-terminal run, plus terminal runs that still owe durable work — a pending
+// retry, an uncleaned base scratch checkout, or a pending merge cleanup. Runs
+// that finished without pending work never leave SQL, so tick cost tracks live
+// work instead of the whole history.
+//
+// The condition must stay a superset of the skip test in reconcile: a run
+// dropped here is never observed again. tick_runs_test covers every exception.
+func (s *Scheduler) tickRuns(ctx context.Context) ([]workflow.Run, error) {
+	return s.storedRunsWhere(ctx, tickRunCondition)
+}
+
+// tickRunCondition mirrors the durable stop conditions of reconciliation,
+// dispatch capacity and orphan detection. Its JSON predicates mirror
+// maintenance.Snapshot.Pending and ci's uncleaned base verification.
+const tickRunCondition = `r.state NOT IN ('FAILED','STOPPED','COMPLETED')
+ OR EXISTS (SELECT 1 FROM run_retries rr WHERE rr.run_id=r.id AND rr.pending=1)
+ OR EXISTS (SELECT 1 FROM ci_waits cw WHERE cw.run_id=r.id
+  AND COALESCE(json_extract(cw.snapshot_json,'$.base.scratch_path'),'')<>''
+  AND COALESCE(json_extract(cw.snapshot_json,'$.base.cleaned'),0)=0)
+ OR EXISTS (SELECT 1 FROM merge_cleanup mc WHERE mc.run_id=r.id
+  AND (COALESCE(json_extract(mc.snapshot_json,'$.process_exited'),0)=0
+   OR COALESCE(json_extract(mc.snapshot_json,'$.ready_removed'),0)=0
+   OR COALESCE(json_extract(mc.snapshot_json,'$.running_removed'),0)=0
+   OR COALESCE(json_extract(mc.snapshot_json,'$.attention_removed'),0)=0
+   OR COALESCE(json_extract(mc.snapshot_json,'$.issue_closed'),0)=0
+   OR COALESCE(json_extract(mc.snapshot_json,'$.review_restored'),0)=0
+   OR COALESCE(json_extract(mc.snapshot_json,'$.worktree_removed'),0)=0
+   OR COALESCE(json_extract(mc.snapshot_json,'$.branch_deleted'),0)=0))`
+
 func (s *Scheduler) storedRuns(ctx context.Context) ([]workflow.Run, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id FROM runs ORDER BY created_at, id")
+	return s.storedRunsWhere(ctx, "")
+}
+
+// storedRunsWhere lists persisted run IDs matching a fixed internal condition,
+// oldest first, then loads each run's lifecycle snapshot. Plan and dashboard
+// reads pass no condition and keep the whole history.
+func (s *Scheduler) storedRunsWhere(ctx context.Context, condition string) ([]workflow.Run, error) {
+	query := "SELECT id FROM runs r"
+	if condition != "" {
+		query += " WHERE " + condition
+	}
+	query += " ORDER BY created_at, id"
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}

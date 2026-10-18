@@ -105,7 +105,7 @@
 {{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}
 {{with .Report}}<h3>Implement status: {{.Status}}</h3><p>{{.Summary}}</p>
 {{template "verification" .}}
-<h3>Acceptance criteria</h3>{{range .Criteria}}<article class="notice"><h4>{{.ID}} · {{if .Met}}met{{else}}not met{{end}}</h4><p>{{.Evidence}}</p></article>{{else}}{{if ge .SchemaVersion 3}}<p>No acceptance criteria found.</p>{{else}}<p>Criteria were not recorded by this schema version.</p>{{end}}{{end}}{{end}}</section>{{end}}
+<h3>Acceptance criteria</h3>{{range .Criteria}}<article class="notice"><h4>{{.ID}} · {{if .Met}}met{{else}}not met{{end}}</h4><p>{{.Evidence}}</p></article>{{else}}{{if .HasCriteria}}<p>No acceptance criteria found.</p>{{else}}<p>Criteria were not recorded by this schema version.</p>{{end}}{{end}}{{end}}</section>{{end}}
 {{range .ReviewHistory}}<section class="queue-section"><h2>Independent review · round {{.Round}}, attempt {{.Attempt}}</h2>
 <dl class="run-facts"><div><dt>Reviewer</dt><dd>{{.Agent}} · model {{.Model}} · effort {{.Effort}}</dd></div>
 <div><dt>Reviewer session</dt><dd><code>{{.SessionID}}</code></dd></div><div><dt>Skills</dt><dd>{{range .Skills}}{{.}} {{else}}None{{end}}</dd></div>
@@ -115,7 +115,7 @@
 {{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}
 {{with .Report}}<h3>Verdict: {{.Status}}</h3><p>{{.Summary}}</p>
 <h3>Acceptance criteria</h3>
-{{range .Criteria}}<article class="notice"><h4>{{.ID}} · {{.Verdict}}</h4><p>{{.Note}}</p></article>{{else}}{{if ge .SchemaVersion 4}}<p>No acceptance criteria found.</p>{{else}}<p>Criteria were not recorded by this schema version.</p>{{end}}{{end}}
+{{range .Criteria}}<article class="notice"><h4>{{.ID}} · {{.Verdict}}</h4><p>{{.Note}}</p></article>{{else}}{{if .HasCriteria}}<p>No acceptance criteria found.</p>{{else}}<p>Criteria were not recorded by this schema version.</p>{{end}}{{end}}
 {{with .PriorCounts}}<p>Prior findings: {{.Fixed}} fixed / {{.NotFixed}} not fixed / {{.NoLongerApplies}} no longer applies.</p>{{end}}
 {{range .PriorFindings}}<article class="notice"><h4>{{.FindingID}} · {{.Outcome}}</h4><p>{{.Note}}</p></article>{{end}}
 {{range .Findings}}<article class="notice"><h4>{{.ID}} · {{.Severity}} · {{.Title}}</h4><p>{{.Details}}</p>{{if .File}}<p><code>{{.File}}{{if .Line}}:{{.Line}}{{end}}</code></p>{{end}}</article>{{else}}<p>No findings.</p>{{end}}{{end}}</section>{{end}}
@@ -126,7 +126,7 @@
 {{range .Findings}}<article class="notice"><h4>{{.ID}} · {{.Title}}</h4><p>{{.Details}}</p></article>{{end}}
 {{with .Report}}<h3>Fix status: {{.Status}}</h3><p>{{.Summary}}</p>
 {{template "verification" .}}
-<h3>Acceptance criteria</h3>{{range .Criteria}}<article class="notice"><h4>{{.ID}} · {{if .Met}}met{{else}}not met{{end}}</h4><p>{{.Evidence}}</p></article>{{else}}{{if ge .SchemaVersion 3}}<p>No acceptance criteria found.</p>{{else}}<p>Criteria were not recorded by this schema version.</p>{{end}}{{end}}{{range .Responses}}<article class="notice"><h4>{{.FindingID}} · {{.Resolution}}</h4><p>{{.Note}}</p></article>{{else}}<p>No responses reported.</p>{{end}}{{end}}</section>{{end}}
+<h3>Acceptance criteria</h3>{{range .Criteria}}<article class="notice"><h4>{{.ID}} · {{if .Met}}met{{else}}not met{{end}}</h4><p>{{.Evidence}}</p></article>{{else}}{{if .HasCriteria}}<p>No acceptance criteria found.</p>{{else}}<p>Criteria were not recorded by this schema version.</p>{{end}}{{end}}{{range .Responses}}<article class="notice"><h4>{{.FindingID}} · {{.Resolution}}</h4><p>{{.Note}}</p></article>{{else}}<p>No responses reported.</p>{{end}}{{end}}</section>{{end}}
 
 {{with .CI}}<section class="queue-section"><h2>CI and readiness</h2>
 <dl class="run-facts"><div><dt>Wait started</dt><dd><time>{{.StartedAt}}</time></dd></div><div><dt>Wait deadline</dt><dd><time>{{.Deadline}}</time></dd></div>
@@ -166,4 +166,4 @@
 {{end}}{{end}}
 
 {{define "verification"}}<h3>Verification evidence</h3>
-{{range .Verification}}<article class="notice"><h4><code>{{.Command}}</code> · {{.Outcome}}</h4>{{if .Excerpt}}<pre>{{.Excerpt}}</pre>{{end}}</article>{{else}}{{if ge .SchemaVersion 4}}<p>no verification reported</p>{{else}}<p>Verification was not recorded by this schema version.</p>{{end}}{{end}}{{end}}
+{{range .Verification}}<article class="notice"><h4><code>{{.Command}}</code> · {{.Outcome}}</h4>{{if .Excerpt}}<pre>{{.Excerpt}}</pre>{{end}}</article>{{else}}{{if .HasVerification}}<p>no verification reported</p>{{else}}<p>Verification was not recorded by this schema version.</p>{{end}}{{end}}{{end}}

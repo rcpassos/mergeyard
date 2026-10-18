@@ -34,7 +34,15 @@ type fakeGitHub struct {
 	creations        int
 	head             func(string) string
 	mutate           func(action, repo string, n int, label string) error
+	listHook         func() // runs inside each label-filtered listing request
 	calls            githubCalls
+	listings         []listingRequest
+}
+
+// listingRequest records one label-filtered listing request.
+type listingRequest struct {
+	repo   string
+	labels []string
 }
 
 // githubCalls records boundary traffic so tests can assert what a tick spends.
@@ -74,9 +82,27 @@ func (f *fakeGitHub) EnsureTrustRefusalComment(_ context.Context, _ string, n in
 	return nil
 }
 
-func (f *fakeGitHub) ListOpenIssues(_ context.Context, repo string) ([]github.Issue, error) {
+// ListLabeledIssues mirrors GitHub's label filter: the repository's open
+// issues carrying any requested label, in adapter-owned order.
+func (f *fakeGitHub) ListLabeledIssues(_ context.Context, repo string, labels []string) ([]github.Issue, error) {
+	if f.listHook != nil {
+		f.listHook()
+	}
 	f.calls.issueListings++
-	return f.issues[repo], nil
+	f.listings = append(f.listings, listingRequest{repo: repo, labels: append([]string(nil), labels...)})
+	var issues []github.Issue
+	for _, issue := range f.issues[repo] {
+		if issue.State != github.Open {
+			continue
+		}
+		for _, label := range labels {
+			if has(issue, label) {
+				issues = append(issues, issue)
+				break
+			}
+		}
+	}
+	return issues, nil
 }
 func (f *fakeGitHub) GetIssue(_ context.Context, repo string, n int) (github.Issue, error) {
 	f.calls.issueReads++
@@ -467,7 +493,13 @@ func (g rejectingGit) Prepare(_ context.Context, req managedgit.PrepareRequest) 
 func (rejectingGit) CommitAndPush(context.Context, managedgit.Run, managedgit.Phase) (managedgit.CommitResult, error) {
 	panic("unexpected push")
 }
-func configured(t *testing.T, api *fakeGitHub, yaml string, g scheduler.Git) (*scheduler.Scheduler, *app.Runtime) {
+func configured(t *testing.T, api scheduler.GitHub, yaml string, g scheduler.Git) (*scheduler.Scheduler, *app.Runtime) {
+	return configuredAt(t, api, yaml, g, nil)
+}
+
+// configuredAt additionally controls the scheduler clock, so tests can age
+// discovery snapshots without waiting.
+func configuredAt(t *testing.T, api scheduler.GitHub, yaml string, g scheduler.Git, now func() time.Time) (*scheduler.Scheduler, *app.Runtime) {
 	t.Helper()
 	runtime, err := app.Open(context.Background(), t.TempDir())
 	if err != nil {
@@ -478,7 +510,7 @@ func configured(t *testing.T, api *fakeGitHub, yaml string, g scheduler.Git) (*s
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Git: g})
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Git: g, Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,12 +804,12 @@ type observingGitHub struct {
 	polls chan struct{}
 }
 
-func (o observingGitHub) ListOpenIssues(ctx context.Context, repo string) ([]github.Issue, error) {
+func (o observingGitHub) ListLabeledIssues(ctx context.Context, repo string, labels []string) ([]github.Issue, error) {
 	select {
 	case o.polls <- struct{}{}:
 	default:
 	}
-	return o.fakeGitHub.ListOpenIssues(ctx, repo)
+	return o.fakeGitHub.ListLabeledIssues(ctx, repo, labels)
 }
 func TestRunPollsImmediatelyAndPeriodically(t *testing.T) {
 	api := &fakeGitHub{issues: map[string][]github.Issue{}}

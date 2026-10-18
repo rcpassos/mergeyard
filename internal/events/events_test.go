@@ -89,6 +89,54 @@ func TestFailedEventsAreNeitherPersistedLoggedNorBroadcast(t *testing.T) {
 	}
 }
 
+func TestNotifyReachesSubscribersWithoutPersisting(t *testing.T) {
+	ctx := context.Background()
+	bus, _, _ := newBus(t)
+	first, cancelFirst := bus.Subscribe(2)
+	defer cancelFirst()
+	second, cancelSecond := bus.Subscribe(2)
+	defer cancelSecond()
+	if err := bus.Notify(ctx, events.Draft{Type: "queue.updated", Payload: map[string]bool{"queued": true}}); err != nil {
+		t.Fatal(err)
+	}
+	consumed := <-first
+	if consumed.ID != 0 || consumed.RunID != "" || consumed.Type != "queue.updated" || string(consumed.Payload) != `{"queued":true}` {
+		t.Fatalf("transient event = %+v", consumed)
+	}
+	consumed.Payload[0] = '['
+	if other := <-second; string(other.Payload) != `{"queued":true}` {
+		t.Fatal("a consumer mutated another consumer's transient event")
+	}
+	history, err := bus.History(ctx, 0, 10)
+	if err != nil || len(history) != 0 {
+		t.Fatalf("transient event persisted: %+v, %v", history, err)
+	}
+}
+
+func TestNotifyRejectsClosedBusAndInvalidDrafts(t *testing.T) {
+	bus, _, logs := newBus(t)
+	live, cancel := bus.Subscribe(1)
+	defer cancel()
+	if err := bus.Notify(context.Background(), events.Draft{Payload: struct{}{}}); err == nil {
+		t.Fatal("notify accepted an event without a type")
+	}
+	if err := bus.Notify(context.Background(), events.Draft{Type: "queue.updated", Payload: make(chan int)}); err == nil {
+		t.Fatal("notify accepted an unserializable payload")
+	}
+	select {
+	case event := <-live:
+		t.Fatalf("invalid transient event delivered: %+v", event)
+	default:
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("invalid transient event logged: %s", logs.String())
+	}
+	bus.Close()
+	if err := bus.Notify(context.Background(), events.Draft{Type: "queue.updated"}); err == nil {
+		t.Fatal("closed bus accepted a transient event")
+	}
+}
+
 func TestSubscribersOwnTheirPayload(t *testing.T) {
 	bus, _, _ := newBus(t)
 	first, cancelFirst := bus.Subscribe(1)

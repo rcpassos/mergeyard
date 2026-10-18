@@ -575,6 +575,13 @@ func TestUnchangedTreeCannotClaimFindingFixed(t *testing.T) {
 			if run.Fix.Report == nil || run.Fix.Report.Responses[0].Resolution != "fixed" {
 				t.Fatal("fix report not preserved")
 			}
+			// The rejection rewrites the attempt's error and status; the frozen
+			// publication eligibility must survive so publication never falls
+			// back to an older report.
+			var eligible int
+			if err := runtime.DB.QueryRow("SELECT report_eligible FROM phase_attempts WHERE run_id=? AND phase='fix'", run.ID).Scan(&eligible); err != nil || eligible != 1 {
+				t.Fatalf("rejected fix lost its publication eligibility: %d %v", eligible, err)
+			}
 			if gitCommand(t, remote, "rev-list", "--count", "main..mergeyard/issue-7") != "1" {
 				t.Fatal("empty fix published")
 			}

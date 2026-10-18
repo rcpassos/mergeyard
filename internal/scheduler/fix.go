@@ -29,7 +29,7 @@ type FixGit interface {
 }
 
 type fixAttempt struct {
-	attempt
+	durable.Attempt
 	target, commit string
 	pushed         bool
 	findings       []review.Finding
@@ -43,10 +43,10 @@ func (s *Scheduler) lastFix(ctx context.Context, run workflow.Run) (fixAttempt, 
 	if err != nil {
 		return a, err
 	}
-	a.attempt = schedulerAttempt(saved)
+	a.Attempt = saved
 	var findings string
 	var report, diagnostics sql.NullString
-	err = s.db.QueryRowContext(ctx, `SELECT target_sha,COALESCE(commit_sha,''),pushed,findings_json,report_json,ci_json FROM fix_attempts WHERE attempt_id=?`, a.id).Scan(&a.target, &a.commit, &a.pushed, &findings, &report, &diagnostics)
+	err = s.db.QueryRowContext(ctx, `SELECT target_sha,COALESCE(commit_sha,''),pushed,findings_json,report_json,ci_json FROM fix_attempts WHERE attempt_id=?`, a.ID).Scan(&a.target, &a.commit, &a.pushed, &findings, &report, &diagnostics)
 	if err != nil {
 		return a, err
 	}
@@ -82,28 +82,28 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 	if err != nil {
 		return fail(err)
 	}
-	if next := explicitAttempt(run, workflow.Fix, a.number); next > 0 {
+	if next := explicitAttempt(run, workflow.Fix, a.Number); next > 0 {
 		return s.startFix(ctx, repo, run, gitRun, next)
 	}
-	if a.status == "usage_limited" {
-		return s.startFix(ctx, repo, run, gitRun, a.number+1)
+	if a.Status == "usage_limited" {
+		return s.startFix(ctx, repo, run, gitRun, a.Number+1)
 	}
-	if a.status == "failed" {
-		code, message, _ := strings.Cut(a.failure, ": ")
+	if a.Status == "failed" {
+		code, message, _ := strings.Cut(a.Failure, ": ")
 		cause := &fault.Error{Code: code, Message: message}
 		if code == "phase.blocked" && a.report != nil {
 			cause.HumanAction = a.report.HumanAction
 		}
-		retry, retryErr := s.retryPhase(ctx, run, workflow.Fix, a.attempt, cause, repo.Implementer.MaxAttempts)
+		retry, retryErr := s.retryPhase(ctx, run, workflow.Fix, a.Attempt, cause, repo.Implementer.MaxAttempts)
 		if retryErr != nil {
 			return retryErr
 		}
 		if !retry {
-			return fail(fixFailure(cause, a.number, repo.Implementer.MaxAttempts))
+			return fail(fixFailure(cause, a.Number, repo.Implementer.MaxAttempts))
 		}
-		return s.startFix(ctx, repo, run, gitRun, a.number+1)
+		return s.startFix(ctx, repo, run, gitRun, a.Number+1)
 	}
-	if a.status == "running" {
+	if a.Status == "running" {
 		pr, err := s.deps.GitHub.GetPullRequest(ctx, repo.Repo, run.PRNumber)
 		if err != nil {
 			return err
@@ -112,14 +112,12 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 			return s.merged(ctx, repo, run, pr)
 		}
 		if !reviewHeadMatches(pr, repo, run, gitRun, a.target) {
-			if err := s.deps.Runner.StopSession(ctx, a.ref); err != nil {
+			if err := s.deps.Runner.StopSession(ctx, a.Ref); err != nil {
 				return err
 			}
 			return s.finishFixAttempt(ctx, repo, run, a, nil, nil, &fault.Error{Code: "review.head_changed", Message: "PR head changed during fix; preserved work needs inspection"})
 		}
-		executionAttempt := durableAttempt(a.attempt)
-		observation, err := s.execution().Observe(ctx, run.ID, workflow.Fix, &executionAttempt)
-		a.attempt = schedulerAttempt(executionAttempt)
+		observation, err := s.execution().Observe(ctx, run.ID, workflow.Fix, &a.Attempt)
 		if err != nil {
 			if observation.Failure != nil || ctx.Err() != nil {
 				return err
@@ -133,7 +131,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 		cause := observation.Failure
 		var report *review.FixReport
 		if cause == nil {
-			result, err := s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Fix, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, observation.Artifacts)
+			result, err := s.parseExecution(ctx, run.ID, a.ID, a.Agent, harness.PhaseContext{Phase: workflow.Fix, PhaseDir: a.Ref.PhaseDir, SessionID: a.SessionID, Resume: a.Resumed}, observation.Artifacts)
 			cause = err
 			if err == nil {
 				report = &review.FixReport{HumanAction: result.HumanAction, SchemaVersion: result.SchemaVersion, Status: result.Status, Summary: result.Summary, Responses: result.Responses, Verification: result.Verification}
@@ -143,7 +141,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 					report = nil
 				} else {
 					data, _ := json.Marshal(report)
-					if err := s.deps.Runner.WriteFile(ctx, filepath.Join(a.ref.PhaseDir, "result.json"), data, 0600); err != nil {
+					if err := s.deps.Runner.WriteFile(ctx, filepath.Join(a.Ref.PhaseDir, "result.json"), data, 0600); err != nil {
 						return err
 					}
 					if report.Status != "success" {
@@ -165,7 +163,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 		}
 		return s.finishFixAttempt(ctx, repo, run, a, status.ExitCode, report, cause)
 	}
-	if a.status != "succeeded" {
+	if a.Status != "succeeded" {
 		return nil
 	}
 	if a.report == nil || a.report.Status != "success" {
@@ -217,13 +215,13 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 			}
 		}
 		_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-			_, err := tx.ExecContext(ctx, "UPDATE fix_attempts SET commit_sha=? WHERE attempt_id=?", result.SHA, a.id)
-			return events.Draft{RunID: run.ID, Type: "fix.committed", Payload: map[string]any{"round": run.ReviewRound, "attempt": a.number, "commit_sha": result.SHA, "committed": result.Committed}}, err
+			_, err := tx.ExecContext(ctx, "UPDATE fix_attempts SET commit_sha=? WHERE attempt_id=?", result.SHA, a.ID)
+			return events.Draft{RunID: run.ID, Type: "fix.committed", Payload: map[string]any{"round": run.ReviewRound, "attempt": a.Number, "commit_sha": result.SHA, "committed": result.Committed}}, err
 		})
 		return err // Separate reconciliation steps make each crash boundary durable.
 	}
 	if !a.pushed && (len(repo.Checks) > 0 || runningSystemStep(run, "checks")) {
-		v, done, err := s.systemStep(ctx, repo, run, gitRun, systemStepRequest{Step: "checks", Commands: repo.Checks, TargetSHA: a.commit, OwnerID: a.id, Retry: s.recheckRequested(run, a.id)})
+		v, done, err := s.systemStep(ctx, repo, run, gitRun, systemStepRequest{Step: "checks", Commands: repo.Checks, TargetSHA: a.commit, OwnerID: a.ID, Retry: s.recheckRequested(run, a.ID)})
 		if err != nil {
 			return fail(err)
 		}
@@ -231,7 +229,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 			return nil
 		}
 		if v.Status != "succeeded" {
-			if err := s.repairChecks(ctx, repo, run, gitRun, a.attempt, v); err != nil {
+			if err := s.repairChecks(ctx, repo, run, gitRun, a.Attempt, v); err != nil {
 				return fail(err)
 			}
 			return nil
@@ -252,8 +250,8 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 			return fail(err)
 		}
 		_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-			_, err := tx.ExecContext(ctx, "UPDATE fix_attempts SET pushed=1 WHERE attempt_id=?", a.id)
-			return events.Draft{RunID: run.ID, Type: "fix.pushed", Payload: map[string]any{"round": run.ReviewRound, "attempt": a.number, "commit_sha": a.commit}}, err
+			_, err := tx.ExecContext(ctx, "UPDATE fix_attempts SET pushed=1 WHERE attempt_id=?", a.ID)
+			return events.Draft{RunID: run.ID, Type: "fix.pushed", Payload: map[string]any{"round": run.ReviewRound, "attempt": a.Number, "commit_sha": a.commit}}, err
 		})
 		return err
 	}
@@ -271,7 +269,7 @@ func (s *Scheduler) fix(ctx context.Context, repo config.Repository, run workflo
 		return fail(err)
 	}
 	approved := ""
-	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.FixSucceeded, Metadata: workflow.MetadataPatch{IncrementReviewRound: true, ApprovedSHA: &approved, Fix: &workflow.FixCompletion{AttemptID: a.id}}})
+	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.FixSucceeded, Metadata: workflow.MetadataPatch{IncrementReviewRound: true, ApprovedSHA: &approved, Fix: &workflow.FixCompletion{AttemptID: a.ID}}})
 	return err
 }
 
@@ -280,7 +278,7 @@ func (s *Scheduler) finishFixAttempt(ctx context.Context, repo config.Repository
 		return ctx.Err()
 	}
 	if isHarnessLimit(cause) {
-		return s.limitExecution(ctx, repo, run, a.attempt, cause)
+		return s.limitExecution(ctx, repo, run, a.Attempt, cause)
 	}
 	var data any
 	if report != nil {
@@ -290,29 +288,36 @@ func (s *Scheduler) finishFixAttempt(ctx context.Context, repo config.Repository
 		}
 		data = string(encoded)
 	}
+	// Freeze publication eligibility only when this finish is publishable. A
+	// later rejection of the same attempt rewrites its status and error but must
+	// never withdraw the report or its eligibility.
+	eligible := 0
+	if report != nil && workflow.ValidCompletion(cause) {
+		eligible = 1
+	}
 	status, event, failure := "succeeded", "phase.completed", ""
 	if cause != nil {
 		status, event, failure = "failed", "phase.failed", cause.Error()
 	}
 	_, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-		if _, err := tx.ExecContext(ctx, "UPDATE fix_attempts SET report_json=? WHERE attempt_id=?", data, a.id); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE fix_attempts SET report_json=? WHERE attempt_id=?", data, a.ID); err != nil {
 			return events.Draft{}, err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE phase_attempts SET status=?,exit_code=?,error=?,ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, status, exit, failure, a.id)
-		return events.Draft{RunID: run.ID, Type: event, Payload: map[string]any{"agent": a.agent, "phase": workflow.Fix, "round": run.ReviewRound, "attempt": a.number, "result": report, "error": failure}}, err
+		_, err := tx.ExecContext(ctx, `UPDATE phase_attempts SET status=?,exit_code=?,error=?,report_eligible=MAX(report_eligible,?),ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, status, exit, failure, eligible, a.ID)
+		return events.Draft{RunID: run.ID, Type: event, Payload: map[string]any{"agent": a.Agent, "phase": workflow.Fix, "round": run.ReviewRound, "attempt": a.Number, "result": report, "error": failure}}, err
 	})
 	if err != nil {
 		return err
 	}
 	if cause != nil {
-		retry, retryErr := s.retryPhase(ctx, run, workflow.Fix, a.attempt, cause, repo.Implementer.MaxAttempts)
+		retry, retryErr := s.retryPhase(ctx, run, workflow.Fix, a.Attempt, cause, repo.Implementer.MaxAttempts)
 		if retryErr != nil {
 			return retryErr
 		}
 		if retry {
 			return nil
 		}
-		return s.recordAttention(ctx, repo, run, fixFailure(cause, a.number, repo.Implementer.MaxAttempts))
+		return s.recordAttention(ctx, repo, run, fixFailure(cause, a.Number, repo.Implementer.MaxAttempts))
 	}
 	return nil
 }
@@ -404,8 +409,8 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		return fail(err)
 	}
 	phase.WorktreePath, phase.Env = gitRun.Path, env
-	phase.Interruption = interruptionContext(schedulerAttempt(previous), phase)
-	checkID := checkRetryIdentity(run, workflow.Fix, schedulerAttempt(previous), number, checkRetry)
+	phase.Interruption = interruptionContext(previous, phase)
+	checkID := checkRetryIdentity(run, workflow.Fix, previous, number, checkRetry)
 	issueInput, err := s.phaseIssueInput(ctx, repo, run.ID, issue, gitRun.BaseBranch, &phase)
 	if err != nil {
 		return fail(err)
@@ -414,13 +419,12 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 	if err != nil {
 		return fail(err)
 	}
-	command, err := s.harnesses[repo.Implementer.Agent].BuildInvocation(phase, repo.Implementer)
+	built, err := s.harnesses[repo.Implementer.Agent].BuildInvocation(phase, repo.Implementer)
 	if err != nil {
 		return fail(err)
 	}
-	req := runner.SessionRequest{RunID: run.ID, Phase: "fix", Round: run.ReviewRound, Attempt: number, PhaseDir: phaseDir, Command: command}
-	permission, allowedTools := s.roleSettings(repo.Implementer.Agent)
-	tools, _ := json.Marshal(allowedTools)
+	req := runner.SessionRequest{RunID: run.ID, Phase: "fix", Round: run.ReviewRound, Attempt: number, PhaseDir: phaseDir, Command: built.Command}
+	tools, _ := json.Marshal(built.Permissions.AllowedTools)
 	encoded, _ := json.Marshal(findings)
 	var diagnostics any
 	if repair != nil {
@@ -430,12 +434,12 @@ func (s *Scheduler) startFix(ctx context.Context, repo config.Repository, run wo
 		}
 		diagnostics = string(data)
 	}
-	launched, err := s.execution().Launch(ctx, run, repo.Implementer, durable.Permissions{Summary: s.rolePermissions(repo.Implementer.Agent), Mode: permission, AllowedTools: allowedTools}, phase, previous, req, input, checkID, func(tx *sql.Tx, a durable.Attempt) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,ci_json) VALUES (?,?,?,?,?,?,?)`, a.ID, sessionID, target, string(encoded), permission, string(tools), diagnostics)
+	launched, err := s.execution().Launch(ctx, run, repo.Implementer, built.Permissions, phase, previous, req, input, checkID, func(tx *sql.Tx, a durable.Attempt) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,ci_json) VALUES (?,?,?,?,?,?,?)`, a.ID, sessionID, target, string(encoded), built.Permissions.Mode, string(tools), diagnostics)
 		return err
 	}, map[string]any{"ci": repair})
 	if err != nil && launched.ID != "" && launched.Status == "failed" && ctx.Err() == nil {
-		return s.finishFixAttempt(ctx, repo, run, fixAttempt{attempt: schedulerAttempt(launched)}, nil, nil, err)
+		return s.finishFixAttempt(ctx, repo, run, fixAttempt{Attempt: launched}, nil, nil, err)
 	}
 	return err
 }

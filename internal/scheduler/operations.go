@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/rcpassos/mergeyard/internal/events"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -53,36 +54,36 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 		}
 		if err == nil {
 			if err := s.discoverImplementSession(ctx, run.ID, &a); err != nil {
-				if !invalidSessionDiscovery(err) {
+				if !durable.InvalidDiscovery(err) {
 					return err
 				}
-				if _, saveErr := s.db.ExecContext(ctx, "UPDATE phase_attempts SET error=? WHERE id=?", err.Error(), a.id); saveErr != nil {
+				if _, saveErr := s.db.ExecContext(ctx, "UPDATE phase_attempts SET error=? WHERE id=?", err.Error(), a.ID); saveErr != nil {
 					return saveErr
 				}
 			}
 		}
 	}
 	if run.Phase == workflow.Fix || run.Phase == workflow.Review {
-		var a attempt
+		var a durable.Attempt
 		var err error
 		if run.Phase == workflow.Fix {
 			var fix fixAttempt
 			fix, err = s.lastFix(ctx, run)
-			a = fix.attempt
+			a = fix.Attempt
 		} else {
 			var review reviewAttempt
 			review, err = s.lastReview(ctx, run)
-			a = review.attempt
+			a = review.Attempt
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if err == nil {
 			if err := s.discoverSession(ctx, run.ID, run.Phase, &a); err != nil {
-				if !invalidSessionDiscovery(err) {
+				if !durable.InvalidDiscovery(err) {
 					return err
 				}
-				if _, saveErr := s.db.ExecContext(ctx, "UPDATE phase_attempts SET error=? WHERE id=?", err.Error(), a.id); saveErr != nil {
+				if _, saveErr := s.db.ExecContext(ctx, "UPDATE phase_attempts SET error=? WHERE id=?", err.Error(), a.ID); saveErr != nil {
 					return saveErr
 				}
 			}

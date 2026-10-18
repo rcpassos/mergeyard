@@ -8,14 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/proc"
 	"github.com/rcpassos/mergeyard/internal/repository"
 )
 
@@ -57,28 +57,51 @@ type CommandRunner interface {
 type ghRunner struct{}
 
 func (ghRunner) Run(ctx context.Context, input []byte, args ...string) ([]byte, []byte, error) {
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	cmd.Stdin = bytes.NewReader(input)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
+	// Never wait on an interactive prompt from an unattended control plane.
+	result, err := proc.Run(ctx, proc.Request{
+		Executable: "gh",
+		Args:       args,
+		Env:        append(os.Environ(), "GH_PROMPT_DISABLED=1"),
+		Stdin:      bytes.NewReader(input),
+	})
+	if errors.Is(err, exec.ErrWaitDelay) && result.ExitCode == 0 {
+		// gh exited successfully; a credential helper outlived it holding the
+		// output pipes. The request itself completed.
+		err = nil
+	}
+	return result.Stdout, result.Stderr, err
 }
 
 // Client wraps the authenticated gh CLI and caches issue authorization snapshots.
 type Client struct {
 	runner     CommandRunner
+	timeout    time.Duration
 	trustMu    sync.Mutex
 	trustCache map[string]trustCacheEntry
 	login      string // authenticated comment author; protected by trustMu
 }
 
+// Options configures the gh CLI adapter. Zero fields use the defaults.
+type Options struct {
+	// Timeout bounds one gh invocation, including its internal retries.
+	Timeout time.Duration
+}
+
+// defaultTimeout bounds a gh invocation when Options leaves Timeout unset.
+const defaultTimeout = 2 * time.Minute
+
 // New uses the installed gh executable when runner is nil.
-func New(runner CommandRunner) *Client {
+func New(runner CommandRunner) *Client { return NewWithOptions(runner, Options{}) }
+
+// NewWithOptions selects the request deadline.
+func NewWithOptions(runner CommandRunner, options Options) *Client {
 	if runner == nil {
 		runner = ghRunner{}
 	}
-	return &Client{runner: runner}
+	if options.Timeout <= 0 {
+		options.Timeout = defaultTimeout
+	}
+	return &Client{runner: runner, timeout: options.Timeout}
 }
 
 // Error retains the GitHub adapter API while sharing the runtime error type.
@@ -102,18 +125,50 @@ func issuePath(repo string, number int) (string, error) {
 	return path, nil
 }
 
-// ListOpenIssues reads every page; GitHub's issues endpoint also returns PRs,
-// which are excluded from the work queue.
-func (c *Client) ListOpenIssues(ctx context.Context, repo string) ([]Issue, error) {
+// ListLabeledIssues reads every open issue carrying any of the labels. GitHub
+// ANDs the labels of one request, so each label is read separately with its own
+// pagination and the results merge by issue number. PRs are excluded; requests
+// stay proportional to labelled issues instead of every open issue and PR.
+func (c *Client) ListLabeledIssues(ctx context.Context, repo string, labels []string) ([]Issue, error) {
 	path, err := issuePath(repo, 0)
 	if err != nil {
 		return nil, err
 	}
-	data, err := c.request(ctx, nil, "GET", path+"?state=open&per_page=100", true)
-	if err != nil {
-		return nil, err
+	unique := make([]string, 0, len(labels))
+	seen := make(map[string]bool, len(labels))
+	for _, label := range labels {
+		if strings.TrimSpace(label) == "" {
+			return nil, codedError("github.invalid_input", "expected nonempty labels", nil)
+		}
+		name := strings.ToLower(label)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		unique = append(unique, label)
 	}
-	return decodeOpenIssues(data)
+	if len(unique) == 0 {
+		return nil, codedError("github.invalid_input", "expected at least one label", nil)
+	}
+	issues := make([]Issue, 0)
+	numbers := make(map[int]bool)
+	for _, label := range unique {
+		data, err := c.request(ctx, nil, "GET", path+"?state=open&per_page=100&labels="+url.QueryEscape(label), true)
+		if err != nil {
+			return nil, err
+		}
+		page, err := decodeOpenIssues(data)
+		if err != nil {
+			return nil, err
+		}
+		for _, issue := range page {
+			if !numbers[issue.Number] {
+				numbers[issue.Number] = true
+				issues = append(issues, issue)
+			}
+		}
+	}
+	return issues, nil
 }
 
 type apiIssue struct {
@@ -261,16 +316,20 @@ func (c *Client) requestWithAttempts(ctx context.Context, input []byte, method, 
 	if input != nil {
 		args = append(args, "--input", "-")
 	}
+	// One deadline covers the whole request, including its retries, so a hung
+	// gh cannot outlive the budget. A caller-supplied deadline stays earlier.
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 	// Retry-safe operations get three attempts with 250ms then 500ms backoff.
 	// PR creation and body writes get one: replaying an ambiguous write may
 	// create duplicates or overwrite human edits made after the original request.
 	for attempt := 0; attempt < attempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return nil, canceled(err)
+			return nil, contextError(err)
 		}
 		stdout, stderr, err := c.runner.Run(ctx, input, args...)
-		if ctx.Err() != nil {
-			return nil, canceled(ctx.Err())
+		if err := ctx.Err(); err != nil {
+			return nil, contextError(err)
 		}
 		if err == nil {
 			return stdout, nil
@@ -283,18 +342,21 @@ func (c *Client) requestWithAttempts(ctx context.Context, input []byte, method, 
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, canceled(ctx.Err())
+			return nil, contextError(ctx.Err())
 		case <-timer.C:
 		}
 	}
 	panic("unreachable")
 }
 
-func canceled(err error) *Error {
+// contextError classifies how a bounded gh invocation ended: an expired
+// deadline is a timeout, any other cancellation is a canceled request.
+func contextError(err error) *Error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &Error{Code: "github.timeout", Err: err}
+	}
 	return &Error{Code: "github.canceled", Err: err}
 }
-
-var httpStatusPattern = regexp.MustCompile(`\(HTTP ([0-9]{3})\)`)
 
 // gh reports API statuses on stderr as "(HTTP NNN)". Other command failures
 // stay permanent unless they match a known transport failure.
@@ -304,16 +366,13 @@ func commandError(stderr []byte, cause error) (*Error, bool) {
 		message = cause.Error()
 	}
 	code, transient := "github.command_failed", false
-	status := 0
-	if match := httpStatusPattern.FindStringSubmatch(message); match != nil {
-		status, _ = strconv.Atoi(match[1])
-	}
-	var exit interface{ ExitCode() int }
 	lower := strings.ToLower(message)
+	status := statusOf(lower)
+	var exit interface{ ExitCode() int }
 	switch {
 	case status == 401 || (errors.As(cause, &exit) && exit.ExitCode() == 4) || strings.Contains(lower, "gh auth login"):
 		code = "github.not_logged_in"
-	case status == 429 || (status == 403 && (strings.Contains(lower, "rate limit") || strings.Contains(lower, "abuse"))):
+	case rateLimited(lower):
 		// gh stderr carries no reset/Retry-After headers. Surface the limit
 		// immediately so callers can defer polling rather than retry too soon.
 		code = "github.rate_limited"
@@ -323,15 +382,8 @@ func commandError(stderr []byte, cause error) (*Error, bool) {
 		code = "github.label_not_found"
 	case status == 404 || status == 410:
 		code = "github.not_found"
-	case status == 408 || (status >= 500 && status < 600):
+	case Unavailable([]byte(lower)):
 		code, transient = "github.unavailable", true
-	case status == 0:
-		for _, marker := range []string{"error connecting to", "dial tcp", "i/o timeout", "tls handshake timeout", "connection reset", "connection refused", "unexpected eof", "network is unreachable"} {
-			if strings.Contains(lower, marker) {
-				code, transient = "github.unavailable", true
-				break
-			}
-		}
 	}
 	return codedError(code, message, cause), transient
 }

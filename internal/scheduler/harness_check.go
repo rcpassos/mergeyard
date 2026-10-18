@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/sessions"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -20,11 +22,13 @@ import (
 // CheckHarness reserves the same durable gate as selected-run Retry and launches
 // only a minimal request. The scheduler observes it on ticks, including restart.
 func (s *Scheduler) CheckHarness(ctx context.Context, name string) (workflow.HarnessCheck, error) {
-	s.tick.Lock()
+	if err := s.tick.Lock(ctx); err != nil {
+		return workflow.HarnessCheck{}, err
+	}
 	defer s.tick.Unlock()
 	adapter, ok := s.harnesses[name]
-	if !ok || (name != "claude" && name != "codex") {
-		return workflow.HarnessCheck{}, &fault.Error{Code: "harness.unknown", Message: "Choose claude or codex"}
+	if !ok || !registry.Known(name) {
+		return workflow.HarnessCheck{}, &fault.Error{Code: "harness.unknown", Message: "Choose " + strings.Join(registry.Names(), " or ")}
 	}
 	if !adapter.Capabilities().CreditExhaustionDetection {
 		return workflow.HarnessCheck{}, &fault.Error{Code: "harness.credit_detection_unavailable", Message: "Credit recovery is unavailable until this harness supports exhausted-credit detection"}

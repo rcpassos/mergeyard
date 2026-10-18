@@ -20,10 +20,11 @@ func TestCodexInvocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := harness.NewCodex(config.Codex{Sandbox: "workspace-write", NetworkAccess: true})
-	invocation, err := adapter.BuildInvocation(ctx, config.Role{Agent: "codex", Model: "chosen-model", Effort: "medium", Skills: []string{"implement", "check"}})
+	built, err := adapter.BuildInvocation(ctx, config.Role{Agent: "codex", Model: "chosen-model", Effort: "medium", Skills: []string{"implement", "check"}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	invocation := built.Command
 	want := []string{"exec", "--json", "-C", ctx.WorktreePath, "-s", "workspace-write", "-c", "approval_policy=\"never\"", "-c", "sandbox_workspace_write.network_access=true", "--output-schema", filepath.Join(ctx.PhaseDir, "schema.json"), "-o", filepath.Join(ctx.PhaseDir, "last-message.json"), "--model", "chosen-model", "-c", "model_reasoning_effort=\"medium\"", "--", "$implement $check Read " + filepath.Join(ctx.PhaseDir, "input.md") + " and follow it. Do not commit."}
 	if !slices.Equal(invocation.Args, want) {
 		t.Fatalf("invocation: %q", invocation.Args)
@@ -37,10 +38,14 @@ func TestCodexInvocation(t *testing.T) {
 	}
 	ctx.SessionID, ctx.Resume = sessionID, true
 	resumed, err := adapter.BuildInvocation(ctx, config.Role{Agent: "codex"})
-	if err != nil || !slices.Equal(resumed.Args[len(resumed.Args)-4:len(resumed.Args)-1], []string{"resume", "--", sessionID}) {
-		t.Fatalf("resume: %q, %v", resumed.Args, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(strings.Join(resumed.Args, " "), "--last") {
+	resumedCommand := resumed.Command
+	if !slices.Equal(resumedCommand.Args[len(resumedCommand.Args)-4:len(resumedCommand.Args)-1], []string{"resume", "--", sessionID}) {
+		t.Fatalf("resume: %q, %v", resumedCommand.Args, err)
+	}
+	if strings.Contains(strings.Join(resumedCommand.Args, " "), "--last") {
 		t.Fatal("resume must use exact ID")
 	}
 }
@@ -54,7 +59,7 @@ func TestCodexRequiresNativeCompletionAndStrictResult(t *testing.T) {
 	adapter := harness.NewCodex(config.Codex{})
 	ctx := phase(t)
 	ctx.SessionID = ""
-	result, err := adapter.ParseResult(ctx, harness.PhaseArtifacts{Stdout: []byte(codexSuccess), LastMessage: []byte(`{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":"Added feature"}`)})
+	result, err := adapter.ParseResult(ctx, harness.PhaseArtifacts{Stdout: []byte(codexSuccess), Files: map[string][]byte{"last-message.json": []byte(`{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":"Added feature"}`)}})
 	if err != nil || result.Status != "success" || result.Summary != "Added feature" {
 		t.Fatalf("result %+v: %v", result, err)
 	}
@@ -81,7 +86,7 @@ func TestCodexRequiresNativeCompletionAndStrictResult(t *testing.T) {
 				message = []byte(`{"status":"success","summary":"Added feature"}`)
 			}
 			ctx.Resume, ctx.SessionID = tc.name == "missing session", sessionID
-			_, err := adapter.ParseResult(ctx, harness.PhaseArtifacts{LastMessage: message, Stdout: []byte(tc.output), Stderr: []byte(tc.stderr), ExitCode: tc.exit})
+			_, err := adapter.ParseResult(ctx, harness.PhaseArtifacts{Files: map[string][]byte{"last-message.json": message}, Stdout: []byte(tc.output), Stderr: []byte(tc.stderr), ExitCode: tc.exit})
 			assertCode(t, err, tc.code)
 			if tc.name == "provider" && !strings.Contains(err.Error(), "Unsupported model") {
 				t.Fatalf("lost provider diagnostic: %v", err)
