@@ -250,7 +250,9 @@ func TestEscalationReadinessRestartAndSurfaces(t *testing.T) {
 	}
 	for _, path := range []string{"/", "/runs/" + run.ID, "/api/status"} {
 		response := httptest.NewRecorder()
-		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil)
+		signAPIRequest(t, rt.Workspace.Root, request)
+		server.ServeHTTP(response, request)
 		for _, text := range []string{"ci/deploy", ".github/workflows/ci.yml", "dependency manifests", "package.json"} {
 			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), text) {
 				t.Fatalf("%s missing %q: %s", path, text, response.Body.String())

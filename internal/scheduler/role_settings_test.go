@@ -182,8 +182,9 @@ func TestStoredRoleSettingsSurviveRestartLabelsAndFix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command, err := s.Takeover(context.Background(), run.ID)
-	if err != nil || command.Executable != cfg.Agents.Claude.Executable || !strings.Contains(strings.Join(command.Args, " "), run.Implementer.SessionID) {
+	prepared, err := s.Takeover(context.Background(), run.ID)
+	command := manualCommand(t, s, run.ID)
+	if err != nil || prepared.State != workflow.Manual || command.Executable != cfg.Agents.Claude.Executable || !strings.Contains(strings.Join(command.Args, " "), run.Implementer.SessionID) {
 		t.Fatalf("takeover changed implementer: %+v %v", command, err)
 	}
 	if _, err := s.Handback(context.Background(), run.ID); err != nil {

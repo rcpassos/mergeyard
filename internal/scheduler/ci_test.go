@@ -326,7 +326,7 @@ func TestReadyWarningsClosureCapacityAndHTTP(t *testing.T) {
 		}
 	}
 	res := httptest.NewRecorder()
-	server.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(res, apiRequest(t, runtime.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if err := json.Unmarshal(res.Body.Bytes(), &status); err != nil || len(status.Runs) != 1 || status.Runs[0].CI.Warning == "" {
 		t.Fatal("API lost CI evidence")

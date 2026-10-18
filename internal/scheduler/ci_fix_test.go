@@ -221,7 +221,9 @@ func TestCIFailureRequiresFixThenIndependentReview(t *testing.T) {
 			}
 			for _, path := range []string{"/runs/" + run.ID, "/api/status"} {
 				response := httptest.NewRecorder()
-				server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+				request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil)
+				signAPIRequest(t, runtime.Workspace.Root, request)
+				server.ServeHTTP(response, request)
 				for _, want := range []string{cause, "https://example.com/build", "Repaired failing CI", "feature.go:12: undefined name"} {
 					if response.Code != 200 || !strings.Contains(response.Body.String(), want) {
 						t.Fatalf("%s missing %q", path, want)

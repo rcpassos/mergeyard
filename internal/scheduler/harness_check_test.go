@@ -223,7 +223,7 @@ func TestHarnessCheckBrowserControlsAndProtections(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := httptest.NewRecorder()
-	server.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(status, apiRequest(t, rt.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 	var snapshot web.Status
 	if err := json.Unmarshal(status.Body.Bytes(), &snapshot); err != nil {
 		t.Fatal(err)

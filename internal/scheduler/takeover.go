@@ -12,10 +12,12 @@ import (
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
-// Takeover prepares manual control; the CLI owns the interactive terminal.
+// Takeover prepares manual control and returns the prepared run snapshot. The
+// CLI owns the interactive terminal and rebuilds the resume invocation locally
+// from the stored role settings; the runtime never returns a command to run.
 // The shared run gate excludes in-flight publication, review and retry work.
-func (s *Scheduler) Takeover(ctx context.Context, id string) (harness.InteractiveCommand, error) {
-	var command harness.InteractiveCommand
+func (s *Scheduler) Takeover(ctx context.Context, id string) (workflow.Run, error) {
+	var prepared workflow.Run
 	err := s.workflow.WithRunOperation(ctx, id, func(ctx context.Context, run workflow.Run) error {
 		if run.State.Terminal() || run.Merge != nil {
 			return &fault.Error{Code: "takeover.unavailable", Message: "Takeover requires a nonterminal run without merged-PR cleanup"}
@@ -27,9 +29,9 @@ func (s *Scheduler) Takeover(ctx context.Context, id string) (harness.Interactiv
 		if stopping || run.PendingRetry() != nil || run.PendingHandback() != nil {
 			return &fault.Error{Code: "takeover.operation_pending", Message: "Finish the pending Stop or Retry before requesting takeover"}
 		}
-		var err error
-		command, err = s.interactiveCommand(ctx, run)
-		if err != nil {
+		// Validate the prerequisites before recording takeover intent, so a
+		// missing worktree or session leaves no requested marker behind.
+		if _, err := s.interactiveCommand(ctx, run); err != nil {
 			return err
 		}
 		if run.State == workflow.Manual && run.TakeoverStatus == workflow.TakeoverManual {
@@ -41,22 +43,27 @@ func (s *Scheduler) Takeover(ctx context.Context, id string) (harness.Interactiv
 				repo, _ := s.runRepository(run)
 				return errors.Join(err, s.recordAttention(ctx, repo, run, err))
 			}
-			return nil
-		}
-		if run.TakeoverStatus != workflow.TakeoverRequested {
-			if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				_, err := tx.ExecContext(ctx, "UPDATE runs SET takeover_status='requested' WHERE id=?", id)
-				return events.Draft{RunID: id, Type: "run.takeover_requested", Payload: map[string]string{"status": "requested"}}, err
-			}); err != nil {
+		} else {
+			if run.TakeoverStatus != workflow.TakeoverRequested {
+				if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+					_, err := tx.ExecContext(ctx, "UPDATE runs SET takeover_status='requested' WHERE id=?", id)
+					return events.Draft{RunID: id, Type: "run.takeover_requested", Payload: map[string]string{"status": "requested"}}, err
+				}); err != nil {
+					return err
+				}
+			}
+			if err := s.prepareTakeover(ctx, run); err != nil {
 				return err
 			}
 		}
-		return s.prepareTakeover(ctx, run)
+		var err error
+		prepared, err = s.workflow.Get(ctx, id)
+		return err
 	})
 	if err != nil {
-		return harness.InteractiveCommand{}, err
+		return workflow.Run{}, err
 	}
-	return command, nil
+	return prepared, nil
 }
 
 func (s *Scheduler) interactiveCommand(ctx context.Context, run workflow.Run) (harness.InteractiveCommand, error) {

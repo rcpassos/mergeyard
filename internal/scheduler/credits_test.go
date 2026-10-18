@@ -74,7 +74,7 @@ func TestCreditRetrySelectedRunRecoversWithoutReset(t *testing.T) {
 				}
 			}
 			h.detection = false
-			assertCreditConflict(t, server, attention.ID, "harness.credit_detection_unavailable", "Credit recovery is unavailable")
+			assertCreditConflict(t, runtime.Workspace.Root, server, attention.ID, "harness.credit_detection_unavailable", "Credit recovery is unavailable")
 			h.detection = true
 			now = now.Add(365 * 24 * time.Hour)
 			if err := s.Tick(context.Background()); err != nil {
@@ -85,7 +85,7 @@ func TestCreditRetrySelectedRunRecoversWithoutReset(t *testing.T) {
 				t.Fatalf("Retry: %+v %v", selected, err)
 			}
 			response := httptest.NewRecorder()
-			server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+			server.ServeHTTP(response, apiRequest(t, runtime.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 			var snapshot web.Status
 			if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &snapshot) != nil || len(snapshot.Runs[0].CreditProbes) != 1 || snapshot.Runs[0].CreditProbes[0].Status != "reserved" || strings.Contains(response.Body.String(), "0001-01-01") {
 				t.Fatalf("reserved probe status: %d %s", response.Code, response.Body.String())
@@ -238,7 +238,7 @@ func TestCreditProbeConcurrentSelectionStopAndWaitingRetry(t *testing.T) {
 			t.Fatalf("busy probe offered Retry: %d %s", page.Code, page.Body.String())
 		}
 		if run.ID != winner.ID {
-			assertCreditConflict(t, server, run.ID, "harness.probe_unavailable", "refresh before retrying")
+			assertCreditConflict(t, rt.Workspace.Root, server, run.ID, "harness.probe_unavailable", "refresh before retrying")
 		}
 	}
 	for range 2 {

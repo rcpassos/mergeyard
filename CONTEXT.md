@@ -19,3 +19,6 @@ _Avoid_: Native limit format, limit error
 _Avoid_: Agent label, harness label
 
 **Tier**: One of `low`, `medium`, or `high`, with model and effort settings specific to a role and harness. An issue label selects the implementer's or reviewer's tier independently; role configuration or a harness override selects the harness.
+
+**Workspace secret**: The owner-only file the runtime writes inside the workspace and the CLI reads, so both can prove they belong to the same workspace before any API request or interactive launch.
+_Avoid_: API key, token (the browser CSRF token is separate)

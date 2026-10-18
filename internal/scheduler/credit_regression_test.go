@@ -215,10 +215,10 @@ printf fixed > feature.txt; `+fixedReport))
 	}
 }
 
-func assertCreditConflict(t *testing.T, server http.Handler, id, code, message string) {
+func assertCreditConflict(t *testing.T, root string, server http.Handler, id, code, message string) {
 	t.Helper()
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(response, apiRequest(t, root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &status) != nil {
 		t.Fatalf("status %d %s", response.Code, response.Body.String())
@@ -226,6 +226,7 @@ func assertCreditConflict(t *testing.T, server http.Handler, id, code, message s
 	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7331/api/runs/"+id+"/retry", nil)
 	request.Header.Set("Origin", "http://127.0.0.1:7331")
 	request.Header.Set("X-CSRF-Token", status.Token)
+	signAPIRequest(t, root, request)
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 	if response.Code != 409 || response.Header().Get("X-Mergeyard-Error-Code") != code || !strings.Contains(response.Body.String(), message) {
@@ -266,7 +267,7 @@ func TestExpiredTemporaryResetDoesNotDescribeCreditProbeDelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(response, apiRequest(t, rt.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 	var snapshot struct {
 		Runs []struct {
 			HarnessWait map[string]json.RawMessage `json:"harness_wait"`

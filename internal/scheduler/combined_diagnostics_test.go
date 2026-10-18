@@ -23,7 +23,7 @@ func TestStatusExposesLoadedEffectiveConfigurationAndSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(response, apiRequest(t, rt.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &status) != nil || status.Config == nil || status.ConfigPath != path || status.Workspace != rt.Workspace.Root || status.Config.Concurrency != 4 {
 		t.Fatalf("effective configuration absent: %d %s", response.Code, response.Body.String())

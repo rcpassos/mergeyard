@@ -192,7 +192,7 @@ func TestLocalAPISharesControlsAndRequiresCSRFForStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	statusResponse := httptest.NewRecorder()
-	server.ServeHTTP(statusResponse, httptest.NewRequest("GET", "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(statusResponse, apiRequest(t, runtime.Workspace.Root, "GET", "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
 		t.Fatal(err)
@@ -201,23 +201,29 @@ func TestLocalAPISharesControlsAndRequiresCSRFForStop(t *testing.T) {
 		t.Fatalf("status: %+v", status)
 	}
 	watch := httptest.NewRecorder()
-	server.ServeHTTP(watch, httptest.NewRequest("GET", "http://127.0.0.1:7331/api/runs/"+id+"/watch", nil))
+	server.ServeHTTP(watch, apiRequest(t, runtime.Workspace.Root, "GET", "http://127.0.0.1:7331/api/runs/"+id+"/watch"))
 	if watch.Code != http.StatusOK {
 		t.Fatalf("watch API: %d %s", watch.Code, watch.Body.String())
 	}
-	for _, authorized := range []bool{false, true} {
+	for _, attack := range []string{"missing proof", "missing token", ""} {
 		request := httptest.NewRequest("POST", "http://127.0.0.1:7331/api/runs/"+id+"/stop", nil)
-		if authorized {
-			request.Header.Set("Origin", "http://127.0.0.1:7331")
+		request.Header.Set("Origin", "http://127.0.0.1:7331")
+		if attack != "missing proof" {
+			signAPIRequest(t, runtime.Workspace.Root, request)
+		}
+		if attack != "missing token" {
 			request.Header.Set("X-CSRF-Token", status.Token)
 		}
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)
 		run, _ := runtime.Workflow.Get(ctx, id)
-		if !authorized && (response.Code != http.StatusForbidden || run.State != workflow.Active) {
+		if attack == "missing proof" && (response.Code != http.StatusUnauthorized || run.State != workflow.Active) {
+			t.Fatalf("unproven stop changed run: %d %+v", response.Code, run)
+		}
+		if attack == "missing token" && (response.Code != http.StatusForbidden || run.State != workflow.Active) {
 			t.Fatalf("unauthorized stop changed run: %d %+v", response.Code, run)
 		}
-		if authorized && (response.Code != http.StatusNoContent || run.State != workflow.Stopped || has(api.issues["owner/repo"][0], "agent-running")) {
+		if attack == "" && (response.Code != http.StatusNoContent || run.State != workflow.Stopped || has(api.issues["owner/repo"][0], "agent-running")) {
 			t.Fatalf("authorized stop failed: %d %+v", response.Code, run)
 		}
 	}

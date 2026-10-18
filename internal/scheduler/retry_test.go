@@ -428,7 +428,7 @@ func TestExplicitRetryDashboardAndCLIAPIShareScheduler(t *testing.T) {
 					t.Fatal(err)
 				}
 				statusRecorder := httptest.NewRecorder()
-				server.ServeHTTP(statusRecorder, httptest.NewRequest("GET", "http://127.0.0.1:7331/api/status", nil))
+				server.ServeHTTP(statusRecorder, apiRequest(t, runtime.Workspace.Root, "GET", "http://127.0.0.1:7331/api/status"))
 				var status web.Status
 				if err := json.Unmarshal(statusRecorder.Body.Bytes(), &status); err != nil {
 					t.Fatal(err)
@@ -442,6 +442,7 @@ func TestExplicitRetryDashboardAndCLIAPIShareScheduler(t *testing.T) {
 					request := httptest.NewRequest("POST", "http://127.0.0.1:7331"+route+before.ID+"/retry", nil)
 					request.Header.Set("Origin", "http://127.0.0.1:7331")
 					request.Header.Set("X-CSRF-Token", status.Token)
+					signAPIRequest(t, runtime.Workspace.Root, request)
 					switch invalid {
 					case "host":
 						request.Host = "evil.example:7331"
@@ -463,6 +464,7 @@ func TestExplicitRetryDashboardAndCLIAPIShareScheduler(t *testing.T) {
 					request := httptest.NewRequest("POST", "http://127.0.0.1:7331"+route+before.ID+"/retry", nil)
 					request.Header.Set("Origin", "http://127.0.0.1:7331")
 					request.Header.Set("X-CSRF-Token", status.Token)
+					signAPIRequest(t, runtime.Workspace.Root, request)
 					response := httptest.NewRecorder()
 					server.ServeHTTP(response, request)
 					if route == "/runs/" {

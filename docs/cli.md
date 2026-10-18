@@ -9,6 +9,16 @@ a delayed launcher does not block the dashboard or CLI controls. Launch failures
 are reported without stopping the runtime. Shutdown cancels and waits for the
 launcher. `--config <path>` works with every command.
 
+Every command that contacts a running control plane first reads the workspace's
+owner-only `runtime.secret` and proves knowledge of it on each request; the
+runtime proves the same secret in its answers. On a machine shared with other
+users, a process that binds the port without the secret is refused with
+`runtime.unauthenticated` and no control or interactive launch is attempted. A
+missing secret reports `runtime.secret_missing` and points at `mergeyard start`
+for that workspace; a group- or world-readable secret reports
+`runtime.secret_insecure` with the `chmod 600` fix. Each `mergeyard start`
+rotates the secret, and the CLI re-reads it per command.
+
 SIGINT and SIGTERM cancel scheduler polling and HTTP/SSE requests, wait for
 scheduler operations to return, and close SQLite before releasing the workspace
 lock. Running tmux phases stay alive. The next startup observes those persisted
@@ -21,12 +31,14 @@ reconciliation can restore labels or advance work.
 changing labels, posting comments, creating runs/worktrees, or writing SQLite.
 With a running control plane it uses `GET /api/plan` over the existing local
 connection and the owner's loaded configuration, persisted runs and pause state.
-With no listener it loads the selected configuration, reads GitHub and opens the
+With no listener — or a workspace where no runtime has created its secret — it
+loads the selected configuration, reads GitHub and opens the
 existing SQLite store in read-only mode, without locking the workspace or applying
 migrations. A workspace without a database is treated as having no persisted runs;
 planning does not create it. An incompatible database requires a normal startup
 to migrate before planning. Connection errors from an active server, including a
-workspace mismatch, are reported rather than falling back.
+workspace mismatch or a port that cannot prove the workspace secret, are reported
+rather than falling back.
 
 The plan lists every open issue carrying its repository's ready label, including
 issues in disabled repositories. Repository configuration order, issue creation
@@ -188,7 +200,9 @@ original text; control sequences appear as visible escapes in the terminal.
 
 `mergeyard takeover <run-id>` prepares manual control through the running
 control plane, then launches the exact implementer conversation in its worktree.
-It requires a nonterminal run, prepared worktree, and recorded implementer UUID;
+The runtime answers with the prepared run snapshot; the CLI reconstructs the
+executable, arguments and worktree locally from the run's stored role settings,
+the recorded implementer session and the managed workspace layout. It requires a nonterminal run, prepared worktree, and recorded implementer UUID;
 a pending Stop or Retry must finish first. Missing prerequisites give an
 actionable error and never create a fresh conversation. Automated processes are
 interrupted and their exit verified; interrupted review changes are restored

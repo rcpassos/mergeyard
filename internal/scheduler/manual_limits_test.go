@@ -50,11 +50,11 @@ func TestHandbackIntoBlockedImplementWait(t *testing.T) {
 				}
 				before := finish(t, s, initial, workflow.Implement)
 				ctx := context.Background()
-				command, err := s.Takeover(ctx, before.ID)
+				prepared, err := s.Takeover(ctx, before.ID)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(command.Dir, "manual.txt"), []byte("manual work"), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(runWorktree(t, rt.Workspace.Root, prepared), "manual.txt"), []byte("manual work"), 0600); err != nil {
 					t.Fatal(err)
 				}
 				selected, err := s.Handback(ctx, before.ID)
@@ -134,7 +134,7 @@ func TestHandbackBlockedReviewerPreservesGrantAndMixedRoles(t *testing.T) {
 						t.Fatalf("fixture: %+v", before)
 					}
 					ctx := context.Background()
-					command, err := s.Takeover(ctx, before.ID)
+					prepared, err := s.Takeover(ctx, before.ID)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -162,7 +162,7 @@ func TestHandbackBlockedReviewerPreservesGrantAndMixedRoles(t *testing.T) {
 					if err := s.Stop(ctx, blocker.ID); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(filepath.Join(command.Dir, "feature.txt"), []byte("manual repair"), 0600); err != nil {
+					if err := os.WriteFile(filepath.Join(runWorktree(t, rt.Workspace.Root, prepared), "feature.txt"), []byte("manual repair"), 0600); err != nil {
 						t.Fatal(err)
 					}
 					// Interrupt the final selection transaction after publication. The
@@ -340,12 +340,13 @@ func TestTakeoverActiveCreditProbeRetainsBlockAndRestoresReviewer(t *testing.T) 
 					if err != nil {
 						t.Fatal(err)
 					}
-					command, err := s.Takeover(ctx, before.ID)
+					prepared, err := s.Takeover(ctx, before.ID)
 					if err != nil {
 						t.Fatal(err)
 					}
 					manual, err := rt.Workflow.Get(ctx, before.ID)
-					if err != nil || manual.State != workflow.Manual || manual.Implementer.SessionID != before.Implementer.SessionID || len(manual.CreditProbes) != 1 || manual.CreditProbes[0].Status != "released" || !strings.Contains(strings.Join(command.Args, " "), before.Implementer.SessionID) {
+					command := manualCommand(t, s, before.ID)
+					if err != nil || manual.State != workflow.Manual || manual.Implementer.SessionID != before.Implementer.SessionID || len(manual.CreditProbes) != 1 || manual.CreditProbes[0].Status != "released" || prepared.State != workflow.Manual || !strings.Contains(strings.Join(command.Args, " "), before.Implementer.SessionID) {
 						t.Fatalf("probe takeover: %+v %v", manual, err)
 					}
 					status, err := r.SessionStatus(ctx, ref)

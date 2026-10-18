@@ -54,7 +54,7 @@ func TestBlockedHandbackRepairsLabelsWithoutRepeatingPublicationOrGrant(t *testi
 				t.Fatalf("fixture: %+v", before)
 			}
 			ctx := context.Background()
-			command, err := s.Takeover(ctx, before.ID)
+			prepared, err := s.Takeover(ctx, before.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -79,7 +79,7 @@ func TestBlockedHandbackRepairsLabelsWithoutRepeatingPublicationOrGrant(t *testi
 			if err := s.Stop(ctx, blocker.ID); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(command.Dir, "feature.txt"), []byte("manual repair"), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(runWorktree(t, rt.Workspace.Root, prepared), "feature.txt"), []byte("manual repair"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			labelFailure := fmt.Errorf("attention label response lost")

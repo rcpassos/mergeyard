@@ -28,6 +28,12 @@ type HarnessAdapter interface {
 	ClassifyFailure(PhaseArtifacts, time.Time) FailureClassification
 }
 
+// Adapters returns the configured harness adapters by name. Callers may replace
+// entries with instrumented adapters for tests.
+func Adapters(agents config.Agents) map[string]HarnessAdapter {
+	return map[string]HarnessAdapter{"claude": NewClaude(agents.Claude), "codex": NewCodex(agents.Codex)}
+}
+
 // CheckConfigurator inspects effective local configuration without a model call.
 // The runner executes the inspection; adapters interpret it and disable tools.
 type CheckConfigurator interface {

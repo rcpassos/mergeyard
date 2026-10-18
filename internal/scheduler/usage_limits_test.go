@@ -91,7 +91,7 @@ func TestTemporaryLimitPreservesWorkAndResumesAfterRestart(t *testing.T) {
 				}
 			}
 			status := httptest.NewRecorder()
-			server.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+			server.ServeHTTP(status, apiRequest(t, runtime.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 			var operational web.Status
 			if status.Code != 200 || json.Unmarshal(status.Body.Bytes(), &operational) != nil || len(operational.Harnesses) != 2 || operational.Runs[0].HarnessWait == nil {
 				t.Fatalf("status %d %s", status.Code, status.Body.String())

@@ -85,7 +85,7 @@ func PlanOffline(ctx context.Context, cfg config.Config, db *sql.DB, deps Depend
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	adapters := map[string]harness.HarnessAdapter{"claude": harness.NewClaude(cfg.Agents.Claude), "codex": harness.NewCodex(cfg.Agents.Codex)}
+	adapters := harness.Adapters(cfg.Agents)
 	for name, adapter := range deps.Harnesses {
 		adapters[name] = adapter
 	}

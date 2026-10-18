@@ -21,6 +21,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/maintenance"
 	"github.com/rcpassos/mergeyard/internal/review"
 	"github.com/rcpassos/mergeyard/internal/runner"
+	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/web"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -55,7 +56,7 @@ func TestCLIControlsUseOwningRuntimeAndWatchReadOnly(t *testing.T) {
 		stopped = true
 		w.WriteHeader(http.StatusNoContent)
 	})
-	server := httptest.NewServer(mux)
+	server := runtimeServer(t, root, mux)
 	defer server.Close()
 	path := filepath.Join(root, "config.yaml")
 	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
@@ -102,30 +103,139 @@ func TestCLIControlsUseOwningRuntimeAndWatchReadOnly(t *testing.T) {
 	if paused || !stopped {
 		t.Fatalf("controls not delivered: paused %v stopped %v", paused, stopped)
 	}
-	// Another workspace on this port cannot receive commands for this config.
-	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", filepath.Join(root, "other"), port)), 0600); err != nil {
+	// Another workspace on this port cannot prove this workspace's secret.
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(other, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeauth.EnsureSecret(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", other, port)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	code, _, errOut := runCLI("pause", "--config", path)
-	if code != 1 || !strings.Contains(errOut, "workspace.mismatch") {
+	if code != 1 || !strings.Contains(errOut, "runtime.unauthenticated") {
 		t.Fatalf("wrong runtime: %d %s", code, errOut)
 	}
 	if paused {
 		t.Fatal("changed another workspace's scheduler")
 	}
+	// Even a copied secret keeps the workspace identity check before controls.
+	copied, err := runtimeauth.LoadSecret(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runtimeauth.SecretPath(other), copied, 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut = runCLI("pause", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "workspace.mismatch") {
+		t.Fatalf("copied secret bypassed the workspace check: %d %s", code, errOut)
+	}
 }
 
 func TestCLIReportsRuntimeUnavailable(t *testing.T) {
+	root := t.TempDir()
+	if _, err := runtimeauth.EnsureSecret(root); err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(http.NotFoundHandler())
 	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
 	server.Close()
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("port: "+port+"\n"), 0600); err != nil {
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, port)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err := connect(context.Background(), path)
 	if err == nil || !strings.Contains(err.Error(), "internal.runtime_unavailable") {
 		t.Fatalf("offline runtime: %v", err)
+	}
+}
+
+func TestCLIRefusesImpostorRuntimeThatCannotProveTheSecret(t *testing.T) {
+	root := t.TempDir()
+	secret, err := runtimeauth.EnsureSecret(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impostorExecutable := filepath.Join(root, "impostor")
+	if err := os.WriteFile(impostorExecutable, []byte("#!/bin/sh\nprintf compromised\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	requests, proofs := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Header.Get(runtimeauth.ProofHeader) != "" {
+			proofs++
+		}
+		if strings.Contains(r.Header.Get(runtimeauth.ProofHeader), string(secret)) {
+			t.Error("the CLI sent the workspace secret to the port")
+		}
+		switch r.URL.Path {
+		case "/api/status":
+			// The impostor knows the workspace path and the classic answer.
+			json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "stolen"})
+		case "/api/runs/run-1/takeover":
+			json.NewEncoder(w).Encode(harness.InteractiveCommand{Executable: impostorExecutable, Dir: root, Args: []string{"--resume", "01a10c5b-38a9-7330-b833-04e365cb5f37"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	commandsAttempted := [][]string{{"status"}, {"pause"}, {"takeover", "run-1"}}
+	for _, action := range commandsAttempted {
+		code, out, errOut := runCLI(append(action, "--config", path)...)
+		if code != 1 || !strings.Contains(errOut, "runtime.unauthenticated") || strings.Contains(out, "compromised") {
+			t.Fatalf("impostor accepted for %v: %d %q %s", action, code, out, errOut)
+		}
+	}
+	// Only the status probe of each command reached the impostor; no control
+	// request was attempted.
+	if requests != len(commandsAttempted) || proofs != requests {
+		t.Fatalf("impostor saw %d requests with %d proofs", requests, proofs)
+	}
+}
+
+func TestCLIRefusesRuntimeProvingTheWrongSecret(t *testing.T) {
+	root := t.TempDir()
+	if _, err := runtimeauth.EnsureSecret(root); err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := runtimeauth.EnsureSecret(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The impostor answers with the right workspace and a proof of its own
+	// secret, so only the proof check can expose it.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(runtimeauth.ProofHeader, runtimeauth.ResponseProof(foreign, r.Header.Get(runtimeauth.NonceHeader)))
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "other"})
+	}))
+	defer server.Close()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("status", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "runtime.unauthenticated") || strings.Contains(out, "Scheduler:") {
+		t.Fatalf("foreign secret accepted: %d %q %s", code, out, errOut)
+	}
+}
+
+func TestCLIStatusRequiresTheWorkspaceSecretFile(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: 7331\n", root)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut := runCLI("status", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "runtime.secret_missing") || !strings.Contains(errOut, "start Mergeyard with this workspace") {
+		t.Fatalf("missing secret guidance: %d %s", code, errOut)
 	}
 }
 
@@ -136,7 +246,7 @@ func TestCLIStatusShowsOwningConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := runtimeServer(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"workspace": root, "config_path": "/runtime/config.yaml\x1b[2J", "effective_config": cfg, "runs": []workflow.Run{}})
 	}))
 	defer server.Close()
@@ -171,7 +281,7 @@ func TestCLIStatusEscapesUntrustedReviewText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("review report should retain original text: %v", err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := runtimeServer(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(web.Status{Workspace: root, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Review, LastErrorCode: "review.failed", LastErrorMessage: attack, HumanAction: &fault.HumanAction{Decision: "Choose recovery" + attack, Files: []string{file}, Options: []string{"Retry" + attack}}, CI: &ci.Snapshot{SHA: "approved" + attack, CurrentHead: "current" + attack, QueryError: "query" + attack, Warning: "warning" + attack, Evidence: ci.Evidence{MergeSHA: "merge" + attack, Checks: []ci.Check{{Name: "check" + attack, SHA: "check-sha" + attack, State: "unknown", Status: "completed", Conclusion: "neutral", URL: "https://check.example/" + attack, Excerpt: "check excerpt" + attack}}, Required: []ci.Requirement{{Name: "required" + attack}}}}, FixHistory: []review.FixSnapshot{{CI: &ci.Snapshot{RepairCause: "ci.check_failed" + attack, Evidence: ci.Evidence{Checks: []ci.Check{{Name: "build" + attack, Conclusion: "failure", Excerpt: "failure excerpt" + attack, URL: "https://check.example/" + attack}}}}, Round: 1, Attempt: 1, Status: "succeeded", SessionID: "implementer" + attack, Report: &review.FixReport{SchemaVersion: 1, Status: "success", Summary: "Fix summary" + attack, Responses: []review.Response{{FindingID: "F1" + attack, Resolution: "disputed", Note: "Safe" + attack}}}}}, Review: &review.Snapshot{Agent: "claude", Model: "model" + attack, Effort: "high", Skills: []string{"review" + attack}, PermissionMode: "auto", SessionID: "session-1", Round: 1, Attempt: 1, TargetSHA: "pinned", Status: "succeeded", Accepted: true, Report: &report}}}})
 	}))
 	defer server.Close()
@@ -221,7 +331,7 @@ func TestCLIRetrySendsProtectedRequestAndDisplaysSelection(t *testing.T) {
 		requested++
 		json.NewEncoder(w).Encode(selected)
 	})
-	server := httptest.NewServer(mux)
+	server := runtimeServer(t, root, mux)
 	defer server.Close()
 	path := filepath.Join(root, "config.yaml")
 	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
@@ -241,13 +351,43 @@ func TestCLIRetrySendsProtectedRequestAndDisplaysSelection(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "FAILED/") || !strings.Contains(out, "mergeyard retry run-1") {
 		t.Fatalf("failed runs invisible: %s %s", out, errOut)
 	}
-	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", filepath.Join(root, "other"), port)), 0600); err != nil {
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(other, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeauth.EnsureSecret(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", other, port)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	code, _, errOut = runCLI("retry", "run-1", "--config", path)
-	if code != 1 || !strings.Contains(errOut, "workspace.mismatch") || requested != 1 {
+	if code != 1 || !strings.Contains(errOut, "runtime.unauthenticated") || requested != 1 {
 		t.Fatalf("retry touched wrong workspace: %d %s %d", code, errOut, requested)
 	}
+}
+
+// manualSnapshot is the runtime's prepared-run answer for takeover. The CLI
+// must rebuild the resume invocation locally from it.
+func manualSnapshot(id, session string) workflow.Run {
+	return workflow.Run{
+		ID: id, Repository: "owner/repo", IssueNumber: 7,
+		State: workflow.Manual, Phase: workflow.Implement, TakeoverStatus: workflow.TakeoverManual,
+		RoleSettings: &config.RunRoleSettings{Implementer: config.RoleSettings{Agent: "claude", HarnessSource: "config"}},
+		Implementer:  &workflow.ImplementSnapshot{Agent: "claude", SessionID: session},
+	}
+}
+
+// takeoverCLIConfig writes a CLI configuration whose harness executable is a
+// local script, not a server reply.
+func takeoverCLIConfig(t *testing.T, root, port, executable string) string {
+	t.Helper()
+	path := filepath.Join(root, "config.yaml")
+	configText := fmt.Sprintf("workspace: %q\nport: %s\nagents:\n  claude:\n    executable: %q\n", root, port, executable)
+	if err := os.WriteFile(path, []byte(configText), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestCLITakeoverResumesExactIDInWorktree(t *testing.T) {
@@ -255,8 +395,8 @@ func TestCLITakeoverResumesExactIDInWorktree(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "runs", "run-1"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	worktree := filepath.Join(root, "work tree's $(touch never)")
-	if err := os.Mkdir(worktree, 0700); err != nil {
+	worktree := filepath.Join(root, "worktrees", "owner-repo", "run-1")
+	if err := os.MkdirAll(worktree, 0700); err != nil {
 		t.Fatal(err)
 	}
 	executable := filepath.Join(root, "harness's executable")
@@ -276,15 +416,11 @@ func TestCLITakeoverResumesExactIDInWorktree(t *testing.T) {
 			return
 		}
 		requests++
-		json.NewEncoder(w).Encode(harness.InteractiveCommand{Executable: executable, Dir: worktree, Args: []string{"--resume", id, "--permission-mode", "default"}})
+		json.NewEncoder(w).Encode(manualSnapshot("run-1", id))
 	})
-	server := httptest.NewServer(mux)
+	server := runtimeServer(t, root, mux)
 	defer server.Close()
-	path := filepath.Join(root, "config.yaml")
-	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
-	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, port)), 0600); err != nil {
-		t.Fatal(err)
-	}
+	path := takeoverCLIConfig(t, root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"), executable)
 	code, out, errOut := runCLI("takeover", "run-1", "--config", path)
 	if code != 0 || requests != 1 || !strings.Contains(out, worktree+"\n--resume\n"+id+"\n--permission-mode\ndefault\n") {
 		t.Fatalf("takeover launch: %d %d %q %s", code, requests, out, errOut)
@@ -296,18 +432,104 @@ func TestCLITakeoverResumesExactIDInWorktree(t *testing.T) {
 	if code != 1 || !strings.Contains(errOut, "takeover.launch_failed") {
 		t.Fatalf("launch failure missing manual recovery: %d %s", code, errOut)
 	}
-	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", filepath.Join(root, "other"), port)), 0600); err != nil {
+	// A runtime for a different workspace cannot prove this workspace's secret.
+	other := t.TempDir()
+	if _, err := runtimeauth.EnsureSecret(other); err != nil {
 		t.Fatal(err)
 	}
-	code, _, errOut = runCLI("takeover", "run-1", "--config", path)
-	if code != 1 || requests != 2 || !strings.Contains(errOut, "workspace.mismatch") {
-		t.Fatalf("takeover changed another workspace: %d %d %s", code, requests, errOut)
+	otherPath := takeoverCLIConfig(t, other, strings.TrimPrefix(server.URL, "http://127.0.0.1:"), executable)
+	code, _, errOut = runCLI("takeover", "run-1", "--config", otherPath)
+	if code != 1 || requests != 2 || !strings.Contains(errOut, "runtime.unauthenticated") {
+		t.Fatalf("takeover trusted another workspace: %d %d %s", code, requests, errOut)
+	}
+}
+
+func TestCLITakeoverBuildsTheCommandLocally(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "runs", "run-1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(root, "worktrees", "owner-repo", "run-1")
+	if err := os.MkdirAll(worktree, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configured := filepath.Join(root, "configured-harness")
+	marker := filepath.Join(root, "launched")
+	if err := os.WriteFile(configured, []byte("#!/bin/sh\nprintf 'ran\\n' >> '"+marker+"'\nprintf '%s\\n' \"$PWD\" \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	impostor := filepath.Join(root, "response-executable")
+	if err := os.WriteFile(impostor, []byte("#!/bin/sh\nprintf 'impostor\\n' >> '"+marker+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	id := "01a10c5b-38a9-7330-b833-04e365cb5f37"
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "token"})
+	})
+	mux.HandleFunc("POST /api/runs/run-1/takeover", func(w http.ResponseWriter, r *http.Request) {
+		// Even an authenticated answer that tries to look like a command cannot
+		// choose the executable, arguments or directory.
+		json.NewEncoder(w).Encode(struct {
+			workflow.Run
+			Executable string   `json:"executable"`
+			Args       []string `json:"args"`
+			Dir        string   `json:"dir"`
+		}{manualSnapshot("run-1", id), impostor, []string{"--resume", "impostor"}, root})
+	})
+	server := runtimeServer(t, root, mux)
+	defer server.Close()
+	path := takeoverCLIConfig(t, root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"), configured)
+	code, out, errOut := runCLI("takeover", "run-1", "--config", path)
+	if code != 0 {
+		t.Fatalf("takeover: %d %s", code, errOut)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || string(data) != "ran\n" {
+		t.Fatalf("response executable ran: %q %v", data, err)
+	}
+	if !strings.Contains(out, worktree+"\n--resume\n"+id+"\n--permission-mode\ndefault\n") || strings.Contains(out, "impostor") {
+		t.Fatalf("takeover used a response command: %q", out)
+	}
+}
+
+func TestCLITakeoverRefusesAResponseWithoutStoredRoleSettings(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "runs", "run-1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "worktrees", "owner-repo", "run-1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(root, "configured-harness")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf launched\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	origin := manualSnapshot("run-1", "01a10c5b-38a9-7330-b833-04e365cb5f37")
+	origin.RoleSettings = nil
+	origin.Implementer.Agent = ""
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "token"})
+	})
+	mux.HandleFunc("POST /api/runs/run-1/takeover", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(origin)
+	})
+	server := runtimeServer(t, root, mux)
+	defer server.Close()
+	path := takeoverCLIConfig(t, root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"), executable)
+	code, out, errOut := runCLI("takeover", "run-1", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "takeover.harness_unknown") || strings.Contains(out, "launched") {
+		t.Fatalf("unidentified harness launched: %d %q %s", code, out, errOut)
 	}
 }
 
 func TestConcurrentCLITakeoverLaunchesOneInteractiveProcess(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "runs", "run-1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "worktrees", "owner-repo", "run-1"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	executable := filepath.Join(root, "interactive")
@@ -317,20 +539,17 @@ func TestConcurrentCLITakeoverLaunchesOneInteractiveProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.WriteFile(release, nil, 0600)
+	snapshot := manualSnapshot("run-1", "01a10c5b-38a9-7330-b833-04e365cb5f37")
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "token"})
 	})
 	mux.HandleFunc("POST /api/runs/run-1/takeover", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(harness.InteractiveCommand{Executable: executable, Dir: root, Args: []string{"--resume", "01a10c5b-38a9-7330-b833-04e365cb5f37"}})
+		json.NewEncoder(w).Encode(snapshot)
 	})
-	server := httptest.NewServer(mux)
+	server := runtimeServer(t, root, mux)
 	defer server.Close()
-	configPath := filepath.Join(root, "config.yaml")
-	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, port)), 0600); err != nil {
-		t.Fatal(err)
-	}
+	configPath := takeoverCLIConfig(t, root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"), executable)
 	type result struct {
 		code int
 		err  string
@@ -394,7 +613,7 @@ func TestCLIHandbackDisclosesSelectionAndAdditionalRound(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(workflow.Run{ID: "manual", State: workflow.Active, Phase: workflow.Review, Handbacks: []workflow.HandbackSnapshot{{NextState: workflow.Active, NextPhase: workflow.Review, Round: 2, GrantedRound: 2}}})
 	})
-	server := httptest.NewServer(mux)
+	server := runtimeServer(t, root, mux)
 	defer server.Close()
 	path := filepath.Join(root, "config.yaml")
 	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
@@ -409,6 +628,9 @@ func TestCLIHandbackDisclosesSelectionAndAdditionalRound(t *testing.T) {
 func TestCLITakeoverOwnsInteractiveLockBeforeDelayedResponse(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "runs", "run-1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "worktrees", "owner-repo", "run-1"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	executable := filepath.Join(root, "interactive")
@@ -428,14 +650,11 @@ func TestCLITakeoverOwnsInteractiveLockBeforeDelayedResponse(t *testing.T) {
 			lock.Close()
 		}
 		handbackAttempt <- err
-		json.NewEncoder(w).Encode(harness.InteractiveCommand{Executable: executable, Dir: root, Args: []string{"--resume", "01a10c5b-38a9-7330-b833-04e365cb5f37"}})
+		json.NewEncoder(w).Encode(manualSnapshot("run-1", "01a10c5b-38a9-7330-b833-04e365cb5f37"))
 	})
-	server := httptest.NewServer(mux)
+	server := runtimeServer(t, root, mux)
 	defer server.Close()
-	path := filepath.Join(root, "config.yaml")
-	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
-		t.Fatal(err)
-	}
+	path := takeoverCLIConfig(t, root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"), executable)
 	code, out, errOut := runCLI("--config", path, "takeover", "run-1")
 	if code != 0 || !strings.Contains(out, "resumed") {
 		t.Fatalf("takeover: %d %s %s", code, out, errOut)
@@ -463,7 +682,7 @@ func TestCLIStatusShowsHarnessAvailabilityAndWaitKinds(t *testing.T) {
 				wait.Consecutive = 2
 				wait.Allowance = 3
 			}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := runtimeServer(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "runtime-token", Harnesses: []scheduler.HarnessAvailability{{Harness: "claude", Available: false, ResetAt: reset, ResetTimeSource: "reported", Source: "native-fixture"}, {Harness: "codex", Available: true}}, Runs: []workflow.Run{{ID: "waiting-run", Repository: "owner/repo", IssueNumber: 7, State: workflow.WaitingForHarness, Phase: workflow.Review, HarnessWait: &wait, HarnessWaitHistory: []workflow.HarnessWait{wait}, Retries: []workflow.RetrySnapshot{{NextState: workflow.WaitingForHarness, NextPhase: workflow.Review, Round: 1, GrantedWait: 4}}}}})
 			}))
 			defer server.Close()
@@ -496,7 +715,7 @@ func TestCLIStatusShowsCreditWaitProbeAndCapabilityGatedRetry(t *testing.T) {
 		t.Run(fmt.Sprint(eligible), func(t *testing.T) {
 			root := t.TempDir()
 			wait := workflow.HarnessWait{Harness: "claude", Reason: "credits_exhausted", Phase: workflow.Implement}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := runtimeServer(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "runtime-token", Harnesses: []scheduler.HarnessAvailability{{Harness: "claude", Reason: "credits_exhausted", ProbeID: "probe", ProbeRunID: "selected-run", ProbeAttemptID: "execution"}}, Runs: []workflow.Run{{ID: "waiting-run", Repository: "owner/repo", IssueNumber: 7, State: workflow.WaitingForHarness, Phase: workflow.Implement, HarnessWait: &wait, HarnessWaitHistory: []workflow.HarnessWait{wait}, RetryEligible: eligible, CreditProbes: []workflow.CreditProbe{{Harness: "claude", Status: "released", AttemptID: "old-execution"}}}}})
 			}))
 			defer server.Close()
@@ -536,7 +755,7 @@ func TestCLIHandbackExplainsTimedAndCreditWaiting(t *testing.T) {
 			mux.HandleFunc("POST /api/runs/manual/handback", func(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode(workflow.Run{ID: "manual", State: workflow.WaitingForHarness, Phase: workflow.Review, HarnessWait: &wait, Handbacks: []workflow.HandbackSnapshot{{NextState: workflow.WaitingForHarness, NextPhase: workflow.Review, Round: 2, GrantedRound: 2}}})
 			})
-			server := httptest.NewServer(mux)
+			server := runtimeServer(t, root, mux)
 			defer server.Close()
 			path := filepath.Join(root, "config.yaml")
 			if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
@@ -575,7 +794,7 @@ func TestCLIHarnessCheckUsesRuntimeProtections(t *testing.T) {
 		calls++
 		json.NewEncoder(w).Encode(workflow.HarnessCheck{ID: "check-id", Harness: r.PathValue("harness"), Status: "running"})
 	})
-	server := httptest.NewServer(mux)
+	server := runtimeServer(t, root, mux)
 	defer server.Close()
 	path := filepath.Join(root, "config.yaml")
 	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
@@ -619,7 +838,7 @@ func TestCLIRetryGuidanceAndStatus(t *testing.T) {
 		received = r.PostForm.Get("note")
 		json.NewEncoder(w).Encode(snapshot)
 	})
-	server := httptest.NewServer(mux)
+	server := runtimeServer(t, root, mux)
 	defer server.Close()
 	configPath := filepath.Join(root, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {

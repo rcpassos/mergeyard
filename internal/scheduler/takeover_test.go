@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/app"
-	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -50,31 +49,33 @@ func TestTakeoverStopsImplementerAndResumesExactConversation(t *testing.T) {
 				_, err := os.Stat(filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", run.ID, "pending.txt"))
 				return err == nil
 			})
-			command, err := s.Takeover(ctx, run.ID)
+			prepared, err := s.Takeover(ctx, run.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			manual, err := runtime.Workflow.Get(ctx, run.ID)
-			if err != nil || manual.State != workflow.Manual || manual.Implementer.SessionID != run.Implementer.SessionID {
+			if err != nil || manual.State != workflow.Manual || manual.Implementer.SessionID != run.Implementer.SessionID || prepared.ID != run.ID || prepared.State != workflow.Manual {
 				t.Fatalf("manual: %+v %v", manual, err)
 			}
 			status, err := r.SessionStatus(ctx, ref)
 			if err != nil || status.State == runner.SessionRunning {
 				t.Fatalf("process survived: %+v %v", status, err)
 			}
+			worktree := runWorktree(t, runtime.Workspace.Root, run)
+			command := manualCommand(t, s, run.ID)
 			want := []string{"--resume", run.Implementer.SessionID, "--permission-mode", "default"}
 			if agent == "codex" {
-				want = []string{"resume", "-C", command.Dir, "-a", "on-request", "-s", "workspace-write", "--", codexID}
+				want = []string{"resume", "-C", worktree, "-a", "on-request", "-s", "workspace-write", "--", codexID}
 			}
-			if !reflect.DeepEqual(command.Args, want) {
-				t.Fatalf("interactive arguments: %q", command.Args)
+			if command.Dir != worktree || !reflect.DeepEqual(command.Args, want) {
+				t.Fatalf("interactive arguments: %+v", command)
 			}
-			data, err := os.ReadFile(filepath.Join(command.Dir, "pending.txt"))
+			data, err := os.ReadFile(filepath.Join(worktree, "pending.txt"))
 			if err != nil || string(data) != "keep" {
 				t.Fatalf("lost partial work: %q %v", data, err)
 			}
 			again, err := s.Takeover(ctx, run.ID)
-			if err != nil || !reflect.DeepEqual(again, command) {
+			if err != nil || again.ID != prepared.ID || again.State != workflow.Manual {
 				t.Fatalf("repeated takeover: %+v %v", again, err)
 			}
 			root := runtime.Workspace.Root
@@ -180,9 +181,9 @@ func TestTakeoverPrerequisitesDoNotInterruptOrCreateConversation(t *testing.T) {
 	if _, err := runtime.Workflow.Transition(ctx, "unprepared", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 7}); err != nil {
 		t.Fatal(err)
 	}
-	command, err := s.Takeover(ctx, "unprepared")
-	if !strings.Contains(fmt.Sprint(err), "takeover.worktree_missing") || command.Executable != "" {
-		t.Fatalf("missing worktree: %+v %v", command, err)
+	prepared, err := s.Takeover(ctx, "unprepared")
+	if !strings.Contains(fmt.Sprint(err), "takeover.worktree_missing") || prepared.ID != "" {
+		t.Fatalf("missing worktree: %+v %v", prepared, err)
 	}
 	run, _ := runtime.Workflow.Get(ctx, "unprepared")
 	if run.State != workflow.Claiming || run.TakeoverStatus != "" {
@@ -199,9 +200,9 @@ func TestTakeoverPrerequisitesDoNotInterruptOrCreateConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command, err = s.Takeover(ctx, run.ID)
-	if !strings.Contains(fmt.Sprint(err), "takeover.session_missing") || command.Executable != "" {
-		t.Fatalf("missing session: %+v %v", command, err)
+	prepared, err = s.Takeover(ctx, run.ID)
+	if !strings.Contains(fmt.Sprint(err), "takeover.session_missing") || prepared.ID != "" {
+		t.Fatalf("missing session: %+v %v", prepared, err)
 	}
 	status, err := r.SessionStatus(ctx, ref)
 	if err != nil || status.State != runner.SessionRunning {
@@ -239,9 +240,9 @@ func TestTakeoverAmbiguousExitPreservesWorkForAttention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command, err := s.Takeover(ctx, run.ID)
-	if err == nil || command.Executable != "" {
-		t.Fatalf("ambiguous exit exposed command: %+v %v", command, err)
+	prepared, err := s.Takeover(ctx, run.ID)
+	if err == nil || prepared.ID != "" {
+		t.Fatalf("ambiguous exit exposed command: %+v %v", prepared, err)
 	}
 	run, err = runtime.Workflow.Get(ctx, run.ID)
 	if err != nil || run.State != workflow.NeedsAttention || run.TakeoverStatus != workflow.TakeoverAttention || run.LastErrorCode != "takeover.process_ambiguous" {
@@ -270,7 +271,7 @@ func TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(response, apiRequest(t, runtime.Workspace.Root, "GET", "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
 		t.Fatal(err)
@@ -303,21 +304,26 @@ func TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand(t *testing.T) {
 		t.Fatal("manual state still offers initial takeover")
 	}
 
-	// Repeated protected API requests return the exact invocation without new work.
+	// Repeated protected API requests return the prepared run snapshot without
+	// new work and never a command to run.
 	request = httptest.NewRequest("POST", "http://127.0.0.1:7331/api/runs/"+id+"/takeover", nil)
 	request.Header.Set("Origin", "http://127.0.0.1:7331")
 	request.Header.Set("X-CSRF-Token", status.Token)
+	signAPIRequest(t, runtime.Workspace.Root, request)
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	var command harness.InteractiveCommand
+	var prepared workflow.Run
 	if response.Code != 200 {
 		t.Fatalf("takeover API: %d %s", response.Code, response.Body.String())
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &command); err != nil {
+	if err := json.Unmarshal(response.Body.Bytes(), &prepared); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(command.Args, " "), run.Implementer.SessionID) {
-		t.Fatalf("API lost exact identity: %+v", command)
+	if prepared.ID != id || prepared.State != workflow.Manual || prepared.Implementer.SessionID != run.Implementer.SessionID {
+		t.Fatalf("API lost the prepared run identity: %+v", prepared)
+	}
+	if strings.Contains(response.Body.String(), `"executable"`) || strings.Contains(response.Body.String(), `"args"`) {
+		t.Fatalf("API response carried a command: %s", response.Body.String())
 	}
 	// Configured executable paths can contain quotes and HTML syntax.
 	cfg.Agents.Claude.Executable = "/tmp/harness's <script>alert(1)</script>"
@@ -359,12 +365,13 @@ func TestTakeoverRestoresReviewerBeforeOfferingImplementer(t *testing.T) {
 				}
 				path := filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", run.ID)
 				waitFor(t, func() bool { _, err := os.Stat(filepath.Join(path, "review-only.txt")); return err == nil })
-				command, err := s.Takeover(context.Background(), run.ID)
+				prepared, err := s.Takeover(context.Background(), run.ID)
 				if err != nil {
 					t.Fatal(err)
 				}
 				manual, err := runtime.Workflow.Get(context.Background(), run.ID)
-				if err != nil || manual.State != workflow.Manual || !manual.Review.Restored || manual.Review.Accepted || manual.Review.SessionID == manual.Implementer.SessionID || !strings.Contains(strings.Join(command.Args, " "), manual.Implementer.SessionID) {
+				command := manualCommand(t, s, run.ID)
+				if err != nil || manual.State != workflow.Manual || !manual.Review.Restored || manual.Review.Accepted || manual.Review.SessionID == manual.Implementer.SessionID || prepared.ID != run.ID || prepared.State != workflow.Manual || !strings.Contains(strings.Join(command.Args, " "), manual.Implementer.SessionID) {
 					t.Fatalf("review takeover: %+v %v %+v", manual, err, command)
 				}
 				data, err := os.ReadFile(filepath.Join(path, "feature.txt"))
@@ -402,12 +409,13 @@ func TestTakeoverFixPreservesPartialImplementerChanges(t *testing.T) {
 			}
 			path := filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", run.ID)
 			waitFor(t, func() bool { _, err := os.Stat(filepath.Join(path, "fix-only.txt")); return err == nil })
-			command, err := s.Takeover(context.Background(), run.ID)
+			prepared, err := s.Takeover(context.Background(), run.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			manual, err := runtime.Workflow.Get(context.Background(), run.ID)
-			if err != nil || manual.State != workflow.Manual || manual.Fix.SessionID != manual.Implementer.SessionID || !strings.Contains(strings.Join(command.Args, " "), manual.Implementer.SessionID) {
+			command := manualCommand(t, s, run.ID)
+			if err != nil || manual.State != workflow.Manual || manual.Fix.SessionID != manual.Implementer.SessionID || prepared.State != workflow.Manual || !strings.Contains(strings.Join(command.Args, " "), manual.Implementer.SessionID) {
 				t.Fatalf("fix takeover: %+v %+v %v", manual, command, err)
 			}
 			data, err := os.ReadFile(filepath.Join(path, "feature.txt"))
@@ -540,12 +548,12 @@ func TestTakeoverWaitsForLifecycleOperationAndConcurrentRequestsAreIdempotent(t 
 	}()
 	<-held
 	type result struct {
-		command harness.InteractiveCommand
-		err     error
+		prepared workflow.Run
+		err      error
 	}
 	results := make(chan result, 2)
 	for range 2 {
-		go func() { command, err := s.Takeover(ctx, id); results <- result{command, err} }()
+		go func() { prepared, err := s.Takeover(ctx, id); results <- result{prepared, err} }()
 	}
 	select {
 	case got := <-results:
@@ -561,7 +569,7 @@ func TestTakeoverWaitsForLifecycleOperationAndConcurrentRequestsAreIdempotent(t 
 		t.Fatal(err)
 	}
 	first, second := <-results, <-results
-	if first.err != nil || second.err != nil || !reflect.DeepEqual(first.command, second.command) {
+	if first.err != nil || second.err != nil || first.prepared.ID != id || first.prepared.State != workflow.Manual || !reflect.DeepEqual(first.prepared.Implementer, second.prepared.Implementer) {
 		t.Fatalf("concurrent takeover: %+v %+v", first, second)
 	}
 	history, err := runtime.Events.History(ctx, 0, 100)
@@ -590,9 +598,9 @@ func TestTakeoverPreservesAmbiguousReviewerGitState(t *testing.T) {
 	}
 	path := filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", run.ID)
 	waitFor(t, func() bool { _, err := os.Stat(filepath.Join(path, "review-only.txt")); return err == nil })
-	command, err := s.Takeover(context.Background(), run.ID)
-	if err == nil || command.Executable != "" {
-		t.Fatalf("ambiguous Git offered control: %+v %v", command, err)
+	prepared, err := s.Takeover(context.Background(), run.ID)
+	if err == nil || prepared.ID != "" {
+		t.Fatalf("ambiguous Git offered control: %+v %v", prepared, err)
 	}
 	attention, err := runtime.Workflow.Get(context.Background(), run.ID)
 	if err != nil || attention.State != workflow.NeedsAttention || attention.TakeoverStatus != workflow.TakeoverAttention || attention.Review.Restored {
@@ -632,9 +640,9 @@ func TestManualResumeRejectsWorktreeReplacementAndPreservesBothRepositories(t *t
 	if _, err := s.ManualCommand(ctx, id); err == nil {
 		t.Fatal("dashboard offered a command outside the owned worktree")
 	}
-	command, err := s.Takeover(ctx, id)
-	if err == nil || command.Executable != "" {
-		t.Fatalf("CLI resumed in another repository: %+v %v", command, err)
+	prepared, err := s.Takeover(ctx, id)
+	if err == nil || prepared.ID != "" {
+		t.Fatalf("CLI resumed in another repository: %+v %v", prepared, err)
 	}
 	attention, err := runtime.Workflow.Get(ctx, id)
 	if err != nil || attention.State != workflow.NeedsAttention {

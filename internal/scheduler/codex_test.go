@@ -357,7 +357,9 @@ func TestCodexPermissionDisplayUsesEffectiveNetworkAccess(t *testing.T) {
 			}
 			for _, path := range []string{"/api/status", "/runs/" + run.ID} {
 				response := httptest.NewRecorder()
-				server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+				request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil)
+				signAPIRequest(t, runtime.Workspace.Root, request)
+				server.ServeHTTP(response, request)
 				if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), tc.permissions) {
 					t.Fatalf("%s missing effective permissions %q: %d %s", path, tc.permissions, response.Code, response.Body.String())
 				}

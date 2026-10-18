@@ -74,7 +74,7 @@ func TestMergeCleanupPendingIsVisible(t *testing.T) {
 		}
 	}
 	res := httptest.NewRecorder()
-	server.ServeHTTP(res, httptest.NewRequest("GET", "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(res, apiRequest(t, runtime.Workspace.Root, "GET", "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if err := json.Unmarshal(res.Body.Bytes(), &status); err != nil || len(status.Runs) != 1 || status.Runs[0].Merge == nil || !status.Runs[0].Merge.Pending() {
 		t.Fatal("status lost maintenance")
@@ -729,10 +729,10 @@ func TestMergeCleanupWaitsForInteractiveTakeoverExit(t *testing.T) {
 	}
 	ctx := context.Background()
 	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	command, err := s.Takeover(ctx, run.ID)
-	if err != nil {
+	if _, err := s.Takeover(ctx, run.ID); err != nil {
 		t.Fatal(err)
 	}
+	worktree := runWorktree(t, runtime.Workspace.Root, run)
 	gate := t.TempDir()
 	started, release := filepath.Join(gate, "started"), filepath.Join(gate, "release")
 	interactiveCtx, cancel := context.WithCancel(ctx)
@@ -741,7 +741,7 @@ func TestMergeCleanupWaitsForInteractiveTakeoverExit(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- runner.RunInteractive(interactiveCtx, runtime.Workspace.Root, run.ID, runner.ExecRequest{
-			Executable: "/bin/sh", Dir: command.Dir,
+			Executable: "/bin/sh", Dir: worktree,
 			Args: []string{"-c", `printf ready > "$1"; while [ ! -f "$2" ]; do sleep 0.02; done`, "interactive", started, release},
 		}, nil, io.Discard, io.Discard)
 	}()
@@ -755,14 +755,14 @@ func TestMergeCleanupWaitsForInteractiveTakeoverExit(t *testing.T) {
 		t.Fatalf("interactive child exited before release: %v", err)
 	default:
 	}
-	if _, err := os.Stat(command.Dir); err != nil {
+	if _, err := os.Stat(worktree); err != nil {
 		t.Fatalf("merge removed worktree while interactive child was still alive: %v", err)
 	}
 	saved, err := runtime.Workflow.Get(ctx, run.ID)
 	if err != nil || saved.State != workflow.Completed || !saved.Merge.Pending() || saved.Merge.WorktreeRemoved || saved.Merge.BranchDeleted || !saved.Merge.IssueClosed {
 		t.Fatalf("interactive merge cleanup: %+v %v", saved, err)
 	}
-	if gitCommand(t, command.Dir, "branch", "--show-current") != "mergeyard/issue-7" {
+	if gitCommand(t, worktree, "branch", "--show-current") != "mergeyard/issue-7" {
 		t.Fatal("removed interactive branch")
 	}
 
@@ -785,7 +785,7 @@ func TestMergeCleanupWaitsForInteractiveTakeoverExit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := os.Stat(command.Dir); err != nil {
+	if _, err := os.Stat(worktree); err != nil {
 		t.Fatalf("restart removed live interactive worktree: %v", err)
 	}
 	if err := os.WriteFile(release, nil, 0600); err != nil {
@@ -808,7 +808,7 @@ func TestMergeCleanupWaitsForInteractiveTakeoverExit(t *testing.T) {
 	if err != nil || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted || saved.Merge.Error != "" {
 		t.Fatalf("cleanup did not resume after interactive exit: %+v %v", saved.Merge, err)
 	}
-	if _, err := os.Stat(command.Dir); !os.IsNotExist(err) {
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
 		t.Fatalf("merged worktree was not cleaned after exit: %v", err)
 	}
 }
@@ -832,16 +832,16 @@ func (g *heldMergeCleanupGit) CleanupWorktree(ctx context.Context, run managedgi
 func TestInteractiveResumeCannotLaunchDuringMergeCleanup(t *testing.T) {
 	s, runtime, base, _, cfg, r := localFlow(t, successfulScript)
 	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	command, err := s.Takeover(context.Background(), run.ID)
-	if err != nil {
+	if _, err := s.Takeover(context.Background(), run.ID); err != nil {
 		t.Fatal(err)
 	}
+	worktree := runWorktree(t, runtime.Workspace.Root, run)
 	held := &heldMergeCleanupGit{Manager: managedgit.New(runtime.Workspace), started: make(chan struct{}), release: make(chan struct{})}
 	var once sync.Once
 	release := func() { once.Do(func() { close(held.release) }) }
 	defer release()
 	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
-	s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Git: held, Runner: r})
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Git: held, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -855,7 +855,7 @@ func TestInteractiveResumeCannotLaunchDuringMergeCleanup(t *testing.T) {
 	}
 	started := filepath.Join(t.TempDir(), "interactive-started")
 	err = runner.RunInteractive(context.Background(), runtime.Workspace.Root, run.ID, runner.ExecRequest{
-		Executable: "/bin/sh", Dir: command.Dir,
+		Executable: "/bin/sh", Dir: worktree,
 		Args: []string{"-c", `printf started > "$1"`, "interactive", started},
 	}, nil, io.Discard, io.Discard)
 	var failure *fault.Error
@@ -913,7 +913,12 @@ func TestDashboardCopiedTakeoverProtectsLiveWorktree(t *testing.T) {
 				t.Fatal(err)
 			}
 			port := listener.Addr().(*net.TCPAddr).Port
-			if err := os.WriteFile(configPath, []byte(fmt.Sprintf("workspace: %q\nport: %d\n", relativeWorkspace, port)), 0600); err != nil {
+			// The CLI rebuilds the resume invocation from its own configuration,
+			// so the copied command's config must name the same harness executables
+			// as the runtime's in-memory configuration.
+			configText := fmt.Sprintf("workspace: %q\nport: %d\nagents:\n  claude:\n    executable: %q\n  codex:\n    executable: %q\n",
+				relativeWorkspace, port, cfg.Agents.Claude.Executable, cfg.Agents.Codex.Executable)
+			if err := os.WriteFile(configPath, []byte(configText), 0600); err != nil {
 				t.Fatal(err)
 			}
 			server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{
@@ -929,7 +934,7 @@ func TestDashboardCopiedTakeoverProtectsLiveWorktree(t *testing.T) {
 			httpServer.Start()
 			defer httpServer.Close()
 			statusResponse := httptest.NewRecorder()
-			server.ServeHTTP(statusResponse, httptest.NewRequest("GET", httpServer.URL+"/api/status", nil))
+			server.ServeHTTP(statusResponse, apiRequest(t, runtime.Workspace.Root, "GET", httpServer.URL+"/api/status"))
 			var status web.Status
 			if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
 				t.Fatal(err)

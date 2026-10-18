@@ -15,6 +15,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/doctor"
+	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/web"
 )
@@ -39,6 +40,12 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer owner.Close()
+	// Rotate the runtime secret on every start so a secret read before the
+	// restart can no longer authenticate a client, and recreate it if it was
+	// removed. The CLI re-reads the file for each command.
+	if err := runtimeauth.RotateSecret(owner.Workspace.Root); err != nil {
+		return err
+	}
 	report := doctor.Check(ctx, doc.Path, doctor.Options{})
 	if len(report.Findings) > 0 {
 		if err := report.Write(stderr); err != nil {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 	webassets "github.com/rcpassos/mergeyard/web"
 )
 
@@ -38,6 +39,7 @@ type Server struct {
 	scheduler  Scheduler
 	templates  *template.Template
 	token      string
+	secret     []byte
 	handler    http.Handler
 	operations Operations
 	workspace  string
@@ -92,8 +94,46 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 		mux.HandleFunc("POST /api/runs/{id}/takeover", s.takeoverRun)
 		mux.HandleFunc("POST /api/runs/{id}/handback", s.handbackRun)
 	}
-	s.handler = mux
+	// Browser forms keep their origin, body and CSRF requirements. API requests
+	// answer only callers that can prove they share this workspace secret, and
+	// the runtime proves itself in return; that check comes first.
+	s.handler = s.browserControls(mux)
+	if operations != nil {
+		if s.secret, err = runtimeauth.EnsureSecret(workspace); err != nil {
+			return nil, err
+		}
+		s.handler = runtimeauth.APIHandler(s.handler, s.secret)
+	}
 	return s, nil
+}
+
+// browserControls owns the origin, body and CSRF requirements shared by the
+// dashboard forms and the CLI's scheduler and harness-check routes.
+func (s *Server) browserControls(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.Header.Get("Origin") != "http://"+r.Host || strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
+			http.Error(w, "Invalid request origin", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		token := r.Header.Get("X-CSRF-Token")
+		if token == "" {
+			token = r.PostForm.Get("csrf_token")
+		}
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) != 1 {
+			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Listen accepts only a numeric 127.0.0.1 address, including port zero for
@@ -162,25 +202,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
-	if r.Method == http.MethodPost {
-		if r.Header.Get("Origin") != "http://"+r.Host || strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
-			http.Error(w, "Invalid request origin", http.StatusForbidden)
-			return
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
-			return
-		}
-		token := r.Header.Get("X-CSRF-Token")
-		if token == "" {
-			token = r.PostForm.Get("csrf_token")
-		}
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) != 1 {
-			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
-			return
-		}
-	}
 	s.handler.ServeHTTP(w, r)
 }
 
