@@ -52,7 +52,7 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 		return ReconcileReport{}, err
 	}
 	report := ReconcileReport{Findings: []Finding{}}
-	runs, err := s.Runs(ctx)
+	runs, err := s.tickRuns(ctx)
 	if err != nil {
 		return report, err
 	}
@@ -395,7 +395,7 @@ func (s *Scheduler) orphanedArtifacts(ctx context.Context, report *ReconcileRepo
 	if err != nil {
 		return err
 	}
-	runs, err := s.Runs(ctx)
+	runs, err := s.tickRuns(ctx)
 	if err != nil {
 		return err
 	}

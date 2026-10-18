@@ -31,6 +31,8 @@ const (
 	historySeedCIPolls     = 6
 	historyChangesRequired = `{"status":"changes_required"}`
 	historyThreadID        = "01a10c5b-38a9-7330-b833-04e365cb5f37"
+	historyReviewThreadID  = "01a10c5b-38a9-7330-b833-04e365cb5f38"
+	historyFixThreadID     = "01a10c5b-38a9-7330-b833-04e365cb5f39"
 	historyRepo            = "owner/repo"
 	historyPendingPR       = 90001
 )
@@ -44,31 +46,40 @@ func TestHistoryKeepsIdentityObservationAndPublicationInsideBudget(t *testing.T)
 	ctx := context.Background()
 	db, phases := historyStore(t)
 	seedFinishedHistory(t, db, historySeedRuns)
-	candidate := seedDiscoverableRun(t, db, phases)
+	candidates := seedDiscoverableRuns(t, db, phases)
+	candidate := candidates[0]
 	s := historyScheduler(t, db)
 
 	observed := historyFastest(t, func() {
-		// Discard the identity the previous round saved so it observes the capture again.
-		reset(t, db, "UPDATE runs SET implementer_session_id=NULL WHERE id=?", candidate.runID)
-		reset(t, db, "UPDATE phase_attempts SET session_id='' WHERE id=?", candidate.attemptID)
-		reset(t, db, "DELETE FROM events WHERE run_id=? AND type='harness.session_discovered'", candidate.runID)
+		// Discard every identity the previous round saved so the pass observes
+		// each phase capture again.
+		for _, c := range candidates {
+			c.restore(t, db)
+		}
+		reset(t, db, "DELETE FROM events WHERE type='harness.session_discovered'")
 	}, func() error { return s.observeIdentities(ctx) })
 	published := historyFastest(t, func() {
 		// Discard the receipts the previous round wrote so it publishes the same report.
 		reset(t, db, "DELETE FROM events WHERE run_id=? AND type IN ('verification.attempted','verification.published')", candidate.runID)
 	}, func() error { return s.publishVerification(ctx) })
+	// The tick's own load must skip finished history too, or reconciliation
+	// still holds the lock that identity observation and publication wait on.
+	reconciled := historyFastest(t, func() {}, func() error {
+		_, err := s.tickRuns(ctx)
+		return err
+	})
 
-	// Narrowing the candidate set must keep observing real discoveries.
-	for _, want := range []struct{ label, query, id string }{
-		{"run session identity", "SELECT COALESCE(implementer_session_id,'') FROM runs WHERE id=?", candidate.runID},
-		{"attempt session identity", "SELECT COALESCE(session_id,'') FROM phase_attempts WHERE id=?", candidate.attemptID},
-	} {
-		var got string
-		if err := db.QueryRowContext(ctx, want.query, want.id).Scan(&got); err != nil {
-			t.Fatal(err)
-		}
-		if got != historyThreadID {
-			t.Fatalf("%s = %q, want %q", want.label, got, historyThreadID)
+	// Narrowing the candidate set must keep observing real discoveries in every
+	// phase and round the SQL mirrors from attemptRound and Phase.Role.
+	for _, c := range candidates {
+		for _, check := range c.identityChecks() {
+			var got string
+			if err := db.QueryRowContext(ctx, check.query, check.arg).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got != c.identity {
+				t.Fatalf("%s = %q, want %q", check.label, got, c.identity)
+			}
 		}
 	}
 	var receipts int
@@ -78,14 +89,14 @@ func TestHistoryKeepsIdentityObservationAndPublicationInsideBudget(t *testing.T)
 	if receipts != 1 {
 		t.Fatalf("verification receipts = %d, want 1", receipts)
 	}
-	if observed > historyIdentityBudget || published > historyTickBudget {
-		t.Fatalf("seeded history broke its budget: identity observation %s of %s, verification publication %s of %s", observed, historyIdentityBudget, published, historyTickBudget)
+	if observed > historyIdentityBudget || published > historyTickBudget || reconciled > historyTickBudget {
+		t.Fatalf("seeded history broke its budget: identity observation %s of %s, verification publication %s of %s, tick load %s of %s", observed, historyIdentityBudget, published, historyTickBudget, reconciled, historyTickBudget)
 	}
 	var seeded int
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM events").Scan(&seeded); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("%d runs and %d seeded events: identity observation %s of %s, verification publication %s of %s", historySeedRuns, seeded, observed, historyIdentityBudget, published, historyTickBudget)
+	t.Logf("%d runs and %d seeded events: identity observation %s of %s, verification publication %s of %s, tick load %s of %s", historySeedRuns, seeded, observed, historyIdentityBudget, published, historyTickBudget, reconciled, historyTickBudget)
 }
 
 // historyFastest restores the pass's inputs and times it, reporting the fastest
@@ -150,9 +161,38 @@ func (historyGitHub) UpdatePullRequest(context.Context, string, int, github.Pull
 	return nil, nil
 }
 
-type historyRun struct {
-	runID     string
-	attemptID string
+// historyCandidate is one active run whose running current-phase attempt has no
+// recorded session identity yet. Discovery must save a capture's identity in the
+// run, the attempt, and the phase journal when one exists.
+type historyCandidate struct {
+	runID     string // runs.id
+	attemptID string // running phase_attempts row
+	phase     string
+	column    string // runs role identity column discovery writes
+	journal   string // role journal table, empty for implement
+	identity  string // thread id the capture reports
+}
+
+// restore clears every identity discovery wrote so the pass observes the
+// candidate again, including the role journal masked by the identity chain.
+func (c historyCandidate) restore(t *testing.T, db *sql.DB) {
+	t.Helper()
+	reset(t, db, "UPDATE runs SET "+c.column+"=NULL WHERE id=?", c.runID)
+	reset(t, db, "UPDATE phase_attempts SET session_id=NULL WHERE id=?", c.attemptID)
+	if c.journal != "" {
+		reset(t, db, "UPDATE "+c.journal+" SET session_id='' WHERE attempt_id=?", c.attemptID)
+	}
+}
+
+func (c historyCandidate) identityChecks() []struct{ label, query, arg string } {
+	checks := []struct{ label, query, arg string }{
+		{c.phase + " run identity", "SELECT COALESCE(" + c.column + ",'') FROM runs WHERE id=?", c.runID},
+		{c.phase + " attempt identity", "SELECT COALESCE(session_id,'') FROM phase_attempts WHERE id=?", c.attemptID},
+	}
+	if c.journal != "" {
+		checks = append(checks, struct{ label, query, arg string }{c.phase + " journal identity", "SELECT COALESCE(session_id,'') FROM " + c.journal + " WHERE attempt_id=?", c.attemptID})
+	}
+	return checks
 }
 
 type historySeeder struct {
@@ -225,18 +265,54 @@ func seedFinishedHistory(t *testing.T, db *sql.DB, runs int) {
 	}
 }
 
-// seedDiscoverableRun adds the one active run whose running attempt has no
-// recorded session identity yet, alongside a capture holding its identity.
-func seedDiscoverableRun(t *testing.T, db *sql.DB, phases string) historyRun {
+// seedDiscoverableRuns adds one active run per phase whose running
+// current-phase attempt has no recorded session identity yet, each alongside a
+// capture holding its identity. The candidates keep every phase rule
+// Discoverable mirrors from attemptRound and Phase.Role falsifiable: implement
+// must match round zero despite a nonzero review round, and it must read the
+// implementer identity even while a reviewer conversation is recorded; review
+// and fix must match the review round of their phase.
+func seedDiscoverableRuns(t *testing.T, db *sql.DB, phases string) []historyCandidate {
+	t.Helper()
+	return []historyCandidate{
+		seedDiscoverable(t, db, phases, discoverable{
+			id: "identity-candidate", phase: workflow.Implement, round: 0, reviewRound: 1, issue: 1,
+			identity: historyThreadID, prNumber: historyPendingPR, publication: true,
+			reviewer: "history-reviewer-conversation",
+		}),
+		seedDiscoverable(t, db, phases, discoverable{
+			id: "identity-review", phase: workflow.Review, round: 2, reviewRound: 2, issue: 2,
+			identity: historyReviewThreadID, implementer: "history-implementer-conversation",
+		}),
+		seedDiscoverable(t, db, phases, discoverable{
+			id: "identity-fix", phase: workflow.Fix, round: 1, reviewRound: 1, issue: 3,
+			identity: historyFixThreadID, reviewer: "history-reviewer-conversation",
+		}),
+	}
+}
+
+type discoverable struct {
+	id          string
+	phase       workflow.Phase
+	round       int // running attempt round the phase rules require
+	reviewRound int // runs.review_round, nonzero to falsify the implement round rule
+	issue       int
+	identity    string
+	prNumber    int
+	implementer string // recorded implementer conversation
+	reviewer    string // recorded reviewer conversation
+	publication bool
+}
+
+func seedDiscoverable(t *testing.T, db *sql.DB, phases string, spec discoverable) historyCandidate {
 	t.Helper()
 	ctx := t.Context()
-	id := "identity-candidate"
-	attemptID := id + "-implement"
-	dir := filepath.Join(phases, id, "implement-0-1")
+	attemptID := spec.id + "-attempt"
+	dir := filepath.Join(phases, spec.id, fmt.Sprintf("%s-%d-%d", spec.phase, spec.round, 1))
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	stream := fmt.Sprintf("{\"type\":\"thread.started\",\"thread_id\":%q}\n", historyThreadID)
+	stream := fmt.Sprintf("{\"type\":\"thread.started\",\"thread_id\":%q}\n", spec.identity)
 	if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), []byte(stream), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -244,22 +320,39 @@ func seedDiscoverableRun(t *testing.T, db *sql.DB, phases string) historyRun {
 	if err := os.WriteFile(input, []byte("# Task\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO runs (id,repository,issue_number,state,current_phase,review_round,pr_number,implementer_agent) VALUES (?,?,1,'ACTIVE','implement',0,?,'codex')`, id, historyRepo, historyPendingPR); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO runs (id,repository,issue_number,state,current_phase,review_round,pr_number,implementer_agent,reviewer_agent,implementer_session_id,reviewer_session_id) VALUES (?,?,?,'ACTIVE',?,?,?,'codex','codex',?,?)`, spec.id, historyRepo, spec.issue, string(spec.phase), spec.reviewRound, spec.prNumber, spec.implementer, spec.reviewer); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,status,step,process_session,input_path,session_id) VALUES (?,?,?,?,0,1,'codex','running','','identity-implement-0-1',?,'')`, attemptID, id, string(workflow.Implement), workflow.Implement.Role(), input); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,status,step,process_session,input_path,session_id) VALUES (?,?,?,?,?,1,'codex','running','',?,?,NULL)`, attemptID, spec.id, string(spec.phase), spec.phase.Role(), spec.round, "identity-"+spec.id, input); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO scheduler_runs (run_id,issue_json) VALUES (?,?)`, id, `{"number":1,"title":"Implement this","state":"open"}`); err != nil {
-		t.Fatal(err)
+	journal := ""
+	switch spec.phase {
+	case workflow.Review:
+		journal = "review_attempts"
+		if _, err := db.ExecContext(ctx, `INSERT INTO review_attempts (attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,'','{}','{}','','default','[]')`, attemptID); err != nil {
+			t.Fatal(err)
+		}
+	case workflow.Fix:
+		journal = "fix_attempts"
+		if _, err := db.ExecContext(ctx, `INSERT INTO fix_attempts (attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json) VALUES (?,'','','[]','default','[]')`, attemptID); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO events (run_id,type,payload_json) VALUES (?,'phase.attempt_started',?)`, id, historyPhase("implement", 1)); err != nil {
-		t.Fatal(err)
+	// Only the implement candidate waits for publication, so only it needs the
+	// issue context and the completion events that carry a report.
+	if spec.publication {
+		if _, err := db.ExecContext(ctx, `INSERT INTO scheduler_runs (run_id,issue_json) VALUES (?,?)`, spec.id, `{"number":1,"title":"Implement this","state":"open"}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO events (run_id,type,payload_json) VALUES (?,'phase.attempt_started',?)`, spec.id, historyPhase("implement", 1)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO events (run_id,type,payload_json) VALUES (?,'phase.completed',?)`, spec.id, historyReport("implement", 1)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO events (run_id,type,payload_json) VALUES (?,'phase.completed',?)`, id, historyReport("implement", 1)); err != nil {
-		t.Fatal(err)
-	}
-	return historyRun{runID: id, attemptID: attemptID}
+	return historyCandidate{runID: spec.id, attemptID: attemptID, phase: string(spec.phase), column: spec.phase.Role() + "_session_id", journal: journal, identity: spec.identity}
 }
 
 func historyStart(t *testing.T, db *sql.DB) *historySeeder {
