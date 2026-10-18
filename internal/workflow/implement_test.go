@@ -2,12 +2,9 @@ package workflow_test
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/contract"
-	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -28,7 +25,7 @@ func TestImplementReportContractPresenceByVersion(t *testing.T) {
 
 func TestImplementationHistoryKeepsRecordedReportsAndSessions(t *testing.T) {
 	ctx := context.Background()
-	w, bus, db := newWorkflow(t)
+	w, _, db := newWorkflow(t)
 	run, err := w.Transition(ctx, "implementation-history", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 7})
 	if err != nil {
 		t.Fatal(err)
@@ -36,24 +33,13 @@ func TestImplementationHistoryKeepsRecordedReportsAndSessions(t *testing.T) {
 	if _, err := db.Exec(`UPDATE runs SET implementer_session_id='active-control' WHERE id=?`, run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO phase_attempts(id,run_id,phase,role,round,attempt,agent,status,session_id,step) VALUES
- ('old',?,'implement','implementer',0,1,'claude','failed',NULL,''),
- ('second',?,'implement','implementer',0,2,'claude','failed','recorded-second',''),
- ('active',?,'implement','implementer',0,3,'claude','running','recorded-third',''),
- ('setup',?,'implement','system',0,9,'claude','succeeded',NULL,'setup')`, run.ID, run.ID, run.ID, run.ID); err != nil {
+	// Each attempt owns its report; a system step's report must not surface.
+	if _, err := db.Exec(`INSERT INTO phase_attempts(id,run_id,phase,role,round,attempt,agent,status,session_id,step,report_json) VALUES
+ ('old',?,'implement','implementer',0,1,'claude','failed',NULL,'','{"schema_version":2,"human_action":null,"status":"failed","summary":"Legacy evidence"}'),
+ ('second',?,'implement','implementer',0,2,'claude','failed','recorded-second','','{"schema_version":3,"human_action":null,"status":"failed","summary":"Second report","criteria":[{"id":"AC1","met":false,"evidence":"Second implementation failed its test"}]}'),
+ ('active',?,'implement','implementer',0,3,'claude','running','recorded-third','',NULL),
+ ('setup',?,'implement','system',0,9,'claude','succeeded',NULL,'setup','{"schema_version":4,"human_action":null,"status":"failed","summary":"System attempt must not surface"}')`, run.ID, run.ID, run.ID, run.ID); err != nil {
 		t.Fatal(err)
-	}
-	for _, payload := range []string{
-		`{"attempt":1,"result":{"schema_version":2,"human_action":null,"status":"failed","summary":"Legacy evidence"}}`,
-		`{"phase":"implement","attempt":2,"result":{"schema_version":3,"human_action":null,"status":"failed","summary":"Second report","criteria":[{"id":"AC1","met":false,"evidence":"Second implementation failed its test"}]}}`,
-		`{"phase":"fix","attempt":2,"result":{"schema_version":3,"status":"success","summary":"Unrelated fix","criteria":[{"id":"AC1","met":true,"evidence":"Wrong phase"}]}}`,
-		`{"phase":"review","attempt":3,"result":{"schema_version":4,"status":"approved","summary":"Unrelated review"}}`,
-	} {
-		if _, err := bus.Commit(ctx, func(*sql.Tx) (events.Draft, error) {
-			return events.Draft{RunID: run.ID, Type: "phase.failed", Payload: json.RawMessage(payload)}, nil
-		}); err != nil {
-			t.Fatal(err)
-		}
 	}
 	history, err := workflow.LoadImplementHistory(ctx, db, run.ID)
 	if err != nil {
@@ -66,10 +52,10 @@ func TestImplementationHistoryKeepsRecordedReportsAndSessions(t *testing.T) {
 		t.Fatalf("legacy report changed: %+v", history[0])
 	}
 	if history[1].SessionID != "recorded-second" || history[1].Report == nil || len(history[1].Report.Criteria) != 1 || history[1].Report.Criteria[0].Evidence != "Second implementation failed its test" {
-		t.Fatalf("second report overwritten by another phase: %+v", history[1])
+		t.Fatalf("second attempt lost its report: %+v", history[1])
 	}
 	if history[2].Attempt != 3 || history[2].SessionID != "recorded-third" || history[2].Report != nil {
-		t.Fatalf("active attempt borrowed another phase's report: %+v", history[2])
+		t.Fatalf("active attempt borrowed another attempt's report: %+v", history[2])
 	}
 	current, err := workflow.LoadImplementSnapshot(ctx, db, run.ID)
 	if err != nil {

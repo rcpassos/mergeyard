@@ -288,6 +288,13 @@ func (s *Scheduler) finishFixAttempt(ctx context.Context, repo config.Repository
 		}
 		data = string(encoded)
 	}
+	// Freeze publication eligibility only when this finish is publishable. A
+	// later rejection of the same attempt rewrites its status and error but must
+	// never withdraw the report or its eligibility.
+	eligible := 0
+	if report != nil && workflow.ValidCompletion(cause) {
+		eligible = 1
+	}
 	status, event, failure := "succeeded", "phase.completed", ""
 	if cause != nil {
 		status, event, failure = "failed", "phase.failed", cause.Error()
@@ -296,7 +303,7 @@ func (s *Scheduler) finishFixAttempt(ctx context.Context, repo config.Repository
 		if _, err := tx.ExecContext(ctx, "UPDATE fix_attempts SET report_json=? WHERE attempt_id=?", data, a.ID); err != nil {
 			return events.Draft{}, err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE phase_attempts SET status=?,exit_code=?,error=?,ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, status, exit, failure, a.ID)
+		_, err := tx.ExecContext(ctx, `UPDATE phase_attempts SET status=?,exit_code=?,error=?,report_eligible=MAX(report_eligible,?),ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, status, exit, failure, eligible, a.ID)
 		return events.Draft{RunID: run.ID, Type: event, Payload: map[string]any{"agent": a.Agent, "phase": workflow.Fix, "round": run.ReviewRound, "attempt": a.Number, "result": report, "error": failure}}, err
 	})
 	if err != nil {

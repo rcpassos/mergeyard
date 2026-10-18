@@ -13,7 +13,6 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/config"
-	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
@@ -337,7 +336,8 @@ func seedVerificationRun(t *testing.T, rt *app.Runtime, id, state string, issue,
 	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO scheduler_runs(run_id,issue_json) VALUES(?,?)`, id, fmt.Sprintf(`{"number":%d,"title":"Feature"}`, issue)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := rt.Events.Publish(ctx, events.Draft{RunID: id, Type: "phase.completed", Payload: map[string]any{"phase": "implement", "result": map[string]any{"schema_version": 4, "criteria": []any{}, "human_action": nil, "status": "success", "summary": "Valid evidence", "verification": []any{map[string]any{"command": "test", "outcome": "passed", "excerpt": nil}}}}}); err != nil {
+	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO phase_attempts(id,run_id,phase,role,round,attempt,agent,status,step,report_json,report_eligible) VALUES(?,?,'implement','implementer',0,1,'claude','succeeded','',?,1)`, id+"-attempt", id,
+		`{"schema_version":4,"criteria":[],"human_action":null,"status":"success","summary":"Valid evidence","verification":[{"command":"test","outcome":"passed","excerpt":null}]}`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -543,8 +543,8 @@ func TestInterruptedVerificationAttemptStaysRetryableForFinishedRun(t *testing.T
 	s, rt, publisher, _ := failingVerificationFlow(t, "github.not_found")
 	ctx := context.Background()
 	seedVerificationRun(t, rt, "probe-interrupted", "STOPPED", 7, 101)
-	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO verification_attempts(run_id,source_event,attempts,last_attempt_at,failed)
-		SELECT ?,id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'),0 FROM events WHERE run_id=? AND type='phase.completed'`, "probe-interrupted", "probe-interrupted"); err != nil {
+	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO verification_attempts(run_id,source_attempt,attempts,last_attempt_at,failed)
+		VALUES(?,?,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'),0)`, "probe-interrupted", "probe-interrupted-attempt"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Reconcile(ctx); err != nil {
