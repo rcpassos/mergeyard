@@ -133,7 +133,7 @@ func TestHarnessPairingsReconcileV1ReviewAfterUpgrade(t *testing.T) {
 					t.Fatal(err)
 				}
 				response := httptest.NewRecorder()
-				server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+				server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 				body := response.Body.String()
 				if response.Code != 200 || !strings.Contains(body, "Criteria were not recorded by this schema version.") {
 					t.Fatal("dashboard did not render the v1 review contract")

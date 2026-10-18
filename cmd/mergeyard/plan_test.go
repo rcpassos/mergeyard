@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/web"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -93,10 +93,16 @@ esac
 
 func TestPlanUsesOwningControlPlane(t *testing.T) {
 	root := t.TempDir()
-	workspace := filepath.Join(root, "never-created")
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeauth.EnsureSecret(workspace); err != nil {
+		t.Fatal(err)
+	}
 	var requests []string
 	report := scheduler.Plan{SchemaVersion: 1, Paused: true, Issues: []scheduler.PlanIssue{{Repository: "owner/runtime", Number: 8, Title: "Runtime settings", Decision: "would_claim", RoleSettings: &config.RunRoleSettings{Implementer: config.RoleSettings{Agent: "codex", HarnessSource: "label", Skills: []string{"implement"}, Tier: "high", TierLabels: []string{"MERGEYARD:IMPLEMENTER-TIER=HIGH"}}, Reviewer: config.RoleSettings{Agent: "claude", HarnessSource: "config", Model: "runtime-model", Skills: []string{}}}}}}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := runtimeServer(t, workspace, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.String())
 		if r.Method != "GET" {
 			t.Error("plan wrote to control plane")
@@ -129,8 +135,41 @@ func TestPlanUsesOwningControlPlane(t *testing.T) {
 	if code != 0 || stderr != "" || !strings.Contains(out, "source label") || !strings.Contains(out, "runtime-model") || !strings.Contains(out, "tier high") || !strings.Contains(out, "MERGEYARD:IMPLEMENTER-TIER=HIGH") || !strings.Contains(out, "tier none") {
 		t.Fatalf("text=%d %s %s", code, out, stderr)
 	}
-	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
-		t.Fatal("online plan created workspace")
+	entries, err := os.ReadDir(workspace)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "runtime.secret" {
+		t.Fatalf("online plan changed the workspace: %v %v", entries, err)
+	}
+}
+
+func TestPlanDoesNotBypassAnActiveRuntimeWithoutItsSecret(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := os.WriteFile(path, []byte("port: "+strconv.Itoa(port)+"\nworkspace: "+strconv.Quote(workspace)+"\nrepositories: [{repo: owner/repo}]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The workspace never created a secret, but the port has a listener, so an
+	// offline plan must not silently replace the active runtime.
+	code, out, errOut := runCLI("plan", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "runtime.secret_missing") || strings.Contains(out, "owner/repo") {
+		t.Fatalf("plan bypassed an active runtime: %d %q %s", code, out, errOut)
 	}
 }
 
@@ -144,7 +183,13 @@ func TestPlanFlagsRequirePlan(t *testing.T) {
 }
 
 func TestPlanOnlineReturnsEveryIssueInLargeQueue(t *testing.T) {
-	workspace := filepath.Join(t.TempDir(), "never-created")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtimeauth.EnsureSecret(workspace); err != nil {
+		t.Fatal(err)
+	}
 	report := scheduler.Plan{SchemaVersion: 1, Paused: true, Issues: make([]scheduler.PlanIssue, 13000)}
 	for i := range report.Issues {
 		report.Issues[i] = scheduler.PlanIssue{Repository: "owner/repo", Number: i + 1, Title: strings.Repeat("x", 240), Decision: "waiting", Reason: "scheduler_paused"}
@@ -157,7 +202,7 @@ func TestPlanOnlineReturnsEveryIssueInLargeQueue(t *testing.T) {
 		t.Fatalf("fixture must exceed the former response cap: %d bytes", len(encoded))
 	}
 	t.Logf("%d issues; encoded response: %d bytes", len(report.Issues), len(encoded)+1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := runtimeServer(t, workspace, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Errorf("plan wrote to control plane: %s", r.Method)
 		}
@@ -207,7 +252,8 @@ func TestPlanOnlineReturnsEveryIssueInLargeQueue(t *testing.T) {
 			}
 		})
 	}
-	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
-		t.Fatal("online plan created workspace")
+	entries, err := os.ReadDir(workspace)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "runtime.secret" {
+		t.Fatalf("large online plan changed the workspace: %v %v", entries, err)
 	}
 }

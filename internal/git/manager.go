@@ -272,12 +272,27 @@ func (m *Manager) newRun(req PrepareRequest) (Run, error) {
 		return Run{}, failure("git.invalid_input", "", errors.New("invalid remote URL"))
 	}
 	slug := strings.ReplaceAll(req.Repository, "/", "-")
+	path, err := WorktreePath(m.root, req.Repository, req.RunID)
+	if err != nil {
+		return Run{}, err
+	}
 	return Run{
 		ID: req.RunID, Repository: req.Repository, RemoteURL: remote, IssueNumber: req.IssueNumber,
 		Branch:   fmt.Sprintf("mergeyard/issue-%d", req.IssueNumber),
-		Path:     filepath.Join(m.root, "worktrees", slug, req.RunID),
+		Path:     path,
 		BasePath: filepath.Join(m.root, "repos", slug, "base"),
 	}, nil
+}
+
+// WorktreePath returns the managed worktree directory for one run. The runtime
+// prepares exactly this path; the CLI rebuilds it from the run's repository and
+// ID so a reply from the port can never choose where an interactive harness
+// runs.
+func WorktreePath(root, repo, runID string) (string, error) {
+	if !repository.ValidName(repo) || !runIDPattern.MatchString(runID) {
+		return "", failure("git.invalid_input", "", errors.New("expected owner/repo and a safe run ID"))
+	}
+	return filepath.Join(root, "worktrees", strings.ReplaceAll(repo, "/", "-"), runID), nil
 }
 
 func (m *Manager) validateRun(run Run) error {

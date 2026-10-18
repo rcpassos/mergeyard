@@ -213,7 +213,7 @@ func TestReviewHTTPDetailStatusAndLiveUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, hx := range []bool{false, true} {
-		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil)
+		request := dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil)
 		if hx {
 			request.Header.Set("HX-Request", "true")
 		}
@@ -230,7 +230,7 @@ func TestReviewHTTPDetailStatusAndLiveUpdates(t *testing.T) {
 		}
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(response, apiRequest(t, runtime.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
 		t.Fatal(err)
@@ -245,8 +245,10 @@ func TestReviewHTTPDetailStatusAndLiveUpdates(t *testing.T) {
 		t.Fatal("live page does not subscribe to review updates")
 	}
 	for _, request := range []*http.Request{
+		// A rebound host is refused before any session exchange, so it needs
+		// no owner cookie to prove the host check.
 		httptest.NewRequest(http.MethodGet, "http://evil.example/runs/"+run.ID, nil),
-		httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7331/runs/"+run.ID+"/stop", nil),
+		dashboardRequest(t, server, http.MethodPost, "http://127.0.0.1:7331/runs/"+run.ID+"/stop", nil),
 	} {
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)

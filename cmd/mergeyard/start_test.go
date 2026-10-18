@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 )
 
 type safeBuffer struct {
@@ -285,10 +287,18 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	}
 	first := start("start")
 	root := filepath.Join(home, ".mergeyard")
-	for _, name := range []string{"state.db", "mergeyard.lock", "repos", "worktrees", "runs"} {
+	for _, name := range []string{"state.db", "mergeyard.lock", "runtime.secret", "repos", "worktrees", "runs"} {
 		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
 			t.Fatalf("startup did not create %s: %v", name, err)
 		}
+	}
+	info, err := os.Stat(filepath.Join(root, "runtime.secret"))
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("runtime secret permissions: %v %v", info, err)
+	}
+	firstSecret, err := runtimeauth.LoadSecret(root)
+	if err != nil {
+		t.Fatal(err)
 	}
 	second := exec.CommandContext(ctx, binary, "start", "--config", path)
 	second.Env = env
@@ -335,8 +345,13 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	if err := first.Wait(); err != nil {
 		t.Fatalf("SIGTERM shutdown: %v", err)
 	}
-	// No arguments also dispatches start; the persistent lock file is reusable.
+	// No arguments also dispatches start; the persistent lock file is reusable
+	// and the restarted runtime rotates the secret it shares with the CLI.
 	restarted := start()
+	rotated, err := runtimeauth.LoadSecret(root)
+	if err != nil || string(rotated) == string(firstSecret) {
+		t.Fatalf("restart did not rotate the runtime secret: %v", err)
+	}
 	if err := restarted.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}

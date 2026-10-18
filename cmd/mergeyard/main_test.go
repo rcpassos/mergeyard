@@ -74,9 +74,7 @@ func TestHelpListsEveryCommand(t *testing.T) {
 }
 
 func TestUnimplementedCommandsFail(t *testing.T) {
-	invocations := [][]string{
-		{"open"},
-	}
+	invocations := [][]string{}
 	for _, args := range invocations {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			code, stdout, stderr := runCLI(args...)

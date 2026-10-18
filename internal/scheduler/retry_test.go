@@ -428,20 +428,21 @@ func TestExplicitRetryDashboardAndCLIAPIShareScheduler(t *testing.T) {
 					t.Fatal(err)
 				}
 				statusRecorder := httptest.NewRecorder()
-				server.ServeHTTP(statusRecorder, httptest.NewRequest("GET", "http://127.0.0.1:7331/api/status", nil))
+				server.ServeHTTP(statusRecorder, apiRequest(t, runtime.Workspace.Root, "GET", "http://127.0.0.1:7331/api/status"))
 				var status web.Status
 				if err := json.Unmarshal(statusRecorder.Body.Bytes(), &status); err != nil {
 					t.Fatal(err)
 				}
 				page := httptest.NewRecorder()
-				server.ServeHTTP(page, httptest.NewRequest("GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
+				server.ServeHTTP(page, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
 				if page.Code != 200 || !strings.Contains(page.Body.String(), "Retry run") {
 					t.Fatalf("retry absent in %s: %s", state, page.Body.String())
 				}
 				for _, invalid := range []string{"host", "origin", "token", "cross-site"} {
-					request := httptest.NewRequest("POST", "http://127.0.0.1:7331"+route+before.ID+"/retry", nil)
+					request := dashboardRequest(t, server, "POST", "http://127.0.0.1:7331"+route+before.ID+"/retry", nil)
 					request.Header.Set("Origin", "http://127.0.0.1:7331")
 					request.Header.Set("X-CSRF-Token", status.Token)
+					signAPIRequest(t, runtime.Workspace.Root, request)
 					switch invalid {
 					case "host":
 						request.Host = "evil.example:7331"
@@ -460,9 +461,10 @@ func TestExplicitRetryDashboardAndCLIAPIShareScheduler(t *testing.T) {
 					}
 				}
 				for range 2 {
-					request := httptest.NewRequest("POST", "http://127.0.0.1:7331"+route+before.ID+"/retry", nil)
+					request := dashboardRequest(t, server, "POST", "http://127.0.0.1:7331"+route+before.ID+"/retry", nil)
 					request.Header.Set("Origin", "http://127.0.0.1:7331")
 					request.Header.Set("X-CSRF-Token", status.Token)
+					signAPIRequest(t, runtime.Workspace.Root, request)
 					response := httptest.NewRecorder()
 					server.ServeHTTP(response, request)
 					if route == "/runs/" {
@@ -481,7 +483,7 @@ func TestExplicitRetryDashboardAndCLIAPIShareScheduler(t *testing.T) {
 					t.Fatalf("handler duplicated orchestration: %+v %v", after, err)
 				}
 				page = httptest.NewRecorder()
-				server.ServeHTTP(page, httptest.NewRequest("GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
+				server.ServeHTTP(page, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
 				for _, text := range []string{"Additional review round granted: 2", "Selected ACTIVE / fix", "run.retry_requested", "\"trigger\":\"retry\""} {
 					if page.Code != 200 || !strings.Contains(html.UnescapeString(page.Body.String()), text) {
 						t.Fatalf("retry detail missing %q: %s", text, page.Body.String())

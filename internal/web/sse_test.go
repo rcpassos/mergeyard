@@ -18,7 +18,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/web"
 )
 
-func openStream(t *testing.T, url, lastEventID string) (*http.Response, *bufio.Reader) {
+func openStream(t *testing.T, server *web.Server, url, lastEventID string) (*http.Response, *bufio.Reader) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -26,6 +26,7 @@ func openStream(t *testing.T, url, lastEventID string) (*http.Response, *bufio.R
 	if err != nil {
 		t.Fatal(err)
 	}
+	request.AddCookie(ownerSession(t, server, url))
 	if lastEventID != "" {
 		request.Header.Set("Last-Event-ID", lastEventID)
 	}
@@ -87,7 +88,7 @@ func TestTransientNotificationRefreshesLiveStreamsWithoutJoiningHistory(t *testi
 	}
 	listener := httptest.NewServer(server)
 	t.Cleanup(listener.Close)
-	response, reader := openStream(t, listener.URL, "")
+	response, reader := openStream(t, server, listener.URL, "")
 	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("stream handshake: %d %q", response.StatusCode, response.Header.Get("Content-Type"))
 	}
@@ -123,7 +124,7 @@ func TestTransientNotificationRefreshesLiveStreamsWithoutJoiningHistory(t *testi
 		t.Fatalf("transient notification reset the durable cursor: %v", second)
 	}
 	response.Body.Close()
-	reconnect, replayed := openStream(t, listener.URL, "1")
+	reconnect, replayed := openStream(t, server, listener.URL, "1")
 	if reconnect.StatusCode != http.StatusOK {
 		t.Fatalf("reconnect status = %d", reconnect.StatusCode)
 	}

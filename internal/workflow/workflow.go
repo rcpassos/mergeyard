@@ -642,3 +642,21 @@ func (r Run) CreditWaiting() bool {
 func (r Run) RetryAllowed() bool {
 	return r.State == NeedsAttention || r.State == Failed || r.CreditWaiting()
 }
+
+// TakeoverResume returns the harness and active implementer session an
+// interactive resume must use. Role settings were fixed at claim, so they win;
+// the latest recorded implement attempt covers runs claimed before role
+// settings were stored. The runtime and the CLI resolve the identity here so
+// both rebuild the same conversation.
+func (r Run) TakeoverResume() (agent, session string) {
+	if r.RoleSettings != nil {
+		agent = r.RoleSettings.Implementer.Agent
+	}
+	if agent == "" && r.Implementer != nil {
+		agent = r.Implementer.Agent
+	}
+	if r.Implementer != nil {
+		session = r.Implementer.SessionID
+	}
+	return agent, session
+}

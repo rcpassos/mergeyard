@@ -131,11 +131,10 @@ func TestCombinedRecoveryAcrossRepositories(t *testing.T) {
 				if len(runs) != 4 || runs[11].State != workflow.Active || runs[12].ID != "" || runs[10].ID != "" || runs[13].ID != "" {
 					t.Fatalf("global/repository caps or blocked implementer bypassed: %+v", runs)
 				}
-				command, err := s.Takeover(ctx, origin.ID)
-				if err != nil {
+				if _, err := s.Takeover(ctx, origin.ID); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(command.Dir, "manual.txt"), []byte("manual work"), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(runWorktree(t, rt.Workspace.Root, origin), "manual.txt"), []byte("manual work"), 0600); err != nil {
 					t.Fatal(err)
 				}
 				if err := s.Tick(ctx); err != nil {

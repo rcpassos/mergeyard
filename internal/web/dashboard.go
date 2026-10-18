@@ -62,7 +62,7 @@ func NewDashboard(bus *events.Bus, control Scheduler, options DashboardOptions) 
 		}
 	}
 	// Preserve the daemon's working directory for configurations whose workspace
-	// path is relative. The CLI itself resumes in the worktree returned by the API.
+	// path is relative. The CLI itself rebuilds the worktree path locally.
 	cliDir, err := os.Getwd()
 	if err != nil {
 		return nil, err

@@ -14,10 +14,12 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 	webassets "github.com/rcpassos/mergeyard/web"
 )
 
@@ -34,15 +36,38 @@ var errorCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$
 
 // Server serves the local dashboard and the runtime's shared event bus.
 type Server struct {
-	bus        *events.Bus
-	scheduler  Scheduler
-	templates  *template.Template
-	token      string
-	handler    http.Handler
+	bus       *events.Bus
+	scheduler Scheduler
+	templates *template.Template
+	// token is the browser CSRF token. It is rendered only into pages served
+	// to an authenticated dashboard session.
+	token string
+	// secret authenticates the CLI API. It is never rendered into a page.
+	secret []byte
+	// session is the dashboard session cookie value; it rotates with the
+	// process, so a restarted runtime locks old browser sessions out.
+	session string
+	// tokens holds single-use dashboard link tokens until they are exchanged.
+	tokens   map[string]time.Time
+	tokensMu sync.Mutex
+	handler  http.Handler
+	// operations and workspace are set for the runtime-backed dashboard.
 	operations Operations
 	workspace  string
 	dashboard  *dashboard
 }
+
+const (
+	// dashboardCookie prefixes the owner session set by the one-time link.
+	// Browsers share cookies across ports on one host, so the name carries the
+	// port and runtimes for different workspaces keep separate sessions.
+	dashboardCookie = "mergeyard_dashboard"
+	// dashboardTokenTTL bounds how long a printed link stays usable.
+	dashboardTokenTTL = 15 * time.Minute
+	// dashboardCookieMaxAge keeps the owner session across browser restarts
+	// until the runtime rotates it.
+	dashboardCookieMaxAge = 7 * 24 * 60 * 60
+)
 
 // New constructs an HTTP handler without opening a socket. The caller owns the
 // bus and scheduler and must keep them alive until the server stops.
@@ -58,11 +83,15 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 	if err != nil {
 		return nil, &fault.Error{Code: "internal.web_templates", Message: "Could not parse dashboard templates", Err: err}
 	}
-	var secret [32]byte
-	if _, err := rand.Read(secret[:]); err != nil {
+	var csrf, session [32]byte
+	if _, err := rand.Read(csrf[:]); err != nil {
 		return nil, &fault.Error{Code: "internal.web_csrf", Message: "Could not generate CSRF token", Err: err}
 	}
-	s := &Server{bus: bus, scheduler: scheduler, operations: operations, workspace: workspace, templates: templates, token: hex.EncodeToString(secret[:])}
+	if _, err := rand.Read(session[:]); err != nil {
+		return nil, &fault.Error{Code: "internal.web_session", Message: "Could not generate the dashboard session", Err: err}
+	}
+	s := &Server{bus: bus, scheduler: scheduler, operations: operations, workspace: workspace, templates: templates,
+		token: hex.EncodeToString(csrf[:]), session: hex.EncodeToString(session[:]), tokens: make(map[string]time.Time)}
 	static, err := fs.Sub(webassets.Files, "static")
 	if err != nil {
 		return nil, &fault.Error{Code: "internal.web_assets", Message: "Could not open embedded assets", Err: err}
@@ -91,9 +120,114 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 		mux.HandleFunc("POST /api/runs/{id}/retry", s.retryRun)
 		mux.HandleFunc("POST /api/runs/{id}/takeover", s.takeoverRun)
 		mux.HandleFunc("POST /api/runs/{id}/handback", s.handbackRun)
+		mux.HandleFunc("POST /api/scheduler/pause", s.control)
+		mux.HandleFunc("POST /api/scheduler/resume", s.control)
+		mux.HandleFunc("POST /api/harnesses/{harness}/check", s.checkHarness)
+		mux.HandleFunc("POST /api/dashboard/session", s.dashboardSession)
 	}
-	s.handler = mux
+	// The CLI API answers only callers that can prove they share the workspace
+	// secret, and the runtime proves itself in return. The browser dashboard
+	// answers only the owner session set by the one-time link printed by
+	// mergeyard start, and keeps its origin, body and CSRF requirements.
+	s.handler = s.dashboardGate(mux)
+	if operations != nil {
+		if s.secret, err = runtimeauth.EnsureSecret(workspace); err != nil {
+			return nil, err
+		}
+		s.handler = runtimeauth.APIHandler(s.handler, s.secret)
+	}
 	return s, nil
+}
+
+// NewDashboardToken mints a single-use dashboard link token. mergeyard start
+// prints it and mergeyard open requests a fresh one; the exchange sets the
+// owner session cookie.
+func (s *Server) NewDashboardToken() string {
+	var token [32]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return ""
+	}
+	value := hex.EncodeToString(token[:])
+	s.tokensMu.Lock()
+	defer s.tokensMu.Unlock()
+	now := time.Now()
+	for existing, expiry := range s.tokens {
+		if now.After(expiry) {
+			delete(s.tokens, existing)
+		}
+	}
+	s.tokens[value] = now.Add(dashboardTokenTTL)
+	return value
+}
+
+// consumeToken exchanges one link token for the owner session. Tokens are
+// single-use, so a captured link cannot be replayed.
+func (s *Server) consumeToken(token string) bool {
+	s.tokensMu.Lock()
+	defer s.tokensMu.Unlock()
+	expiry, ok := s.tokens[token]
+	if !ok {
+		return false
+	}
+	delete(s.tokens, token)
+	return time.Now().Before(expiry)
+}
+
+// authenticated reports whether the request carries the owner session cookie.
+func (s *Server) authenticated(r *http.Request) bool {
+	cookie, err := r.Cookie(dashboardCookieName(r))
+	return err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.session)) == 1
+}
+
+// dashboardCookieName returns the owner session cookie for the port the
+// browser addressed.
+func dashboardCookieName(r *http.Request) string {
+	if _, port, err := net.SplitHostPort(r.Host); err == nil && port != "" {
+		return dashboardCookie + "_" + port
+	}
+	return dashboardCookie
+}
+
+// dashboardGate locks the dashboard to the owner session. API and asset routes
+// pass through to their own boundary. Every POST still requires an exact Origin
+// and the CSRF token: dashboard forms get it from an owner page, and the CLI
+// gets it from the proof-protected status snapshot.
+func (s *Server) dashboardGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/static/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		api := strings.HasPrefix(r.URL.Path, "/api/")
+		if !api && !s.authenticated(r) {
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				s.renderData(w, "locked", nil)
+				return
+			}
+			http.Error(w, "This dashboard is locked to the workspace owner; run mergeyard open for a new link.", http.StatusForbidden)
+			return
+		}
+		if r.Method == http.MethodPost {
+			if r.Header.Get("Origin") != "http://"+r.Host || strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
+				http.Error(w, "Invalid request origin", http.StatusForbidden)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "Invalid request body", http.StatusBadRequest)
+				return
+			}
+			token := r.Header.Get("X-CSRF-Token")
+			if token == "" {
+				token = r.PostForm.Get("csrf_token")
+			}
+			if subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) != 1 {
+				http.Error(w, "Invalid CSRF token", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Listen accepts only a numeric 127.0.0.1 address, including port zero for
@@ -162,26 +296,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
-	if r.Method == http.MethodPost {
-		if r.Header.Get("Origin") != "http://"+r.Host || strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
-			http.Error(w, "Invalid request origin", http.StatusForbidden)
-			return
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
-			return
-		}
-		token := r.Header.Get("X-CSRF-Token")
-		if token == "" {
-			token = r.PostForm.Get("csrf_token")
-		}
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.token)) != 1 {
-			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
-			return
-		}
+	if token := r.URL.Query().Get("token"); token != "" && (r.Method == http.MethodGet || r.Method == http.MethodHead) && !strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/static/") {
+		s.exchangeToken(w, r, token)
+		return
 	}
 	s.handler.ServeHTTP(w, r)
+}
+
+// exchangeToken trades the one-time link for the owner session cookie and
+// redirects to the requested page without the token in the address bar.
+func (s *Server) exchangeToken(w http.ResponseWriter, r *http.Request, token string) {
+	if !s.consumeToken(token) {
+		http.Error(w, "This dashboard link is invalid or expired; run mergeyard open for a new one.", http.StatusForbidden)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: dashboardCookieName(r), Value: s.session, Path: "/",
+		MaxAge: dashboardCookieMaxAge, HttpOnly: true, SameSite: http.SameSiteStrictMode,
+	})
+	target := r.URL.Path
+	if target == "" {
+		target = "/"
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 func (s *Server) render(w http.ResponseWriter, name string) {
@@ -205,7 +342,7 @@ func (s *Server) renderData(w http.ResponseWriter, name string, data any) {
 
 func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	var err error
-	if r.URL.Path == "/scheduler/pause" {
+	if strings.HasSuffix(r.URL.Path, "/pause") {
 		err = s.scheduler.Pause(r.Context())
 	} else {
 		err = s.scheduler.Resume(r.Context())

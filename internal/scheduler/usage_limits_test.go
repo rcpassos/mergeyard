@@ -83,7 +83,7 @@ func TestTemporaryLimitPreservesWorkAndResumesAfterRestart(t *testing.T) {
 			}
 			for _, path := range []string{"/runs/" + waiting.ID, "/settings", "/"} {
 				response := httptest.NewRecorder()
-				server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+				server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil))
 				for _, value := range []string{"Waiting until", "reported", "fixture"} {
 					if response.Code != 200 || !strings.Contains(response.Body.String(), value) {
 						t.Fatalf("%s missing %s: %d %s", path, value, response.Code, response.Body.String())
@@ -91,7 +91,7 @@ func TestTemporaryLimitPreservesWorkAndResumesAfterRestart(t *testing.T) {
 				}
 			}
 			status := httptest.NewRecorder()
-			server.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+			server.ServeHTTP(status, apiRequest(t, runtime.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 			var operational web.Status
 			if status.Code != 200 || json.Unmarshal(status.Body.Bytes(), &operational) != nil || len(operational.Harnesses) != 2 || operational.Runs[0].HarnessWait == nil {
 				t.Fatalf("status %d %s", status.Code, status.Body.String())

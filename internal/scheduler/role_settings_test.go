@@ -182,8 +182,9 @@ func TestStoredRoleSettingsSurviveRestartLabelsAndFix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command, err := s.Takeover(context.Background(), run.ID)
-	if err != nil || command.Executable != cfg.Agents.Claude.Executable || !strings.Contains(strings.Join(command.Args, " "), run.Implementer.SessionID) {
+	prepared, err := s.Takeover(context.Background(), run.ID)
+	command := manualCommand(t, s, run.ID)
+	if err != nil || prepared.State != workflow.Manual || command.Executable != cfg.Agents.Claude.Executable || !strings.Contains(strings.Join(command.Args, " "), run.Implementer.SessionID) {
 		t.Fatalf("takeover changed implementer: %+v %v", command, err)
 	}
 	if _, err := s.Handback(context.Background(), run.ID); err != nil {
@@ -554,7 +555,7 @@ func TestRunDetailShowsStoredRolesBeforeReviewerStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := httptest.NewRecorder()
-	server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	for _, value := range []string{"Role settings at claim", "implement-model", "review-model", "source config"} {
 		if page.Code != 200 || !strings.Contains(page.Body.String(), value) {
 			t.Fatalf("missing %q: %d %s", value, page.Code, page.Body.String())

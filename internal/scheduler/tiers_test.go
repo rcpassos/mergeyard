@@ -61,8 +61,9 @@ func TestTierSelectionSurvivesRestartFixAndPublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command, err := s.Takeover(context.Background(), run.ID)
-	if err != nil || command.Executable != cfg.Agents.Claude.Executable || !strings.Contains(strings.Join(command.Args, " "), run.Implementer.SessionID) {
+	prepared, err := s.Takeover(context.Background(), run.ID)
+	command := manualCommand(t, s, run.ID)
+	if err != nil || prepared.State != workflow.Manual || command.Executable != cfg.Agents.Claude.Executable || !strings.Contains(strings.Join(command.Args, " "), run.Implementer.SessionID) {
 		t.Fatalf("takeover changed tier selection: %+v %v", command, err)
 	}
 	if _, err := s.Handback(context.Background(), run.ID); err != nil {
@@ -85,7 +86,7 @@ func TestTierSelectionSurvivesRestartFixAndPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := httptest.NewRecorder()
-	server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	for _, want := range []string{"tier high", "MERGEYARD:IMPLEMENTER-TIER=HIGH", "tier low", "mergeyard:reviewer-tier=low", "implement-model", "review-model"} {
 		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), want) {
 			t.Fatalf("dashboard missing saved selection %q: %d %s", want, page.Code, page.Body.String())

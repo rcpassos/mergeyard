@@ -162,11 +162,11 @@ func TestBlockedHandbackRecoversAfterControlPlaneKill(t *testing.T) {
 						state = workflow.NeedsAttention
 					}
 					before := finish(t, s, state, workflow.Implement)
-					command, err := s.Takeover(context.Background(), before.ID)
+					prepared, err := s.Takeover(context.Background(), before.ID)
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err := os.WriteFile(filepath.Join(command.Dir, "manual.txt"), []byte("manual work"), 0600); err != nil {
+					if err := os.WriteFile(filepath.Join(runWorktree(t, rt.Workspace.Root, prepared), "manual.txt"), []byte("manual work"), 0600); err != nil {
 						t.Fatal(err)
 					}
 					root := rt.Workspace.Root

@@ -11,7 +11,6 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
-	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -24,7 +23,7 @@ type Operations interface {
 	Retry(context.Context, string, ...string) (workflow.Run, error)
 	Watch(context.Context, string) (runner.SessionRef, error)
 	Handback(context.Context, string) (workflow.Run, error)
-	Takeover(context.Context, string) (harness.InteractiveCommand, error)
+	Takeover(context.Context, string) (workflow.Run, error)
 }
 
 // Status is a snapshot from the process owning the configured workspace.
@@ -101,12 +100,20 @@ func (s *Server) handbackRun(w http.ResponseWriter, r *http.Request) {
 	s.json(w, run)
 }
 func (s *Server) takeoverRun(w http.ResponseWriter, r *http.Request) {
-	command, err := s.operations.Takeover(r.Context(), r.PathValue("id"))
+	run, err := s.operations.Takeover(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.operationError(w, r, err)
 		return
 	}
-	s.json(w, command)
+	s.json(w, run)
+}
+
+// dashboardSession mints a fresh one-time dashboard link for the CLI's open
+// command. Only a caller that proved the workspace secret reaches it.
+func (s *Server) dashboardSession(w http.ResponseWriter, r *http.Request) {
+	s.json(w, struct {
+		URL string `json:"url"`
+	}{URL: "http://" + r.Host + "/?token=" + s.NewDashboardToken()})
 }
 func (s *Server) json(w http.ResponseWriter, value any) {
 	w.Header().Set("Cache-Control", "no-store")

@@ -241,7 +241,7 @@ func TestFixReportsVisibleInDetailStatusAndEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, hx := range []bool{false, true} {
-		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil)
+		request := dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil)
 		if hx {
 			request.Header.Set("HX-Request", "true")
 		}
@@ -257,7 +257,7 @@ func TestFixReportsVisibleInDetailStatusAndEvents(t *testing.T) {
 		}
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(response, apiRequest(t, runtime.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
 		t.Fatal(err)

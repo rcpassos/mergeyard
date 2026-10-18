@@ -1700,6 +1700,19 @@ The next startup performs reconciliation.
 
 The MVP binds only to loopback addresses. Remote dashboard exposure is unsupported.
 
+A port on the loopback interface is shared with every local user, so the CLI
+does not trust whoever is listening on it. The runtime and CLI share an
+owner-only secret in the workspace; API requests carry a proof of that secret
+and the runtime proves itself in return, binding the response status and body.
+Interactive takeover commands are rebuilt by the CLI from the run's stored role
+settings rather than accepted from the runtime, so a process that impersonates
+the port cannot choose what runs.
+
+The dashboard is locked to the workspace owner. `mergeyard start` prints a
+single-use link; exchanging it sets an owner-only session cookie. Without that
+session the dashboard renders a lock page with no CSRF token and refuses every
+action, so another local user cannot stop, retry, pause or take over runs.
+
 ### Issue trust boundary
 
 Agents run with the user's local permissions. An issue title and body are effectively executable intent once the issue receives the ready label. The ready label is a trusted-maintainer authorization boundary.

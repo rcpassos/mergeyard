@@ -25,18 +25,68 @@ workflow, and workspace with the dashboard:
   and the current CSRF token;
 - `GET /api/runs/<run-id>/watch`: the current live tmux session reference;
 - `POST /api/runs/<run-id>/stop`: interrupt the phase, update labels, and stop
-  the run while preserving its code.
+  the run while preserving its code;
+- `POST /api/scheduler/pause` and `POST /api/scheduler/resume`: the same
+  scheduler control the dashboard uses, answering JSON;
+- `POST /api/harnesses/<harness>/check`: the same availability check the
+  dashboard offers;
+- `POST /api/dashboard/session`: mint one single-use dashboard link for
+  `mergeyard open`.
 
-CLI pause/resume use the existing scheduler endpoints with
-`Accept: application/json`, which returns JSON instead of a browser redirect.
 The CLI checks workspace identity before operating, disables HTTP proxies and
 redirect following, and uses a 30-second request timeout.
 
-Every POST requires an exact `Origin: http://127.0.0.1:<port>` and a random
-per-process token, supplied as the `csrf_token` form field or `X-CSRF-Token`
-header. Missing origins are rejected, including requests from CLI clients.
-Host checks also protect GET requests against DNS rebinding. Restarting the
-server invalidates tokens; refresh open dashboard pages after a restart.
+### Workspace secret
+
+Only the workspace owner can be trusted on the loopback port: another local
+user can bind it whenever the runtime is down. The runtime and CLI therefore
+share a secret stored at `<workspace>/runtime.secret` with owner-only
+permissions (`0600`). `mergeyard start` writes a fresh secret on every startup,
+so a value read before a restart can no longer authenticate. The CLI reads the
+same file for each command.
+
+Every `/api` request carries a fresh random nonce, the request time, and an
+HMAC-SHA256 proof of the secret over the method, target, nonce and time. The
+secret itself never travels over the port. The runtime rejects an unproven API
+request with HTTP 401 and `runtime.unauthenticated`, and it proves the same
+secret in the `X-Mergeyard-Proof` response header. That proof covers the exact
+status and body, so a relay cannot edit an answer, and an unproven request
+never receives a proof, so the runtime is not a proof oracle. The CLI refuses a
+reply that does not prove the secret and binds the request to the run it asked
+about. A missing secret tells the user to stop any running Mergeyard, start the
+current version, unreadable permissions name the `chmod 600` fix, and a port
+that cannot prove the secret is reported as `runtime.unauthenticated` with
+recovery guidance.
+
+### Dashboard session
+
+The dashboard is locked to the workspace owner. `mergeyard start` prints a
+dashboard link carrying a single-use token, and opens it when `open_browser` is
+enabled; `mergeyard open` mints a fresh link through the proof-protected API.
+The exchange sets an `HttpOnly`, `SameSite=Strict` session cookie and redirects
+to the page without the token, so the link does not linger in the address bar.
+Tokens expire and cannot be replayed. The session rotates with the process, so
+a restarted runtime locks old browser sessions out; the lock page points at
+`mergeyard open`. Browsers share cookies across ports on one host, so the
+cookie name carries the port and runtimes for different workspaces keep
+separate sessions.
+
+Without that session, every dashboard route answers with the lock page (or HTTP
+403 for a mutation), and no page renders the CSRF token. `/static/` stays
+public so the lock page is styled. A local process that never followed the link
+can read nothing and control nothing.
+
+Every POST still requires an exact `Origin: http://127.0.0.1:<port>` and a
+random per-process token, supplied as the `csrf_token` form field or
+`X-CSRF-Token` header. Missing origins are rejected, including requests from CLI
+clients, which take the token from the proof-protected status snapshot. Host
+checks also protect GET requests against DNS rebinding. Restarting the server
+invalidates tokens; refresh open dashboard pages after a restart.
+
+The dashboard link is printed to the runtime's terminal and briefly visible in
+the browser launcher's process arguments while it opens. The token is
+single-use and short-lived, and the session it sets dies with the process, so a
+stolen link only races the browser once.
 
 Failed scheduler actions return HTTP 500 with a safe diagnostic code in the
 response body and `X-Mergeyard-Error-Code` header. The dashboard displays that
@@ -170,8 +220,12 @@ launch delay. Current run JSON omits an expired credit-wait reset;
 `Scheduler.Takeover`. Run detail offers Take over run when its prerequisites
 are recorded, explains missing worktree/session identity, and shows pending
 preparation. It displays an escaped, copyable `mergeyard takeover` command only after
-process exit and review restoration have completed. The API returns executable,
-argument vector, and worktree; it does not launch an interactive terminal.
+process exit and review restoration have completed. The API returns the prepared
+run snapshot; it never returns an executable, argument vector or directory, and
+it does not launch an interactive terminal. The CLI rebuilds the resume
+invocation locally from the run's stored role settings, its recorded implementer
+session and the managed worktree layout, then verifies the worktree exists. An
+authenticated answer that carries command-shaped fields cannot choose what runs.
 The copied command uses the running Mergeyard executable, an absolute configuration
 path, and the daemon's original working directory, so workspace identity is checked
 even when pasted elsewhere or when configuration paths are relative. It resumes
@@ -180,9 +234,9 @@ the identity remains visible in the run detail. A missing configuration path
 withholds the command and displays an actionable explanation.
 Normal interactive permissions are selected explicitly for either harness.
 `run.takeover_requested` and `run.manual` refresh the dashboard over SSE.
-Takeover uses the existing Host, Origin, CSRF, loopback, and CLI workspace checks;
-known prerequisite errors include actionable messages. Manual runs retain their
-slot and never launch automated agent phases after restart.
+Takeover uses the existing Host, Origin, CSRF, loopback, workspace-secret, and CLI
+workspace checks; known prerequisite errors include actionable messages. Manual
+runs retain their slot and never launch automated agent phases after restart.
 
 If a PR merges while a CLI or dashboard-command takeover is open, the dashboard records completion
 and shows pending cleanup. Interactive ownership protects the worktree and

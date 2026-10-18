@@ -115,7 +115,7 @@ func TestSchedulerUsesHeadApprovalAndCurrentTestMergeCI(t *testing.T) {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()
-			server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+			server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 			for _, text := range []string{"Verified test merge commit", "test-merge", run.ApprovedSHA, "https://example.com/" + tc.mergeState} {
 				if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), text) {
 					t.Fatalf("missing %q in merge CI detail", text)

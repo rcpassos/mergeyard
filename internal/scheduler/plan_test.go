@@ -209,7 +209,7 @@ func TestPlanHTTPReadsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/plan?repo=owner%2Frepo", nil))
+	server.ServeHTTP(response, apiRequest(t, rt.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/plan?repo=owner%2Frepo"))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"decision":"would_claim"`) {
 		t.Fatalf("HTTP plan=%d %s", response.Code, response.Body)
 	}

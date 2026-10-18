@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +18,7 @@ func TestCLIStatusShowsEscalationReasonsAndWarnings(t *testing.T) {
 	root := t.TempDir()
 	run := workflow.Run{ID: "ready", Repository: "owner/repo", IssueNumber: 100, State: workflow.ReadyToMerge,
 		Escalation: &escalation.Snapshot{HeadSHA: "approved", Reasons: []escalation.Flag{{Reason: "migration", Files: []string{"migrations/001.sql"}}}, PublicationWarning: "PR body update will retry."}}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := runtimeServer(t, root, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(web.Status{Workspace: root, Runs: []workflow.Run{run}})
 	}))
 	defer server.Close()

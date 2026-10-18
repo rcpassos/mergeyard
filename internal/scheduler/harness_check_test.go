@@ -223,14 +223,14 @@ func TestHarnessCheckBrowserControlsAndProtections(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := httptest.NewRecorder()
-	server.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(status, apiRequest(t, rt.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 	var snapshot web.Status
 	if err := json.Unmarshal(status.Body.Bytes(), &snapshot); err != nil {
 		t.Fatal(err)
 	}
 	page := func() string {
 		response := httptest.NewRecorder()
-		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil))
+		server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
 		if response.Code != 200 {
 			t.Fatalf("page: %s", response.Body)
 		}
@@ -246,7 +246,7 @@ func TestHarnessCheckBrowserControlsAndProtections(t *testing.T) {
 		t.Fatalf("missing disclosure: %s", body)
 	}
 	for _, restriction := range []string{"host", "origin", "csrf", "cross-site", "capability"} {
-		request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7331/harnesses/claude/check", nil)
+		request := dashboardRequest(t, server, http.MethodPost, "http://127.0.0.1:7331/harnesses/claude/check", nil)
 		request.Header.Set("Origin", "http://127.0.0.1:7331")
 		request.Header.Set("X-CSRF-Token", snapshot.Token)
 		switch restriction {
@@ -271,7 +271,7 @@ func TestHarnessCheckBrowserControlsAndProtections(t *testing.T) {
 	if err := os.WriteFile(cfg.Agents.Claude.Executable, []byte("#!/bin/sh\nsleep 0.1\nprintf '%s\\n' '{\"type\":\"result\",\"is_error\":false,\"subtype\":\"success\",\"result\":\"OK\"}'"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7331/harnesses/claude/check", nil)
+	request := dashboardRequest(t, server, http.MethodPost, "http://127.0.0.1:7331/harnesses/claude/check", nil)
 	request.Header.Set("Origin", "http://127.0.0.1:7331")
 	request.Header.Set("X-CSRF-Token", snapshot.Token)
 	request.Header.Set("HX-Request", "true")

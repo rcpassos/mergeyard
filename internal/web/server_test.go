@@ -41,8 +41,11 @@ func TestSchedulerDatabaseFailurePreservesSafeDiagnostics(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			cookie := ownerSession(t, server, "http://127.0.0.1:7331")
 			page := httptest.NewRecorder()
-			server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil))
+			pageRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil)
+			pageRequest.AddCookie(cookie)
+			server.ServeHTTP(page, pageRequest)
 			token := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(page.Body.String())
 			if len(token) != 2 {
 				t.Fatal("dashboard did not supply a CSRF token")
@@ -61,6 +64,7 @@ func TestSchedulerDatabaseFailurePreservesSafeDiagnostics(t *testing.T) {
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			request.Header.Set("Origin", "http://127.0.0.1:7331")
 			request.Header.Set("HX-Request", "true")
+			request.AddCookie(cookie)
 			response := httptest.NewRecorder()
 			server.ServeHTTP(response, request)
 			if response.Code != http.StatusInternalServerError {

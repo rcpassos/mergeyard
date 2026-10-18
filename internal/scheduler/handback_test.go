@@ -97,7 +97,7 @@ func TestHandbackExistingPRAlwaysGetsIndependentReviewAndOneDurableRound(t *test
 						t.Fatal(err)
 					}
 					response := httptest.NewRecorder()
-					server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/settings", nil))
+					server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/settings", nil))
 					if response.Code != 200 || !strings.Contains(response.Body.String(), "Additional review round granted: 2") {
 						t.Fatalf("settings lost the handback grant: %d %s", response.Code, response.Body.String())
 					}
@@ -380,15 +380,16 @@ func TestDashboardHandbackUsesProtectedSharedOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1:7331/api/status", nil))
+	server.ServeHTTP(response, apiRequest(t, runtime.Workspace.Root, "GET", "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
 		t.Fatal(err)
 	}
 	for _, action := range []string{"/runs/", "/api/runs/"} {
 		for _, attack := range []string{"missing token", "foreign origin"} {
-			request := httptest.NewRequest("POST", "http://127.0.0.1:7331"+action+before.ID+"/handback", nil)
+			request := dashboardRequest(t, server, "POST", "http://127.0.0.1:7331"+action+before.ID+"/handback", nil)
 			request.Header.Set("Origin", "http://127.0.0.1:7331")
+			signAPIRequest(t, runtime.Workspace.Root, request)
 			if attack == "foreign origin" {
 				request.Header.Set("X-CSRF-Token", status.Token)
 				request.Header.Set("Origin", "https://attacker.example")
@@ -402,13 +403,13 @@ func TestDashboardHandbackUsesProtectedSharedOperation(t *testing.T) {
 		}
 	}
 	response = httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
 	for _, text := range []string{"Hand back run", "Exit the interactive harness", "exactly one additional round", "original implementer session"} {
 		if !strings.Contains(response.Body.String(), text) {
 			t.Fatalf("missing disclosure %q", text)
 		}
 	}
-	request := httptest.NewRequest("POST", "http://127.0.0.1:7331/runs/"+before.ID+"/handback", nil)
+	request := dashboardRequest(t, server, "POST", "http://127.0.0.1:7331/runs/"+before.ID+"/handback", nil)
 	request.Header.Set("Origin", "http://127.0.0.1:7331")
 	request.Header.Set("X-CSRF-Token", status.Token)
 	request.Header.Set("HX-Request", "true")
@@ -420,6 +421,7 @@ func TestDashboardHandbackUsesProtectedSharedOperation(t *testing.T) {
 	request = httptest.NewRequest("POST", "http://127.0.0.1:7331/api/runs/"+before.ID+"/handback", nil)
 	request.Header.Set("Origin", "http://127.0.0.1:7331")
 	request.Header.Set("X-CSRF-Token", status.Token)
+	signAPIRequest(t, runtime.Workspace.Root, request)
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 	var selected workflow.Run
@@ -485,7 +487,7 @@ func TestHandbackPendingPublicationIsVisibleAndStopCancelsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
 	for _, text := range []string{"Selected ACTIVE / review", "Publication or reconciliation is incomplete", "Handback publication is pending"} {
 		if !strings.Contains(response.Body.String(), text) {
 			t.Fatalf("missing recovery detail %q", text)

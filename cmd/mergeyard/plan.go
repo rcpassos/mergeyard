@@ -7,17 +7,43 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/store"
 	"github.com/rcpassos/mergeyard/internal/workspace"
 )
+
+// missingSecret reports a workspace where the runtime never created its secret,
+// so no client could authenticate a runtime there.
+func missingSecret(err error) bool {
+	var failure *fault.Error
+	return errors.As(err, &failure) && failure.Code == "runtime.secret_missing"
+}
+
+// noListener reports whether the configured port has no process accepting
+// connections. Offline planning may replace a missing secret, but it must not
+// silently bypass an active runtime, even one for another workspace.
+func noListener(configPath string) bool {
+	cfg, _, err := config.Load(configPath)
+	if err != nil {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Port), 500*time.Millisecond)
+	if err != nil {
+		return true
+	}
+	conn.Close()
+	return false
+}
 
 func plan(ctx context.Context, configPath, repo string, asJSON bool, out io.Writer) error {
 	client, _, err := connect(ctx, configPath)
@@ -25,9 +51,12 @@ func plan(ctx context.Context, configPath, repo string, asJSON bool, out io.Writ
 	if err == nil {
 		defer client.http.CloseIdleConnections()
 		err = client.request(ctx, http.MethodGet, "/api/plan?repo="+url.QueryEscape(repo), &report, nil)
-	} else if errors.Is(err, syscall.ECONNREFUSED) {
-		// Fall back only when there is no listener. An active but unresponsive,
-		// incompatible, or mismatched control plane must never be silently bypassed.
+	} else if errors.Is(err, syscall.ECONNREFUSED) || (missingSecret(err) && noListener(configPath)) {
+		// Fall back only when there is no runtime to authenticate: no listener,
+		// or a workspace where the runtime never created its secret and the port
+		// is free. An active but unresponsive, incompatible, or mismatched
+		// control plane must never be silently bypassed. Offline planning only
+		// reads storage.
 		cfg, _, loadErr := config.Load(configPath)
 		if loadErr != nil {
 			return loadErr
