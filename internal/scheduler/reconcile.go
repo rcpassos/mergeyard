@@ -33,6 +33,49 @@ type ReconcileReport struct {
 	Findings []Finding `json:"findings"`
 }
 
+// githubRetryable names the GitHub adapter failures that a later tick retries:
+// the service could not be reached, was rate limited, was cancelled, or did not
+// answer cleanly. Conclusive answers (missing repository, permission, login, or
+// input) stay absent so they refuse startup like any local-state failure.
+var githubRetryable = map[string]bool{
+	"github.unavailable":      true,
+	"github.rate_limited":     true,
+	"github.canceled":         true,
+	"github.timeout":          true,
+	"github.command_failed":   true,
+	"github.invalid_response": true,
+}
+
+// GitHubFailure reports whether err can be left for later ticks: the GitHub
+// boundary did not answer cleanly and nothing else failed. A coded wrapper
+// classifies by its cause, so pending handback state wrapped around a GitHub
+// failure stays retryable. Every error joined into the tree must classify as
+// retryable; anything else (database, workspace, Git, harness, runner, or a
+// conclusive GitHub answer) makes dispatch unsafe and returns false.
+func GitHubFailure(err error) bool {
+	switch failure := err.(type) {
+	case *fault.Error:
+		if githubRetryable[failure.Code] {
+			return true
+		}
+		if failure.Err == nil {
+			return false
+		}
+		return GitHubFailure(failure.Err)
+	case interface{ Unwrap() []error }:
+		for _, joined := range failure.Unwrap() {
+			if !GitHubFailure(joined) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		return GitHubFailure(failure.Unwrap())
+	default:
+		return false
+	}
+}
+
 // Reconcile observes and advances existing runs without claiming any new work.
 // Run's first tick and every later Tick use this same gate before dispatch.
 func (s *Scheduler) Reconcile(ctx context.Context) (ReconcileReport, error) {

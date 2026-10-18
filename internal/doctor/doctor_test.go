@@ -277,9 +277,22 @@ func TestLoginFailuresAreErrors(t *testing.T) {
 		t.Run(tc.scope, func(t *testing.T) {
 			path, fake, opts := setup(t, "reviewer: {agent: codex}\n")
 			fake.responses[tc.command] = runner.ExecResult{ExitCode: 1}
+			// An answered reachability probe keeps a failed login an error.
+			fake.responses["gh api --hostname github.com --method GET rate_limit"] = runner.ExecResult{Stdout: []byte(`{"resources":{}}`)}
 			requireFinding(t, doctor.Check(context.Background(), path, opts), doctor.Error, tc.code, tc.scope)
 		})
 	}
+}
+
+func TestAuthenticationDuringGitHubOutageIsUnverifiable(t *testing.T) {
+	path, fake, opts := setup(t, "reviewer: {agent: codex}\n")
+	fake.responses["gh auth status --hostname github.com"] = runner.ExecResult{ExitCode: 1, Stderr: []byte("Failed to log in to github.com account octo\nThe token in keyring is invalid.")}
+	fake.responses["gh api --hostname github.com --method GET rate_limit"] = runner.ExecResult{ExitCode: 1, Stderr: []byte(`Get "https://api.github.com/rate_limit": dial tcp: lookup api.github.com: no such host`)}
+	report := doctor.Check(context.Background(), path, opts)
+	if report.HasErrors() {
+		t.Fatalf("unreachable GitHub must not fail doctor: %+v", report)
+	}
+	requireFinding(t, report, doctor.Unverifiable, "github.not_logged_in", "gh")
 }
 
 func TestRootWithBypassPermissionsIsAnError(t *testing.T) {
@@ -462,30 +475,91 @@ func TestInstructionFilesMustResolveToRegularFiles(t *testing.T) {
 func TestRepositoryCheckFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name, command, output string
+		stderr                string
 		exit                  int
 		severity              doctor.Severity
 		code                  string
 	}{
-		{"origin inaccessible", "git ls-remote --symref -- https://github.com/octo/repo.git HEAD", "", 1, doctor.Error, "git.origin_inaccessible"},
-		{"default branch absent", "git ls-remote --symref -- https://github.com/octo/repo.git HEAD", "", 0, doctor.Error, "git.base_branch"},
-		{"invalid base branch", "git check-ref-format refs/heads/main", "", 1, doctor.Error, "git.base_branch"},
-		{"base branch absent", "git ls-remote --exit-code --heads -- https://github.com/octo/repo.git refs/heads/main", "", 2, doctor.Error, "git.base_branch"},
-		{"fetch failure", "git fetch --depth=1 --no-tags --no-recurse-submodules -- https://github.com/octo/repo.git refs/heads/main:refs/heads/doctor", "", 1, doctor.Error, "git.fetch"},
-		{"push transport failure", "git push probe", "", 1, doctor.Error, "git.push_access"},
-		{"push denied", "gh api --hostname github.com --method GET repos/octo/repo", `{"permissions":{"push":false}}`, 0, doctor.Error, "github.push_forbidden"},
-		{"push permission omitted", "gh api --hostname github.com --method GET repos/octo/repo", `{}`, 0, doctor.Unverifiable, "github.push_unverifiable"},
-		{"permissions request failed", "gh api --hostname github.com --method GET repos/octo/repo", "", 1, doctor.Unverifiable, "github.push_unverifiable"},
-		{"invalid metadata", "gh api --hostname github.com --method GET repos/octo/repo", `null`, 0, doctor.Error, "github.invalid_response"},
-		{"label request failed", "gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100", "", 1, doctor.Error, "github.labels_check_failed"},
-		{"invalid labels", "gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100", `{}`, 0, doctor.Error, "github.invalid_response"},
-		{"tree unavailable", "git cat-file --batch-check=%(objecttype) --follow-symlinks", "", 1, doctor.Unverifiable, "git.tree_unverifiable"},
+		{"origin inaccessible", "git ls-remote --symref -- https://github.com/octo/repo.git HEAD", "", "", 1, doctor.Error, "git.origin_inaccessible"},
+		{"origin unreachable", "git ls-remote --symref -- https://github.com/octo/repo.git HEAD", "", "fatal: unable to access 'https://github.com/octo/repo.git/': Could not resolve host: github.com", 128, doctor.Unverifiable, "git.origin_inaccessible"},
+		{"default branch absent", "git ls-remote --symref -- https://github.com/octo/repo.git HEAD", "", "", 0, doctor.Error, "git.base_branch"},
+		{"invalid base branch", "git check-ref-format refs/heads/main", "", "", 1, doctor.Error, "git.base_branch"},
+		{"base branch absent", "git ls-remote --exit-code --heads -- https://github.com/octo/repo.git refs/heads/main", "", "", 2, doctor.Error, "git.base_branch"},
+		{"base branch request failed", "git ls-remote --exit-code --heads -- https://github.com/octo/repo.git refs/heads/main", "", "", 1, doctor.Error, "git.base_branch"},
+		{"base branch request unreachable", "git ls-remote --exit-code --heads -- https://github.com/octo/repo.git refs/heads/main", "", "fatal: unable to access 'https://github.com/octo/repo.git/': The requested URL returned error: 503", 128, doctor.Unverifiable, "git.base_branch"},
+		{"fetch failure", "git fetch --depth=1 --no-tags --no-recurse-submodules -- https://github.com/octo/repo.git refs/heads/main:refs/heads/doctor", "", "", 1, doctor.Error, "git.fetch"},
+		{"fetch unreachable", "git fetch --depth=1 --no-tags --no-recurse-submodules -- https://github.com/octo/repo.git refs/heads/main:refs/heads/doctor", "", "fatal: unable to access 'https://github.com/octo/repo.git/': Connection timed out", 128, doctor.Unverifiable, "git.fetch"},
+		{"push transport failure", "git push probe", "", "", 1, doctor.Error, "git.push_access"},
+		{"push transport unreachable", "git push probe", "", "fatal: unable to access 'https://github.com/octo/repo.git/': Failed to connect to github.com port 443", 128, doctor.Unverifiable, "git.push_access"},
+		{"push denied", "gh api --hostname github.com --method GET repos/octo/repo", `{"permissions":{"push":false}}`, "", 0, doctor.Error, "github.push_forbidden"},
+		{"push permission omitted", "gh api --hostname github.com --method GET repos/octo/repo", `{}`, "", 0, doctor.Unverifiable, "github.push_unverifiable"},
+		{"permissions request failed", "gh api --hostname github.com --method GET repos/octo/repo", "", "", 1, doctor.Unverifiable, "github.push_unverifiable"},
+		{"invalid metadata", "gh api --hostname github.com --method GET repos/octo/repo", `null`, "", 0, doctor.Error, "github.invalid_response"},
+		{"label request failed", "gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100", "", "", 1, doctor.Error, "github.labels_check_failed"},
+		{"label request unreachable", "gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100", "", "error connecting to api.github.com", 1, doctor.Unverifiable, "github.labels_check_failed"},
+		{"label request rate limited", "gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100", "", "API rate limit exceeded (HTTP 429)", 1, doctor.Unverifiable, "github.labels_check_failed"},
+		{"invalid labels", "gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100", `{}`, "", 0, doctor.Error, "github.invalid_response"},
+		{"tree unavailable", "git cat-file --batch-check=%(objecttype) --follow-symlinks", "", "", 1, doctor.Unverifiable, "git.tree_unverifiable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path, fake, opts := repositorySetup(t, "")
-			fake.responses[tc.command] = runner.ExecResult{Stdout: []byte(tc.output), ExitCode: tc.exit}
+			fake.responses[tc.command] = runner.ExecResult{Stdout: []byte(tc.output), Stderr: []byte(tc.stderr), ExitCode: tc.exit}
 			requireFinding(t, doctor.Check(context.Background(), path, opts), tc.severity, tc.code, "octo/repo")
 		})
 	}
+}
+
+func TestUnreachableGitHubKeepsRepositoryChecksUnverifiable(t *testing.T) {
+	path, fake, opts := repositorySetup(t, "")
+	unreachable := runner.ExecResult{ExitCode: 1, Stderr: []byte("error connecting to api.github.com")}
+	for _, command := range []string{
+		"gh api --hostname github.com --method GET repos/octo/repo",
+		"gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100",
+	} {
+		fake.responses[command] = unreachable
+	}
+	fake.responses["git ls-remote --symref -- https://github.com/octo/repo.git HEAD"] = runner.ExecResult{ExitCode: 128, Stderr: []byte("fatal: unable to access 'https://github.com/octo/repo.git/': Could not resolve host: github.com")}
+	report := doctor.Check(context.Background(), path, opts)
+	if report.HasErrors() {
+		t.Fatalf("an unreachable GitHub must not fail doctor: %+v", report)
+	}
+	requireFinding(t, report, doctor.Unverifiable, "github.push_unverifiable", "octo/repo")
+	requireFinding(t, report, doctor.Unverifiable, "github.labels_check_failed", "octo/repo")
+	requireFinding(t, report, doctor.Unverifiable, "git.origin_inaccessible", "octo/repo")
+}
+
+// timingOutExecutor answers every command containing marker as if it hung
+// until the check deadline.
+type timingOutExecutor struct {
+	*fakeCommands
+	marker string
+}
+
+func (e timingOutExecutor) Exec(ctx context.Context, req runner.ExecRequest) (runner.ExecResult, error) {
+	if strings.Contains(strings.Join(req.Args, " "), e.marker) {
+		return runner.ExecResult{}, fmt.Errorf("executor: %w", context.DeadlineExceeded)
+	}
+	return e.fakeCommands.Exec(ctx, req)
+}
+
+func TestGitHubReadsThatOutrunTheDeadlineAreUnverifiable(t *testing.T) {
+	path, fake, opts := repositorySetup(t, "")
+	opts.Executor = timingOutExecutor{fakeCommands: fake, marker: "ls-remote"}
+	report := doctor.Check(context.Background(), path, opts)
+	if report.HasErrors() {
+		t.Fatalf("a deadline on a GitHub read must not fail doctor: %+v", report)
+	}
+	requireFinding(t, report, doctor.Unverifiable, "git.origin_inaccessible", "octo/repo")
+}
+
+func TestBaseBranchReadsThatOutrunTheDeadlineAreUnverifiable(t *testing.T) {
+	path, fake, opts := repositorySetup(t, "")
+	opts.Executor = timingOutExecutor{fakeCommands: fake, marker: "ls-remote --exit-code"}
+	report := doctor.Check(context.Background(), path, opts)
+	if report.HasErrors() {
+		t.Fatalf("a deadline on the base branch read must not fail doctor: %+v", report)
+	}
+	requireFinding(t, report, doctor.Unverifiable, "git.base_branch", "octo/repo")
 }
 
 func TestRepositoryLabelOverridesAcrossPages(t *testing.T) {
