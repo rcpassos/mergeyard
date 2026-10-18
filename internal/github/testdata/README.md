@@ -6,7 +6,8 @@ and repository metadata are omitted. Bodies, labels, states, timestamps, URLs,
 and dependency summaries are unchanged.
 
 - `open-issues.json`: `repos/rcpassos/mergeyard/issues?state=open&per_page=100`,
-  reduced to issues #18 and #6 in response order.
+  reduced to issues #18 and #6 in response order. Tests reuse it as the response
+  to each per-label query of the label-filtered listing.
 - `open-blockers.json`: `repos/rcpassos/mergeyard/issues/7/dependencies/blocked_by`
   (#3, open).
 - `closed-blockers.json`: `repos/rcpassos/mergeyard/issues/6/dependencies/blocked_by`
@@ -29,8 +30,9 @@ uses the current Git remote to choose a repository.
 Prepare an open issue and an existing repository label named
 `mergeyard-integration-test`, without applying that label to the test issue.
 Optionally add native dependencies on one open and one closed issue to exercise
-blocker filtering against live GitHub. The test lists issues, reads the issue's
-state and native blockers, then adds and removes the test label. Cleanup attempts
+blocker filtering against live GitHub. The test reads the issue's state and
+native blockers, then adds, rediscovers through the label-filtered listing, and
+removes the test label. Cleanup attempts
 to remove the label if a later assertion fails. Run only one live test against the
 same issue at a time.
 

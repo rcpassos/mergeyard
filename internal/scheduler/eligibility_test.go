@@ -71,9 +71,18 @@ func TestLimitedImplementerHarnessSpendsNoPerIssueCalls(t *testing.T) {
 			if claimed := len(runs) != 0; claimed == limited {
 				t.Fatalf("limited=%t claimed %d runs: %+v", limited, len(runs), runs)
 			}
-			// A tick still lists the repository once to reconcile and once to dispatch.
-			tickCalls := wantCalls
-			tickCalls.issueListings++
+			// One poll lists the repository once for reconcile and dispatch; a
+			// gated candidate spends no per-issue calls beyond that listing.
+			tickCalls := githubCalls{issueListings: 1}
+			if !limited {
+				tickCalls = githubCalls{
+					issueListings:      1,
+					trustVerifications: 2 * perCandidate.trustVerifications,
+					blockerReads:       2 * perCandidate.blockerReads,
+					issueReads:         2 * perCandidate.issueReads,
+					trustRechecks:      2 * perCandidate.trustRechecks,
+				}
+			}
 			if !reflect.DeepEqual(api.calls, tickCalls) {
 				t.Fatalf("tick calls = %+v, want %+v", api.calls, tickCalls)
 			}
@@ -122,7 +131,7 @@ func TestClaimRechecksTheGateOnTheFreshSnapshot(t *testing.T) {
 	}
 	// The recheck cost the same claim reads a candidate without an override costs,
 	// so the second decision came from the snapshot rather than from the listing.
-	want := githubCalls{issueListings: 3, trustVerifications: 2, blockerReads: 2, issueReads: 2, trustRechecks: 2}
+	want := githubCalls{issueListings: 2, trustVerifications: 2, blockerReads: 2, issueReads: 2, trustRechecks: 2}
 	if !reflect.DeepEqual(api.calls, want) {
 		t.Fatalf("calls = %+v, want %+v", api.calls, want)
 	}
@@ -194,8 +203,9 @@ func TestLimitedHarnessStillSettlesARelabelledRefusal(t *testing.T) {
 			if err := s.Tick(ctx); err != nil {
 				t.Fatal(err)
 			}
-			// Only the cached trust verification is spent on the refused issue.
-			if want := (githubCalls{issueListings: 2, trustVerifications: 1}); !reflect.DeepEqual(api.calls, want) {
+			// Only the cached trust verification is spent on the refused issue,
+			// and the tick shares one listing between reconcile and dispatch.
+			if want := (githubCalls{issueListings: 1, trustVerifications: 1}); !reflect.DeepEqual(api.calls, want) {
 				t.Fatalf("tick calls = %+v, want %+v", api.calls, want)
 			}
 			runs, err := s.Runs(ctx)

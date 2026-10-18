@@ -28,8 +28,8 @@ type testIssueGitHub struct {
 	number int
 }
 
-func (c testIssueGitHub) ListOpenIssues(ctx context.Context, repo string) ([]github.Issue, error) {
-	issues, err := c.Client.ListOpenIssues(ctx, repo)
+func (c testIssueGitHub) ListLabeledIssues(ctx context.Context, repo string, labels []string) ([]github.Issue, error) {
+	issues, err := c.Client.ListLabeledIssues(ctx, repo, labels)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,8 @@ func TestGitHubSchedulerIntegration(t *testing.T) {
 	defer cancel()
 	client := github.New(nil)
 	api := testIssueGitHub{Client: client, number: number}
-	issues, err := api.ListOpenIssues(ctx, repo)
+	pollLabels := []string{"ready-for-agent", "agent-running", "agent-needs-attention"}
+	issues, err := api.ListLabeledIssues(ctx, repo, pollLabels)
 	if err != nil || len(issues) != 1 {
 		t.Fatalf("test issue unavailable: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestGitHubSchedulerIntegration(t *testing.T) {
 		t.Fatalf("expected one draft PR: %+v, %v", pr, err)
 	}
 	t.Logf("Created test draft PR: %s", pr.URL)
-	issues, err = api.ListOpenIssues(ctx, repo)
+	issues, err = api.ListLabeledIssues(ctx, repo, pollLabels)
 	if err != nil || len(issues) != 1 || !has(issues[0], "agent-running") || has(issues[0], "ready-for-agent") {
 		t.Fatalf("claim labels not applied: %+v, %v", issues, err)
 	}

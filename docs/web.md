@@ -78,7 +78,10 @@ the shared CLI API. `New` remains available for the foundation without runtime d
 
 Run `Server.RunUpdates(ctx)` in a goroutine. It discovers GitHub queue issues
 immediately and at `poll_interval`, including while paused or at capacity.
-Discovery performs no claims. It preserves the last successful snapshot on
+Discovery performs no claims and reads the scheduler's shared label-filtered poll
+listing, refreshing it only once the snapshot is older than `poll_interval`.
+Blocker reads are reused while an issue's listing snapshot is unchanged. It
+preserves the last successful snapshot on
 failure and shows a stale-data notice. Discovery errors fail closed: an issue
 with unknown dependency status is never displayed as ready. Run lifecycle data
 always comes from SQLite, so claims and phase/PR transitions immediately

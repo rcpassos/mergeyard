@@ -36,6 +36,16 @@ dependency. Global and repository limits count all nonterminal runs except
 harness gates withhold new claims and phase launches using the limited harness;
 eligible other-harness work and CI observation continue within capacity.
 
+Each poll reads one listing per repository, filtered server-side to that
+repository's ready, running and needs-attention labels. GitHub ANDs the labels of
+one request, so the adapter reads one query per label and merges the pages by
+issue number; the listing never pages through every open issue and PR.
+Reconcile and dispatch share the poll's snapshot and the dashboard queue reuses
+it, so a repository is listed once per poll instead of once per reader; an
+explicit `Plan` read starts its own poll. A reader
+outside a scheduler poll (the dashboard without a running scheduler) refreshes a
+snapshot older than `poll_interval`. Readers never mutate the shared snapshot.
+
 `Plan(ctx, repository)` uses the same read-only candidate inspection and pure
 capacity/label eligibility policy as `Tick`. It reserves prospective slots in
 memory and returns every open ready issue's decision without reconciliation or
@@ -201,7 +211,13 @@ manual removal of these test artifacts.
 ## Dashboard discovery and Stop
 
 `Queue(ctx)` reads ready/blocked/attention issues from enabled repositories in
-configuration and issue creation order. It does not mutate labels or claim runs,
+configuration and issue creation order, from the scheduler's shared poll listing.
+An issue refused earlier no longer carries a Mergeyard label, so it is read back
+individually and stays visible with its reason until a trusted maintainer
+relabels it; closed and deleted issues stay absent. Open blockers are read only
+when the listing summary reports open blockers and the issue's snapshot changed
+since the previous read, so refreshes of unchanged issues spend no dependency
+calls. `Queue(ctx)` does not mutate labels or claim runs,
 and works independently of pause and concurrency. Dependency lookup failures
 return an error rather than reporting an issue as unblocked.
 
