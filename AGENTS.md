@@ -11,3 +11,7 @@ The default five labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready
 ### Domain docs
 
 Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+## Testing
+
+CI owns the Go test suite: it runs in four parallel jobs, while a local `go test ./...` or `make test` takes many minutes (`internal/scheduler` alone). Verify a change by pushing it and reading `gh pr checks`. Locally, run `make lint` and, at most, the specific tests you wrote or changed: `go test -run '<TestName>' ./<package>/`.
