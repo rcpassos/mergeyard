@@ -209,7 +209,7 @@ func TestHandbackBlockedReviewerPreservesGrantAndMixedRoles(t *testing.T) {
 						guidance = "Explicit recovery is required"
 					}
 					page := httptest.NewRecorder()
-					server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+before.ID, nil))
+					server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+before.ID, nil))
 					if page.Code != 200 || !strings.Contains(page.Body.String(), guidance) || !strings.Contains(page.Body.String(), "Manual conversation success does not clear the harness block") || !strings.Contains(page.Body.String(), "Selected WAITING_FOR_HARNESS / review") || !strings.Contains(page.Body.String(), "Granted additional review round: 2") || strings.Contains(page.Body.String(), ">Retry run<") != (kind == harness.CreditsExhausted) {
 						t.Fatalf("blocked handback actions: %d %s", page.Code, page.Body.String())
 					}

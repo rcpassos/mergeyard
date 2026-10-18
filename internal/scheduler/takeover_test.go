@@ -277,7 +277,7 @@ func TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, attack := range []string{"missing token", "foreign origin"} {
-		request := httptest.NewRequest("POST", "http://127.0.0.1:7331/runs/"+id+"/takeover", nil)
+		request := dashboardRequest(t, server, "POST", "http://127.0.0.1:7331/runs/"+id+"/takeover", nil)
 		request.Header.Set("Origin", "http://127.0.0.1:7331")
 		if attack == "foreign origin" {
 			request.Header.Set("X-CSRF-Token", status.Token)
@@ -290,7 +290,7 @@ func TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand(t *testing.T) {
 			t.Fatalf("%s changed run: %d %+v", attack, response.Code, run)
 		}
 	}
-	request := httptest.NewRequest("POST", "http://127.0.0.1:7331/runs/"+id+"/takeover", nil)
+	request := dashboardRequest(t, server, "POST", "http://127.0.0.1:7331/runs/"+id+"/takeover", nil)
 	request.Header.Set("Origin", "http://127.0.0.1:7331")
 	request.Header.Set("X-CSRF-Token", status.Token)
 	request.Header.Set("HX-Request", "true")
@@ -336,7 +336,7 @@ func TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	response = httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1:7331/runs/"+id, nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+id, nil))
 	if response.Code != 200 || strings.Contains(response.Body.String(), "<script>alert(1)</script>") || !strings.Contains(response.Body.String(), "&lt;script&gt;") {
 		t.Fatalf("unescaped command: %d %s", response.Code, response.Body.String())
 	}
@@ -347,7 +347,7 @@ func TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	response = httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1:7331/runs/"+id, nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+id, nil))
 	if response.Code != 200 || strings.Contains(response.Body.String(), "Copy resume command") || !strings.Contains(response.Body.String(), "configuration path") {
 		t.Fatalf("missing config exposed unprotected launcher: %d %s", response.Code, response.Body.String())
 	}

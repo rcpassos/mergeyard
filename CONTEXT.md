@@ -22,3 +22,5 @@ _Avoid_: Agent label, harness label
 
 **Workspace secret**: The owner-only file the runtime writes inside the workspace and the CLI reads, so both can prove they belong to the same workspace before any API request or interactive launch.
 _Avoid_: API key, token (the browser CSRF token is separate)
+
+**Dashboard session**: The owner-only browser credential set by the single-use link printed by `mergeyard start` (or `mergeyard open`). It gates dashboard pages and actions and rotates with the runtime process.

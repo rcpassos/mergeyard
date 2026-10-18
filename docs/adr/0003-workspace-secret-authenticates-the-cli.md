@@ -28,9 +28,12 @@ runtime returns only the prepared run snapshot.
 - **Move the CLI API to a Unix socket with owner-only permissions.** Rejected:
   the dashboard and CLI already share one HTTP listener, configuration carries a
   port, and the secret keeps one boundary for both.
-- **Require the secret for the browser dashboard too.** Rejected: a browser
-  cannot read the workspace file. The dashboard keeps its origin and CSRF
-  checks, and the CSRF token is now only handed out to a proven caller.
+- **Require the workspace secret itself in the browser.** Rejected: a browser
+  cannot read the workspace file. Instead the runtime prints a single-use link
+  that exchanges for an `HttpOnly`, `SameSite=Strict` session cookie. Without
+  that session the dashboard renders a lock page, hands out no CSRF token, and
+  refuses every action, while keeping its origin and CSRF checks for owner
+  pages.
 - **Keep returning the takeover command from the API.** Rejected: even a proven
   runtime would then choose what the user's machine executes. The CLI owns that
   decision.
@@ -43,8 +46,12 @@ runtime returns only the prepared run snapshot.
   the secret reports `runtime.unauthenticated` and no control is attempted.
 - Restart rotates the secret. A CLI always re-reads the file, so only a long-
   running pre-restart process would be refused.
-- A local process can still load the dashboard pages and act through the
-  browser forms. Those checks protect against other websites, not against
-  another user on the machine.
+- The dashboard link is printed to the runtime's terminal and is briefly
+  visible in the browser launcher's process arguments while it opens. The token
+  is single-use and expires, and the session it sets rotates when the runtime
+  restarts, so a stolen link only races the browser once.
+- The API proof binds the exact status and body, and unproven requests receive
+  no proof, so a process that relays between the CLI and a runtime on another
+  port cannot edit an answer or use the runtime as an oracle.
 - CLI and runtime must be upgraded together: an older runtime cannot prove the
   secret, and the CLI refuses it with restart guidance.

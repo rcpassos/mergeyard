@@ -86,7 +86,7 @@ func TestTierSelectionSurvivesRestartFixAndPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := httptest.NewRecorder()
-	server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	for _, want := range []string{"tier high", "MERGEYARD:IMPLEMENTER-TIER=HIGH", "tier low", "mergeyard:reviewer-tier=low", "implement-model", "review-model"} {
 		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), want) {
 			t.Fatalf("dashboard missing saved selection %q: %d %s", want, page.Code, page.Body.String())

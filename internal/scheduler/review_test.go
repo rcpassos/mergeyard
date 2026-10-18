@@ -213,7 +213,7 @@ func TestReviewHTTPDetailStatusAndLiveUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, hx := range []bool{false, true} {
-		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil)
+		request := dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil)
 		if hx {
 			request.Header.Set("HX-Request", "true")
 		}
@@ -245,8 +245,8 @@ func TestReviewHTTPDetailStatusAndLiveUpdates(t *testing.T) {
 		t.Fatal("live page does not subscribe to review updates")
 	}
 	for _, request := range []*http.Request{
-		httptest.NewRequest(http.MethodGet, "http://evil.example/runs/"+run.ID, nil),
-		httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7331/runs/"+run.ID+"/stop", nil),
+		dashboardRequest(t, server, http.MethodGet, "http://evil.example/runs/"+run.ID, nil),
+		dashboardRequest(t, server, http.MethodPost, "http://127.0.0.1:7331/runs/"+run.ID+"/stop", nil),
 	} {
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)

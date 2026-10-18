@@ -74,18 +74,8 @@ func (s *Scheduler) interactiveCommand(ctx context.Context, run workflow.Run) (h
 	if err != nil || gitRun.ID == "" || gitRun.Path == "" {
 		return harness.InteractiveCommand{}, &fault.Error{Code: "takeover.worktree_missing", Message: "Wait for Mergeyard to prepare this run's worktree before takeover", Err: err}
 	}
-	var agent, session string
-	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(implementer_agent,''),COALESCE(implementer_session_id,'') FROM runs WHERE id=?", run.ID).Scan(&agent, &session); err != nil {
-		return harness.InteractiveCommand{}, err
-	}
-	if session == "" {
-		return harness.InteractiveCommand{}, &fault.Error{Code: "takeover.session_missing", Message: "Wait for the implementer's session identity to be recorded; takeover cannot create a new conversation"}
-	}
-	adapter, ok := s.harnesses[agent]
-	if !ok {
-		return harness.InteractiveCommand{}, &fault.Error{Code: "takeover.harness_unknown", Message: "Restore the recorded implementer harness before takeover"}
-	}
-	return adapter.BuildInteractiveInvocation(session, gitRun.Path)
+	agent, session := run.TakeoverResume()
+	return harness.InteractiveResume(s.harnesses, agent, session, gitRun.Path)
 }
 
 // ManualCommand only exposes commands after safe preparation has completed.

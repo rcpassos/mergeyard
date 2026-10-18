@@ -36,7 +36,7 @@ func TestCLIControlsUseOwningRuntimeAndWatchReadOnly(t *testing.T) {
 		json.NewEncoder(w).Encode(web.Status{Workspace: root, Paused: paused, Token: token, Runs: []workflow.Run{{ID: "run-1", Repository: "owner/repo", IssueNumber: 7, State: workflow.Active, Phase: workflow.Implement, RoleSettings: &config.RunRoleSettings{Implementer: config.RoleSettings{Agent: "codex", HarnessSource: "label", Skills: []string{"implement"}, Tier: "high", TierLabels: []string{"MERGEYARD:IMPLEMENTER-TIER=HIGH"}}, Reviewer: config.RoleSettings{Agent: "claude", Model: "stored-review-model", Effort: "high", Skills: []string{"stored-review-skill"}, HarnessSource: "config"}}, SessionRecoveries: []workflow.SessionRecovery{{Phase: workflow.Implement, Role: "implementer", Round: 0, PreviousSessionID: "missing-session", SessionID: "codex-session"}}, Implementer: &workflow.ImplementSnapshot{Agent: "codex", SessionID: "codex-session", Model: "chosen-model", Effort: "medium", Skills: []string{"implement"}, Permissions: "workspace-write · network true · approvals never", Attempt: 2, Status: "running", ProcessSession: "live-phase"}}, {ID: "merged-run", Repository: "owner/repo", IssueNumber: 8, State: workflow.Completed, Merge: &maintenance.Snapshot{Early: true, ProcessExited: true, Error: "dirty work preserved"}}, {ID: "old-run", State: workflow.Completed}}})
 
 	})
-	mux.HandleFunc("POST /scheduler/{action}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/scheduler/{action}", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {
 			http.Error(w, "missing CLI CSRF", 403)
 			return
@@ -212,9 +212,13 @@ func TestCLIRefusesRuntimeProvingTheWrongSecret(t *testing.T) {
 	}
 	// The impostor answers with the right workspace and a proof of its own
 	// secret, so only the proof check can expose it.
+	body, err := json.Marshal(web.Status{Workspace: root, Token: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(runtimeauth.ProofHeader, runtimeauth.ResponseProof(foreign, r.Header.Get(runtimeauth.NonceHeader)))
-		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "other"})
+		w.Header().Set(runtimeauth.ProofHeader, runtimeauth.ResponseProof(foreign, r.Header.Get(runtimeauth.NonceHeader), http.StatusOK, body))
+		w.Write(body)
 	}))
 	defer server.Close()
 	path := filepath.Join(root, "config.yaml")
@@ -234,7 +238,7 @@ func TestCLIStatusRequiresTheWorkspaceSecretFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, _, errOut := runCLI("status", "--config", path)
-	if code != 1 || !strings.Contains(errOut, "runtime.secret_missing") || !strings.Contains(errOut, "start Mergeyard with this workspace") {
+	if code != 1 || !strings.Contains(errOut, "runtime.secret_missing") || !strings.Contains(errOut, "stop any running Mergeyard") {
 		t.Fatalf("missing secret guidance: %d %s", code, errOut)
 	}
 }
@@ -493,6 +497,40 @@ func TestCLITakeoverBuildsTheCommandLocally(t *testing.T) {
 	}
 }
 
+func TestCLITakeoverRefusesAnAnswerForAnotherRun(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "runs", "run-1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "worktrees", "owner-repo", "run-1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	launched := filepath.Join(root, "launched")
+	executable := filepath.Join(root, "configured-harness")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf launched > '"+launched+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "token"})
+	})
+	mux.HandleFunc("POST /api/runs/run-1/takeover", func(w http.ResponseWriter, r *http.Request) {
+		// A proven runtime that answers for another run must not choose a
+		// different worktree under this run's interactive lock.
+		json.NewEncoder(w).Encode(manualSnapshot("run-2", "01a10c5b-38a9-7330-b833-04e365cb5f37"))
+	})
+	server := runtimeServer(t, root, mux)
+	defer server.Close()
+	path := takeoverCLIConfig(t, root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"), executable)
+	code, out, errOut := runCLI("takeover", "run-1", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "runtime.mismatch") || strings.Contains(out, "MANUAL") {
+		t.Fatalf("mismatched answer accepted: %d %q %s", code, out, errOut)
+	}
+	if _, err := os.Stat(launched); !os.IsNotExist(err) {
+		t.Fatalf("mismatched answer launched a command: %v", err)
+	}
+}
+
 func TestCLITakeoverRefusesAResponseWithoutStoredRoleSettings(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "runs", "run-1"), 0700); err != nil {
@@ -596,6 +634,47 @@ func TestConcurrentCLITakeoverLaunchesOneInteractiveProcess(t *testing.T) {
 	code, _, errOut := runCLI("takeover", "run-1", "--config", configPath)
 	if code != 0 {
 		t.Fatalf("ownership survived exit: %d %s", code, errOut)
+	}
+}
+
+func TestCLIOpenFollowsTheOneTimeDashboardLink(t *testing.T) {
+	root := t.TempDir()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: "token"})
+	})
+	opened := false
+	mux.HandleFunc("POST /api/dashboard/session", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != "token" {
+			http.Error(w, "missing protection", 403)
+			return
+		}
+		opened = true
+		json.NewEncoder(w).Encode(map[string]string{"url": "http://127.0.0.1:7331/?token=one-time"})
+	})
+	server := runtimeServer(t, root, mux)
+	defer server.Close()
+	// A fake browser launcher records the link the CLI asked it to open.
+	tools := t.TempDir()
+	launched := filepath.Join(tools, "launched")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + launched + "'\n"
+	for _, name := range []string{"open", "xdg-open"} {
+		if err := os.WriteFile(filepath.Join(tools, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", tools)
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("open", "--config", path)
+	if code != 0 || !opened || !strings.Contains(out, "http://127.0.0.1:7331/?token=one-time") {
+		t.Fatalf("open: %d %t %q %s", code, opened, out, errOut)
+	}
+	data, err := os.ReadFile(launched)
+	if err != nil || string(data) != "http://127.0.0.1:7331/?token=one-time\n" {
+		t.Fatalf("launcher did not receive the link: %q %v", data, err)
 	}
 }
 
@@ -786,7 +865,7 @@ func TestCLIHarnessCheckUsesRuntimeProtections(t *testing.T) {
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(web.Status{Workspace: workspaceIdentity, Token: "runtime-token"})
 	})
-	mux.HandleFunc("POST /harnesses/{harness}/check", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/harnesses/{harness}/check", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != "runtime-token" {
 			http.Error(w, "missing protection", 403)
 			return

@@ -191,7 +191,7 @@ func TestReadyBaseWarningsAreReadOnlyAndReachDashboard(t *testing.T) {
 		}
 		for _, path := range []string{"/", "/runs/" + ready.ID} {
 			res := httptest.NewRecorder()
-			server.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+			server.ServeHTTP(res, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil))
 			if res.Code != 200 || !strings.Contains(res.Body.String(), tc.warning) {
 				t.Fatalf("dashboard %s lacks %s", path, tc.warning)
 			}

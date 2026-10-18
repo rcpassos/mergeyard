@@ -107,6 +107,14 @@ func (s *Server) takeoverRun(w http.ResponseWriter, r *http.Request) {
 	}
 	s.json(w, run)
 }
+
+// dashboardSession mints a fresh one-time dashboard link for the CLI's open
+// command. Only a caller that proved the workspace secret reaches it.
+func (s *Server) dashboardSession(w http.ResponseWriter, r *http.Request) {
+	s.json(w, struct {
+		URL string `json:"url"`
+	}{URL: "http://" + r.Host + "/?token=" + s.NewDashboardToken()})
+}
 func (s *Server) json(w http.ResponseWriter, value any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")

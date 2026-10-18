@@ -92,14 +92,18 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 	updatesDone := make(chan struct{})
 	go func() { defer close(updatesDone); dashboard.RunUpdates(liveCtx) }()
 	address := "http://" + listener.Addr().String()
-	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s; dashboard at %s\n", owner.Workspace.Root, address)
+	// The dashboard is locked to the workspace owner; the printed link carries
+	// a single-use token that sets the owner session cookie. mergeyard open
+	// mints a fresh link when this one expires.
+	dashboardURL := address + "/?token=" + dashboard.NewDashboardToken()
+	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s; dashboard at %s\n", owner.Workspace.Root, dashboardURL)
 	// Browser launch is optional and must not delay HTTP controls. Keep it
 	// owned by the runtime so shutdown cancels and reaps a blocked launcher.
 	browserDone := make(chan struct{})
 	if cfg.OpenBrowser {
 		go func() {
 			defer close(browserDone)
-			if err := openBrowser(liveCtx, address); err != nil && liveCtx.Err() == nil {
+			if err := openBrowser(liveCtx, dashboardURL); err != nil && liveCtx.Err() == nil {
 				fmt.Fprintf(stderr, "mergeyard: could not open browser: %v\n", err)
 			}
 		}()

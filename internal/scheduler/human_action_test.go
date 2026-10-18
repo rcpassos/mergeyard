@@ -45,7 +45,7 @@ func TestHumanActionAcrossAllHarnessPairingsAndPhases(t *testing.T) {
 					}
 					for _, path := range []string{"/", "/runs/" + run.ID} {
 						response := httptest.NewRecorder()
-						server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+						server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil))
 						for _, text := range []string{"Human action required", "Reject duplicates or overwrite &lt;script&gt;them&lt;/script&gt;?", "feature.txt", "Overwrite"} {
 							if !strings.Contains(response.Body.String(), text) {
 								t.Fatalf("missing %q in %s: %s", text, path, response.Body.String())

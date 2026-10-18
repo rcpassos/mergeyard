@@ -23,6 +23,23 @@ func (c InteractiveCommand) ShellCommand() string {
 	return "cd " + quote(c.Dir) + " && " + strings.Join(words, " ")
 }
 
+// InteractiveResume validates one run's stored identity and builds the exact
+// interactive resume with the caller's configured adapters. The runtime and the
+// CLI share this boundary so both accept and refuse the same identities.
+func InteractiveResume(adapters map[string]HarnessAdapter, agent, session, worktree string) (InteractiveCommand, error) {
+	if agent == "" {
+		return InteractiveCommand{}, phaseError("takeover.harness_unknown", "The run has no stored implementer harness; restore its role settings before takeover", nil)
+	}
+	adapter, ok := adapters[agent]
+	if !ok {
+		return InteractiveCommand{}, phaseError("takeover.harness_unknown", "The run's stored implementer harness "+agent+" is not supported; restore the implementer identity before takeover", nil)
+	}
+	if session == "" {
+		return InteractiveCommand{}, phaseError("takeover.session_missing", "Wait for the implementer's session identity to be recorded; takeover cannot create a new conversation", nil)
+	}
+	return adapter.BuildInteractiveInvocation(session, worktree)
+}
+
 func validateInteractive(sessionID, worktree string) error {
 	if !sessionUUID.MatchString(sessionID) {
 		return phaseError("takeover.session_invalid", "Takeover requires the implementer's exact session UUID; inspect the saved conversation", nil)

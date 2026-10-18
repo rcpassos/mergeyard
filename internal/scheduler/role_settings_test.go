@@ -555,7 +555,7 @@ func TestRunDetailShowsStoredRolesBeforeReviewerStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := httptest.NewRecorder()
-	server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	for _, value := range []string{"Role settings at claim", "implement-model", "review-model", "source config"} {
 		if page.Code != 200 || !strings.Contains(page.Body.String(), value) {
 			t.Fatalf("missing %q: %d %s", value, page.Code, page.Body.String())

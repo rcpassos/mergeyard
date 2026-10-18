@@ -307,7 +307,7 @@ func TestReadyWarningsClosureCapacityAndHTTP(t *testing.T) {
 	}
 	for _, path := range []string{"/runs/" + run.ID, "/"} {
 		res := httptest.NewRecorder()
-		server.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+		server.ServeHTTP(res, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil))
 		body := res.Body.String()
 		if res.Code != 200 || !strings.Contains(body, "Waiting for your merge") {
 			t.Fatalf("HTTP %d: %s", res.Code, body)

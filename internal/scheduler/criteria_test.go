@@ -58,7 +58,7 @@ func TestCriteriaCarryThroughAllHarnessPairings(t *testing.T) {
 					t.Fatal(err)
 				}
 				response := httptest.NewRecorder()
-				server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+				server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 				body := response.Body.String()
 				for _, want := range []string{"Acceptance criteria", "AC1", "met", "Spot-check: feature test passed &lt;script&gt;note&lt;/script&gt;", "go test: passed &lt;script&gt;evidence&lt;/script&gt;"} {
 					if response.Code != 200 || !strings.Contains(body, want) {
@@ -109,7 +109,7 @@ func TestBlockedImplementationDisplaysCriteriaBeforeReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	for _, want := range []string{"Acceptance criteria", "AC1 · not met", "Behavior needs a decision &lt;script&gt;blocked&lt;/script&gt;"} {
 		if response.Code != 200 || !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("blocked run dashboard missing %q", want)
@@ -212,7 +212,7 @@ func TestImplementationCriteriaHistorySurvivesRetryAndRestart(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, hx := range []bool{false, true} {
-					req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+blocked.ID, nil)
+					req := dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+blocked.ID, nil)
 					if hx {
 						req.Header.Set("HX-Request", "true")
 					}

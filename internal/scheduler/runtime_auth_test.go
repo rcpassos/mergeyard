@@ -2,6 +2,7 @@ package scheduler_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
+	"github.com/rcpassos/mergeyard/internal/web"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -35,6 +37,34 @@ func apiRequest(t *testing.T, root, method, target string) *http.Request {
 	return request
 }
 
+// dashboardSession exchanges a fresh one-time dashboard link for the owner
+// session cookie a browser would hold.
+func dashboardSession(t *testing.T, server *web.Server) *http.Cookie {
+	t.Helper()
+	exchange := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/?token="+server.NewDashboardToken(), nil)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, exchange)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("dashboard link: %d %s", recorder.Code, recorder.Body)
+	}
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == "mergeyard_dashboard" {
+			return cookie
+		}
+	}
+	t.Fatal("dashboard link did not set the owner session")
+	return nil
+}
+
+// dashboardRequest builds a browser request that carries the owner session
+// cookie, like a user who followed the link printed by mergeyard start.
+func dashboardRequest(t *testing.T, server *web.Server, method, target string, body io.Reader) *http.Request {
+	t.Helper()
+	request := httptest.NewRequest(method, target, body)
+	request.AddCookie(dashboardSession(t, server))
+	return request
+}
+
 // runWorktree returns the managed worktree the runtime prepared for one run.
 func runWorktree(t *testing.T, root string, run workflow.Run) string {
 	t.Helper()
@@ -45,8 +75,9 @@ func runWorktree(t *testing.T, root string, run workflow.Run) string {
 	return path
 }
 
-// manualCommand returns the interactive resume the CLI rebuilds locally after
-// takeover prepared the run.
+// manualCommand returns the runtime's interactive resume after takeover
+// prepared the run; the CLI must rebuild the same invocation from the run
+// snapshot and its own configuration.
 func manualCommand(t *testing.T, s *scheduler.Scheduler, id string) harness.InteractiveCommand {
 	t.Helper()
 	command, err := s.ManualCommand(context.Background(), id)

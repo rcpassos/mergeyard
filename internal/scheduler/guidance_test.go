@@ -107,7 +107,7 @@ func TestDashboardRetryGuidanceIsOptionalAndEscapedInHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := httptest.NewRecorder()
-	server.ServeHTTP(page, httptest.NewRequest("GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
+	server.ServeHTTP(page, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
 	if page.Code != 200 || !strings.Contains(page.Body.String(), `name="note"`) || !strings.Contains(page.Body.String(), "Human guidance (optional)") {
 		t.Fatalf("missing guidance field: %d %s", page.Code, page.Body)
 	}
@@ -118,7 +118,7 @@ func TestDashboardRetryGuidanceIsOptionalAndEscapedInHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	note := "Keep the intended behaviour\n<script>alert('guidance')</script>"
-	request := httptest.NewRequest("POST", "http://127.0.0.1:7331/runs/"+before.ID+"/retry", strings.NewReader(url.Values{"note": {note}, "csrf_token": {status.Token}}.Encode()))
+	request := dashboardRequest(t, server, "POST", "http://127.0.0.1:7331/runs/"+before.ID+"/retry", strings.NewReader(url.Values{"note": {note}, "csrf_token": {status.Token}}.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Origin", "http://127.0.0.1:7331")
 	request.Header.Set("HX-Request", "true")

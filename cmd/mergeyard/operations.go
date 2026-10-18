@@ -25,6 +25,10 @@ import (
 	"github.com/rcpassos/mergeyard/internal/workspace"
 )
 
+// maxRuntimeResponse bounds one runtime answer the CLI will buffer and hash
+// before it trusts the reply.
+const maxRuntimeResponse = 64 << 20
+
 // runtimeClient only connects to the configured loopback port. It never follows
 // redirects or ambient HTTP proxies, proves the workspace secret on every
 // request, and refuses any reply that does not prove the same secret.
@@ -87,17 +91,30 @@ func (c *runtimeClient) request(ctx context.Context, method, path string, result
 		return &fault.Error{Code: "internal.runtime_unavailable", Message: "Cannot reach Mergeyard; start it with the same configuration", Err: err}
 	}
 	defer resp.Body.Close()
-	if err := runtimeauth.VerifyResponse(resp, c.secret); err != nil {
+	// The proof binds the exact status and body, so the complete answer is read
+	// before it is trusted. The bound also stops an impostor from streaming an
+	// endless reply.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRuntimeResponse+1))
+	if err != nil {
+		return &fault.Error{Code: "internal.runtime_unavailable", Message: "Could not read the runtime's answer", Err: err}
+	}
+	if int64(len(body)) > maxRuntimeResponse {
+		return &fault.Error{Code: "internal.runtime_unavailable", Message: "The runtime's answer exceeded the supported size", Path: c.base}
+	}
+	if err := runtimeauth.VerifyResponse(resp, c.secret, body); err != nil {
 		return &fault.Error{Code: "runtime.unauthenticated", Path: runtimeauth.SecretPath(c.root), Message: "The port did not prove knowledge of this workspace's secret. Another local process, or a runtime for a different workspace, may be using it. Stop it, start Mergeyard with this configuration, and retry", Err: err}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("local API (%s): %s", resp.Status, strings.TrimSpace(string(body)))
+		detail := body
+		if len(detail) > 4096 {
+			detail = detail[:4096]
+		}
+		return fmt.Errorf("local API (%s): %s", resp.Status, strings.TrimSpace(string(detail)))
 	}
 	if result != nil {
-		// Collection responses such as plans and status can grow with the queue.
-		// Decode the complete response; the HTTP client's timeout bounds the read.
-		return json.NewDecoder(resp.Body).Decode(result)
+		// Collection responses such as plans and status can grow with the queue;
+		// the read above is bounded and the HTTP client's timeout still applies.
+		return json.Unmarshal(body, result)
 	}
 	return nil
 }
@@ -115,7 +132,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 	case "harness check":
 		fmt.Fprintln(stdout, "Check availability uses account quota for one minimal model request with no engineering work.")
 		var check workflow.HarnessCheck
-		if err := client.request(ctx, http.MethodPost, "/harnesses/"+args[0]+"/check", &check, nil); err != nil {
+		if err := client.request(ctx, http.MethodPost, "/api/harnesses/"+args[0]+"/check", &check, nil); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "Harness %s: check %s · %s. Follow progress with mergeyard status.\n", terminalText(check.Harness), terminalText(check.ID), terminalText(check.Status))
@@ -320,7 +337,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			fmt.Fprintln(stdout, "No active runs.")
 		}
 	case "pause", "resume":
-		if err := client.request(ctx, http.MethodPost, "/scheduler/"+action, nil, nil); err != nil {
+		if err := client.request(ctx, http.MethodPost, "/api/scheduler/"+action, nil, nil); err != nil {
 			return err
 		}
 		state := "paused"
@@ -371,6 +388,9 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/takeover", &prepared, nil); err != nil {
 				return runner.ExecRequest{}, err
 			}
+			if prepared.ID != args[0] {
+				return runner.ExecRequest{}, &fault.Error{Code: "runtime.mismatch", Message: "The runtime answered for a different run; stop it, start Mergeyard with this configuration, and retry"}
+			}
 			command, err := localInteractiveCommand(client.agents, client.root, prepared)
 			if err != nil {
 				return runner.ExecRequest{}, err
@@ -378,6 +398,18 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			fmt.Fprintf(stdout, "Run %s is MANUAL. Exit the interactive harness before handing control back.\n", terminalText(args[0]))
 			return runner.ExecRequest{Executable: command.Executable, Args: command.Args, Dir: command.Dir}, nil
 		}, os.Stdin, stdout, stderr)
+	case "open":
+		var session struct {
+			URL string `json:"url"`
+		}
+		if err := client.request(ctx, http.MethodPost, "/api/dashboard/session", &session, nil); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Dashboard: %s\n", terminalText(session.URL))
+		if err := openBrowser(ctx, session.URL); err != nil {
+			return &fault.Error{Code: "internal.browser_failed", Message: "Could not open a browser; open the printed dashboard link", Err: err}
+		}
+		return nil
 	case "watch":
 		var ref runner.SessionRef
 		if err := client.request(ctx, http.MethodGet, "/api/runs/"+url.PathEscape(args[0])+"/watch", &ref, nil); err != nil {
@@ -397,27 +429,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 // stored role settings and the managed workspace layout. It never accepts an
 // executable, argument vector or directory from the runtime's reply.
 func localInteractiveCommand(agents config.Agents, root string, run workflow.Run) (harness.InteractiveCommand, error) {
-	agent := ""
-	if run.RoleSettings != nil {
-		agent = run.RoleSettings.Implementer.Agent
-	}
-	if agent == "" && run.Implementer != nil {
-		agent = run.Implementer.Agent
-	}
-	if agent == "" {
-		return harness.InteractiveCommand{}, &fault.Error{Code: "takeover.harness_unknown", Message: "The run has no stored implementer harness; restore its role settings before takeover"}
-	}
-	adapter, ok := harness.Adapters(agents)[agent]
-	if !ok {
-		return harness.InteractiveCommand{}, &fault.Error{Code: "takeover.harness_unknown", Message: "The run's stored implementer harness " + terminalText(agent) + " is not supported; restore the implementer identity before takeover"}
-	}
-	session := ""
-	if run.Implementer != nil {
-		session = run.Implementer.SessionID
-	}
-	if session == "" {
-		return harness.InteractiveCommand{}, &fault.Error{Code: "takeover.session_missing", Message: "Wait for the implementer's session identity to be recorded; takeover cannot create a new conversation"}
-	}
+	agent, session := run.TakeoverResume()
 	worktree, err := managedgit.WorktreePath(root, run.Repository, run.ID)
 	if err != nil {
 		return harness.InteractiveCommand{}, err
@@ -425,7 +437,7 @@ func localInteractiveCommand(agents config.Agents, root string, run workflow.Run
 	if info, err := os.Stat(worktree); err != nil || !info.IsDir() {
 		return harness.InteractiveCommand{}, &fault.Error{Code: "takeover.worktree_missing", Path: worktree, Message: "Wait for Mergeyard to prepare this run's worktree before takeover", Err: err}
 	}
-	return adapter.BuildInteractiveInvocation(session, worktree)
+	return harness.InteractiveResume(harness.Adapters(agents), agent, session, worktree)
 }
 
 func printHarnessWait(out io.Writer, v workflow.HarnessWait) {

@@ -38,7 +38,7 @@ func TestDashboardObservationKeepsBoundedSelectionAndOlderDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := httptest.NewRecorder()
-	server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil))
+	server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
 	body := page.Body.String()
 	if page.Code != 200 || !strings.Contains(body, "/runs/active-run") {
 		t.Fatalf("active run missing: %d %s", page.Code, body)
@@ -60,7 +60,7 @@ func TestDashboardObservationKeepsBoundedSelectionAndOlderDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	detail := httptest.NewRecorder()
-	server.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/terminal-25", nil))
+	server.ServeHTTP(detail, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/terminal-25", nil))
 	if detail.Code != 200 || !strings.Contains(detail.Body.String(), "terminal-25") {
 		t.Fatalf("older selected run missing: %d %s", detail.Code, detail.Body.String())
 	}

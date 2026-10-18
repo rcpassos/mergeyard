@@ -73,7 +73,7 @@ func TestVerificationFlowsThroughPRReviewAndDashboard(t *testing.T) {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()
-			server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+			server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 			for _, want := range []string{"Verification evidence", "implement test", "Initial verification", "fix test", "failed", "skipped", "Fix verification &lt;details&gt;@someone"} {
 				if response.Code != 200 || !strings.Contains(response.Body.String(), want) {
 					t.Fatalf("dashboard missing %q", want)
@@ -154,7 +154,7 @@ func TestVerificationBodyRetriesLatestReportOnRestartWithCommentsDisabled(t *tes
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+runs[0].ID, nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+runs[0].ID, nil))
 	if response.Code != 200 || !strings.Contains(response.Body.String(), "no verification reported") {
 		t.Fatal("empty verification not shown on dashboard")
 	}

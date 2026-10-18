@@ -190,7 +190,7 @@ func TestReviewAndFixWaitAllowancesAreIndependent(t *testing.T) {
 							}
 							for _, path := range []string{"/runs/" + waiting.ID, "/settings"} {
 								response := httptest.NewRecorder()
-								server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+								server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil))
 								for _, value := range []string{string(phase) + " / round 1 · " + role, "temporary_limit", "Exactly one additional usage-limit wait granted; allowance 3"} {
 									if response.Code != 200 || !strings.Contains(response.Body.String(), value) {
 										t.Errorf("%s missing %q", path, value)

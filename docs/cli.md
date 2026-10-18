@@ -11,13 +11,20 @@ launcher. `--config <path>` works with every command.
 
 Every command that contacts a running control plane first reads the workspace's
 owner-only `runtime.secret` and proves knowledge of it on each request; the
-runtime proves the same secret in its answers. On a machine shared with other
-users, a process that binds the port without the secret is refused with
-`runtime.unauthenticated` and no control or interactive launch is attempted. A
-missing secret reports `runtime.secret_missing` and points at `mergeyard start`
-for that workspace; a group- or world-readable secret reports
-`runtime.secret_insecure` with the `chmod 600` fix. Each `mergeyard start`
-rotates the secret, and the CLI re-reads it per command.
+runtime proves the same secret in its answers, binding the exact status and
+body. On a machine shared with other users, a process that binds the port
+without the secret is refused with `runtime.unauthenticated` and no control or
+interactive launch is attempted. A missing secret reports
+`runtime.secret_missing` and tells the user to stop any running Mergeyard for
+that workspace and start the current version; a group- or world-readable secret
+reports `runtime.secret_insecure` with the `chmod 600` fix. Each
+`mergeyard start` rotates the secret, and the CLI re-reads it per command.
+
+The dashboard itself is locked to the owner. `mergeyard start` prints a
+single-use dashboard link (and opens it when `open_browser` is enabled), and
+`mergeyard open` mints a fresh link and opens it. The exchange sets an owner
+session cookie; without it the dashboard shows a lock page, renders no CSRF
+token, and refuses every action.
 
 SIGINT and SIGTERM cancel scheduler polling and HTTP/SSE requests, wait for
 scheduler operations to return, and close SQLite before releasing the workspace
@@ -181,7 +188,10 @@ repository caps, and configured role settings even before a role starts. These
 are its loaded values; changing the CLI's file does not reload the running
 process. Settings shows the same effective configuration and durable handback
 grants, including grants without a usage-limit wait. Both Claude and Codex
-are supported in either role. `open` remains reserved.
+are supported in either role. `open` prints the owning runtime's single-use
+dashboard link and hands it to the platform browser launcher; the URL stays
+valid until it is used or expires, and the session it sets lasts until the
+runtime restarts.
 
 Both production adapters enable temporary-limit detection for their captured
 signals: Claude's headless weekly rejection and Codex's Plus-plan same-day

@@ -88,7 +88,7 @@ func TestLoadSecretMissingFileTellsTheUserHowToCreateIt(t *testing.T) {
 	if !errors.As(err, &failure) || failure.Code != "runtime.secret_missing" {
 		t.Fatalf("missing secret accepted: %v", err)
 	}
-	if !strings.Contains(failure.Message, "start Mergeyard with this workspace") {
+	if !strings.Contains(failure.Message, "stop any running Mergeyard") || !strings.Contains(failure.Message, "create the workspace secret") {
 		t.Fatalf("missing guidance: %v", failure)
 	}
 }

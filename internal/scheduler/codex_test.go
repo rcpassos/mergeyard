@@ -108,7 +108,7 @@ func TestCodexEarlyIdentityRestartAndStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := httptest.NewRecorder()
-	server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	for _, value := range []string{codexID, "chosen-model", "medium", "workspace-write", "network true", "implement", "check", v.ProcessSession} {
 		if page.Code != 200 || !strings.Contains(page.Body.String(), value) {
 			t.Fatalf("dashboard missing %q: %d %s", value, page.Code, page.Body.String())
@@ -357,7 +357,7 @@ func TestCodexPermissionDisplayUsesEffectiveNetworkAccess(t *testing.T) {
 			}
 			for _, path := range []string{"/api/status", "/runs/" + run.ID} {
 				response := httptest.NewRecorder()
-				request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil)
+				request := dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil)
 				signAPIRequest(t, runtime.Workspace.Root, request)
 				server.ServeHTTP(response, request)
 				if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), tc.permissions) {

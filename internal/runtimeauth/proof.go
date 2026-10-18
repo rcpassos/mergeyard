@@ -1,11 +1,13 @@
 package runtimeauth
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -65,9 +67,17 @@ func VerifyRequest(request *http.Request, secret []byte, now time.Time) error {
 	return nil
 }
 
+// Verified reports whether a request proves the workspace secret. Requests
+// without a proof, such as browser requests, are not verified and receive no
+// response proof.
+func Verified(request *http.Request, secret []byte, now time.Time) bool {
+	return VerifyRequest(request, secret, now) == nil
+}
+
 // VerifyResponse checks that the runtime proved knowledge of the workspace
-// secret for one signed request.
-func VerifyResponse(response *http.Response, secret []byte) error {
+// secret for one signed request, binding the exact status and body it answered
+// with so a reply cannot be swapped or edited in transit.
+func VerifyResponse(response *http.Response, secret []byte, body []byte) error {
 	if response.Request == nil {
 		return ErrUnauthenticated
 	}
@@ -75,48 +85,73 @@ func VerifyResponse(response *http.Response, secret []byte) error {
 	if !validNonce(nonce) {
 		return ErrUnauthenticated
 	}
-	if !hmac.Equal([]byte(response.Header.Get(ProofHeader)), []byte(proof(secret, responseMessage(nonce)))) {
+	expected := ResponseProof(secret, nonce, response.StatusCode, body)
+	if !hmac.Equal([]byte(response.Header.Get(ProofHeader)), []byte(expected)) {
 		return ErrUnauthenticated
 	}
 	return nil
 }
 
-// APIHandler requires a valid proof on /api paths and proves the runtime on
-// every response to a signed request. Browser paths pass through untouched, so
-// the dashboard keeps its existing host, origin and CSRF protections.
+// ResponseProof returns the proof a runtime attaches to its answer to one
+// signed request.
+func ResponseProof(secret []byte, nonce string, status int, body []byte) string {
+	sum := sha256.Sum256(body)
+	return proof(secret, responseMessage(nonce, status, hex.EncodeToString(sum[:])))
+}
+
+// APIHandler requires a valid proof on /api paths and passes browser requests
+// through untouched. Responses to proven requests are buffered so the runtime
+// can bind the proof to the exact status and body; a request that cannot prove
+// the secret never receives a proof, so the runtime is not a proof oracle.
 func APIHandler(next http.Handler, secret []byte) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ProveResponse(w, r, secret)
-		if !RequireProof(w, r, secret) {
+		if !Verified(r, secret, time.Now()) {
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				w.Header().Set("X-Mergeyard-Error-Code", "runtime.unauthenticated")
+				http.Error(w, "This runtime requires the workspace secret; start the CLI with this workspace's configuration.", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Streaming responses are not proven; the CLI's API surface is small
+		// JSON answers, and browsers never sign requests.
+		recorder := &proofWriter{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		recorder.finish(secret, r.Header.Get(NonceHeader))
 	})
 }
 
-// ProveResponse adds the runtime's own proof to a response to a signed request.
-func ProveResponse(w http.ResponseWriter, r *http.Request, secret []byte) {
-	if nonce := r.Header.Get(NonceHeader); validNonce(nonce) {
-		w.Header().Set(ProofHeader, ResponseProof(secret, nonce))
+// proofWriter buffers one proven response so its status and body can be bound
+// into the proof header before any byte reaches the client.
+type proofWriter struct {
+	http.ResponseWriter
+	status int
+	body   bytes.Buffer
+}
+
+func (w *proofWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
 	}
 }
 
-// ResponseProof returns the proof a runtime attaches to its answer to one
-// request nonce.
-func ResponseProof(secret []byte, nonce string) string { return proof(secret, responseMessage(nonce)) }
+func (w *proofWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.body.Write(p)
+}
 
-// RequireProof writes the rejection and reports false when an API request
-// cannot prove the workspace secret. Non-API paths always pass.
-func RequireProof(w http.ResponseWriter, r *http.Request, secret []byte) bool {
-	if !strings.HasPrefix(r.URL.Path, "/api/") {
-		return true
+func (w *proofWriter) finish(secret []byte, nonce string) {
+	status := w.status
+	if status == 0 {
+		status = http.StatusOK
 	}
-	if err := VerifyRequest(r, secret, time.Now()); err != nil {
-		w.Header().Set("X-Mergeyard-Error-Code", "runtime.unauthenticated")
-		http.Error(w, "This runtime requires the workspace secret; start the CLI with this workspace's configuration.", http.StatusUnauthorized)
-		return false
-	}
-	return true
+	body := w.body.Bytes()
+	w.Header().Set(ProofHeader, ResponseProof(secret, nonce, status, body))
+	w.ResponseWriter.WriteHeader(status)
+	w.ResponseWriter.Write(body)
 }
 
 // requestMessage binds a proof to one method and target.
@@ -124,8 +159,10 @@ func requestMessage(method, target, nonce, seconds string) string {
 	return strings.Join([]string{"request", method, target, nonce, seconds}, "\n")
 }
 
-// responseMessage binds the runtime's answer to one request nonce.
-func responseMessage(nonce string) string { return "response\n" + nonce }
+// responseMessage binds the runtime's answer to one request, status and body.
+func responseMessage(nonce string, status int, bodyHash string) string {
+	return fmt.Sprintf("response\n%s\n%d\n%s", nonce, status, bodyHash)
+}
 
 func proof(secret []byte, message string) string {
 	mac := hmac.New(sha256.New, secret)

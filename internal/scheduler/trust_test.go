@@ -183,7 +183,7 @@ func TestDashboardRendersRefusedIssueReason(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		page := httptest.NewRecorder()
-		server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/queue", nil))
+		server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/queue", nil))
 		body := page.Body.String()
 		if strings.Contains(body, "Refused:") {
 			if page.Code != http.StatusOK || !strings.Contains(body, "owner/repo #7") || !strings.Contains(body, "&lt;script&gt;") || strings.Contains(body, "<script>alert(1)</script>") {

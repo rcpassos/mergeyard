@@ -65,7 +65,7 @@ func TestMergeCleanupPendingIsVisible(t *testing.T) {
 	}
 	for _, path := range []string{"/", "/runs/" + run.ID} {
 		res := httptest.NewRecorder()
-		server.ServeHTTP(res, httptest.NewRequest("GET", "http://127.0.0.1:7331"+path, nil))
+		server.ServeHTTP(res, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331"+path, nil))
 		if res.Code != 200 || !strings.Contains(res.Body.String(), "Merged — cleanup pending") {
 			t.Fatalf("merge missing from %s", path)
 		}
@@ -145,7 +145,7 @@ func TestEarlyMergeWaitsForProcessExitBeforeReleasingCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := httptest.NewRecorder()
-	server.ServeHTTP(res, httptest.NewRequest("GET", "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(res, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	if !strings.Contains(res.Body.String(), "Stop owned phase and verify exit") || strings.Contains(res.Body.String(), "Retry Stop") {
 		t.Fatal("pending merge shows ordinary stop instructions")
 	}
@@ -939,7 +939,7 @@ func TestDashboardCopiedTakeoverProtectsLiveWorktree(t *testing.T) {
 			if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
 				t.Fatal(err)
 			}
-			request := httptest.NewRequest("POST", httpServer.URL+"/runs/"+run.ID+"/takeover", nil)
+			request := dashboardRequest(t, server, "POST", httpServer.URL+"/runs/"+run.ID+"/takeover", nil)
 			request.Header.Set("Origin", httpServer.URL)
 			request.Header.Set("X-CSRF-Token", status.Token)
 			request.Header.Set("HX-Request", "true")

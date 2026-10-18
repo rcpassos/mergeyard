@@ -202,7 +202,7 @@ func TestHarnessPairingsStopAndRestart(t *testing.T) {
 					}
 					for _, path := range []string{"/api/status", "/runs/" + run.ID} {
 						response := httptest.NewRecorder()
-						request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil)
+						request := dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil)
 						signAPIRequest(t, runtime.Workspace.Root, request)
 						server.ServeHTTP(response, request)
 						identity, model := run.Review.SessionID, "review-model"

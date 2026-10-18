@@ -284,7 +284,7 @@ func TestExpiredTemporaryResetDoesNotDescribeCreditProbeDelay(t *testing.T) {
 		t.Fatalf("observed reset history lost: %+v", snapshot.Runs[0].History)
 	}
 	response = httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
 	if response.Code != 200 || strings.Contains(response.Body.String(), "Probe may run after temporary reset") {
 		t.Fatalf("expired delay displayed: %d %s", response.Code, response.Body.String())
 	}
@@ -370,7 +370,7 @@ func TestCreditRetryEligibilityUsesSelectedHarness(t *testing.T) {
 				t.Fatal(err)
 			}
 			page := httptest.NewRecorder()
-			server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+primary.ID, nil))
+			server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+primary.ID, nil))
 			if page.Code != 200 || strings.Contains(page.Body.String(), ">Retry run<") != (blocked == "codex") {
 				t.Fatalf("selected-harness dashboard action: %d %s", page.Code, page.Body.String())
 			}
@@ -400,7 +400,7 @@ func TestCreditProbeDoesNotHideCIOnlyDashboardRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := httptest.NewRecorder()
-	server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+primary.ID, nil))
+	server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+primary.ID, nil))
 	if page.Code != 200 || !strings.Contains(page.Body.String(), ">Retry run<") {
 		t.Fatalf("saved approval missing from eligibility snapshot: %d %s", page.Code, page.Body.String())
 	}

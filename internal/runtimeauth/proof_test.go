@@ -1,6 +1,7 @@
 package runtimeauth_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -58,7 +59,7 @@ func TestVerifyRequestBindsMethodTargetTimeAndNonce(t *testing.T) {
 	}
 }
 
-func TestAPIHandlerProvesTheRuntimeAndProtectsAPIRoutes(t *testing.T) {
+func TestAPIHandlerProtectsAPIRoutesAndBindsTheAnswer(t *testing.T) {
 	secret := []byte("secret-under-test")
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +71,7 @@ func TestAPIHandlerProvesTheRuntimeAndProtectsAPIRoutes(t *testing.T) {
 	server := httptest.NewServer(runtimeauth.APIHandler(mux, secret))
 	defer server.Close()
 
-	// An unsigned API request is rejected without leaking a token.
+	// An unsigned API request is rejected and carries no proof.
 	response, err := http.Get(server.URL + "/api/status")
 	if err != nil {
 		t.Fatal(err)
@@ -79,8 +80,11 @@ func TestAPIHandlerProvesTheRuntimeAndProtectsAPIRoutes(t *testing.T) {
 	if response.StatusCode != http.StatusUnauthorized || response.Header.Get("X-Mergeyard-Error-Code") != "runtime.unauthenticated" {
 		t.Fatalf("unsigned API request: %d %q", response.StatusCode, response.Header.Get("X-Mergeyard-Error-Code"))
 	}
+	if response.Header.Get(runtimeauth.ProofHeader) != "" {
+		t.Fatal("unproven request received a response proof")
+	}
 
-	// A signed API request succeeds and the response proves the runtime.
+	// A signed API request succeeds and the proof binds the exact body.
 	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/status", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -92,25 +96,71 @@ func TestAPIHandlerProvesTheRuntimeAndProtectsAPIRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("signed API request: %d", response.StatusCode)
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("signed API request: %d %v", response.StatusCode, err)
 	}
-	if err := runtimeauth.VerifyResponse(response, secret); err != nil {
+	if err := runtimeauth.VerifyResponse(response, secret, body); err != nil {
 		t.Fatalf("runtime proof rejected: %v", err)
 	}
-	if err := runtimeauth.VerifyResponse(response, []byte("other-secret")); err == nil {
+	if err := runtimeauth.VerifyResponse(response, secret, append(body, ' ')); !errors.Is(err, runtimeauth.ErrUnauthenticated) {
+		t.Fatalf("edited body accepted: %v", err)
+	}
+	if err := runtimeauth.VerifyResponse(response, []byte("other-secret"), body); err == nil {
 		t.Fatal("foreign runtime proof accepted")
 	}
 
-	// Browser pages keep working without any secret.
+	// Browser requests keep working without a secret and receive no proof.
 	response, err = http.Get(server.URL + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
+	body, err = io.ReadAll(response.Body)
+	response.Body.Close()
 	if err != nil || response.StatusCode != http.StatusOK || string(body) != "dashboard" {
 		t.Fatalf("browser page: %d %q %v", response.StatusCode, body, err)
+	}
+	if response.Header.Get(runtimeauth.ProofHeader) != "" {
+		t.Fatal("browser request received a response proof")
+	}
+
+	// A caller without the secret cannot use the runtime as a proof oracle:
+	// sending a nonce and a guessed proof yields no proof header.
+	request, err = http.NewRequest(http.MethodGet, server.URL+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set(runtimeauth.NonceHeader, strings.Repeat("a", 32))
+	request.Header.Set(runtimeauth.TimeHeader, "1")
+	request.Header.Set(runtimeauth.ProofHeader, strings.Repeat("0", 64))
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.Header.Get(runtimeauth.ProofHeader) != "" {
+		t.Fatal("unproven nonce received a response proof")
+	}
+}
+
+func TestResponseProofBindsStatusAndBody(t *testing.T) {
+	secret := []byte("secret-under-test")
+	nonce := strings.Repeat("b", 32)
+	proof := runtimeauth.ResponseProof(secret, nonce, http.StatusOK, []byte("one"))
+	if proof == runtimeauth.ResponseProof(secret, nonce, http.StatusOK, []byte("two")) {
+		t.Fatal("body is not bound into the response proof")
+	}
+	if proof == runtimeauth.ResponseProof(secret, nonce, http.StatusAccepted, []byte("one")) {
+		t.Fatal("status is not bound into the response proof")
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/api/status", nil)
+	request.Header.Set(runtimeauth.NonceHeader, nonce)
+	response := &http.Response{Request: request, StatusCode: http.StatusOK, Header: http.Header{runtimeauth.ProofHeader: {proof}}}
+	if err := runtimeauth.VerifyResponse(response, secret, []byte("one")); err != nil {
+		t.Fatalf("matching body rejected: %v", err)
+	}
+	if err := runtimeauth.VerifyResponse(response, secret, bytes.Repeat([]byte("x"), 1024)); err == nil {
+		t.Fatal("different body accepted")
 	}
 }

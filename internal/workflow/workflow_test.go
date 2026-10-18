@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/store"
@@ -735,5 +736,24 @@ func TestInvalidMetadataPatchesAreRejectedAtomically(t *testing.T) {
 			seed(t, w, workflow.Active, workflow.Review)
 			assertInvalid(t, w, bus, workflow.Request{Trigger: workflow.ReviewApproved, Metadata: patch})
 		})
+	}
+}
+
+func TestTakeoverResumePrefersStoredRoleSettings(t *testing.T) {
+	stored := workflow.Run{
+		RoleSettings: &config.RunRoleSettings{Implementer: config.RoleSettings{Agent: "codex"}},
+		Implementer:  &workflow.ImplementSnapshot{Agent: "claude", SessionID: "session-1"},
+	}
+	if agent, session := stored.TakeoverResume(); agent != "codex" || session != "session-1" {
+		t.Fatalf("stored settings: %q %q", agent, session)
+	}
+	// Runs claimed before role settings were stored fall back to the recorded
+	// implement attempt.
+	legacy := workflow.Run{Implementer: &workflow.ImplementSnapshot{Agent: "claude", SessionID: "session-2"}}
+	if agent, session := legacy.TakeoverResume(); agent != "claude" || session != "session-2" {
+		t.Fatalf("legacy run: %q %q", agent, session)
+	}
+	if agent, session := (workflow.Run{}).TakeoverResume(); agent != "" || session != "" {
+		t.Fatalf("empty run: %q %q", agent, session)
 	}
 }

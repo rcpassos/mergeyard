@@ -25,14 +25,16 @@ workflow, and workspace with the dashboard:
   and the current CSRF token;
 - `GET /api/runs/<run-id>/watch`: the current live tmux session reference;
 - `POST /api/runs/<run-id>/stop`: interrupt the phase, update labels, and stop
-  the run while preserving its code.
+  the run while preserving its code;
+- `POST /api/scheduler/pause` and `POST /api/scheduler/resume`: the same
+  scheduler control the dashboard uses, answering JSON;
+- `POST /api/harnesses/<harness>/check`: the same availability check the
+  dashboard offers;
+- `POST /api/dashboard/session`: mint one single-use dashboard link for
+  `mergeyard open`.
 
-CLI pause/resume use the existing scheduler endpoints with
-`Accept: application/json`, which returns JSON instead of a browser redirect;
-the CLI proves the workspace secret on every request and verifies the runtime's
-proof on every reply. The CLI checks workspace identity before operating,
-disables HTTP proxies and redirect following, and uses a 30-second request
-timeout.
+The CLI checks workspace identity before operating, disables HTTP proxies and
+redirect following, and uses a 30-second request timeout.
 
 ### Workspace secret
 
@@ -47,28 +49,42 @@ Every `/api` request carries a fresh random nonce, the request time, and an
 HMAC-SHA256 proof of the secret over the method, target, nonce and time. The
 secret itself never travels over the port. The runtime rejects an unproven API
 request with HTTP 401 and `runtime.unauthenticated`, and it proves the same
-secret in the `X-Mergeyard-Proof` response header; the CLI refuses any reply
-that does not prove it, before reading the body. A missing secret tells the user
-to start Mergeyard with that workspace, unreadable permissions name the `chmod
-600` fix, and a port that cannot prove the secret is reported as
-`runtime.unauthenticated` with recovery guidance. Restart also re-reads the
-file, so deleting it and restarting recovers from a lost or exposed value.
+secret in the `X-Mergeyard-Proof` response header. That proof covers the exact
+status and body, so a relay cannot edit an answer, and an unproven request
+never receives a proof, so the runtime is not a proof oracle. The CLI refuses a
+reply that does not prove the secret and binds the request to the run it asked
+about. A missing secret tells the user to stop any running Mergeyard, start the
+current version, unreadable permissions name the `chmod 600` fix, and a port
+that cannot prove the secret is reported as `runtime.unauthenticated` with
+recovery guidance.
 
-The dashboard never needs the secret. `GET /` and the other browser pages keep
-serving HTML with the per-process CSRF token, and browser actions keep their
-exact `Origin` and token checks. The CSRF token is also returned by
-`GET /api/status`, which now requires the secret, so a local process that cannot
-read the secret learns no token from the API. A local process can still load the
-dashboard pages; the token and origin checks protect those forms from other
-websites, not from another user on the machine.
+### Dashboard session
 
-Every POST requires an exact `Origin: http://127.0.0.1:<port>` and a random
-per-process token, supplied as the `csrf_token` form field or `X-CSRF-Token`
-header. Missing origins are rejected, including requests from CLI clients.
-Host checks also protect GET requests against DNS rebinding. Restarting the
-server invalidates tokens; refresh open dashboard pages after a restart. API
-requests are authenticated by the workspace proof first, and API POSTs also
-carry the origin and CSRF token, so both layers apply to CLI writes.
+The dashboard is locked to the workspace owner. `mergeyard start` prints a
+dashboard link carrying a single-use token, and opens it when `open_browser` is
+enabled; `mergeyard open` mints a fresh link through the proof-protected API.
+The exchange sets an `HttpOnly`, `SameSite=Strict` session cookie and redirects
+to the page without the token, so the link does not linger in the address bar.
+Tokens expire and cannot be replayed. The session rotates with the process, so
+a restarted runtime locks old browser sessions out; the lock page points at
+`mergeyard open`.
+
+Without that session, every dashboard route answers with the lock page (or HTTP
+403 for a mutation), and no page renders the CSRF token. `/static/` stays
+public so the lock page is styled. A local process that never followed the link
+can read nothing and control nothing.
+
+Every POST still requires an exact `Origin: http://127.0.0.1:<port>` and a
+random per-process token, supplied as the `csrf_token` form field or
+`X-CSRF-Token` header. Missing origins are rejected, including requests from CLI
+clients, which take the token from the proof-protected status snapshot. Host
+checks also protect GET requests against DNS rebinding. Restarting the server
+invalidates tokens; refresh open dashboard pages after a restart.
+
+The dashboard link is printed to the runtime's terminal and briefly visible in
+the browser launcher's process arguments while it opens. The token is
+single-use and short-lived, and the session it sets dies with the process, so a
+stolen link only races the browser once.
 
 Failed scheduler actions return HTTP 500 with a safe diagnostic code in the
 response body and `X-Mergeyard-Error-Code` header. The dashboard displays that

@@ -241,7 +241,7 @@ func TestFixReportsVisibleInDetailStatusAndEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, hx := range []bool{false, true} {
-		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil)
+		request := dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil)
 		if hx {
 			request.Header.Set("HX-Request", "true")
 		}

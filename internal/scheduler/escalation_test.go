@@ -250,7 +250,7 @@ func TestEscalationReadinessRestartAndSurfaces(t *testing.T) {
 	}
 	for _, path := range []string{"/", "/runs/" + run.ID, "/api/status"} {
 		response := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+path, nil)
+		request := dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil)
 		signAPIRequest(t, rt.Workspace.Root, request)
 		server.ServeHTTP(response, request)
 		for _, text := range []string{"ci/deploy", ".github/workflows/ci.yml", "dependency manifests", "package.json"} {
@@ -315,7 +315,7 @@ func TestEscalationUnavailableDiffDoesNotBlockAndRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
 	if response.Code != 200 || strings.Contains(response.Body.String(), "Needs careful review") || strings.Contains(api.prs["mergeyard/issue-7"].Body, "Needs careful review") {
 		t.Fatal("unflagged run shows badge")
 	}

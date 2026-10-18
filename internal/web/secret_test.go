@@ -41,7 +41,7 @@ func (stubOperations) Retry(context.Context, string, ...string) (workflow.Run, e
 	return workflow.Run{}, nil
 }
 
-func newAPIServer(t *testing.T) (*httptest.Server, []byte, func() bool) {
+func newAPIServer(t *testing.T) (*web.Server, *httptest.Server, []byte, func() bool) {
 	t.Helper()
 	ctx := context.Background()
 	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
@@ -61,11 +61,30 @@ func newAPIServer(t *testing.T) (*httptest.Server, []byte, func() bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return httptest.NewServer(server), secret, control.Paused
+	return server, httptest.NewServer(server), secret, control.Paused
+}
+
+// ownerSession follows a one-time dashboard link and returns the session
+// cookie a browser would hold.
+func ownerSession(t *testing.T, server *web.Server) *http.Cookie {
+	t.Helper()
+	exchange := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/?token="+server.NewDashboardToken(), nil)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, exchange)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("dashboard link: %d %s", recorder.Code, recorder.Body)
+	}
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == "mergeyard_dashboard" {
+			return cookie
+		}
+	}
+	t.Fatal("dashboard link did not set the owner session")
+	return nil
 }
 
 func TestAPIRequestsRequireTheWorkspaceSecret(t *testing.T) {
-	server, secret, _ := newAPIServer(t)
+	_, server, secret, _ := newAPIServer(t)
 	defer server.Close()
 
 	// An unauthenticated caller learns nothing, not even the CSRF token.
@@ -94,15 +113,16 @@ func TestAPIRequestsRequireTheWorkspaceSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("signed status: %d", response.StatusCode)
+	body, err = io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("signed status: %d %v", response.StatusCode, err)
 	}
-	if err := runtimeauth.VerifyResponse(response, secret); err != nil {
+	if err := runtimeauth.VerifyResponse(response, secret, body); err != nil {
 		t.Fatalf("runtime did not prove itself: %v", err)
 	}
 	var status web.Status
-	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+	if err := json.Unmarshal(body, &status); err != nil {
 		t.Fatal(err)
 	}
 	if status.Token == "" || len(status.Runs) != 1 {
@@ -120,39 +140,93 @@ func TestAPIRequestsRequireTheWorkspaceSecret(t *testing.T) {
 	}
 }
 
-func TestDashboardKeepsWorkingWithoutTheSecret(t *testing.T) {
-	server, _, paused := newAPIServer(t)
-	defer server.Close()
-
+func TestDashboardIsLockedToTheOwnerSession(t *testing.T) {
+	server, httpServer, _, paused := newAPIServer(t)
+	defer httpServer.Close()
 	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	page, err := client.Get(server.URL + "/")
+
+	// A local process that never followed the printed link sees a locked page
+	// without the CSRF token, and cannot mutate anything.
+	page, err := client.Get(httpServer.URL + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(page.Body)
 	page.Body.Close()
-	if page.StatusCode != http.StatusOK {
-		t.Fatalf("dashboard page: %d", page.StatusCode)
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(body), "Dashboard locked") {
+		t.Fatalf("locked page: %d %s", page.StatusCode, body)
 	}
-	token := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(string(body))
-	if len(token) != 2 {
-		t.Fatal("dashboard did not supply a CSRF token")
+	for _, forbidden := range []string{"csrf_token", "Pause scheduler", "Resume scheduler"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("locked page exposed %q: %s", forbidden, body)
+		}
+	}
+	attack, err := http.NewRequest(http.MethodPost, httpServer.URL+"/scheduler/pause", strings.NewReader("csrf_token=stolen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attack.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	attack.Header.Set("Origin", httpServer.URL)
+	response, err := client.Do(attack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden || paused() {
+		t.Fatalf("locked dashboard accepted a control: %d paused=%v", response.StatusCode, paused())
 	}
 
+	// Following a one-time link sets the owner session; the page then renders
+	// the CSRF token and controls work.
+	cookie := ownerSession(t, server)
+	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Value == "" {
+		t.Fatalf("owner session cookie: %+v", cookie)
+	}
+	pageRequest, err := http.NewRequest(http.MethodGet, httpServer.URL+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageRequest.AddCookie(cookie)
+	page, err = client.Do(pageRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(page.Body)
+	page.Body.Close()
+	token := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(string(body))
+	if page.StatusCode != http.StatusOK || len(token) != 2 || !strings.Contains(string(body), "Pause scheduler") {
+		t.Fatalf("owner page: %d %s", page.StatusCode, body)
+	}
 	form := url.Values{"csrf_token": {token[1]}}
-	request, err := http.NewRequest(http.MethodPost, server.URL+"/scheduler/pause", strings.NewReader(form.Encode()))
+	request, err := http.NewRequest(http.MethodPost, httpServer.URL+"/scheduler/pause", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.Header.Set("Origin", server.URL)
-	response, err := client.Do(request)
+	request.Header.Set("Origin", httpServer.URL)
+	request.AddCookie(cookie)
+	response, err = client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusSeeOther || !paused() {
-		t.Fatalf("browser pause: %d paused=%v", response.StatusCode, paused())
+		t.Fatalf("owner pause: %d paused=%v", response.StatusCode, paused())
+	}
+
+	// Links are single-use: replaying one is refused.
+	link := server.NewDashboardToken()
+	first := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/run-1?token="+link, nil)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, first)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/runs/run-1" {
+		t.Fatalf("link exchange: %d %q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	replay := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/run-1?token="+link, nil)
+	recorder = httptest.NewRecorder()
+	server.ServeHTTP(recorder, replay)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("replayed link accepted: %d", recorder.Code)
 	}
 }
 

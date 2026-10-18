@@ -67,7 +67,7 @@ func TestCreditRetrySelectedRunRecoversWithoutReset(t *testing.T) {
 			for _, enabled := range []bool{false, true} {
 				h.detection = enabled
 				response := httptest.NewRecorder()
-				server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+attention.ID, nil))
+				server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+attention.ID, nil))
 				body := response.Body.String()
 				if response.Code != 200 || !strings.Contains(body, "no scheduled reset") || strings.Contains(body, "0001-01-01") || strings.Contains(body, ">Retry run<") != enabled {
 					t.Fatalf("credit controls capability=%v: %d %s", enabled, response.Code, body)
@@ -233,7 +233,7 @@ func TestCreditProbeConcurrentSelectionStopAndWaitingRetry(t *testing.T) {
 			t.Fatalf("busy harness offered Retry: %+v", run)
 		}
 		page := httptest.NewRecorder()
-		server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+		server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 		if page.Code != 200 || strings.Contains(page.Body.String(), ">Retry run<") {
 			t.Fatalf("busy probe offered Retry: %d %s", page.Code, page.Body.String())
 		}
@@ -591,7 +591,7 @@ func TestCreditRetryAfterTemporaryProbeWaitExhaustion(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	if response.Code != 200 || !strings.Contains(response.Body.String(), "Probe may run after temporary reset") {
 		t.Fatalf("credit/temporary diagnostics: %d %s", response.Code, response.Body.String())
 	}

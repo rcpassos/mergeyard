@@ -96,7 +96,7 @@ func TestReportPublicationEnabledDisabledAndFailureDoesNotBlockLoop(t *testing.T
 					t.Fatal(err)
 				}
 				for _, hx := range []bool{false, true} {
-					req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil)
+					req := dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil)
 					if hx {
 						req.Header.Set("HX-Request", "true")
 					}
@@ -241,7 +241,7 @@ func TestUntrustedReportTextIsLiteralLocallyAndInComment(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	if response.Code != 200 || strings.Contains(response.Body.String(), "<script>finding</script>") || !strings.Contains(response.Body.String(), "&lt;script&gt;finding&lt;/script&gt;") {
 		t.Fatalf("untrusted content not escaped: %s", response.Body.String())
 	}
@@ -285,7 +285,7 @@ func TestPublicationWarningDoesNotBlockCIReadiness(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	for _, want := range []string{"Waiting for your merge", "CI and readiness", "Wait deadline", "Publication warning", "github.unavailable"} {
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), want) {
 			t.Fatalf("missing %q from combined detail", want)

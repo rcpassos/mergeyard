@@ -72,7 +72,7 @@ func LoadSecret(root string) ([]byte, error) {
 	path := SecretPath(root)
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, secretFailure("runtime.secret_missing", path, "start Mergeyard with this workspace to create the workspace secret, then retry", err)
+		return nil, secretFailure("runtime.secret_missing", path, "stop any running Mergeyard for this workspace, start the current version with this configuration to create the workspace secret, then retry", err)
 	}
 	if err != nil {
 		return nil, secretFailure("runtime.secret_unreadable", path, "fix read access for your user, then retry", err)
