@@ -245,7 +245,9 @@ func TestReviewHTTPDetailStatusAndLiveUpdates(t *testing.T) {
 		t.Fatal("live page does not subscribe to review updates")
 	}
 	for _, request := range []*http.Request{
-		dashboardRequest(t, server, http.MethodGet, "http://evil.example/runs/"+run.ID, nil),
+		// A rebound host is refused before any session exchange, so it needs
+		// no owner cookie to prove the host check.
+		httptest.NewRequest(http.MethodGet, "http://evil.example/runs/"+run.ID, nil),
 		dashboardRequest(t, server, http.MethodPost, "http://127.0.0.1:7331/runs/"+run.ID+"/stop", nil),
 	} {
 		response := httptest.NewRecorder()

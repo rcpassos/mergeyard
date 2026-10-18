@@ -409,7 +409,7 @@ func TestFailingVerificationPublicationKeepsAttemptsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/probe-manual", nil))
+	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/probe-manual", nil))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "verification.warning") || !strings.Contains(response.Body.String(), "will retry") {
 		t.Fatalf("run page lost the publication warning: %d", response.Code)
 	}
