@@ -439,14 +439,6 @@ func canRetryAttempt(err error, number, max int) bool {
 	return number < max
 }
 
-func canRetryImplementAttempt(err error, number, max int) bool {
-	var coded *fault.Error
-	if errors.As(err, &coded) && (coded.Code == "harness.session_resume_failed" || coded.Code == "harness.session_identity_invalid") {
-		return false
-	}
-	return canRetryAttempt(err, number, max)
-}
-
 func (s *Scheduler) rolePermissions(agent string) string {
 	if agent == "codex" {
 		networkAccess := s.cfg.Agents.Codex.NetworkAccess

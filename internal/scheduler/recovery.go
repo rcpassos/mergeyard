@@ -51,8 +51,5 @@ func (s *Scheduler) retryPhase(ctx context.Context, run workflow.Run, phase work
 		return false, err
 	}
 	number := ordinary - recovered
-	if phase == workflow.Implement {
-		return canRetryImplementAttempt(cause, number, max), nil
-	}
 	return canRetryAttempt(cause, number, max), nil
 }

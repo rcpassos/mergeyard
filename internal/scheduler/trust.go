@@ -12,11 +12,6 @@ import (
 	"github.com/rcpassos/mergeyard/internal/github"
 )
 
-func (s *Scheduler) authorizeIssue(ctx context.Context, repo config.Repository, issue github.Issue) (bool, error) {
-	decision, err := s.deps.GitHub.VerifyIssueTrust(ctx, repo.Repo, issue, repo.Labels.Ready, repo.TrustedLabelers)
-	return s.applyTrustDecision(ctx, repo, issue, decision, err)
-}
-
 func (s *Scheduler) recheckIssue(ctx context.Context, repo config.Repository, issue github.Issue) (bool, error) {
 	decision, err := s.deps.GitHub.RecheckIssueTrust(ctx, repo.Repo, issue, repo.Labels.Ready, repo.TrustedLabelers)
 	return s.applyTrustDecision(ctx, repo, issue, decision, err)
