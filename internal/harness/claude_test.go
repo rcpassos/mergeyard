@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runner"
@@ -273,7 +274,7 @@ func TestImplementSchemaIsOpenAIStrict(t *testing.T) {
 	}
 	if schema.Type != "object" || schema.AdditionalProperties || len(schema.Properties) != 6 ||
 		!slices.Equal(schema.Required, []string{"schema_version", "status", "summary", "human_action", "criteria", "verification"}) ||
-		schema.Properties["schema_version"].Type != "integer" || schema.Properties["schema_version"].Const != 4 ||
+		schema.Properties["schema_version"].Type != "integer" || schema.Properties["schema_version"].Const != contract.CurrentVersion ||
 		schema.Properties["status"].Type != "string" || !slices.Equal(schema.Properties["status"].Enum, []string{"success", "blocked", "failed"}) ||
 		schema.Properties["summary"].Type != "string" {
 		t.Fatalf("schema does not match PRD §13.2: %+v", schema)

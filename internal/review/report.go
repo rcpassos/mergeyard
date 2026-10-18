@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/rcpassos/mergeyard/internal/acceptance"
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"math/big"
 	"path"
@@ -81,45 +82,32 @@ type Snapshot struct {
 
 // Parse enforces the native strict contract before using any reported verdict.
 func Parse(data []byte) (Report, error) {
-	return parse(data, 4)
+	return ParseVersion(data, contract.CurrentVersion)
 }
 
 // ParseLegacy is only for attempts launched with the persisted v1 schema.
 func ParseLegacy(data []byte) (Report, error) {
-	return parse(data, 1)
+	return ParseVersion(data, 1)
 }
 
 // ParseVersion is for an attempt's saved contract, never for a newly launched review.
-func ParseVersion(data []byte, version int) (Report, error) {
-	if version < 1 || version > 4 {
+func ParseVersion(data []byte, expectedVersion int) (Report, error) {
+	requirement, ok := contract.For(contract.Review, expectedVersion)
+	if !ok {
 		return Report{}, fmt.Errorf("unsupported review schema version")
 	}
-	return parse(data, int64(version))
-}
-
-func parse(data []byte, expectedVersion int64) (Report, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return Report{}, err
 	}
-	fieldCount := 5
-	if expectedVersion == 4 {
-		fieldCount = 7
-	}
-	if expectedVersion == 3 {
-		fieldCount = 6
-	}
-	if expectedVersion == 1 {
-		fieldCount = 4
-	}
-	if len(fields) != fieldCount || fields["schema_version"] == nil || fields["status"] == nil || fields["summary"] == nil || fields["findings"] == nil || (expectedVersion >= 2 && fields["prior_findings"] == nil) {
-		return Report{}, fmt.Errorf("review requires schema_version, status, summary, findings, prior_findings (v2+), human_action (v3+), and criteria (v4)")
+	if !requirement.Matches(fields) {
+		return Report{}, fmt.Errorf("review requires %s", requirement)
 	}
 	version, ok := new(big.Rat).SetString(string(fields["schema_version"]))
-	if !ok || version.Cmp(big.NewRat(expectedVersion, 1)) != 0 {
+	if !ok || version.Cmp(big.NewRat(int64(expectedVersion), 1)) != 0 {
 		return Report{}, fmt.Errorf("schema_version must be %d", expectedVersion)
 	}
-	if expectedVersion >= 2 {
+	if requirement.Requires("prior_findings") {
 		if bytes.Equal(bytes.TrimSpace(fields["prior_findings"]), []byte("null")) {
 			return Report{}, fmt.Errorf("prior_findings cannot be null")
 		}
@@ -152,19 +140,19 @@ func parse(data []byte, expectedVersion int64) (Report, error) {
 			}
 		}
 	}
-	if expectedVersion >= 3 {
+	if requirement.Requires("human_action") {
 		if _, err := fault.ParseHumanAction(fields["human_action"], stringValue(fields["status"])); err != nil {
 			return Report{}, err
 		}
 	}
-	if expectedVersion == 4 {
+	if requirement.Requires("criteria") {
 		if _, err := acceptance.ParseVerdicts(fields["criteria"]); err != nil {
 			return Report{}, err
 		}
 	}
 	// Normalize equivalent numeric spellings after checking the exact value.
 	fields["schema_version"] = json.RawMessage(fmt.Sprint(expectedVersion))
-	if expectedVersion == 1 {
+	if !requirement.Requires("prior_findings") {
 		fields["prior_findings"] = json.RawMessage("[]")
 	}
 	normalized, _ := json.Marshal(fields)
@@ -176,10 +164,11 @@ func parse(data []byte, expectedVersion int64) (Report, error) {
 }
 
 func (r Report) Validate() error {
-	if (r.SchemaVersion < 1 || r.SchemaVersion > 4) || r.Findings == nil || (r.SchemaVersion >= 2 && r.PriorFindings == nil) {
+	requirement, ok := contract.For(contract.Review, r.SchemaVersion)
+	if !ok || r.Findings == nil || (requirement.Requires("prior_findings") && r.PriorFindings == nil) {
 		return fmt.Errorf("invalid review version or findings")
 	}
-	if r.SchemaVersion >= 3 {
+	if requirement.Requires("human_action") {
 		if err := r.HumanAction.Validate(r.Status); err != nil {
 			return err
 		}
@@ -215,7 +204,7 @@ func (r Report) Validate() error {
 	if (r.Status == "approved" && blocking) || (r.Status == "changes_required" && !blocking) {
 		return fmt.Errorf("verdict contradicts blocking findings")
 	}
-	if r.SchemaVersion == 4 {
+	if requirement.Requires("criteria") {
 		if err := acceptance.ValidateVerdicts(r.Criteria); err != nil {
 			return err
 		}
@@ -244,7 +233,8 @@ func (r Report) ValidatePriorFindings(round int, previous []Finding, fix *FixRep
 	if err := r.Validate(); err != nil {
 		return err
 	}
-	if r.SchemaVersion == 1 {
+	requirement, ok := contract.For(contract.Review, r.SchemaVersion)
+	if !ok || !requirement.Requires("prior_findings") {
 		return nil
 	}
 	remaining := map[string]bool{}
@@ -286,7 +276,10 @@ func (r Report) ValidatePriorFindings(round int, previous []Finding, fix *FixRep
 	return nil
 }
 
-const Schema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":4},"status":{"type":"string","enum":["approved","changes_required","blocked","failed"]},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"severity":{"type":"string","enum":["blocking","warning","note"]},"title":{"type":"string"},"details":{"type":"string"},"file":{"type":["string","null"]},"line":{"type":["integer","null"],"minimum":1}},"required":["id","severity","title","details","file","line"],"additionalProperties":false}},"human_action":` + fault.HumanActionSchema + `,"prior_findings":{"type":"array","items":{"type":"object","properties":{"finding_id":{"type":"string"},"outcome":{"type":"string","enum":["fixed","not_fixed","no_longer_applies"]},"note":{"type":"string"}},"required":["finding_id","outcome","note"],"additionalProperties":false}},"criteria":` + acceptance.VerdictSchema + `},"required":["schema_version","status","summary","findings","prior_findings","human_action","criteria"],"additionalProperties":false}`
+// Schema is the strict review output schema for the current version.
+var Schema = contract.Bind(reviewSchema)
+
+const reviewSchema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":` + contract.VersionToken + `},"status":{"type":"string","enum":["approved","changes_required","blocked","failed"]},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"severity":{"type":"string","enum":["blocking","warning","note"]},"title":{"type":"string"},"details":{"type":"string"},"file":{"type":["string","null"]},"line":{"type":["integer","null"],"minimum":1}},"required":["id","severity","title","details","file","line"],"additionalProperties":false}},"human_action":` + fault.HumanActionSchema + `,"prior_findings":{"type":"array","items":{"type":"object","properties":{"finding_id":{"type":"string"},"outcome":{"type":"string","enum":["fixed","not_fixed","no_longer_applies"]},"note":{"type":"string"}},"required":["finding_id","outcome","note"],"additionalProperties":false}},"criteria":` + acceptance.VerdictSchema + `},"required":["schema_version","status","summary","findings","prior_findings","human_action","criteria"],"additionalProperties":false}`
 
 func stringValue(data json.RawMessage) string {
 	var value string

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+
+	"github.com/rcpassos/mergeyard/internal/contract"
 )
 
 type queryer interface {
@@ -59,7 +61,8 @@ func scanReview(row interface{ Scan(...any) error }) (*Snapshot, error) {
 		if err := json.Unmarshal([]byte(report.String), v.Report); err != nil {
 			return nil, err
 		}
-		if v.Report.SchemaVersion == 1 {
+		// Versions without prior findings, including v1, display an empty list.
+		if requirement, ok := contract.For(contract.Review, v.Report.SchemaVersion); ok && !requirement.Requires("prior_findings") {
 			v.Report.PriorFindings = []PriorFinding{}
 		}
 	}

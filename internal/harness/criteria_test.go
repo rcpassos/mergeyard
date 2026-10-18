@@ -102,10 +102,13 @@ func TestOlderAttemptsKeepSavedContracts(t *testing.T) {
 			version int
 			raw     string
 		}{
-			{workflow.Implement, 3, `{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done"}`},
-			{workflow.Fix, 3, `{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done","responses":[]}`},
+			{workflow.Implement, 1, `{"schema_version":1,"status":"success","summary":"Done"}`},
 			{workflow.Implement, 2, `{"schema_version":2,"human_action":null,"status":"success","summary":"Done"}`},
+			{workflow.Implement, 3, `{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done"}`},
+			{workflow.Fix, 1, `{"schema_version":1,"status":"success","summary":"Done","responses":[]}`},
 			{workflow.Fix, 2, `{"schema_version":2,"human_action":null,"status":"success","summary":"Done","responses":[]}`},
+			{workflow.Fix, 3, `{"schema_version":3,"criteria":[],"human_action":null,"status":"success","summary":"Done","responses":[]}`},
+			{workflow.Review, 1, `{"schema_version":1,"status":"approved","summary":"Done","findings":[]}`},
 			{workflow.Review, 2, `{"schema_version":2,"status":"approved","summary":"Done","findings":[],"prior_findings":[]}`},
 			{workflow.Review, 3, `{"schema_version":3,"human_action":null,"status":"approved","summary":"Done","findings":[],"prior_findings":[]}`},
 		} {

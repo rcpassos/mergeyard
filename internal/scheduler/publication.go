@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
@@ -76,7 +77,7 @@ ORDER BY a.run_id,a.round,CASE a.phase WHEN 'review' THEN 0 ELSE 1 END,a.attempt
 				rows.Close()
 				return err
 			}
-			if r.SchemaVersion >= 4 {
+			if requirement, ok := contract.For(contract.Review, r.SchemaVersion); ok && requirement.Requires("criteria") {
 				outcomes = "\n\nAcceptance criteria:"
 				if len(r.Criteria) == 0 {
 					outcomes += " no acceptance criteria found."

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/rcpassos/mergeyard/internal/acceptance"
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -46,7 +47,7 @@ func (e Executor) Parse(ctx context.Context, runID, attemptID, agent string, pha
 		phase.ResultSchemaVersion = contract.Properties.SchemaVersion.Const
 	}
 	result, err := e.Harnesses[agent].ParseResult(phase, artifacts)
-	if err == nil && phase.PhaseDir != "" && ((phase.Phase == workflow.Review && result.SchemaVersion >= 4) || (phase.Phase != workflow.Review && result.SchemaVersion >= 3)) {
+	if err == nil && phase.PhaseDir != "" && requiresCriteria(phase.Phase, result.SchemaVersion) {
 		raw, readErr := e.Runner.ReadFile(ctx, filepath.Join(phase.PhaseDir, "criteria.json"))
 		if readErr != nil {
 			return result, readErr
@@ -91,6 +92,26 @@ func (e Executor) Parse(ctx context.Context, runID, attemptID, agent string, pha
 type CreditLimitError struct {
 	Outcome harness.FailureClassification
 	Exit    int
+}
+
+// requiresCriteria reports whether the phase's version requires criteria,
+// which is what makes the saved criteria file mandatory.
+func requiresCriteria(phase workflow.Phase, version int) bool {
+	requirement, ok := contract.For(contractPhase(phase), version)
+	return ok && requirement.Requires("criteria")
+}
+
+// contractPhase maps a workflow phase to its result contract; only review and
+// fix are distinct, every other phase follows the implement contract.
+func contractPhase(phase workflow.Phase) contract.Phase {
+	switch phase {
+	case workflow.Review:
+		return contract.Review
+	case workflow.Fix:
+		return contract.Fix
+	default:
+		return contract.Implement
+	}
 }
 
 func (*CreditLimitError) Error() string {
