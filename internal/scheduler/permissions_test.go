@@ -75,8 +75,9 @@ func permissionFlow(t *testing.T, agent string, configure func(*config.Config)) 
 }
 
 // TestRecordedPermissionsMatchTheCommandThatRan reads every attempt's audit
-// record back out of the command the scheduler actually launched. This is the
-// persisted chain: adapter report, launch journal, phase and review tables.
+// record back out of the command the scheduler actually launched, including the
+// editing tools a Claude review removes. This is the persisted chain: adapter
+// report, launch journal, phase and review tables.
 func TestRecordedPermissionsMatchTheCommandThatRan(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -142,12 +143,16 @@ func TestRecordedPermissionsMatchTheCommandThatRan(t *testing.T) {
 
 func assertAttemptPermissions(t *testing.T, phase string, round, attempt int, wantMode string, wantTools []string, mode, toolsJSON string) {
 	t.Helper()
+	wantToolsJSON, err := json.Marshal(wantTools)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var tools []string
 	if err := json.Unmarshal([]byte(toolsJSON), &tools); err != nil {
 		t.Fatal(err)
 	}
-	if mode != wantMode || !slices.Equal(tools, wantTools) {
-		t.Fatalf("%s attempt %d/%d recorded %q/%v; the command recorded %q/%v", phase, round, attempt, mode, tools, wantMode, wantTools)
+	if mode != wantMode || toolsJSON != string(wantToolsJSON) || !slices.Equal(tools, wantTools) {
+		t.Fatalf("%s attempt %d/%d recorded %q/%s; the command recorded %q/%s", phase, round, attempt, mode, toolsJSON, wantMode, wantToolsJSON)
 	}
 }
 
@@ -157,7 +162,11 @@ func commandPermissions(t *testing.T, agent string, args []string) (summary, mod
 	if agent == registry.Claude {
 		mode = flagValue(t, args, "--permission-mode")
 		tools = variadicValues(args, "--allowedTools")
-		return mode + " · allowed tools " + strings.Join(tools, ", "), mode, tools
+		summary = mode + " · allowed tools " + strings.Join(tools, ", ")
+		if disallowed := variadicValues(args, "--disallowedTools"); len(disallowed) > 0 {
+			summary += " · disallowed tools " + strings.Join(disallowed, ", ")
+		}
+		return summary, mode, tools
 	}
 	sandbox := flagValue(t, args, "-s")
 	network := "false"
@@ -172,7 +181,7 @@ func commandPermissions(t *testing.T, agent string, args []string) (summary, mod
 		network = "true"
 	}
 	summary = sandbox + " · network " + network + " · approvals never"
-	return summary, summary, nil
+	return summary, summary, []string{}
 }
 
 func flagValue(t *testing.T, args []string, flag string) string {
@@ -186,12 +195,14 @@ func flagValue(t *testing.T, args []string, flag string) string {
 	return ""
 }
 
+// variadicValues returns the values after a variadic flag, up to the next flag.
+// An absent flag records the empty list, not an absent one.
 func variadicValues(args []string, flag string) []string {
+	values := []string{}
 	for i, arg := range args {
 		if arg != flag {
 			continue
 		}
-		var values []string
 		for _, value := range args[i+1:] {
 			if strings.HasPrefix(value, "-") {
 				break
@@ -200,5 +211,5 @@ func variadicValues(args []string, flag string) []string {
 		}
 		return values
 	}
-	return nil
+	return values
 }

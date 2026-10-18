@@ -197,28 +197,28 @@ func (c *checker) machine(cfg config.Config) {
 		if !assigned[agent] {
 			continue
 		}
-		execPath := executable(cfg, agent)
+		facts, known := harnesses[agent]
+		if !known {
+			c.report.add(Error, "harness.unsupported", agent, "assigned harness has no supported doctor checks; update Mergeyard before using it")
+			continue
+		}
+		execPath := facts.executable(cfg)
 		result, err := c.command("", execPath, "--version")
 		if err != nil {
 			c.report.add(Error, "harness.not_found", agent, "assigned harness is missing or cannot run: "+err.Error())
 			continue
 		}
 		c.tools[agent] = true
-		minimum := claudeMinimum
-		auth := []string{"auth", "status"}
-		if agent == registry.Codex {
-			minimum, auth = codexMinimum, []string{"login", "status"}
-		}
 		v, ok := parseVersion(string(result.Stdout) + " " + string(result.Stderr))
 		if !ok {
-			c.report.add(Unverifiable, "harness.version_unverifiable", agent, "cannot parse the installed version; minimum required: "+minimum.String())
+			c.report.add(Unverifiable, "harness.version_unverifiable", agent, "cannot parse the installed version; minimum required: "+facts.minimum.String())
 		} else {
 			c.versions[agent] = v
-			if v.less(minimum) {
-				c.report.add(Error, "harness.version_unsupported", agent, "installed "+v.String()+"; minimum required: "+minimum.String())
+			if v.less(facts.minimum) {
+				c.report.add(Error, "harness.version_unsupported", agent, "installed "+v.String()+"; minimum required: "+facts.minimum.String())
 			}
 		}
-		if _, err := c.command("", execPath, auth...); err != nil {
+		if _, err := c.command("", execPath, facts.auth...); err != nil {
 			c.report.add(Error, "harness.not_logged_in", agent, "harness login check failed; log in with the configured executable: "+err.Error())
 		}
 	}

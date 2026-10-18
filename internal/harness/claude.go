@@ -67,6 +67,11 @@ func (c *Claude) ValidateConfig(role RoleConfig) error {
 	return nil
 }
 
+// claudeReviewDisallowedTools are the tools a review invocation removes so the
+// reviewer can run tests without editing the pinned tree. The command and the
+// recorded permissions both read them.
+var claudeReviewDisallowedTools = []string{"Edit", "Write", "NotebookEdit"}
+
 func (c *Claude) BuildInvocation(ctx PhaseContext, role RoleConfig) (PhaseInvocation, error) {
 	if err := c.ValidateConfig(role); err != nil {
 		return PhaseInvocation{}, err
@@ -87,7 +92,8 @@ func (c *Claude) BuildInvocation(ctx PhaseContext, role RoleConfig) (PhaseInvoca
 	}
 	if ctx.Phase == workflow.Review {
 		args[len(args)-1] = review.Schema
-		args = append(args, "--disallowedTools", "Edit", "Write", "NotebookEdit")
+		args = append(args, "--disallowedTools")
+		args = append(args, claudeReviewDisallowedTools...)
 	}
 	if len(c.config.AllowedTools) > 0 {
 		args = append(args, "--allowedTools")
@@ -109,15 +115,20 @@ func (c *Claude) BuildInvocation(ctx PhaseContext, role RoleConfig) (PhaseInvoca
 	args = append(args, "--", prompt.String())
 	return PhaseInvocation{
 		Command:     Invocation{Executable: c.config.Executable, Dir: ctx.WorktreePath, Env: ctx.Env, Args: args},
-		Permissions: c.permissions(),
+		Permissions: c.permissions(ctx.Phase),
 	}, nil
 }
 
-// permissions reports the surface every Claude invocation applies: the mode
-// and allowed tools its command sets from the same configuration.
-func (c *Claude) permissions() Permissions {
+// permissions reports the surface every Claude invocation applies for one
+// phase: the mode and allowed tools its command sets, plus the tools a review
+// removes. All of them come from the same configuration and phase.
+func (c *Claude) permissions(phase workflow.Phase) Permissions {
+	summary := c.config.PermissionMode + " · allowed tools " + strings.Join(c.config.AllowedTools, ", ")
+	if phase == workflow.Review {
+		summary += " · disallowed tools " + strings.Join(claudeReviewDisallowedTools, ", ")
+	}
 	return Permissions{
-		Summary:      c.config.PermissionMode + " · allowed tools " + strings.Join(c.config.AllowedTools, ", "),
+		Summary:      summary,
 		Mode:         c.config.PermissionMode,
 		AllowedTools: c.config.AllowedTools,
 	}

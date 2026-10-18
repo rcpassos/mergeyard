@@ -92,15 +92,15 @@ func (c *Codex) BuildInvocation(ctx PhaseContext, role RoleConfig) (PhaseInvocat
 
 // permissions reports the surface every Codex invocation applies. The
 // workspace-write network toggle cannot restrict full access, so full access is
-// reported as effective. Codex has no permission-mode flag, so its sandbox and
-// network surface is the mode recorded with fix and review rows.
+// reported as effective. Codex has no permission-mode flag or tool list, so its
+// sandbox and network surface is the mode and the empty tool list is explicit.
 func (c *Codex) permissions() Permissions {
 	networkAccess := c.config.NetworkAccess
 	if c.config.Sandbox == "danger-full-access" {
 		networkAccess = true
 	}
 	summary := c.config.Sandbox + " · network " + strconv.FormatBool(networkAccess) + " · approvals never"
-	return Permissions{Summary: summary, Mode: summary}
+	return Permissions{Summary: summary, Mode: summary, AllowedTools: []string{}}
 }
 
 // ResultArtifacts reports the native -o message that carries Codex's result.

@@ -14,17 +14,14 @@ import (
 
 var skillName = regexp.MustCompile(`^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?$`)
 
-func repositorySkillPath(agent, skill string) string {
-	dir := ".claude"
-	if agent == registry.Codex {
-		dir = ".agents"
-	}
-	return dir + "/skills/" + skill + "/SKILL.md"
-}
-
 func (c *checker) skills(role config.Role, scope string, files map[string]repositoryFileType) {
+	facts, known := harnesses[role.Agent]
+	if !known {
+		// An assigned harness without probes is already reported by machine.
+		return
+	}
 	for _, skill := range role.Skills {
-		if !skillName.MatchString(skill) || (role.Agent != registry.Claude && strings.Contains(skill, ":")) {
+		if !skillName.MatchString(skill) || (strings.Contains(skill, ":") && !facts.namespacedSkills) {
 			c.report.add(Error, "harness.skill_invalid", scope, fmt.Sprintf("%q is not a supported skill name", skill))
 			continue
 		}
@@ -32,7 +29,7 @@ func (c *checker) skills(role config.Role, scope string, files map[string]reposi
 			c.report.add(Unverifiable, "harness.skill_unverifiable", scope, fmt.Sprintf("Claude plugin skill %q can only be confirmed in the runtime system/init event", skill))
 			continue
 		}
-		projectType := files[repositorySkillPath(role.Agent, skill)]
+		projectType := files[facts.repositorySkillPath(skill)]
 		if projectType == fileRegular {
 			continue
 		}
@@ -84,20 +81,24 @@ func personalSkillRoots(agent string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if agent == registry.Claude {
+	switch agent {
+	case registry.Claude:
 		root := os.Getenv("CLAUDE_CONFIG_DIR")
 		if root == "" {
 			root = filepath.Join(home, ".claude")
 		}
 		root, err := expandHome(root)
 		return []string{filepath.Join(root, "skills")}, err
+	case registry.Codex:
+		// Codex's personal skills live in ~/.agents, independent of CODEX_HOME.
+		// Bundled system skills are also available under CODEX_HOME/skills/.system.
+		root := os.Getenv("CODEX_HOME")
+		if root == "" {
+			root = filepath.Join(home, ".codex")
+		}
+		root, err = expandHome(root)
+		return []string{filepath.Join(home, ".agents", "skills"), "/etc/codex/skills", filepath.Join(root, "skills", ".system")}, err
+	default:
+		return nil, fmt.Errorf("no personal skill locations for harness %q", agent)
 	}
-	// Codex's personal skills live in ~/.agents, independent of CODEX_HOME.
-	// Bundled system skills are also available under CODEX_HOME/skills/.system.
-	root := os.Getenv("CODEX_HOME")
-	if root == "" {
-		root = filepath.Join(home, ".codex")
-	}
-	root, err = expandHome(root)
-	return []string{filepath.Join(home, ".agents", "skills"), "/etc/codex/skills", filepath.Join(root, "skills", ".system")}, err
 }

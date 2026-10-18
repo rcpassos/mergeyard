@@ -23,11 +23,15 @@ func repositoryFilePaths(repo config.Repository) []string {
 	paths := []string{"CLAUDE.md", "AGENTS.md"}
 	seen := map[string]bool{"CLAUDE.md": true, "AGENTS.md": true}
 	for _, role := range []config.Role{repo.Implementer, repo.Reviewer} {
+		facts, known := harnesses[role.Agent]
+		if !known {
+			continue
+		}
 		for _, skill := range role.Skills {
 			if !skillName.MatchString(skill) || strings.Contains(skill, ":") {
 				continue
 			}
-			path := repositorySkillPath(role.Agent, skill)
+			path := facts.repositorySkillPath(skill)
 			if !seen[path] {
 				seen[path] = true
 				paths = append(paths, path)
