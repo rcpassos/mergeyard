@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/runner"
@@ -67,7 +68,7 @@ func (s *Scheduler) systemStep(ctx context.Context, repo config.Repository, run 
 	number := 1
 	for i := range steps {
 		v := &steps[i]
-		if v.Step == req.Step && v.Round == phaseRound(run, run.Phase) {
+		if v.Step == req.Step && v.Round == durable.AttemptRound(run, run.Phase) {
 			// The session name contains the system step and round, so handback
 			// and fix steps in that round share one physical number sequence.
 			if v.Attempt >= number {
@@ -209,7 +210,7 @@ func (s *Scheduler) startSystemStep(ctx context.Context, repo config.Repository,
 	if timeout <= 0 {
 		timeout = 20 * time.Minute
 	}
-	dir := filepath.Join(s.workspace.Root, "runs", run.ID, "phases", fmt.Sprintf("%s-%d-%d", req.Step, phaseRound(run, run.Phase), number))
+	dir := filepath.Join(s.workspace.Root, "runs", run.ID, "phases", fmt.Sprintf("%s-%d-%d", req.Step, durable.AttemptRound(run, run.Phase), number))
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, false, err
 	}
@@ -230,7 +231,7 @@ func (s *Scheduler) startSystemStep(ctx context.Context, repo config.Repository,
 	if err := s.deps.Runner.WriteFile(ctx, input, []byte(script), 0600); err != nil {
 		return nil, false, err
 	}
-	session := runner.SessionRequest{Timeout: timeout, RunID: run.ID, Phase: req.Step, Round: phaseRound(run, run.Phase), Attempt: number, PhaseDir: dir, Command: runner.ExecRequest{Executable: "/bin/bash", Args: []string{"--login", input}, Dir: gitRun.Path, Env: s.deps.Env}}
+	session := runner.SessionRequest{Timeout: timeout, RunID: run.ID, Phase: req.Step, Round: durable.AttemptRound(run, run.Phase), Attempt: number, PhaseDir: dir, Command: runner.ExecRequest{Executable: "/bin/bash", Args: []string{"--login", input}, Dir: gitRun.Path, Env: s.deps.Env}}
 	v := &workflow.SystemStepSnapshot{OwnerID: req.OwnerID, ID: uuid.NewString(), Phase: run.Phase, Step: req.Step, Round: session.Round, Attempt: number, Commands: req.Commands, CommandTimeout: timeout.String(), TargetSHA: req.TargetSHA, WorktreeIdentity: identity, Status: "running", ProcessSession: sessions.Name(session), PhaseDir: dir}
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -388,7 +389,7 @@ func (s *Scheduler) verifyCheckedTree(ctx context.Context, gitRun managedgit.Run
 
 func runningSystemStep(run workflow.Run, step string) bool {
 	for _, v := range run.SystemSteps {
-		if v.Step == step && v.Phase == run.Phase && v.Round == phaseRound(run, run.Phase) && v.Status == "running" {
+		if v.Step == step && v.Phase == run.Phase && v.Round == durable.AttemptRound(run, run.Phase) && v.Status == "running" {
 			return true
 		}
 	}

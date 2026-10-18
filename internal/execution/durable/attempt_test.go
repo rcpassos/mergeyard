@@ -3,6 +3,7 @@ package durable_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -106,6 +107,39 @@ func TestAmbiguousLaunchIsObservedAfterRestart(t *testing.T) {
 	}
 	if r.starts != 1 {
 		t.Fatalf("ambiguous launch replayed: %d", r.starts)
+	}
+}
+
+func TestAttemptRoundKeepsPhasesOnTheSharedRound(t *testing.T) {
+	run := workflow.Run{RunMetadata: workflow.RunMetadata{ReviewRound: 2}}
+	for _, tc := range []struct {
+		phase workflow.Phase
+		want  int
+	}{
+		{workflow.Implement, 0},
+		{workflow.Review, 2},
+		{workflow.Fix, 2},
+	} {
+		if got := durable.AttemptRound(run, tc.phase); got != tc.want {
+			t.Errorf("%s round = %d; want %d", tc.phase, got, tc.want)
+		}
+	}
+}
+
+func TestInvalidDiscoveryRecognizesOnlyInvalidatedSessions(t *testing.T) {
+	for _, code := range []string{"phase.result_invalid", "harness.session_identity_invalid", "harness.session_resume_failed"} {
+		if !durable.InvalidDiscovery(&fault.Error{Code: code}) {
+			t.Errorf("%s not recognized as invalid discovery", code)
+		}
+	}
+	wrapped := fmt.Errorf("observe: %w", &fault.Error{Code: "harness.session_identity_invalid"})
+	if !durable.InvalidDiscovery(wrapped) {
+		t.Errorf("wrapped failure not recognized as invalid discovery")
+	}
+	for _, err := range []error{errors.New("plain failure"), &fault.Error{Code: "phase.session_missing"}} {
+		if durable.InvalidDiscovery(err) {
+			t.Errorf("%v recognized as invalid discovery", err)
+		}
 	}
 }
 

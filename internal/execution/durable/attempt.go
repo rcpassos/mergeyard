@@ -34,6 +34,10 @@ type Executor struct {
 	Now       func() time.Time
 }
 
+// Attempt is the journal entry for one phase execution: the harness (agent)
+// that ran it, its persisted session identity, owned process reference and
+// continuation state. It is the single attempt shape shared by durable
+// execution and the scheduler's phase workflows.
 type Attempt struct {
 	ID, Agent             string
 	Number                int
@@ -77,7 +81,7 @@ func (e Executor) PrepareImplement(ctx context.Context, root string, run workflo
 // Prepare establishes the role identity and process journal shared by coding phases.
 func (e Executor) Prepare(ctx context.Context, root string, run workflow.Run, kind workflow.Phase, role config.Role, number int) (harness.PhaseContext, Attempt, error) {
 	var phase harness.PhaseContext
-	round := attemptRound(run, kind)
+	round := AttemptRound(run, kind)
 	var previous Attempt
 	var sessionID, agent string
 	if err := e.DB.QueryRowContext(ctx, "SELECT COALESCE("+kind.Role()+"_session_id,''),COALESCE("+kind.Role()+"_agent,'') FROM runs WHERE id=?", run.ID).Scan(&sessionID, &agent); err != nil {
@@ -135,7 +139,7 @@ func (e Executor) LaunchImplement(ctx context.Context, run workflow.Run, role co
 // reservation and the launch event. Common event fields come from launch intent;
 // payload adds only phase-specific facts. The hook must only write through this transaction.
 func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role, permissions Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string, facts func(*sql.Tx, Attempt) error, payload map[string]any) (Attempt, error) {
-	round := attemptRound(run, phase.Phase)
+	round := AttemptRound(run, phase.Phase)
 	if req.RunID != run.ID || req.Phase != string(phase.Phase) || req.Round != round || req.PhaseDir != phase.PhaseDir || req.Attempt < 1 || filepath.Base(phase.PhaseDir) != fmt.Sprintf("%s-%d-%d", phase.Phase, round, req.Attempt) {
 		return Attempt{}, &fault.Error{Code: "phase.invalid_request", Message: "Launch request does not match the prepared phase attempt"}
 	}
@@ -203,19 +207,36 @@ func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role
 	return a, err
 }
 
-// attemptRound keeps preparation, launch validation and recovery reservation on
-// the same round: implementation uses zero; review and fix use the review round.
-func attemptRound(run workflow.Run, phase workflow.Phase) int {
+// AttemptRound keeps preparation, launch validation, recovery reservation and
+// retry accounting on the same round: implementation uses zero; review and fix
+// use the review round.
+func AttemptRound(run workflow.Run, phase workflow.Phase) int {
 	if phase == workflow.Implement {
 		return 0
 	}
 	return run.ReviewRound
 }
 
+// InvalidDiscovery reports whether a failure invalidates the session discovered
+// for one attempt: its identity or result cannot be trusted, so the owned
+// process must be stopped and the attempt failed.
+func InvalidDiscovery(err error) bool {
+	var coded *fault.Error
+	if !errors.As(err, &coded) {
+		return false
+	}
+	switch coded.Code {
+	case "phase.result_invalid", "harness.session_identity_invalid", "harness.session_resume_failed":
+		return true
+	default:
+		return false
+	}
+}
+
 // ReserveRecovery belongs to the replacement's launch transaction. A crash
 // after commit leaves one deterministic identity to observe, never replay.
 func ReserveRecovery(ctx context.Context, tx *sql.Tx, run workflow.Run, phase workflow.Phase, previous Attempt, replacement, session string) (events.Draft, error) {
-	round := attemptRound(run, phase)
+	round := AttemptRound(run, phase)
 	role := phase.Role()
 	_, err := tx.ExecContext(ctx, `INSERT INTO session_recoveries(run_id,phase,role,round,failed_attempt_id,replacement_attempt_id,previous_session_id) VALUES (?,?,?,?,?,?,?)`, run.ID, phase, role, round, previous.ID, replacement, previous.SessionID)
 	return events.Draft{RunID: run.ID, Type: "harness.session_resume_failed", Payload: map[string]any{"agent": previous.Agent, "phase": phase, "role": role, "round": round, "attempt": previous.Number, "replacement_attempt": previous.Number + 1, "previous_session_id": previous.SessionID, "session_id": session, "error": previous.Failure, "warning": "Saved conversation is missing; continuing once in a fresh session"}}, err
@@ -309,8 +330,7 @@ func (e Executor) ObserveProcess(ctx context.Context, runID string, phase workfl
 	}
 	o.Failure = e.Discover(ctx, runID, phase, a)
 	if o.Failure != nil {
-		var coded *fault.Error
-		if !errors.As(o.Failure, &coded) || (coded.Code != "phase.result_invalid" && coded.Code != "harness.session_identity_invalid" && coded.Code != "harness.session_resume_failed") {
+		if !InvalidDiscovery(o.Failure) {
 			return o, o.Failure
 		}
 		if o.Status.State == runner.SessionRunning {

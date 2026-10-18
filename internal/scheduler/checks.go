@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
+	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
@@ -28,7 +29,7 @@ func (s *Scheduler) checkImplementation(ctx context.Context, repo config.Reposit
 		return false, &fault.Error{Code: "git.implement_unsupported", Message: "Git adapter cannot gate publication on checks"}
 	}
 	var commit string
-	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(commit_sha,'') FROM phase_attempts WHERE id=?", a.id).Scan(&commit); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(commit_sha,'') FROM phase_attempts WHERE id=?", a.ID).Scan(&commit); err != nil {
 		return false, err
 	}
 	if commit == "" {
@@ -40,12 +41,12 @@ func (s *Scheduler) checkImplementation(ctx context.Context, repo config.Reposit
 			return false, err
 		}
 		_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-			_, err := tx.ExecContext(ctx, "UPDATE phase_attempts SET commit_sha=? WHERE id=?", result.SHA, a.id)
-			return events.Draft{RunID: run.ID, Type: "implement.committed", Payload: map[string]any{"attempt": a.number, "commit_sha": result.SHA}}, err
+			_, err := tx.ExecContext(ctx, "UPDATE phase_attempts SET commit_sha=? WHERE id=?", result.SHA, a.ID)
+			return events.Draft{RunID: run.ID, Type: "implement.committed", Payload: map[string]any{"attempt": a.Number, "commit_sha": result.SHA}}, err
 		})
 		return false, err
 	}
-	v, done, err := s.systemStep(ctx, repo, run, gitRun, systemStepRequest{Step: "checks", Commands: repo.Checks, TargetSHA: commit, OwnerID: a.id, Retry: s.recheckRequested(run, a.id)})
+	v, done, err := s.systemStep(ctx, repo, run, gitRun, systemStepRequest{Step: "checks", Commands: repo.Checks, TargetSHA: commit, OwnerID: a.ID, Retry: s.recheckRequested(run, a.ID)})
 	if err != nil || !done {
 		return false, err
 	}
@@ -69,9 +70,9 @@ func (s *Scheduler) checkResult(run workflow.Run, id string) *workflow.SystemSte
 	return nil
 }
 
-func (s *Scheduler) repairChecks(ctx context.Context, repo config.Repository, run workflow.Run, gitRun managedgit.Run, a attempt, v *workflow.SystemStepSnapshot) error {
+func (s *Scheduler) repairChecks(ctx context.Context, repo config.Repository, run workflow.Run, gitRun managedgit.Run, a durable.Attempt, v *workflow.SystemStepSnapshot) error {
 	var spent int
-	if err := s.db.QueryRowContext(ctx, "SELECT count(DISTINCT check_retry_of) FROM phase_attempts WHERE run_id=? AND phase=? AND round=? AND check_retry_of!=''", run.ID, run.Phase, phaseRound(run, run.Phase)).Scan(&spent); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT count(DISTINCT check_retry_of) FROM phase_attempts WHERE run_id=? AND phase=? AND round=? AND check_retry_of!=''", run.ID, run.Phase, durable.AttemptRound(run, run.Phase)).Scan(&spent); err != nil {
 		return err
 	}
 	allowance := repo.CheckRetries
@@ -89,15 +90,15 @@ func (s *Scheduler) repairChecks(ctx context.Context, repo config.Repository, ru
 		return err
 	}
 	if run.Phase == workflow.Implement {
-		return s.startAttempt(ctx, repo, run, issue, gitRun, a.number+1, v.ID)
+		return s.startAttempt(ctx, repo, run, issue, gitRun, a.Number+1, v.ID)
 	}
-	return s.startFix(ctx, repo, run, gitRun, a.number+1, v.ID)
+	return s.startFix(ctx, repo, run, gitRun, a.Number+1, v.ID)
 }
 
 func latestChecks(run workflow.Run) *workflow.SystemStepSnapshot {
 	for i := len(run.SystemSteps) - 1; i >= 0; i-- {
 		v := run.SystemSteps[i]
-		if v.Step == "checks" && v.Phase == run.Phase && v.Round == phaseRound(run, run.Phase) {
+		if v.Step == "checks" && v.Phase == run.Phase && v.Round == durable.AttemptRound(run, run.Phase) {
 			return &v
 		}
 	}
@@ -154,12 +155,12 @@ func (s *Scheduler) retryChecks(ctx context.Context, repo config.Repository, run
 	return s.retryLabels(ctx, repo, selected)
 }
 
-func checkRetryIdentity(run workflow.Run, phase workflow.Phase, previous attempt, number int, override []string) string {
+func checkRetryIdentity(run workflow.Run, phase workflow.Phase, previous durable.Attempt, number int, override []string) string {
 	if len(override) > 0 {
 		return override[0]
 	}
-	if floor := attemptWindowStart(run, phase); number == floor && number > previous.number {
+	if floor := attemptWindowStart(run, phase); number == floor && number > previous.Number {
 		return ""
 	}
-	return previous.checkRetryOf
+	return previous.CheckRetryOf
 }

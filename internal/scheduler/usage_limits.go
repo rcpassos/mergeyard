@@ -31,8 +31,8 @@ func isHarnessLimit(err error) bool {
 	var credit *creditLimitError
 	return errors.As(err, &temporary) || errors.As(err, &credit)
 }
-func (s *Scheduler) creditExecution(ctx context.Context, repo config.Repository, run workflow.Run, a attempt, cause *creditLimitError) error {
-	wait := workflow.HarnessWait{Harness: a.agent, Reason: "credits_exhausted", Phase: run.Phase, Round: phaseRound(run, run.Phase), AttemptID: a.id, Attempt: a.number, ExitCode: &cause.Exit, DetectedAt: s.deps.Now().UTC(), Source: cause.Outcome.Source}
+func (s *Scheduler) creditExecution(ctx context.Context, repo config.Repository, run workflow.Run, a durable.Attempt, cause *creditLimitError) error {
+	wait := workflow.HarnessWait{Harness: a.Agent, Reason: "credits_exhausted", Phase: run.Phase, Round: durable.AttemptRound(run, run.Phase), AttemptID: a.ID, Attempt: a.Number, ExitCode: &cause.Exit, DetectedAt: s.deps.Now().UTC(), Source: cause.Outcome.Source}
 	_, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.OperationFailed, Failure: &fault.Error{Code: "harness.credits_exhausted", Message: "Harness credits are exhausted; restore credits and explicitly Retry to probe recovery"}, Metadata: workflow.MetadataPatch{HarnessWait: &wait}})
 	if err != nil {
 		return err
@@ -40,7 +40,7 @@ func (s *Scheduler) creditExecution(ctx context.Context, repo config.Repository,
 	return s.attentionLabels(ctx, repo, run)
 }
 
-func (s *Scheduler) limitExecution(ctx context.Context, repo config.Repository, run workflow.Run, a attempt, cause error) error {
+func (s *Scheduler) limitExecution(ctx context.Context, repo config.Repository, run workflow.Run, a durable.Attempt, cause error) error {
 	var credit *creditLimitError
 	if errors.As(cause, &credit) {
 		return s.creditExecution(ctx, repo, run, a, credit)
@@ -50,7 +50,7 @@ func (s *Scheduler) limitExecution(ctx context.Context, repo config.Repository, 
 		return cause
 	}
 	now := s.deps.Now().UTC()
-	wait := workflow.HarnessWait{Harness: a.agent, Reason: "temporary_limit", Phase: run.Phase, Round: phaseRound(run, run.Phase), AttemptID: a.id, Attempt: a.number, ExitCode: &limit.Exit, DetectedAt: now, ResetAt: now.Add(s.cfg.UsageLimits.Cooldown), ResetTimeSource: "default_cooldown", Source: limit.Outcome.Source, Allowance: s.cfg.UsageLimits.MaxWaits}
+	wait := workflow.HarnessWait{Harness: a.Agent, Reason: "temporary_limit", Phase: run.Phase, Round: durable.AttemptRound(run, run.Phase), AttemptID: a.ID, Attempt: a.Number, ExitCode: &limit.Exit, DetectedAt: now, ResetAt: now.Add(s.cfg.UsageLimits.Cooldown), ResetTimeSource: "default_cooldown", Source: limit.Outcome.Source, Allowance: s.cfg.UsageLimits.MaxWaits}
 	if limit.Outcome.ResetAt.After(now) {
 		wait.ResetAt = limit.Outcome.ResetAt.UTC()
 		wait.ResetTimeSource = "reported"
@@ -180,14 +180,14 @@ func (s *Scheduler) gatePhase(ctx context.Context, run workflow.Run, agent strin
 	if wait == nil || limit.ProbeReady(run.ID, now, s.harnesses[agent].Capabilities().CreditExhaustionDetection) {
 		return false, nil
 	}
-	wait.Phase, wait.Round = run.Phase, phaseRound(run, run.Phase)
+	wait.Phase, wait.Round = run.Phase, durable.AttemptRound(run, run.Phase)
 	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.HarnessLimited, Metadata: workflow.MetadataPatch{HarnessWait: wait}})
 	return true, err
 }
 
 func (s *Scheduler) resumeHarnessWait(ctx context.Context, run workflow.Run) error {
 	wait := run.HarnessWait
-	if wait == nil || wait.Phase != run.Phase || wait.Round != phaseRound(run, run.Phase) {
+	if wait == nil || wait.Phase != run.Phase || wait.Round != durable.AttemptRound(run, run.Phase) {
 		return &fault.Error{Code: "harness.wait_missing", Message: "Harness wait metadata is unavailable; inspect preserved work"}
 	}
 	limit, err := workflow.LoadHarnessLimit(ctx, s.db, wait.Harness)
@@ -207,8 +207,8 @@ func (s *Scheduler) resumeHarnessWait(ctx context.Context, run workflow.Run) err
 
 // Describe only the execution actually being resumed. An ordinary retry or a
 // fresh missing-session recovery has its own context, not an old limit notice.
-func interruptionContext(previous attempt, phase harness.PhaseContext) string {
-	if previous.status != "usage_limited" || !phase.Resume || previous.sessionID == "" || previous.sessionID != phase.SessionID {
+func interruptionContext(previous durable.Attempt, phase harness.PhaseContext) string {
+	if previous.Status != "usage_limited" || !phase.Resume || previous.SessionID == "" || previous.SessionID != phase.SessionID {
 		return ""
 	}
 	work := "Partial edits are preserved; inspect them before continuing."
@@ -216,10 +216,10 @@ func interruptionContext(previous attempt, phase harness.PhaseContext) string {
 		work = "Reviewer changes from that execution were restored; review the pinned target again without editing repository files."
 	}
 	reason := "a temporary usage limit"
-	if strings.HasPrefix(previous.failure, "harness.credits_exhausted:") {
+	if strings.HasPrefix(previous.Failure, "harness.credits_exhausted:") {
 		reason = "exhausted credits; this execution is the explicitly requested recovery probe"
 	}
-	return fmt.Sprintf("The previous %s execution (%s) was interrupted by %s. Resume this phase in the same conversation. %s Effective settings and full phase context are reapplied.", phase.Phase, previous.id, reason, work)
+	return fmt.Sprintf("The previous %s execution (%s) was interrupted by %s. Resume this phase in the same conversation. %s Effective settings and full phase context are reapplied.", phase.Phase, previous.ID, reason, work)
 }
 
 func (s *Scheduler) selectCreditProbe(ctx context.Context, run workflow.Run, repo config.Repository, v workflow.RetrySnapshot, patch *workflow.MetadataPatch) error {
@@ -321,7 +321,7 @@ func (s *Scheduler) retryStartsAgent(ctx context.Context, run workflow.Run, v wo
 	if v.AttemptFrom > 0 {
 		return true, nil
 	}
-	var a attempt
+	var a durable.Attempt
 	var err error
 	switch v.NextPhase {
 	case workflow.Implement:
@@ -329,21 +329,21 @@ func (s *Scheduler) retryStartsAgent(ctx context.Context, run workflow.Run, v wo
 	case workflow.Fix:
 		var f fixAttempt
 		f, err = s.lastFix(ctx, run)
-		a = f.attempt
+		a = f.Attempt
 	default:
 		return true, nil
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return true, nil
 	}
-	if err == nil && a.status == "succeeded" {
+	if err == nil && a.Status == "succeeded" {
 		if repo, ok := s.runRepository(run); ok && len(repo.Checks) > 0 {
-			if checks := latestChecks(run); checks != nil && checks.Status == "failed" && checks.OwnerID == a.id {
+			if checks := latestChecks(run); checks != nil && checks.Status == "failed" && checks.OwnerID == a.ID {
 				return true, nil
 			}
 		}
 	}
-	return a.status != "succeeded", err
+	return a.Status != "succeeded", err
 }
 
 // runSnapshot keeps current credit-wait JSON consistent with harness availability.

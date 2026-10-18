@@ -246,21 +246,8 @@ func (s *Scheduler) context(ctx context.Context, run workflow.Run) (github.Issue
 	return issue, gitRun, nil
 }
 
-type attempt struct {
-	id           string
-	agent        string
-	number       int
-	status       string
-	ref          runner.SessionRef
-	sessionID    string
-	resumed      bool
-	failure      string
-	checkRetryOf string
-}
-
-func (s *Scheduler) lastAttempt(ctx context.Context, id string) (attempt, error) {
-	a, err := s.execution().LoadImplement(ctx, id)
-	return schedulerAttempt(a), err
+func (s *Scheduler) lastAttempt(ctx context.Context, id string) (durable.Attempt, error) {
+	return s.execution().LoadImplement(ctx, id)
 }
 
 func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run workflow.Run, issue github.Issue, gitRun managedgit.Run) (harness.PhaseResult, bool, error) {
@@ -271,11 +258,11 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	if err != nil {
 		return harness.PhaseResult{}, false, err
 	}
-	if next := explicitAttempt(run, workflow.Implement, a.number); next > 0 {
+	if next := explicitAttempt(run, workflow.Implement, a.Number); next > 0 {
 		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, next)
 	}
-	if a.status == "succeeded" {
-		data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.ref.PhaseDir, "result.json"))
+	if a.Status == "succeeded" {
+		data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.Ref.PhaseDir, "result.json"))
 		if err != nil {
 			return harness.PhaseResult{}, false, err
 		}
@@ -283,20 +270,20 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		err = json.Unmarshal(data, &result)
 		return result, err == nil, err
 	}
-	if a.status == "usage_limited" {
-		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, a.number+1)
+	if a.Status == "usage_limited" {
+		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, a.Number+1)
 	}
-	if a.status == "failed" {
+	if a.Status == "failed" {
 		max := repo.Implementer.MaxAttempts
 		if max < 1 {
 			max = 1
 		}
-		code, message, _ := strings.Cut(a.failure, ": ")
+		code, message, _ := strings.Cut(a.Failure, ": ")
 		cause := &fault.Error{Code: code, Message: message}
 		if code == "phase.blocked" {
 			// The result was saved before the failed-attempt commit. Recover its
 			// decision if the control plane stopped before the attention transition.
-			data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.ref.PhaseDir, "result.json"))
+			data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.Ref.PhaseDir, "result.json"))
 			if err != nil {
 				return harness.PhaseResult{}, false, err
 			}
@@ -311,13 +298,11 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 			return harness.PhaseResult{}, false, err
 		}
 		if !retry {
-			return harness.PhaseResult{}, false, attemptFailure(cause, a.number, max)
+			return harness.PhaseResult{}, false, attemptFailure(cause, a.Number, max)
 		}
-		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, a.number+1)
+		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, a.Number+1)
 	}
-	executionAttempt := durableAttempt(a)
-	observation, err := s.execution().Observe(ctx, run.ID, workflow.Implement, &executionAttempt)
-	a = schedulerAttempt(executionAttempt)
+	observation, err := s.execution().Observe(ctx, run.ID, workflow.Implement, &a)
 	if err != nil {
 		return harness.PhaseResult{}, false, err
 	}
@@ -329,14 +314,14 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	err = observation.Failure
 	var result harness.PhaseResult
 	if err == nil {
-		result, err = s.parseExecution(ctx, run.ID, a.id, a.agent, harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: a.ref.PhaseDir, SessionID: a.sessionID, Resume: a.resumed}, artifacts)
+		result, err = s.parseExecution(ctx, run.ID, a.ID, a.Agent, harness.PhaseContext{Phase: workflow.Implement, WorktreePath: gitRun.Path, PhaseDir: a.Ref.PhaseDir, SessionID: a.SessionID, Resume: a.Resumed}, artifacts)
 	}
 	if err == nil {
 		data, marshalErr := json.Marshal(result)
 		if marshalErr != nil {
 			return result, false, marshalErr
 		}
-		if err := s.deps.Runner.WriteFile(ctx, filepath.Join(a.ref.PhaseDir, "result.json"), data, 0600); err != nil {
+		if err := s.deps.Runner.WriteFile(ctx, filepath.Join(a.Ref.PhaseDir, "result.json"), data, 0600); err != nil {
 			return result, false, err
 		}
 		if result.Status == "blocked" {
@@ -351,7 +336,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 	if isHarnessLimit(err) {
 		return result, false, s.limitExecution(ctx, repo, run, a, err)
 	}
-	if saveErr := s.execution().FinishImplement(ctx, run.ID, durableAttempt(a), status.ExitCode, result, err); saveErr != nil {
+	if saveErr := s.execution().FinishImplement(ctx, run.ID, a, status.ExitCode, result, err); saveErr != nil {
 		return result, false, saveErr
 	}
 
@@ -363,7 +348,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		if retry {
 			return result, false, nil
 		}
-		return result, false, attemptFailure(err, a.number, repo.Implementer.MaxAttempts)
+		return result, false, attemptFailure(err, a.Number, repo.Implementer.MaxAttempts)
 	}
 	return result, true, nil
 }
@@ -372,11 +357,10 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	if gated, err := s.gatePhase(ctx, run, repo.Implementer.Agent); gated || err != nil {
 		return err
 	}
-	phase, savedPrevious, err := s.execution().PrepareImplement(ctx, s.workspace.Root, run, repo.Implementer, number)
+	phase, previous, err := s.execution().PrepareImplement(ctx, s.workspace.Root, run, repo.Implementer, number)
 	if err != nil {
 		return err
 	}
-	previous := schedulerAttempt(savedPrevious)
 	phaseDir := phase.PhaseDir
 	env, err := s.phaseEnvironment(ctx, run.ID, workflow.Implement)
 	if err != nil {
@@ -403,9 +387,9 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	}
 	req := runner.SessionRequest{RunID: run.ID, Phase: "implement", Round: 0, Attempt: number, PhaseDir: phaseDir, Command: command}
 	permission, allowedTools := s.roleSettings(repo.Implementer.Agent)
-	launched, err := s.execution().LaunchImplement(ctx, run, repo.Implementer, durable.Permissions{Summary: s.rolePermissions(repo.Implementer.Agent), Mode: permission, AllowedTools: allowedTools}, phase, savedPrevious, req, input, checkID)
+	launched, err := s.execution().LaunchImplement(ctx, run, repo.Implementer, durable.Permissions{Summary: s.rolePermissions(repo.Implementer.Agent), Mode: permission, AllowedTools: allowedTools}, phase, previous, req, input, checkID)
 	if err != nil && launched.ID != "" && launched.Status == "failed" && ctx.Err() == nil {
-		retry, retryErr := s.retryPhase(ctx, run, workflow.Implement, schedulerAttempt(launched), err, repo.Implementer.MaxAttempts)
+		retry, retryErr := s.retryPhase(ctx, run, workflow.Implement, launched, err, repo.Implementer.MaxAttempts)
 		if retryErr != nil {
 			return retryErr
 		}
