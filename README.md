@@ -144,11 +144,15 @@ overrides, [setup](docs/setup.md) for adding repositories, and
 
 ```sh
 make test   # offline preflight, script checks, Go tests and research checks
-make lint   # gofmt and go vet
+make lint   # gofmt, go vet, and an unused-code check
 make build  # rebuild dashboard assets with Node.js 24, then compile Go
 ```
 
 Commit generated `web/static/` files with dashboard source changes.
+
+`make lint` also runs the pinned Staticcheck unused-code check (`U1000`), so code
+left behind by a change fails lint instead of accumulating. It downloads Staticcheck
+on first use, so the first lint run needs network access to the Go module proxy.
 
 The public project website is maintained separately in `site/` and deployed to
 GitHub Pages. See [website development and deployment](docs/website.md) for

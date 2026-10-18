@@ -481,13 +481,6 @@ func (s *Scheduler) abortReview(ctx context.Context, repo config.Repository, run
 	}
 	return s.rejectReview(ctx, repo, run, *a, nil, nil, cause)
 }
-func reviewCanRetry(err error, number, max int) bool {
-	var coded *fault.Error
-	if errors.As(err, &coded) && coded.Code == "review.head_changed" {
-		return false
-	}
-	return canRetryAttempt(err, number, max)
-}
 func reviewFailure(err error, number int) error {
 	return &fault.Error{Code: errorCodeForReview(err), Message: fmt.Sprintf("Review attempt %d could not be accepted: %s", number, err.Error()), Err: err}
 }

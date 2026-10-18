@@ -114,4 +114,6 @@ make lint
 Normal tests require no credentials, network service, or paid model calls. The
 preflight rejects inherited live integration flags. Existing opt-in live GitHub
 acceptance checks require a dedicated test repository. No live GitHub acceptance
-or paid harness capture is needed for this offline acceptance path.
+or paid harness capture is needed for this offline acceptance path. `make lint`
+makes no service call, but it downloads its pinned Staticcheck release on first
+use and then needs module-proxy access for that run.

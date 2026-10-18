@@ -65,6 +65,9 @@ goreleaser check
 goreleaser release --snapshot --clean
 ```
 
+`make lint` downloads its pinned Staticcheck release on first use, so allow Go
+module-proxy access for that run. It makes no other network call.
+
 Snapshot mode builds archives and checksums in the ignored `dist/` directory
 without publishing or requiring a release tag. It uses the committed dashboard
 assets, so regenerate them first when changing the UI. CI also builds snapshots
