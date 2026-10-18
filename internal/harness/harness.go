@@ -7,6 +7,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/acceptance"
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/execution"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/review"
@@ -110,4 +111,7 @@ type PhaseResult struct {
 // ImplementSchema returns a fresh copy of the common OpenAI strict schema.
 func ImplementSchema() json.RawMessage { return json.RawMessage(implementSchema) }
 
-const implementSchema = `{"type":"object","properties":{"schema_version":{"type":"integer","const":4},"status":{"type":"string","enum":["success","blocked","failed"]},"summary":{"type":"string"},"human_action":` + fault.HumanActionSchema + `,"criteria":` + acceptance.EvidenceSchema + `,"verification":` + verification.Schema + `},"required":["schema_version","status","summary","human_action","criteria","verification"],"additionalProperties":false}`
+// implementSchema is the strict implement contract for the current version.
+var implementSchema = contract.Bind(implementSchemaTemplate)
+
+const implementSchemaTemplate = `{"type":"object","properties":{"schema_version":{"type":"integer","const":` + contract.VersionToken + `},"status":{"type":"string","enum":["success","blocked","failed"]},"summary":{"type":"string"},"human_action":` + fault.HumanActionSchema + `,"criteria":` + acceptance.EvidenceSchema + `,"verification":` + verification.Schema + `},"required":["schema_version","status","summary","human_action","criteria","verification"],"additionalProperties":false}`

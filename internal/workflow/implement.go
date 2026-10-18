@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/rcpassos/mergeyard/internal/acceptance"
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/verification"
 )
 
@@ -16,6 +17,18 @@ type ImplementReport struct {
 	Status        string                `json:"status"`
 	Summary       string                `json:"summary"`
 	Criteria      []acceptance.Evidence `json:"criteria"`
+}
+
+// HasCriteria reports whether the saved contract records acceptance criteria.
+func (r ImplementReport) HasCriteria() bool {
+	requirement, ok := contract.For(contract.Implement, r.SchemaVersion)
+	return ok && requirement.Requires(contract.Criteria)
+}
+
+// HasVerification reports whether the saved contract records verification.
+func (r ImplementReport) HasVerification() bool {
+	requirement, ok := contract.For(contract.Implement, r.SchemaVersion)
+	return ok && requirement.Requires(contract.Verification)
 }
 
 // ImplementSnapshot is the last durable implement attempt, retained during review.

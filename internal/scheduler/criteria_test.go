@@ -53,6 +53,9 @@ func TestCriteriaCarryThroughAllHarnessPairings(t *testing.T) {
 				if !strings.Contains(comments, `"criteria"`) || !strings.Contains(comments, `"AC1"`) {
 					t.Fatal("comments missing criteria")
 				}
+				if !strings.Contains(comments, "Acceptance criteria: AC1 met;") {
+					t.Fatal("published review comment missing criteria summary")
+				}
 				server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg})
 				if err != nil {
 					t.Fatal(err)

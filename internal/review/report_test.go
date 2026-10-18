@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rcpassos/mergeyard/internal/contract"
 	"github.com/rcpassos/mergeyard/internal/review"
 )
 
@@ -41,6 +42,23 @@ func TestPriorFindingContract(t *testing.T) {
 	report, err := review.ParseLegacy([]byte(legacy))
 	if err != nil || report.PriorFindings == nil || len(report.PriorFindings) != 0 {
 		t.Fatalf("legacy=%+v err=%v", report, err)
+	}
+}
+
+// The dashboard's criteria and verification sections follow each version's
+// contract rather than hard-coded version comparisons.
+func TestReportContractPresenceByVersion(t *testing.T) {
+	for version := 1; version <= contract.CurrentVersion; version++ {
+		reviewCriteria, fixCriteria, fixVerification := version >= 4, version >= 3, version >= 4
+		if got := (review.Report{SchemaVersion: version}).HasCriteria(); got != reviewCriteria {
+			t.Fatalf("review v%d HasCriteria = %v, want %v", version, got, reviewCriteria)
+		}
+		if got := (review.FixReport{SchemaVersion: version}).HasCriteria(); got != fixCriteria {
+			t.Fatalf("fix v%d HasCriteria = %v, want %v", version, got, fixCriteria)
+		}
+		if got := (review.FixReport{SchemaVersion: version}).HasVerification(); got != fixVerification {
+			t.Fatalf("fix v%d HasVerification = %v, want %v", version, got, fixVerification)
+		}
 	}
 }
 
