@@ -67,7 +67,9 @@ The exchange sets an `HttpOnly`, `SameSite=Strict` session cookie and redirects
 to the page without the token, so the link does not linger in the address bar.
 Tokens expire and cannot be replayed. The session rotates with the process, so
 a restarted runtime locks old browser sessions out; the lock page points at
-`mergeyard open`.
+`mergeyard open`. Browsers share cookies across ports on one host, so the
+cookie name carries the port and runtimes for different workspaces keep
+separate sessions.
 
 Without that session, every dashboard route answers with the lock page (or HTTP
 403 for a mutation), and no page renders the CSRF token. `/static/` stays

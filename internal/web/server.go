@@ -58,7 +58,9 @@ type Server struct {
 }
 
 const (
-	// dashboardCookie names the owner session set by the one-time link.
+	// dashboardCookie prefixes the owner session set by the one-time link.
+	// Browsers share cookies across ports on one host, so the name carries the
+	// port and runtimes for different workspaces keep separate sessions.
 	dashboardCookie = "mergeyard_dashboard"
 	// dashboardTokenTTL bounds how long a printed link stays usable.
 	dashboardTokenTTL = 15 * time.Minute
@@ -173,8 +175,17 @@ func (s *Server) consumeToken(token string) bool {
 
 // authenticated reports whether the request carries the owner session cookie.
 func (s *Server) authenticated(r *http.Request) bool {
-	cookie, err := r.Cookie(dashboardCookie)
+	cookie, err := r.Cookie(dashboardCookieName(r))
 	return err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.session)) == 1
+}
+
+// dashboardCookieName returns the owner session cookie for the port the
+// browser addressed.
+func dashboardCookieName(r *http.Request) string {
+	if _, port, err := net.SplitHostPort(r.Host); err == nil && port != "" {
+		return dashboardCookie + "_" + port
+	}
+	return dashboardCookie
 }
 
 // dashboardGate locks the dashboard to the owner session. API and asset routes
@@ -300,7 +311,7 @@ func (s *Server) exchangeToken(w http.ResponseWriter, r *http.Request, token str
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: dashboardCookie, Value: s.session, Path: "/",
+		Name: dashboardCookieName(r), Value: s.session, Path: "/",
 		MaxAge: dashboardCookieMaxAge, HttpOnly: true, SameSite: http.SameSiteStrictMode,
 	})
 	target := r.URL.Path

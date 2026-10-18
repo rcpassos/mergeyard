@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,18 +38,18 @@ func apiRequest(t *testing.T, root, method, target string) *http.Request {
 	return request
 }
 
-// dashboardSession exchanges a fresh one-time dashboard link for the owner
-// session cookie a browser would hold.
-func dashboardSession(t *testing.T, server *web.Server) *http.Cookie {
+// dashboardSession exchanges a fresh one-time dashboard link at host for the
+// owner session cookie a browser would hold for that address.
+func dashboardSession(t *testing.T, server *web.Server, host string) *http.Cookie {
 	t.Helper()
-	exchange := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/?token="+server.NewDashboardToken(), nil)
+	exchange := httptest.NewRequest(http.MethodGet, "http://"+host+"/?token="+server.NewDashboardToken(), nil)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, exchange)
 	if recorder.Code != http.StatusSeeOther {
 		t.Fatalf("dashboard link: %d %s", recorder.Code, recorder.Body)
 	}
 	for _, cookie := range recorder.Result().Cookies() {
-		if cookie.Name == "mergeyard_dashboard" {
+		if strings.HasPrefix(cookie.Name, "mergeyard_dashboard") {
 			return cookie
 		}
 	}
@@ -61,7 +62,7 @@ func dashboardSession(t *testing.T, server *web.Server) *http.Cookie {
 func dashboardRequest(t *testing.T, server *web.Server, method, target string, body io.Reader) *http.Request {
 	t.Helper()
 	request := httptest.NewRequest(method, target, body)
-	request.AddCookie(dashboardSession(t, server))
+	request.AddCookie(dashboardSession(t, server, request.Host))
 	return request
 }
 

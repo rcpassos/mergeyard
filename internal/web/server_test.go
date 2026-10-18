@@ -41,7 +41,7 @@ func TestSchedulerDatabaseFailurePreservesSafeDiagnostics(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cookie := ownerSession(t, server)
+			cookie := ownerSession(t, server, "http://127.0.0.1:7331")
 			page := httptest.NewRecorder()
 			pageRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil)
 			pageRequest.AddCookie(cookie)

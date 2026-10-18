@@ -64,18 +64,18 @@ func newAPIServer(t *testing.T) (*web.Server, *httptest.Server, []byte, func() b
 	return server, httptest.NewServer(server), secret, control.Paused
 }
 
-// ownerSession follows a one-time dashboard link and returns the session
-// cookie a browser would hold.
-func ownerSession(t *testing.T, server *web.Server) *http.Cookie {
+// ownerSession follows a one-time dashboard link at base and returns the
+// session cookie a browser would hold for that address.
+func ownerSession(t *testing.T, server *web.Server, base string) *http.Cookie {
 	t.Helper()
-	exchange := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/?token="+server.NewDashboardToken(), nil)
+	exchange := httptest.NewRequest(http.MethodGet, base+"/?token="+server.NewDashboardToken(), nil)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, exchange)
 	if recorder.Code != http.StatusSeeOther {
 		t.Fatalf("dashboard link: %d %s", recorder.Code, recorder.Body)
 	}
 	for _, cookie := range recorder.Result().Cookies() {
-		if cookie.Name == "mergeyard_dashboard" {
+		if strings.HasPrefix(cookie.Name, "mergeyard_dashboard") {
 			return cookie
 		}
 	}
@@ -178,7 +178,7 @@ func TestDashboardIsLockedToTheOwnerSession(t *testing.T) {
 
 	// Following a one-time link sets the owner session; the page then renders
 	// the CSRF token and controls work.
-	cookie := ownerSession(t, server)
+	cookie := ownerSession(t, server, httpServer.URL)
 	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Value == "" {
 		t.Fatalf("owner session cookie: %+v", cookie)
 	}
@@ -240,5 +240,25 @@ func TestDashboardAssetsNeverSendTheWorkspaceSecret(t *testing.T) {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("dashboard script references %s", forbidden)
 		}
+	}
+}
+
+func TestDashboardSessionsAreScopedToThePort(t *testing.T) {
+	// Browsers share cookies across ports on one host. Each runtime's session
+	// must use its own name, or opening one workspace's dashboard would
+	// overwrite another's session.
+	server, httpServer, _, _ := newAPIServer(t)
+	defer httpServer.Close()
+	first := ownerSession(t, server, "http://127.0.0.1:7331")
+	second := ownerSession(t, server, "http://127.0.0.1:7332")
+	if first.Name == second.Name {
+		t.Fatalf("sessions for different ports share the cookie name %q", first.Name)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil)
+	request.AddCookie(second)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if strings.Contains(recorder.Body.String(), "csrf_token") || !strings.Contains(recorder.Body.String(), "Dashboard locked") {
+		t.Fatalf("another port's session unlocked the dashboard: %s", recorder.Body)
 	}
 }
