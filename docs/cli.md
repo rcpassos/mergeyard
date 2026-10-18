@@ -52,13 +52,20 @@ Decisions use the scheduler's own eligibility path:
   pre-claim read reports `not_ready`.
 
 The first applicable gate is reported: disabled repository, running/attention
-labels, existing run, pause, capacity, trust, blockers, role settings, harness
-availability. Nonterminal runs consume capacity except `READY_TO_MERGE`; pending
-merge cleanup still prevents a duplicate claim. GitHub dependency/read failures
-return an error instead of a partial plan; unverifiable trust is skipped as it
-would be by dispatch. Planning observes current state without advancing existing
-runs or replaying pending label/comment deliveries. A later reconciliation or
-external change may therefore change the next poll's decisions.
+labels, existing run, pause, capacity, harness availability, trust, blockers,
+then the fresh issue repeats label and capacity eligibility before the uncached
+trust recheck, role settings, and harness availability. The first
+harness-availability gate resolves the implementer from the labels the listing
+already carries, so a limited harness reports its wait without spending a trust,
+blocker or issue-read call; an issue that is both limited and untrusted or blocked
+reports the limit until the harness is available. An override that does not
+resolve is not settled there and is refused from the fresh issue as before.
+Nonterminal runs consume capacity except `READY_TO_MERGE`; pending merge cleanup
+still prevents a duplicate claim. GitHub dependency/read failures return an error
+instead of a partial plan; unverifiable trust is skipped as it would be by
+dispatch. Planning observes current state without advancing existing runs or
+replaying pending label/comment deliveries. A later reconciliation or external
+change may therefore change the next poll's decisions.
 
 `--json` writes one versioned object; issue array order is deterministic, empty
 queues encode as `[]`, and output includes no observation timestamp or credentials:

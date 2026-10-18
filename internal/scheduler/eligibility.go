@@ -98,7 +98,14 @@ func (s *Scheduler) inspectCandidate(ctx context.Context, repo config.Repository
 	if v.decision != "would_claim" {
 		return v, nil
 	}
-	var err error
+	limited, err := s.gateLimitedIssue(ctx, repo, issue)
+	if err != nil {
+		return v, err
+	}
+	if limited {
+		v.decision, v.reason = "waiting", "harness_limited"
+		return v, nil
+	}
 	v.trust, v.trustErr = s.deps.GitHub.VerifyIssueTrust(ctx, repo.Repo, issue, repo.Labels.Ready, repo.TrustedLabelers)
 	if ctx.Err() != nil {
 		return v, ctx.Err()
@@ -141,14 +148,14 @@ func (s *Scheduler) inspectCandidate(ctx context.Context, repo config.Repository
 		v.decision, v.reason = "skipped", "invalid_harness_override"
 		return v, nil
 	}
-	if s.db != nil {
-		gate, err := s.harnessGate(ctx, v.settings.Implementer.Agent)
-		if err != nil {
-			return v, err
-		}
-		if gate != nil {
-			v.decision, v.reason = "waiting", "harness_limited"
-		}
+	// Rechecked on the snapshot being claimed: its labels can override to a
+	// harness the listing did not name.
+	limited, err = s.harnessLimited(ctx, v.settings.Implementer.Agent)
+	if err != nil {
+		return v, err
+	}
+	if limited {
+		v.decision, v.reason = "waiting", "harness_limited"
 	}
 	return v, nil
 }

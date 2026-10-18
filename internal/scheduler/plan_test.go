@@ -83,10 +83,7 @@ func TestPlanMatchesNextPoll(t *testing.T) {
 				}
 			}
 			if tc.limited {
-				_, err := rt.DB.Exec("INSERT INTO harness_limits(harness_type,limited_until,reset_time_source,detected_at,phase_attempt_id,signal_source,notified_until) VALUES('claude',?,'reported',?,NULL,'fixture','')", time.Now().Add(time.Hour).Format(time.RFC3339Nano), time.Now().Format(time.RFC3339Nano))
-				if err != nil {
-					t.Fatal(err)
-				}
+				limitedHarness(t, rt, "claude", time.Now().Add(time.Hour))
 			}
 			if tc.paused {
 				if err := s.Pause(ctx, true); err != nil {
@@ -190,10 +187,7 @@ func TestPlanUsesResolvedRoleSettingsAndImplementerGate(t *testing.T) {
 	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
 	api.issues["owner/repo"][0].Labels = append(api.issues["owner/repo"][0].Labels, github.Label{Name: "mergeyard:implementer=codex"})
 	s, rt := configured(t, api, "repositories:\n  - repo: owner/repo\n    implementer:\n      agent: claude\n      model: original\n      effort: high\n      skills: [implement]\n    reviewer:\n      model: review-model\n      effort: medium\n      skills: [review]\n", rejectingGit{})
-	_, err := rt.DB.Exec("INSERT INTO harness_limits(harness_type,limited_until,reset_time_source,detected_at,phase_attempt_id,signal_source,notified_until) VALUES('claude',?,'reported',?,NULL,'fixture','')", time.Now().Add(time.Hour).Format(time.RFC3339Nano), time.Now().Format(time.RFC3339Nano))
-	if err != nil {
-		t.Fatal(err)
-	}
+	limitedHarness(t, rt, "claude", time.Now().Add(time.Hour))
 	plan, err := s.Plan(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)

@@ -34,6 +34,13 @@ type fakeGitHub struct {
 	creations        int
 	head             func(string) string
 	mutate           func(action, repo string, n int, label string) error
+	calls            githubCalls
+}
+
+// githubCalls records boundary traffic so tests can assert what a tick spends.
+type githubCalls struct {
+	issueListings, issueReads, blockerReads int
+	trustVerifications, trustRechecks       int
 }
 
 func (f *fakeGitHub) ListIssueComments(_ context.Context, repo string, n int, trusted []string) (github.IssueComments, error) {
@@ -44,13 +51,18 @@ func (f *fakeGitHub) ListIssueComments(_ context.Context, repo string, n int, tr
 }
 
 func (f *fakeGitHub) VerifyIssueTrust(_ context.Context, _ string, issue github.Issue, _ string, _ []string) (github.TrustDecision, error) {
+	f.calls.trustVerifications++
+	return f.trustDecision(issue)
+}
+func (f *fakeGitHub) RecheckIssueTrust(_ context.Context, _ string, issue github.Issue, _ string, _ []string) (github.TrustDecision, error) {
+	f.calls.trustRechecks++
+	return f.trustDecision(issue)
+}
+func (f *fakeGitHub) trustDecision(issue github.Issue) (github.TrustDecision, error) {
 	if f.trust != nil {
 		return f.trust(issue)
 	}
 	return github.TrustDecision{Allowed: true}, nil
-}
-func (f *fakeGitHub) RecheckIssueTrust(ctx context.Context, repo string, issue github.Issue, ready string, trusted []string) (github.TrustDecision, error) {
-	return f.VerifyIssueTrust(ctx, repo, issue, ready, trusted)
 }
 func (f *fakeGitHub) EnsureTrustRefusalComment(_ context.Context, _ string, n int, reason string) error {
 	if f.trustComments == nil {
@@ -63,9 +75,11 @@ func (f *fakeGitHub) EnsureTrustRefusalComment(_ context.Context, _ string, n in
 }
 
 func (f *fakeGitHub) ListOpenIssues(_ context.Context, repo string) ([]github.Issue, error) {
+	f.calls.issueListings++
 	return f.issues[repo], nil
 }
 func (f *fakeGitHub) GetIssue(_ context.Context, repo string, n int) (github.Issue, error) {
+	f.calls.issueReads++
 	if f.getIssue != nil {
 		return f.getIssue(repo, n)
 	}
@@ -85,6 +99,7 @@ func (f *fakeGitHub) GetPullRequest(_ context.Context, _ string, n int) (*github
 	return nil, &fault.Error{Code: "github.not_found", Message: "PR not found"}
 }
 func (f *fakeGitHub) UnresolvedBlockers(_ context.Context, _ string, n int) ([]github.Issue, error) {
+	f.calls.blockerReads++
 	return f.blockers[n], nil
 }
 func (f *fakeGitHub) AddLabel(_ context.Context, repo string, n int, label string) error {
