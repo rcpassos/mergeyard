@@ -181,6 +181,9 @@ func setup(t *testing.T, extra string) (string, *fakeCommands, doctor.Options) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
+	// The SSH policy must resolve the configuration, not an ambient command.
+	t.Setenv("GIT_SSH", "")
+	t.Setenv("GIT_SSH_COMMAND", "")
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
