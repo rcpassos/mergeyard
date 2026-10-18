@@ -59,8 +59,10 @@ func TestHistoryKeepsIdentityObservationAndPublicationInsideBudget(t *testing.T)
 		reset(t, db, "DELETE FROM events WHERE type='harness.session_discovered'")
 	}, func() error { return s.observeIdentities(ctx) })
 	published := historyFastest(t, func() {
-		// Discard the receipts the previous round wrote so it publishes the same report.
-		reset(t, db, "DELETE FROM events WHERE run_id=? AND type IN ('verification.attempted','verification.published')", candidate.runID)
+		// Discard the receipts and bookkeeping the previous round wrote so it
+		// publishes the same report.
+		reset(t, db, "DELETE FROM events WHERE run_id=? AND type='verification.published'", candidate.runID)
+		reset(t, db, "DELETE FROM verification_attempts WHERE run_id=?", candidate.runID)
 	}, func() error { return s.publishVerification(ctx) })
 	// The tick's own load must skip finished history too, or reconciliation
 	// still holds the lock that identity observation and publication wait on.
@@ -196,19 +198,21 @@ func (c historyCandidate) identityChecks() []struct{ label, query, arg string } 
 }
 
 type historySeeder struct {
-	run     *sql.Stmt
-	context *sql.Stmt
-	attempt *sql.Stmt
-	review  *sql.Stmt
-	event   *sql.Stmt
-	nextID  int64
-	tx      *sql.Tx
+	run          *sql.Stmt
+	context      *sql.Stmt
+	attempt      *sql.Stmt
+	review       *sql.Stmt
+	fix          *sql.Stmt
+	verification *sql.Stmt
+	event        *sql.Stmt
+	nextID       int64
+	tx           *sql.Tx
 }
 
 // seedFinishedHistory writes a long tail of merged runs. Each run keeps the
 // shape mergeyard actually produces — an implementation, review rounds with
 // fixes, polled CI — so the event table grows with real history rather than
-// with an artificial per-run loop. Their implement completion already carries a
+// with an artificial per-run loop. Their newest saved report already carries a
 // publication receipt, so only the separately seeded active run waits for the
 // publication pass under test.
 func seedFinishedHistory(t *testing.T, db *sql.DB, runs int) {
@@ -224,18 +228,17 @@ func seedFinishedHistory(t *testing.T, db *sql.DB, runs int) {
 		if _, err := s.context.ExecContext(t.Context(), id, fmt.Sprintf(`{"number":%d,"title":"Implement this","state":"open"}`, i+1)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.attempt.ExecContext(t.Context(), id+"-implement", id, string(workflow.Implement), workflow.Implement.Role(), 0, 1, "codex", session); err != nil {
+		if _, err := s.attempt.ExecContext(t.Context(), id+"-implement", id, string(workflow.Implement), workflow.Implement.Role(), 0, 1, "codex", "succeeded", "", session, historyResult("implement"), 1); err != nil {
 			t.Fatal(err)
 		}
 		s.record(t, id, "run.claimed", `{}`)
 		s.record(t, id, "phase.attempt_started", historyPhase("implement", 1))
-		completed := s.record(t, id, "phase.completed", historyReport("implement", 1))
-		s.record(t, id, "verification.attempted", historySource(completed))
-		s.record(t, id, "verification.published", historySource(completed))
+		s.record(t, id, "phase.completed", historyReport("implement", 1))
+		s.record(t, id, "verification.published", historySource(id+"-implement"))
 		s.record(t, id, "pr.created", `{}`)
 		for round := 1; round <= historySeedRounds; round++ {
 			review := fmt.Sprintf("%s-review-%d", id, round)
-			if _, err := s.attempt.ExecContext(t.Context(), review, id, string(workflow.Review), workflow.Review.Role(), round, 1, "codex", session); err != nil {
+			if _, err := s.attempt.ExecContext(t.Context(), review, id, string(workflow.Review), workflow.Review.Role(), round, 1, "codex", "succeeded", "", session, nil, 0); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := s.review.ExecContext(t.Context(), review, session); err != nil {
@@ -245,17 +248,24 @@ func seedFinishedHistory(t *testing.T, db *sql.DB, runs int) {
 			s.record(t, id, "phase.completed", historyReport("review", round))
 			s.record(t, id, "review.completed", historyChangesRequired)
 			fix := fmt.Sprintf("%s-fix-%d", id, round)
-			if _, err := s.attempt.ExecContext(t.Context(), fix, id, string(workflow.Fix), workflow.Fix.Role(), round, 1, "codex", session); err != nil {
+			if _, err := s.attempt.ExecContext(t.Context(), fix, id, string(workflow.Fix), workflow.Fix.Role(), round, 1, "codex", "succeeded", "", session, nil, 1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.fix.ExecContext(t.Context(), fix, session, historyResult("fix")); err != nil {
 				t.Fatal(err)
 			}
 			s.record(t, id, "phase.attempt_started", historyPhase("fix", round))
-			repaired := s.record(t, id, "phase.completed", historyReport("fix", round))
-			s.record(t, id, "verification.attempted", historySource(repaired))
-			s.record(t, id, "verification.published", historySource(repaired))
+			s.record(t, id, "phase.completed", historyReport("fix", round))
+			s.record(t, id, "verification.published", historySource(fix))
 			s.record(t, id, "fix.completed", `{"round":`+strconv.Itoa(round)+`}`)
 			for range historySeedCIPolls {
 				s.record(t, id, "ci.updated", `{"status":"pending"}`)
 			}
+		}
+		// The bounded per-run row answers the newest report, whose receipt above
+		// already stopped the publication pass from trying it again.
+		if _, err := s.verification.ExecContext(t.Context(), id, fmt.Sprintf("%s-fix-%d", id, historySeedRounds), 1, "2026-01-01T00:00:00.000Z", false); err != nil {
+			t.Fatal(err)
 		}
 		s.record(t, id, "pr.ready_for_review", `{}`)
 		s.record(t, id, "run.completed", `{}`)
@@ -323,7 +333,13 @@ func seedDiscoverable(t *testing.T, db *sql.DB, phases string, spec discoverable
 	if _, err := db.ExecContext(ctx, `INSERT INTO runs (id,repository,issue_number,state,current_phase,review_round,pr_number,implementer_agent,reviewer_agent,implementer_session_id,reviewer_session_id) VALUES (?,?,?,'ACTIVE',?,?,?,'codex','codex',?,?)`, spec.id, historyRepo, spec.issue, string(spec.phase), spec.reviewRound, spec.prNumber, spec.implementer, spec.reviewer); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,status,step,process_session,input_path,session_id) VALUES (?,?,?,?,?,1,'codex','running','',?,?,NULL)`, attemptID, spec.id, string(spec.phase), spec.phase.Role(), spec.round, "identity-"+spec.id, input); err != nil {
+	report := sql.NullString{}
+	eligible := 0
+	if spec.publication {
+		report = sql.NullString{String: historyResult("implement"), Valid: true}
+		eligible = 1
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,status,step,process_session,input_path,session_id,report_json,report_eligible) VALUES (?,?,?,?,?,1,'codex','running','',?,?,NULL,?,?)`, attemptID, spec.id, string(spec.phase), spec.phase.Role(), spec.round, "identity-"+spec.id, input, report, eligible); err != nil {
 		t.Fatal(err)
 	}
 	journal := ""
@@ -340,7 +356,7 @@ func seedDiscoverable(t *testing.T, db *sql.DB, phases string, spec discoverable
 		}
 	}
 	// Only the implement candidate waits for publication, so only it needs the
-	// issue context and the completion events that carry a report.
+	// issue context and the saved report the completion event already mirrors.
 	if spec.publication {
 		if _, err := db.ExecContext(ctx, `INSERT INTO scheduler_runs (run_id,issue_json) VALUES (?,?)`, spec.id, `{"number":1,"title":"Implement this","state":"open"}`); err != nil {
 			t.Fatal(err)
@@ -369,14 +385,19 @@ func historyStart(t *testing.T, db *sql.DB) *historySeeder {
 	if s.context, err = tx.PrepareContext(ctx, `INSERT INTO scheduler_runs (run_id,issue_json) VALUES (?,?)`); err != nil {
 		t.Fatal(err)
 	}
-	if s.attempt, err = tx.PrepareContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,status,step,session_id) VALUES (?,?,?,?,?,?,'codex','succeeded','',?)`); err != nil {
+	if s.attempt, err = tx.PrepareContext(ctx, `INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,status,step,session_id,report_json,report_eligible) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`); err != nil {
 		t.Fatal(err)
 	}
 	if s.review, err = tx.PrepareContext(ctx, `INSERT INTO review_attempts (attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,'','{}','{}',?,'default','[]')`); err != nil {
 		t.Fatal(err)
 	}
-	// Event IDs are assigned here so publication receipts can reference the
-	// completion they answer without depending on RETURNING on a prepared write.
+	if s.fix, err = tx.PrepareContext(ctx, `INSERT INTO fix_attempts (attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,report_json) VALUES (?,?,'','[]','default','[]',?)`); err != nil {
+		t.Fatal(err)
+	}
+	if s.verification, err = tx.PrepareContext(ctx, `INSERT INTO verification_attempts (run_id,source_attempt,attempts,last_attempt_at,failed) VALUES (?,?,?,?,?)`); err != nil {
+		t.Fatal(err)
+	}
+	// Event IDs are fixed so the seeded stream is deterministic.
 	if s.event, err = tx.PrepareContext(ctx, `INSERT INTO events (id,run_id,type,payload_json) VALUES (?,?,?,?)`); err != nil {
 		t.Fatal(err)
 	}
@@ -397,14 +418,19 @@ func historyPhase(phase string, attempt int) string {
 	return fmt.Sprintf(`{"phase":%q,"attempt":%d,"agent":"codex"}`, phase, attempt)
 }
 
-func historyReport(phase string, attempt int) string {
+// historyResult is the report object older events carried as $.result.
+func historyResult(phase string) string {
 	evidence := "[]"
 	if phase != "review" {
 		evidence = `[{"check":"go test ./...","status":"passed"}]`
 	}
-	return fmt.Sprintf(`{"phase":%q,"attempt":%d,"result":{"schema_version":3,"status":"success","summary":"Implemented the change","verification":%s}}`, phase, attempt, evidence)
+	return fmt.Sprintf(`{"schema_version":3,"status":"success","summary":"Implemented the change","verification":%s}`, evidence)
 }
 
-func historySource(event int64) string {
-	return fmt.Sprintf(`{"source_event":%d}`, event)
+func historyReport(phase string, attempt int) string {
+	return fmt.Sprintf(`{"phase":%q,"attempt":%d,"result":%s}`, phase, attempt, historyResult(phase))
+}
+
+func historySource(attempt string) string {
+	return fmt.Sprintf(`{"source_attempt":%q}`, attempt)
 }
