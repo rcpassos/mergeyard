@@ -22,7 +22,9 @@ func (s *Scheduler) discoverSession(ctx context.Context, id string, phase workfl
 // Identity observation is local and does not wait for the GitHub polling interval.
 // It shares the tick and per-run gates with reconciliation and lifecycle controls.
 func (s *Scheduler) observeIdentities(ctx context.Context) error {
-	s.tick.Lock()
+	if err := s.tick.Lock(ctx); err != nil {
+		return err
+	}
 	defer s.tick.Unlock()
 	// Only a run waiting on an unidentified attempt can discover an identity,
 	// so the pass reads candidates instead of reloading the whole history.

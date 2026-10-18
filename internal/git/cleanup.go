@@ -13,8 +13,12 @@ import (
 // retain their worktrees. Dirty worktrees and unpublished local commits are preserved; remote refs are kept.
 // Repeating cleanup after an interrupted or completed cleanup is safe.
 func (m *Manager) Cleanup(ctx context.Context, run Run) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Completion checks may observe the remote, so allow the remote budget.
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}
@@ -27,8 +31,11 @@ func (m *Manager) Cleanup(ctx context.Context, run Run) error {
 // CleanupWorktree removes only a clean owned tree and prunes its registration.
 // A missing directory is accepted only by callers with recorded removal intent.
 func (m *Manager) CleanupWorktree(ctx context.Context, run Run) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return m.cleanupWorktree(ctx, run)
 }
 func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
@@ -80,8 +87,11 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 
 // CleanupBranch deletes a completed run's published local ref; remote refs are retained.
 func (m *Manager) CleanupBranch(ctx context.Context, run Run) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return err
+	}
+	defer release()
 	return m.cleanupBranch(ctx, run)
 }
 func (m *Manager) cleanupBranch(ctx context.Context, run Run) error {

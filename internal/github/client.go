@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/proc"
 	"github.com/rcpassos/mergeyard/internal/repository"
 )
 
@@ -57,28 +59,51 @@ type CommandRunner interface {
 type ghRunner struct{}
 
 func (ghRunner) Run(ctx context.Context, input []byte, args ...string) ([]byte, []byte, error) {
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	cmd.Stdin = bytes.NewReader(input)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
+	// Never wait on an interactive prompt from an unattended control plane.
+	result, err := proc.Run(ctx, proc.Request{
+		Executable: "gh",
+		Args:       args,
+		Env:        append(os.Environ(), "GH_PROMPT_DISABLED=1"),
+		Stdin:      bytes.NewReader(input),
+	})
+	if errors.Is(err, exec.ErrWaitDelay) && result.ExitCode == 0 {
+		// gh exited successfully; a credential helper outlived it holding the
+		// output pipes. The request itself completed.
+		err = nil
+	}
+	return result.Stdout, result.Stderr, err
 }
 
 // Client wraps the authenticated gh CLI and caches issue authorization snapshots.
 type Client struct {
 	runner     CommandRunner
+	timeout    time.Duration
 	trustMu    sync.Mutex
 	trustCache map[string]trustCacheEntry
 	login      string // authenticated comment author; protected by trustMu
 }
 
+// Options configures the gh CLI adapter. Zero fields use the defaults.
+type Options struct {
+	// Timeout bounds one gh invocation, including its internal retries.
+	Timeout time.Duration
+}
+
+// defaultTimeout bounds a gh invocation when Options leaves Timeout unset.
+const defaultTimeout = 2 * time.Minute
+
 // New uses the installed gh executable when runner is nil.
-func New(runner CommandRunner) *Client {
+func New(runner CommandRunner) *Client { return NewWithOptions(runner, Options{}) }
+
+// NewWithOptions selects the request deadline.
+func NewWithOptions(runner CommandRunner, options Options) *Client {
 	if runner == nil {
 		runner = ghRunner{}
 	}
-	return &Client{runner: runner}
+	if options.Timeout <= 0 {
+		options.Timeout = defaultTimeout
+	}
+	return &Client{runner: runner, timeout: options.Timeout}
 }
 
 // Error retains the GitHub adapter API while sharing the runtime error type.
@@ -293,16 +318,20 @@ func (c *Client) requestWithAttempts(ctx context.Context, input []byte, method, 
 	if input != nil {
 		args = append(args, "--input", "-")
 	}
+	// One deadline covers the whole request, including its retries, so a hung
+	// gh cannot outlive the budget. A caller-supplied deadline stays earlier.
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 	// Retry-safe operations get three attempts with 250ms then 500ms backoff.
 	// PR creation and body writes get one: replaying an ambiguous write may
 	// create duplicates or overwrite human edits made after the original request.
 	for attempt := 0; attempt < attempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return nil, canceled(err)
+			return nil, contextError(err)
 		}
 		stdout, stderr, err := c.runner.Run(ctx, input, args...)
-		if ctx.Err() != nil {
-			return nil, canceled(ctx.Err())
+		if err := ctx.Err(); err != nil {
+			return nil, contextError(err)
 		}
 		if err == nil {
 			return stdout, nil
@@ -315,14 +344,19 @@ func (c *Client) requestWithAttempts(ctx context.Context, input []byte, method, 
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, canceled(ctx.Err())
+			return nil, contextError(ctx.Err())
 		case <-timer.C:
 		}
 	}
 	panic("unreachable")
 }
 
-func canceled(err error) *Error {
+// contextError classifies how a bounded gh invocation ended: an expired
+// deadline is a timeout, any other cancellation is a canceled request.
+func contextError(err error) *Error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &Error{Code: "github.timeout", Err: err}
+	}
 	return &Error{Code: "github.canceled", Err: err}
 }
 

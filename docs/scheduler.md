@@ -7,10 +7,22 @@ application startup. Pass `Runtime.Scheduler` as the control to share the
 dashboard's pause/resume gate. `Run(ctx)` polls immediately and then every
 `poll_interval` (default 30 seconds). `Reconcile(ctx)` advances existing runs and
 returns orphan findings without dispatching new work. Every `Tick(ctx)` reconciles
-before dispatch, including the first tick after startup. Ticks serialize, and run operations coordinate with lifecycle controls so takeover
+before dispatch, including the first tick after startup. Ticks serialize through
+a gate that honors cancellation: callers wait only while their context lives, so
+shutdown and dashboard actions are never blocked indefinitely by a stalled tick.
+Run operations coordinate with lifecycle controls so takeover
 or stop waits for an in-flight operation before changing state. Running tmux agents are observed without waiting
 for them to finish. Tick errors are logged by `Run` and tried again at the next
 interval. Cancelling the scheduler leaves agent sessions running.
+
+Every `gh` and `git` call on the scheduler path has a deadline. A publication
+push, fetch, or repository hook gets the longest budget; local reads get the
+shortest, and a commit keeps its own budget while the push keeps the remote one.
+`gh` shares one two-minute budget across a request's retries. A deadline ends
+the owned process group and surfaces as `git.timeout` or `github.timeout`, which
+the existing retry and attention paths handle. Git never prompts: SSH uses batch
+mode with connect timeout and keepalive options unless the machine selects its
+own transport. See [git.md](git.md) for the operation budgets.
 
 `Pause(ctx, true)` prevents new claims; existing implementations continue.
 `Pause(ctx, false)` resumes dispatch. These operations publish scheduler events.

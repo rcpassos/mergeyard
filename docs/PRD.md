@@ -358,7 +358,11 @@ Blocked issues appear in the dashboard but do not create a run until they become
 
 ### Polling
 
-Default polling interval: `30s`. Only one scheduler reconciliation tick may run at a time.
+Default polling interval: `30s`. Only one scheduler reconciliation tick may run at a time. Waiting for that gate honors cancellation, so a shutdown or a dashboard action like Check availability is never blocked indefinitely by a stalled tick.
+
+### Bounded external calls
+
+Every `gh` and `git` invocation on the scheduler path carries a deadline suited to the operation; push, fetch and repository hooks get the longest budget. A run that reaches a deadline fails with a stable code (`git.timeout`, `github.timeout`) and follows the ordinary retry and attention paths, and the next tick proceeds. Git never prompts: HTTPS credentials and SSH both fail instead of waiting for terminal input, and SSH detects dead connections, unless the machine already selects its own transport through `GIT_SSH`, `GIT_SSH_COMMAND`, or `core.sshCommand`. ADR 0003 records why each invocation is bounded separately and why a timeout is a failure rather than cancellation. See section 16.
 
 ### Concurrency limits
 
@@ -968,6 +972,10 @@ its diagnostics and worktree for attention. Agent commits are kept as above.
 Default commit message: `mergeyard: #<issue> <issue title>`. The commit uses the machine's Git identity.
 
 Mergeyard never force-pushes. If the remote branch diverges unexpectedly, the run moves to `NEEDS_ATTENTION`.
+
+Every managed Git operation has a deadline: `2m` for quick local reads of refs, the index, or single paths, and `10m` for operations that may run repository hooks or touch the whole worktree, and for operations that contact the remote. A caller-supplied deadline always wins, including while waiting for another managed operation, and a command that reaches its deadline ends the whole owned process group, so a repository hook or transport helper that keeps output pipes open cannot extend the call. Deadline and cancellation failures use `git.timeout` and `git.canceled`, and the run continues through the normal retry and attention paths.
+
+Git runs unattended. Terminal prompts are disabled; SSH uses `BatchMode=yes` with connect timeout and keepalive options so a missing credential or dead connection fails instead of hanging, for both managed operations and `doctor` probes. A `GIT_SSH`, `GIT_SSH_COMMAND`, or a `core.sshCommand` the configuration resolves for the command's repository (including repository-scoped conditional includes) is the machine's own transport choice and is preserved.
 
 ---
 
@@ -1746,6 +1754,8 @@ git.base_verification_failed
 git.no_changes
 git.branch_conflict
 git.push_rejected
+git.timeout
+github.timeout
 harness.not_logged_in
 harness.version_unsupported
 harness.session_resume_failed
@@ -1770,6 +1780,7 @@ Every `NEEDS_ATTENTION`/`FAILED` run exposes a human-readable message and a stab
 Mergeyard must enforce:
 
 - no unbounded loops: review rounds, phase attempts, check retries, and usage-limit waits are bounded;
+- no unbounded external command: every `gh` and `git` call on the scheduler path has a deadline;
 - no push or review of a committed head before its configured local checks pass;
 - no duplicate active run for one repository + issue;
 - no shared agent session between implementer and reviewer;

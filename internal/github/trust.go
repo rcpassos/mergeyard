@@ -106,7 +106,7 @@ func (c *Client) issueTrust(ctx context.Context, repo string, issue Issue, ready
 	c.trustMu.Lock()
 	defer c.trustMu.Unlock()
 	if ctx.Err() != nil {
-		return TrustDecision{}, canceled(ctx.Err())
+		return TrustDecision{}, contextError(ctx.Err())
 	}
 	if entry, ok := c.trustCache[key]; !fresh && ok && entry.fingerprint == fingerprint {
 		return entry.decision, nil

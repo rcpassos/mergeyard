@@ -259,7 +259,7 @@ func TestCancellationStopsBackoff(t *testing.T) {
 	defer cancel()
 	runner := &recordedGH{responses: []response{{stderr: []byte("gh: Bad Gateway (HTTP 502)"), err: errors.New("exit status 1")}}}
 	_, err := github.New(runner).IssueState(ctx, "rcpassos/mergeyard", 2)
-	requireCode(t, err, "github.canceled")
+	requireCode(t, err, "github.timeout")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("lost context error: %v", err)
 	}

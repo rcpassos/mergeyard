@@ -8,8 +8,11 @@ import (
 // InspectHandback reconciles published ancestry while allowing manual commits
 // and edits. It never adopts a remote head absent from the preserved local work.
 func (m *Manager) InspectHandback(ctx context.Context, run Run, target string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	remote, err := m.inspectHandbackAncestry(ctx, run)
 	if err != nil {
 		return "", err
@@ -45,23 +48,36 @@ func (m *Manager) inspectHandbackAncestry(ctx context.Context, run Run) (string,
 
 // CommitHandback is replayable after committing but before saving the new SHA.
 func (m *Manager) CommitHandback(ctx context.Context, run Run, previous string) (CommitResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	remote, err := m.inspectHandbackAncestry(ctx, run)
+	// Publication covers the remote ancestry read and the manual commit, each
+	// with its own class deadline.
+	ctx, release, err := m.begin(ctx, m.timeouts.publication())
+	if err != nil {
+		return CommitResult{}, err
+	}
+	defer release()
+	remoteCtx, remoteCancel := m.remoteDeadline(ctx)
+	remote, err := m.inspectHandbackAncestry(remoteCtx, run)
+	remoteCancel()
 	if err != nil {
 		return CommitResult{}, err
 	}
 	if remote != previous {
 		return CommitResult{}, failure("handback.head_ambiguous", run.Path, errors.New("remote changed before manual commit"))
 	}
-	return commit(ctx, run, Phase{Title: "manual handback"})
+	commitCtx, commitCancel := m.worktreeDeadline(ctx)
+	result, err := commit(commitCtx, run, Phase{Title: "manual handback"})
+	commitCancel()
+	return result, err
 }
 
 // PushHandback accepts only the inspected remote or our journaled commit,
 // including a genuinely absent branch before PR creation. Never force push.
 func (m *Manager) PushHandback(ctx context.Context, run Run, previous, target string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := m.inspectReview(ctx, run); err != nil {
 		return err
 	}
