@@ -78,6 +78,46 @@ func TestCallerDeadlineBoundsAnOperation(t *testing.T) {
 	requireCode(t, err, "git.timeout")
 }
 
+func TestCallerDeadlineBoundsAManagedWait(t *testing.T) {
+	f := newFixture(t)
+	dir := t.TempDir()
+	marker, release := filepath.Join(dir, "started"), filepath.Join(dir, "release")
+	// The first operation holds the manager's serialization until this test
+	// releases it, however slowly the machine schedules goroutines.
+	installFakeGit(t, ": > "+marker+"\nwhile [ ! -f "+release+" ]; do /bin/sleep 0.05; done\nexit 1")
+	manager := managerWithTimeouts(t, f, shortTimeouts(30*time.Second))
+	holder := make(chan struct{})
+	go func() {
+		defer close(holder)
+		_, _ = manager.Prepare(context.Background(), f.request)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("hung operation never reached its command")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := manager.ListWorktrees(ctx)
+	requireCode(t, err, "git.timeout")
+	if !strings.Contains(err.Error(), "wait timed out") {
+		t.Fatalf("wait failure was not reported as a timeout: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("waited %s for a busy manager", elapsed)
+	}
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	<-holder
+}
+
 func TestDeadlineEndsAHungRepositoryHook(t *testing.T) {
 	f := newFixture(t)
 	run := prepare(t, f)
@@ -88,7 +128,7 @@ func TestDeadlineEndsAHungRepositoryHook(t *testing.T) {
 exec `+gitPath+` "$@"`)
 	// Verification and staging need a real budget; the hook that hangs is the
 	// commit itself, which must still fail on its own deadline.
-	manager := managerWithTimeouts(t, f, managedgit.Timeouts{Metadata: 10 * time.Second, Worktree: 500 * time.Millisecond, Remote: 10 * time.Second})
+	manager := managerWithTimeouts(t, f, managedgit.Timeouts{Metadata: 30 * time.Second, Worktree: 500 * time.Millisecond, Remote: 30 * time.Second})
 	start := time.Now()
 	_, err := manager.CommitAndPush(context.Background(), run, managedgit.Phase{Title: "hung hook", RequireChanges: true})
 	requireCode(t, err, "git.timeout")
@@ -97,6 +137,32 @@ exec `+gitPath+` "$@"`)
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("hung hook held the manager for %s", elapsed)
+	}
+}
+
+func TestSuccessfulCommandWithLingeringOutputPipesStillCompletes(t *testing.T) {
+	f := newFixture(t)
+	// ListWorktrees reads registered worktrees from every managed base.
+	if err := os.MkdirAll(filepath.Join(f.root, "repos", "owner-repo", "base"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(f.root, "worktrees"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// A helper outlives a successful Git exit while holding its output pipes.
+	installFakeGit(t, `/bin/sleep 2 &
+printf 'worktree /tmp/mergeyard-leaked\0'`)
+	manager := managerWithTimeouts(t, f, shortTimeouts(10*time.Second))
+	paths, err := manager.ListWorktrees(context.Background())
+	if err != nil {
+		t.Fatalf("successful command with a lingering helper failed: %v", err)
+	}
+	found := false
+	for _, path := range paths {
+		found = found || path == "/tmp/mergeyard-leaked"
+	}
+	if !found {
+		t.Fatalf("git output was not read: %v", paths)
 	}
 }
 

@@ -362,7 +362,7 @@ Default polling interval: `30s`. Only one scheduler reconciliation tick may run 
 
 ### Bounded external calls
 
-Every `gh` and `git` invocation on the scheduler path carries a deadline suited to the operation; push, fetch and repository hooks get the longest budget. A run that reaches a deadline fails with a stable code (`git.timeout`, `github.timeout`) and follows the ordinary retry and attention paths, and the next tick proceeds. Git never prompts: HTTPS credentials and SSH both fail instead of waiting for terminal input, and SSH detects dead connections. See section 16.
+Every `gh` and `git` invocation on the scheduler path carries a deadline suited to the operation; push, fetch and repository hooks get the longest budget. A run that reaches a deadline fails with a stable code (`git.timeout`, `github.timeout`) and follows the ordinary retry and attention paths, and the next tick proceeds. Git never prompts: HTTPS credentials and SSH both fail instead of waiting for terminal input, and SSH detects dead connections. ADR 0003 records why each invocation is bounded separately and why a timeout is a failure rather than cancellation. See section 16.
 
 ### Concurrency limits
 
@@ -973,9 +973,9 @@ Default commit message: `mergeyard: #<issue> <issue title>`. The commit uses the
 
 Mergeyard never force-pushes. If the remote branch diverges unexpectedly, the run moves to `NEEDS_ATTENTION`.
 
-Every managed Git operation has a deadline: `2m` for quick local reads of refs, the index, or single paths, and `10m` for operations that may run repository hooks or touch the whole worktree, and for operations that contact the remote. A caller-supplied deadline always wins, and a command that reaches its deadline ends the whole owned process group, so a repository hook or transport helper that keeps output pipes open cannot extend the call. Deadline and cancellation failures use `git.timeout` and `git.canceled`, and the run continues through the normal retry and attention paths.
+Every managed Git operation has a deadline: `2m` for quick local reads of refs, the index, or single paths, and `10m` for operations that may run repository hooks or touch the whole worktree, and for operations that contact the remote. A caller-supplied deadline always wins, including while waiting for another managed operation, and a command that reaches its deadline ends the whole owned process group, so a repository hook or transport helper that keeps output pipes open cannot extend the call. Deadline and cancellation failures use `git.timeout` and `git.canceled`, and the run continues through the normal retry and attention paths.
 
-Git runs unattended. Terminal prompts are disabled; SSH uses `BatchMode=yes` with connect timeout and keepalive options so a missing credential or dead connection fails instead of hanging. `GIT_SSH` or `GIT_SSH_COMMAND` already present in the environment is preserved.
+Git runs unattended. Terminal prompts are disabled; SSH uses `BatchMode=yes` with connect timeout and keepalive options so a missing credential or dead connection fails instead of hanging, for both managed operations and `doctor` probes. `GIT_SSH` or `GIT_SSH_COMMAND` already present in the environment is preserved.
 
 ---
 

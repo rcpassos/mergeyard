@@ -21,10 +21,11 @@ type BaseMerge struct {
 // CheckBase fetches the current base before computing a real three-way merge.
 // Exit 1 is a merge conflict; all other errors leave mergeability unknown.
 func (m *Manager) CheckBase(ctx context.Context, run Run, branch, head string) (BaseMerge, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.remote(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return BaseMerge{}, err
+	}
+	defer release()
 	v := BaseMerge{BaseBranch: branch, HeadSHA: head}
 	if err := m.validateRun(run); err != nil {
 		return v, err
@@ -44,7 +45,6 @@ func (m *Manager) CheckBase(ctx context.Context, run Run, branch, head string) (
 	if _, err := command(ctx, run.BasePath, "git.fetch", "fetch", "--no-tags", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch); err != nil {
 		return v, err
 	}
-	var err error
 	v.BaseSHA, err = command(ctx, run.BasePath, "git.base_check", "rev-parse", "--verify", "refs/remotes/origin/"+branch+"^{commit}")
 	if err != nil {
 		return v, err
@@ -76,10 +76,11 @@ func (m *Manager) CheckBase(ctx context.Context, run Run, branch, head string) (
 // VerificationCommit creates an unreferenced synthetic merge commit for checkout.
 // It is never put on a branch or pushed.
 func (m *Manager) VerificationCommit(ctx context.Context, run Run, v BaseMerge) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.metadata(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Metadata)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	if err := m.validateRun(run); err != nil {
 		return "", err
 	}
@@ -104,10 +105,11 @@ func (m *Manager) VerificationRun(run Run, id, commit string) (Run, error) {
 }
 
 func (m *Manager) EnsureVerification(ctx context.Context, run Run, id, commit string) (Run, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.worktree(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Worktree)
+	if err != nil {
+		return Run{}, err
+	}
+	defer release()
 	scratch, err := m.VerificationRun(run, id, commit)
 	if err != nil {
 		return Run{}, err
@@ -160,10 +162,11 @@ func inspectVerification(ctx context.Context, scratch Run, commit string, clean 
 }
 
 func (m *Manager) InspectVerification(ctx context.Context, scratch Run, target string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.metadata(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Metadata)
+	if err != nil {
+		return err
+	}
+	defer release()
 	// Recover original ownership from the deterministic path before inspection.
 	original := scratch
 	original.Path = filepath.Join(filepath.Dir(scratch.Path), scratch.ID)
@@ -194,10 +197,11 @@ func (m *Manager) InspectVerification(ctx context.Context, scratch Run, target s
 // disposable, including generated and ignored output; run work is never removed.
 // The caller must stop and verify the owned command processes first.
 func (m *Manager) RemoveVerification(ctx context.Context, run Run, id, commit string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.metadata(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Worktree)
+	if err != nil {
+		return err
+	}
+	defer release()
 	scratch, err := m.VerificationRun(run, id, commit)
 	if err != nil {
 		return err
@@ -220,10 +224,11 @@ func (m *Manager) RemoveVerification(ctx context.Context, run Run, id, commit st
 // caller persists creation intent first. A replay keeps resolutions and stages
 // intact when the same MERGE_HEAD is already present.
 func (m *Manager) PrepareBaseRepair(ctx context.Context, run Run, target, base string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.worktree(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Worktree)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}

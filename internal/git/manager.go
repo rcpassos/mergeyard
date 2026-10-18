@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/gate"
 	"github.com/rcpassos/mergeyard/internal/pathspec"
 	"github.com/rcpassos/mergeyard/internal/repository"
 	"github.com/rcpassos/mergeyard/internal/workspace"
@@ -23,7 +23,9 @@ import (
 type Manager struct {
 	root     string
 	timeouts Timeouts
-	mu       sync.Mutex
+	// mu serializes operations through a cancellation-aware gate so a caller
+	// that gives up is released instead of waiting for the operation in flight.
+	mu gate.Gate
 }
 
 // Timeouts bound each managed operation class so one stalled remote, hook, or
@@ -41,9 +43,9 @@ type Timeouts struct {
 
 // Defaults for Timeouts fields left unset.
 const (
-	DefaultMetadataTimeout = 2 * time.Minute
-	DefaultWorktreeTimeout = 10 * time.Minute
-	DefaultRemoteTimeout   = 10 * time.Minute
+	defaultMetadataTimeout = 2 * time.Minute
+	defaultWorktreeTimeout = 10 * time.Minute
+	defaultRemoteTimeout   = 10 * time.Minute
 )
 
 func New(w *workspace.Workspace) *Manager { return NewWithTimeouts(w, Timeouts{}) }
@@ -51,31 +53,32 @@ func New(w *workspace.Workspace) *Manager { return NewWithTimeouts(w, Timeouts{}
 // NewWithTimeouts selects operation deadlines; tests use shorter ones.
 func NewWithTimeouts(w *workspace.Workspace, timeouts Timeouts) *Manager {
 	if timeouts.Metadata <= 0 {
-		timeouts.Metadata = DefaultMetadataTimeout
+		timeouts.Metadata = defaultMetadataTimeout
 	}
 	if timeouts.Worktree <= 0 {
-		timeouts.Worktree = DefaultWorktreeTimeout
+		timeouts.Worktree = defaultWorktreeTimeout
 	}
 	if timeouts.Remote <= 0 {
-		timeouts.Remote = DefaultRemoteTimeout
+		timeouts.Remote = defaultRemoteTimeout
 	}
 	return &Manager{root: w.Root, timeouts: timeouts}
 }
 
-// metadata bounds quick local reads; callers must call the returned cancel.
-func (m *Manager) metadata(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, m.timeouts.Metadata)
+// begin serializes one managed operation, bounds it with the operation class's
+// deadline, and releases a caller that has already given up. Callers must call
+// the returned release function.
+func (m *Manager) begin(ctx context.Context, timeout time.Duration) (context.Context, func(), error) {
+	if err := m.mu.Lock(ctx); err != nil {
+		return nil, nil, contextFailure("git.wait", "", err)
+	}
+	bounded, cancel := context.WithTimeout(ctx, timeout)
+	return bounded, func() { cancel(); m.mu.Unlock() }, nil
 }
 
-// worktree bounds operations that may run repository hooks or touch the whole
-// worktree.
+// worktree bounds the commit inside an operation that needs the remote budget
+// as well. Callers must call the returned cancel.
 func (m *Manager) worktree(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, m.timeouts.Worktree)
-}
-
-// remote bounds operations that contact the configured remote.
-func (m *Manager) remote(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, m.timeouts.Remote)
 }
 
 // PrepareRequest describes a new or reconcilable run. RemoteURL defaults to
@@ -133,10 +136,11 @@ var shaPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 // Prepare clones or refreshes the managed base and creates one isolated
 // worktree. The base is detached so concurrent runs never check out its branch.
 func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.remote(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return Run{}, err
+	}
+	defer release()
 	run, err := m.newRun(req)
 	if err != nil {
 		return Run{}, err

@@ -25,14 +25,14 @@ type heldGitHub struct {
 	once    sync.Once
 }
 
-func (h *heldGitHub) ListOpenIssues(ctx context.Context, repo string) ([]github.Issue, error) {
+func (h *heldGitHub) ListLabeledIssues(ctx context.Context, repo string, labels []string) ([]github.Issue, error) {
 	h.once.Do(func() { close(h.entered) })
 	select {
 	case <-h.release:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	return h.fakeGitHub.ListOpenIssues(ctx, repo)
+	return h.fakeGitHub.ListLabeledIssues(ctx, repo, labels)
 }
 
 func TestHarnessCheckWaitHonorsCancellation(t *testing.T) {

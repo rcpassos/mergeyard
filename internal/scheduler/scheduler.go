@@ -16,6 +16,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/gate"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/harness"
@@ -74,35 +75,18 @@ type Dependencies struct {
 	Env map[string]string
 }
 
-// tickGate serializes ticks, lifecycle controls, and dashboard actions. Unlike
-// a mutex, waiting on the gate honors cancellation, so a caller that gives up,
-// disconnects, or shuts down is released even while a tick is stalled.
-type tickGate struct {
-	init  sync.Once
-	token chan struct{}
-}
-
-func (g *tickGate) lock(ctx context.Context) error {
-	g.init.Do(func() { g.token = make(chan struct{}, 1) })
-	select {
-	case g.token <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (g *tickGate) unlock() { <-g.token }
-
 type Scheduler struct {
-	cfg              config.Config
-	db               *sql.DB
-	bus              *events.Bus
-	workflow         *workflow.Workflow
-	workspace        *workspace.Workspace
-	deps             Dependencies
-	harnesses        map[string]harness.HarnessAdapter
-	tick             tickGate
+	cfg       config.Config
+	db        *sql.DB
+	bus       *events.Bus
+	workflow  *workflow.Workflow
+	workspace *workspace.Workspace
+	deps      Dependencies
+	harnesses map[string]harness.HarnessAdapter
+	// tick serializes ticks, lifecycle controls, and dashboard actions. It
+	// honors cancellation, so a stalled tick never blocks a caller that gives
+	// up, disconnects, or shuts down.
+	tick             gate.Gate
 	control          *Control
 	running          atomic.Bool
 	listingFetch     sync.Mutex               // serializes listing fetches so concurrent readers share one
@@ -238,10 +222,10 @@ func (s *Scheduler) Runs(ctx context.Context) ([]workflow.Run, error) {
 // Tick serializes reconciliation and dispatch. It observes running processes
 // once and returns, so long phases do not block new claims or pause/resume.
 func (s *Scheduler) Tick(ctx context.Context) error {
-	if err := s.tick.lock(ctx); err != nil {
+	if err := s.tick.Lock(ctx); err != nil {
 		return err
 	}
-	defer s.tick.unlock()
+	defer s.tick.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}

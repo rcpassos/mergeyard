@@ -15,12 +15,12 @@ import (
 	"github.com/rcpassos/mergeyard/internal/fault"
 )
 
-// An unattended Git operation must never wait on a terminal prompt or an
-// unresponsive SSH peer. BatchMode fails instead of prompting, ConnectTimeout
+// NonInteractiveSSH is the SSH command Mergeyard uses whenever it runs Git
+// without a terminal: BatchMode fails instead of prompting, ConnectTimeout
 // bounds the handshake, and the keepalive options detect a dead connection.
 // GIT_SSH and GIT_SSH_COMMAND already present in the environment still win, so
 // a machine with a custom transport keeps it.
-const nonInteractiveSSH = "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+const NonInteractiveSSH = "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
 
 // Execute Git directly, with the machine's identity and credentials. Disable
 // terminal prompts so an unattended run reports failures instead of hanging.
@@ -33,7 +33,7 @@ func commandWithEnv(ctx context.Context, dir, code string, env []string, args ..
 	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), env...)
 	if os.Getenv("GIT_SSH_COMMAND") == "" && os.Getenv("GIT_SSH") == "" {
-		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND="+nonInteractiveSSH)
+		cmd.Env = append(cmd.Env, "GIT_SSH_COMMAND="+NonInteractiveSSH)
 	}
 	// A repository hook or credential helper can outlive Git and keep its
 	// output pipes open. Bound the owned process group and the pipe drain so a
@@ -53,6 +53,12 @@ func commandWithEnv(ctx context.Context, dir, code string, env []string, args ..
 	if ctx.Err() != nil {
 		return stdout.String(), contextFailure(code, dir, ctx.Err())
 	}
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		// Git exited successfully; a hook or helper outlived it holding the
+		// output pipes. The command itself completed, and Git wrote its own
+		// output before exiting.
+		err = nil
+	}
 	if err != nil {
 		return stdout.String(), failure(code, dir, fmt.Errorf("%s: %w", strings.TrimSpace(stderr.String()), err))
 	}
@@ -71,7 +77,6 @@ func contextFailure(code, dir string, err error) *fault.Error {
 	}
 	return failure("git.canceled", dir, err)
 }
-
 func refExists(ctx context.Context, dir, ref string) (bool, error) {
 	_, err := command(ctx, dir, "git.ref", "show-ref", "--verify", "--quiet", ref)
 	if err == nil {

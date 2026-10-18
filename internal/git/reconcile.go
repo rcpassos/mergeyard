@@ -11,10 +11,11 @@ import (
 // Inspect verifies persisted ownership and the current branch without fetching,
 // recreating a worktree, or touching the agent's working files.
 func (m *Manager) Inspect(ctx context.Context, run Run) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.metadata(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Metadata)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}
@@ -30,10 +31,11 @@ func (m *Manager) Inspect(ctx context.Context, run Run) error {
 // ListWorktrees includes registered linked worktrees (even missing directories)
 // and unmanaged directories in the worktree layout. Nothing is pruned or deleted.
 func (m *Manager) ListWorktrees(ctx context.Context) ([]string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.metadata(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	paths := map[string]bool{}
 	bases, err := filepath.Glob(filepath.Join(m.root, "repos", "*", "base"))
 	if err != nil {

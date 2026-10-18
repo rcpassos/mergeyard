@@ -13,6 +13,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/runner"
 )
 
@@ -118,6 +119,11 @@ func Check(ctx context.Context, path string, options Options) Report {
 		c.env[key] = value
 	}
 	c.env["GIT_TERMINAL_PROMPT"], c.env["GH_PROMPT_DISABLED"], c.env["LC_ALL"] = "0", "1", "C"
+	// Diagnostics probe remotes unattended: SSH must fail instead of prompting
+	// or hanging on a dead connection.
+	if c.env["GIT_SSH_COMMAND"] == "" && c.env["GIT_SSH"] == "" {
+		c.env["GIT_SSH_COMMAND"] = managedgit.NonInteractiveSSH
+	}
 	c.access(cfg)
 	c.machine(cfg)
 	c.capabilities(cfg)

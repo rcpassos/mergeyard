@@ -5,10 +5,11 @@ import "context"
 // CommitImplement pins local work without publishing it, so configured checks
 // can gate the exact commit. Repeating after a commit-before-journal crash is safe.
 func (m *Manager) CommitImplement(ctx context.Context, run Run, phase Phase) (CommitResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.worktree(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Worktree)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	defer release()
 	if err := m.validateRun(run); err != nil {
 		return CommitResult{}, err
 	}
@@ -24,10 +25,11 @@ func (m *Manager) CommitImplement(ctx context.Context, run Run, phase Phase) (Co
 // PushImplement publishes only the commit which passed checks; edits after the
 // check began require inspection instead of quietly changing checked code.
 func (m *Manager) PushImplement(ctx context.Context, run Run, target string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.remote(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := m.validateRun(run); err != nil {
 		return err
 	}

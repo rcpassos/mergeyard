@@ -12,16 +12,18 @@ index, or single paths get `Timeouts.Metadata` (`2m`). Operations that may run
 repository hooks, stage or restore the worktree, or create and remove one get
 `Timeouts.Worktree` (`10m`). Operations that contact the configured remote get
 `Timeouts.Remote` (`10m`). `New` uses those defaults; `NewWithTimeouts` selects
-shorter or longer ones. A caller-supplied deadline always wins, so the
-scheduler's five-second publication and cleanup budgets stay authoritative.
+shorter or longer ones. A caller-supplied deadline always wins, including while
+waiting for another managed operation to finish, so the scheduler's
+five-second publication and cleanup budgets stay authoritative.
 
 A command that reaches its deadline is killed with its owned process group, and
 the call returns once its output pipes are drained, so a repository hook or
-transport helper that outlives Git cannot extend the operation. Deadlines are
-coded failures: `git.timeout` names the stalled operation (for example
-`push timed out`) with the deadline as its cause. An explicitly cancelled
-context still reports `git.canceled`. Both flow through the scheduler's ordinary
-retry and attention paths, and the next tick proceeds.
+transport helper that outlives Git cannot extend the operation; a command that
+exited successfully still reports its own exit status. Deadlines are coded
+failures: `git.timeout` names the stalled operation (for example
+`push timed out`) or the serialized wait, with the deadline as its cause. An
+explicitly cancelled context still reports `git.canceled`. Both flow through
+the scheduler's ordinary retry and attention paths, and the next tick proceeds.
 
 Git never prompts from an unattended control plane. `GIT_TERMINAL_PROMPT=0` is
 always set, `LC_ALL=C` keeps diagnostics stable, and SSH defaults to

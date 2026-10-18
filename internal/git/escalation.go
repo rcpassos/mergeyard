@@ -16,10 +16,11 @@ import (
 // Pin Git's 512 MiB binary cutoff as well, so local limits cannot hide text lines.
 // Renames retain both paths, but count only the actual changed lines once.
 func (m *Manager) EscalationDiff(ctx context.Context, run Run, head string) ([]escalation.FileChange, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ctx, cancel := m.metadata(ctx)
-	defer cancel()
+	ctx, release, err := m.begin(ctx, m.timeouts.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := m.inspectReview(ctx, run); err != nil {
 		return nil, err
 	}

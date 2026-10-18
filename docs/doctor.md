@@ -80,9 +80,11 @@ must resolve to regular files before counting as available.
 
 Doctor never changes labels, creates remote branches, logs in, invokes a model,
 or alters a managed checkout. Temporary probes are removed. Git hooks are
-disabled, shell repository/index overrides are cleared, and existing credential
-helpers and transport URL rewrites remain available. Every external command
-has a 30-second timeout; SIGINT/SIGTERM cancels the checks.
+disabled, shell repository/index overrides are cleared, existing credential
+helpers and transport URL rewrites remain available, and Git never prompts:
+SSH probes use batch mode with keepalive options so a missing credential or a
+dead connection fails instead of hanging. Every external command has a
+30-second timeout; SIGINT/SIGTERM cancels the checks.
 
 ## Verification
 
