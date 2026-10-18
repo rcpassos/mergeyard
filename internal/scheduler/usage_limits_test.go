@@ -38,7 +38,7 @@ func (f *classifiedHarness) ClassifyFailure(a harness.PhaseArtifacts, observed t
 	}
 	return f.outcome
 }
-func (f *classifiedHarness) BuildInvocation(p harness.PhaseContext, r harness.RoleConfig) (harness.Invocation, error) {
+func (f *classifiedHarness) BuildInvocation(p harness.PhaseContext, r harness.RoleConfig) (harness.PhaseInvocation, error) {
 	f.phases = append(f.phases, p)
 	return f.HarnessAdapter.BuildInvocation(p, r)
 }

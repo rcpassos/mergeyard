@@ -486,10 +486,19 @@ type HarnessAdapter interface {
     Type() string
     Capabilities() HarnessCapabilities
     ValidateConfig(role RoleConfig) error
-    BuildInvocation(ctx PhaseContext, role RoleConfig) (Invocation, error)
+    BuildInvocation(ctx PhaseContext, role RoleConfig) (PhaseInvocation, error)
+    ResultArtifacts() []string
     ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseResult, error)
 }
 ```
+
+`BuildInvocation` returns the command together with the adapter's effective
+permissions for it; Mergeyard records that same report with the attempt, so the
+audit record cannot drift from the command that ran. `ResultArtifacts` names the
+adapter-owned files that completed execution must capture, so shared code reads
+a reported name instead of branching on the harness. One harness registry lists
+the supported harnesses for configuration validation, the doctor, the
+scheduler's adapters and the CLI.
 
 ```text
 Phase (implement / review / fix)

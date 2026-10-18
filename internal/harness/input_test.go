@@ -41,10 +41,11 @@ func TestImplementInputWriterKeepsIssueTextOutOfInvocation(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("input mode = %v; error = %v", info, err)
 	}
-	invocation, err := harness.NewClaude(config.Claude{}).BuildInvocation(ctx, config.Role{})
+	built, err := harness.NewClaude(config.Claude{}).BuildInvocation(ctx, config.Role{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	invocation := built.Command
 	if strings.Contains(strings.Join(invocation.Args, "\n"), input.IssueBody) || strings.Contains(strings.Join(invocation.Args, "\n"), input.IssueTitle) {
 		t.Fatalf("issue text was included in command arguments: %q", invocation.Args)
 	}

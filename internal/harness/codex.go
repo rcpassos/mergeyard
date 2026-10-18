@@ -10,22 +10,27 @@ import (
 	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
 // Codex adapts the native exec JSONL contract verified by the M2 live probes.
 type Codex struct{ config config.Codex }
 
+// lastMessageFile is the native -o artifact: the same name BuildInvocation
+// writes and ParseResult reads.
+const lastMessageFile = "last-message.json"
+
 func NewCodex(cfg config.Codex) *Codex {
 	if cfg.Executable == "" {
-		cfg.Executable = "codex"
+		cfg.Executable = registry.Codex
 	}
 	if cfg.Sandbox == "" {
 		cfg.Sandbox = "workspace-write"
 	}
 	return &Codex{config: cfg}
 }
-func (*Codex) Type() string { return "codex" }
+func (*Codex) Type() string { return registry.Codex }
 func (*Codex) Capabilities() HarnessCapabilities {
 	return HarnessCapabilities{ModelSelection: true, EffortSelection: true, SkillSelection: true, StructuredOutput: true, SessionResume: true, TemporaryLimitDetection: true, SessionIDSource: Discovered}
 }
@@ -51,18 +56,18 @@ func (c *Codex) ValidateConfig(role RoleConfig) error {
 	}
 	return nil
 }
-func (c *Codex) BuildInvocation(ctx PhaseContext, role RoleConfig) (Invocation, error) {
+func (c *Codex) BuildInvocation(ctx PhaseContext, role RoleConfig) (PhaseInvocation, error) {
 	if err := c.ValidateConfig(role); err != nil {
-		return Invocation{}, err
+		return PhaseInvocation{}, err
 	}
 	if err := validatePhaseContext(ctx); err != nil {
-		return Invocation{}, err
+		return PhaseInvocation{}, err
 	}
 
 	if ctx.Resume && !sessionUUID.MatchString(ctx.SessionID) {
-		return Invocation{}, phaseError("phase.invalid_request", "Codex resume requires an exact session UUID", nil)
+		return PhaseInvocation{}, phaseError("phase.invalid_request", "Codex resume requires an exact session UUID", nil)
 	}
-	args := []string{"exec", "--json", "-C", ctx.WorktreePath, "-s", c.config.Sandbox, "-c", `approval_policy="never"`, "-c", "sandbox_workspace_write.network_access=" + strconv.FormatBool(c.config.NetworkAccess), "--output-schema", filepath.Join(ctx.PhaseDir, "schema.json"), "-o", filepath.Join(ctx.PhaseDir, "last-message.json")}
+	args := []string{"exec", "--json", "-C", ctx.WorktreePath, "-s", c.config.Sandbox, "-c", `approval_policy="never"`, "-c", "sandbox_workspace_write.network_access=" + strconv.FormatBool(c.config.NetworkAccess), "--output-schema", filepath.Join(ctx.PhaseDir, "schema.json"), "-o", filepath.Join(ctx.PhaseDir, lastMessageFile)}
 	if role.Model != "" {
 		args = append(args, "--model", role.Model)
 	}
@@ -79,8 +84,27 @@ func (c *Codex) BuildInvocation(ctx PhaseContext, role RoleConfig) (Invocation, 
 	} else {
 		args = append(args, "--", prompt.String())
 	}
-	return Invocation{Executable: c.config.Executable, Dir: ctx.WorktreePath, Env: ctx.Env, Args: args}, nil
+	return PhaseInvocation{
+		Command:     Invocation{Executable: c.config.Executable, Dir: ctx.WorktreePath, Env: ctx.Env, Args: args},
+		Permissions: c.permissions(),
+	}, nil
 }
+
+// permissions reports the surface every Codex invocation applies. The
+// workspace-write network toggle cannot restrict full access, so full access is
+// reported as effective. Codex has no permission-mode flag or tool list, so its
+// sandbox and network surface is the mode and the empty tool list is explicit.
+func (c *Codex) permissions() Permissions {
+	networkAccess := c.config.NetworkAccess
+	if c.config.Sandbox == "danger-full-access" {
+		networkAccess = true
+	}
+	summary := c.config.Sandbox + " · network " + strconv.FormatBool(networkAccess) + " · approvals never"
+	return Permissions{Summary: summary, Mode: summary, AllowedTools: []string{}}
+}
+
+// ResultArtifacts reports the native -o message that carries Codex's result.
+func (*Codex) ResultArtifacts() []string { return []string{lastMessageFile} }
 
 // DiscoverSession reads complete JSONL records from a live capture. The final
 // partial line is ignored until the writer finishes it; malformed records fail.
@@ -172,10 +196,10 @@ func (*Codex) ParseResult(ctx PhaseContext, artifacts PhaseArtifacts) (PhaseResu
 	if ctx.SessionID != "" && identity != ctx.SessionID {
 		return PhaseResult{}, phaseError("harness.session_identity_invalid", "Codex returned a different thread than the requested session", nil)
 	}
-	if !completed || len(bytes.TrimSpace(artifacts.LastMessage)) == 0 {
+	if !completed || len(bytes.TrimSpace(artifacts.Files[lastMessageFile])) == 0 {
 		return PhaseResult{}, phaseError("phase.result_missing", "Codex did not emit native completion and a final structured message", nil)
 	}
-	return parsePhaseResult(ctx, artifacts.LastMessage)
+	return parsePhaseResult(ctx, artifacts.Files[lastMessageFile])
 }
 
 var _ HarnessAdapter = (*Codex)(nil)

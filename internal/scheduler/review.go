@@ -368,19 +368,18 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	if err != nil {
 		return fail(err)
 	}
-	command, err := s.harnesses[repo.Reviewer.Agent].BuildInvocation(phase, repo.Reviewer)
+	built, err := s.harnesses[repo.Reviewer.Agent].BuildInvocation(phase, repo.Reviewer)
 	if err != nil {
 		return fail(err)
 	}
-	req := runner.SessionRequest{RunID: run.ID, Phase: "review", Round: run.ReviewRound, Attempt: number, PhaseDir: phaseDir, Command: command}
+	req := runner.SessionRequest{RunID: run.ID, Phase: "review", Round: run.ReviewRound, Attempt: number, PhaseDir: phaseDir, Command: built.Command}
 	snapshotJSON, err := json.Marshal(snapshot)
 	if err != nil {
 		return err
 	}
-	permission, allowedTools := s.roleSettings(repo.Reviewer.Agent)
-	tools, _ := json.Marshal(allowedTools)
-	launched, err := s.execution().Launch(ctx, run, repo.Reviewer, durable.Permissions{Summary: s.rolePermissions(repo.Reviewer.Agent), Mode: permission, AllowedTools: allowedTools}, phase, savedPrevious, req, input, "", func(tx *sql.Tx, a durable.Attempt) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,?,?,?,?,?,?)`, a.ID, snapshot.Head, diff, string(snapshotJSON), sessionID, permission, string(tools))
+	tools, _ := json.Marshal(built.Permissions.AllowedTools)
+	launched, err := s.execution().Launch(ctx, run, repo.Reviewer, built.Permissions, phase, savedPrevious, req, input, "", func(tx *sql.Tx, a durable.Attempt) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO review_attempts(attempt_id,target_sha,diff,snapshot_json,session_id,permission_mode,allowed_tools_json) VALUES (?,?,?,?,?,?,?)`, a.ID, snapshot.Head, diff, string(snapshotJSON), sessionID, built.Permissions.Mode, string(tools))
 		return err
 	}, map[string]any{"target_sha": snapshot.Head})
 	if err != nil && launched.ID != "" && launched.Status == "failed" && ctx.Err() == nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/harness"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -107,7 +108,7 @@ type HarnessAvailability struct {
 
 func (s *Scheduler) HarnessAvailability(ctx context.Context) ([]HarnessAvailability, error) {
 	var result []HarnessAvailability
-	for _, name := range []string{"claude", "codex"} {
+	for _, name := range registry.Names() {
 		caps := s.harnesses[name].Capabilities()
 		v := HarnessAvailability{Harness: name, Available: true, TemporaryLimitDetection: caps.TemporaryLimitDetection, CreditExhaustionDetection: caps.CreditExhaustionDetection}
 		limit, err := workflow.LoadHarnessLimit(ctx, s.db, name)

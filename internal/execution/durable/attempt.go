@@ -48,13 +48,6 @@ type Attempt struct {
 	Failure, CheckRetryOf string
 }
 
-// Permissions records the effective harness permissions alongside launch intent.
-type Permissions struct {
-	Summary      string
-	Mode         string
-	AllowedTools []string
-}
-
 func (a Attempt) resumeFailed() bool {
 	return strings.HasPrefix(a.Failure, "harness.session_resume_failed: ")
 }
@@ -173,14 +166,14 @@ func (e Executor) Prepare(ctx context.Context, root string, run workflow.Run, ki
 // LaunchImplement commits all executable intent before invoking the runner.
 // An ambiguous launch remains running and is observed through its saved ref.
 // A returned attempt with an error denotes a definite, durably failed startup.
-func (e Executor) LaunchImplement(ctx context.Context, run workflow.Run, role config.Role, permissions Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string) (Attempt, error) {
+func (e Executor) LaunchImplement(ctx context.Context, run workflow.Run, role config.Role, permissions harness.Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string) (Attempt, error) {
 	return e.Launch(ctx, run, role, permissions, phase, previous, req, input, checkID, nil, nil)
 }
 
 // Launch commits phase facts alongside executable intent, probe binding, recovery
 // reservation and the launch event. Common event fields come from launch intent;
 // payload adds only phase-specific facts. The hook must only write through this transaction.
-func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role, permissions Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string, facts func(*sql.Tx, Attempt) error, payload map[string]any) (Attempt, error) {
+func (e Executor) Launch(ctx context.Context, run workflow.Run, role config.Role, permissions harness.Permissions, phase harness.PhaseContext, previous Attempt, req runner.SessionRequest, input, checkID string, facts func(*sql.Tx, Attempt) error, payload map[string]any) (Attempt, error) {
 	round := AttemptRound(run, phase.Phase)
 	if req.RunID != run.ID || req.Phase != string(phase.Phase) || req.Round != round || req.PhaseDir != phase.PhaseDir || req.Attempt < 1 || filepath.Base(phase.PhaseDir) != fmt.Sprintf("%s-%d-%d", phase.Phase, round, req.Attempt) {
 		return Attempt{}, &fault.Error{Code: "phase.invalid_request", Message: "Launch request does not match the prepared phase attempt"}
@@ -402,11 +395,32 @@ func (e Executor) ReadArtifacts(ctx context.Context, a Attempt, o Observation) O
 	if o.Failure == nil {
 		o.Artifacts.Stderr, o.Failure = e.Runner.ReadFile(ctx, filepath.Join(a.Ref.PhaseDir, "stderr.log"))
 	}
-	if o.Failure == nil && a.Agent == "codex" {
-		o.Artifacts.LastMessage, o.Failure = e.Runner.ReadFile(ctx, filepath.Join(a.Ref.PhaseDir, "last-message.json"))
-		if errors.Is(o.Failure, os.ErrNotExist) {
-			o.Failure = nil
-		}
+	// An attempt always has an adapter; a missing one reports no artifacts,
+	// which ParseResult treats like any other unavailable capture.
+	adapter, known := e.Harnesses[a.Agent]
+	if o.Failure != nil || !known {
+		return o
 	}
+	o.Artifacts.Files, o.Failure = e.readResultArtifacts(ctx, a, adapter.ResultArtifacts())
 	return o
+}
+
+// readResultArtifacts captures the files the adapter reported, keyed by the
+// reported name. A missing file is left for ParseResult to judge.
+func (e Executor) readResultArtifacts(ctx context.Context, a Attempt, names []string) (map[string][]byte, error) {
+	var files map[string][]byte
+	for _, name := range names {
+		data, err := e.Runner.ReadFile(ctx, filepath.Join(a.Ref.PhaseDir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if files == nil {
+			files = make(map[string][]byte, len(names))
+		}
+		files[name] = data
+	}
+	return files, nil
 }

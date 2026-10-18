@@ -13,10 +13,11 @@ func TestNativeFixContractAndResumedInvocation(t *testing.T) {
 	c := harness.NewClaude(config.Claude{PermissionMode: "acceptEdits"})
 	ctx := phase(t)
 	ctx.Phase, ctx.Resume = workflow.Fix, true
-	invocation, err := c.BuildInvocation(ctx, config.Role{Model: "fix-model", Effort: "high", Skills: []string{"fix-skill"}})
+	built, err := c.BuildInvocation(ctx, config.Role{Model: "fix-model", Effort: "high", Skills: []string{"fix-skill"}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	invocation := built.Command
 	args := strings.Join(invocation.Args, "\n")
 	for _, want := range []string{"--resume\n" + ctx.SessionID, "--model\nfix-model", "--effort\nhigh", "--permission-mode\nacceptEdits", "/fix-skill", "finding_id", "disputed"} {
 		if !strings.Contains(args, want) {

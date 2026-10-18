@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/config"
@@ -379,13 +378,12 @@ func (s *Scheduler) startAttempt(ctx context.Context, repo config.Repository, ru
 	if err != nil {
 		return err
 	}
-	command, err := s.harnesses[repo.Implementer.Agent].BuildInvocation(phase, repo.Implementer)
+	built, err := s.harnesses[repo.Implementer.Agent].BuildInvocation(phase, repo.Implementer)
 	if err != nil {
 		return err
 	}
-	req := runner.SessionRequest{RunID: run.ID, Phase: "implement", Round: 0, Attempt: number, PhaseDir: phaseDir, Command: command}
-	permission, allowedTools := s.roleSettings(repo.Implementer.Agent)
-	launched, err := s.execution().LaunchImplement(ctx, run, repo.Implementer, durable.Permissions{Summary: s.rolePermissions(repo.Implementer.Agent), Mode: permission, AllowedTools: allowedTools}, phase, previous, req, input, checkID)
+	req := runner.SessionRequest{RunID: run.ID, Phase: "implement", Round: 0, Attempt: number, PhaseDir: phaseDir, Command: built.Command}
+	launched, err := s.execution().LaunchImplement(ctx, run, repo.Implementer, built.Permissions, phase, previous, req, input, checkID)
 	if err != nil && launched.ID != "" && launched.Status == "failed" && ctx.Err() == nil {
 		retry, retryErr := s.retryPhase(ctx, run, workflow.Implement, launched, err, repo.Implementer.MaxAttempts)
 		if retryErr != nil {
@@ -421,18 +419,6 @@ func canRetryAttempt(err error, number, max int) bool {
 	return number < max
 }
 
-func (s *Scheduler) rolePermissions(agent string) string {
-	if agent == "codex" {
-		networkAccess := s.cfg.Agents.Codex.NetworkAccess
-		if s.cfg.Agents.Codex.Sandbox == "danger-full-access" {
-			// The workspace-write network toggle does not restrict full access.
-			networkAccess = true
-		}
-		return s.cfg.Agents.Codex.Sandbox + " · network " + strconv.FormatBool(networkAccess) + " · approvals never"
-	}
-	return s.cfg.Agents.Claude.PermissionMode + " · allowed tools " + strings.Join(s.cfg.Agents.Claude.AllowedTools, ", ")
-}
-
 func validateImplementerHarness(persistedAgent, configuredAgent string) error {
 	return validateRoleHarness("implementer", persistedAgent, configuredAgent)
 }
@@ -442,15 +428,4 @@ func validateRoleHarness(role, persistedAgent, configuredAgent string) error {
 		return &fault.Error{Code: "harness.session_agent_changed", Message: "Persisted " + role + " belongs to " + persistedAgent + "; restore that role harness before resuming"}
 	}
 	return nil
-}
-
-func (s *Scheduler) roleSettings(agent string) (string, []string) {
-	if agent == "codex" {
-		return s.rolePermissions(agent), []string{}
-	}
-	permission := s.cfg.Agents.Claude.PermissionMode
-	if permission == "" {
-		permission = "bypassPermissions"
-	}
-	return permission, s.cfg.Agents.Claude.AllowedTools
 }

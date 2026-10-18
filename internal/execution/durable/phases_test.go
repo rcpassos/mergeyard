@@ -14,6 +14,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -25,7 +26,7 @@ func launchPhase(t *testing.T, e durable.Executor, run workflow.Run, root, agent
 	if err != nil {
 		return durable.Attempt{}, err
 	}
-	return e.Launch(ctx, run, config.Role{Agent: agent, Model: "saved-model", Effort: "high", Skills: []string{"review"}}, durable.Permissions{Summary: "saved permissions", Mode: "saved-mode", AllowedTools: []string{"Read"}}, phase, previous, runner.SessionRequest{RunID: run.ID, Phase: string(kind), Round: run.ReviewRound, Attempt: number, PhaseDir: phase.PhaseDir}, filepath.Join(phase.PhaseDir, "input.md"), "", func(tx *sql.Tx, a durable.Attempt) error {
+	return e.Launch(ctx, run, config.Role{Agent: agent, Model: "saved-model", Effort: "high", Skills: []string{"review"}}, harness.Permissions{Summary: "saved permissions", Mode: "saved-mode", AllowedTools: []string{"Read"}}, phase, previous, runner.SessionRequest{RunID: run.ID, Phase: string(kind), Round: run.ReviewRound, Attempt: number, PhaseDir: phase.PhaseDir}, filepath.Join(phase.PhaseDir, "input.md"), "", func(tx *sql.Tx, a durable.Attempt) error {
 		if kind == workflow.Fix {
 			_, err := tx.ExecContext(ctx, `INSERT INTO fix_attempts(attempt_id,target_sha,findings_json,session_id,permission_mode,allowed_tools_json,ci_json) VALUES (?,'pinned-head','[]',?,'read-write','[]','{"repair_cause":"ci.check_failed"}')`, a.ID, a.SessionID)
 			return err

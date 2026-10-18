@@ -131,7 +131,7 @@ func New(cfg config.Config, resources Resources, deps Dependencies) (*Scheduler,
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	adapters := map[string]harness.HarnessAdapter{"claude": harness.NewClaude(cfg.Agents.Claude), "codex": harness.NewCodex(cfg.Agents.Codex)}
+	adapters := harness.Adapters(cfg)
 	for name, adapter := range deps.Harnesses {
 		if adapter == nil || adapter.Type() != name {
 			return nil, &fault.Error{Code: "config.invalid_agent", Message: "Harness override must match its type"}

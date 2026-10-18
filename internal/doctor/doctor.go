@@ -14,6 +14,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/runner"
 )
 
@@ -213,36 +214,36 @@ func (c *checker) machine(cfg config.Config) {
 	for _, assignedRole := range roles(cfg) {
 		assigned[assignedRole.role.Agent] = true
 	}
-	for _, agent := range []string{"claude", "codex"} {
+	for _, agent := range registry.Names() {
 		if !assigned[agent] {
 			continue
 		}
-		execPath := executable(cfg, agent)
+		facts, known := harnesses[agent]
+		if !known {
+			c.report.add(Error, "harness.unsupported", agent, "assigned harness has no supported doctor checks; update Mergeyard before using it")
+			continue
+		}
+		execPath := facts.executable(cfg)
 		result, err := c.command("", execPath, "--version")
 		if err != nil {
 			c.report.add(Error, "harness.not_found", agent, "assigned harness is missing or cannot run: "+err.Error())
 			continue
 		}
 		c.tools[agent] = true
-		minimum := claudeMinimum
-		auth := []string{"auth", "status"}
-		if agent == "codex" {
-			minimum, auth = codexMinimum, []string{"login", "status"}
-		}
 		v, ok := parseVersion(string(result.Stdout) + " " + string(result.Stderr))
 		if !ok {
-			c.report.add(Unverifiable, "harness.version_unverifiable", agent, "cannot parse the installed version; minimum required: "+minimum.String())
+			c.report.add(Unverifiable, "harness.version_unverifiable", agent, "cannot parse the installed version; minimum required: "+facts.minimum.String())
 		} else {
 			c.versions[agent] = v
-			if v.less(minimum) {
-				c.report.add(Error, "harness.version_unsupported", agent, "installed "+v.String()+"; minimum required: "+minimum.String())
+			if v.less(facts.minimum) {
+				c.report.add(Error, "harness.version_unsupported", agent, "installed "+v.String()+"; minimum required: "+facts.minimum.String())
 			}
 		}
-		if _, err := c.command("", execPath, auth...); err != nil {
+		if _, err := c.command("", execPath, facts.auth...); err != nil {
 			c.report.add(Error, "harness.not_logged_in", agent, "harness login check failed; log in with the configured executable: "+err.Error())
 		}
 	}
-	if assigned["claude"] && cfg.Agents.Claude.PermissionMode == "bypassPermissions" && c.options.EffectiveUID() == 0 {
-		c.report.add(Error, "harness.root_bypass_permissions", "claude", "bypassPermissions cannot run as root; run as a non-root user or change agents.claude.permission_mode")
+	if assigned[registry.Claude] && cfg.Agents.Claude.PermissionMode == "bypassPermissions" && c.options.EffectiveUID() == 0 {
+		c.report.add(Error, "harness.root_bypass_permissions", registry.Claude, "bypassPermissions cannot run as root; run as a non-root user or change agents.claude.permission_mode")
 	}
 }

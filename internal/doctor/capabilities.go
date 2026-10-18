@@ -22,23 +22,17 @@ func roles(cfg config.Config) []assignedRole {
 	return result
 }
 
-func executable(cfg config.Config, agent string) string {
-	if agent == "codex" {
-		return cfg.Agents.Codex.Executable
-	}
-	return cfg.Agents.Claude.Executable
-}
-
 func (c *checker) capabilities(cfg config.Config) {
 	help := make(map[string]string)
 	failed := make(map[string]bool)
 	for _, assigned := range roles(cfg) {
 		role := assigned.role
-		if (role.Model == "" && role.Effort == "") || !c.tools[role.Agent] {
+		facts, known := harnesses[role.Agent]
+		if !known || (role.Model == "" && role.Effort == "") || !c.tools[role.Agent] {
 			continue
 		}
 		if _, checked := help[role.Agent]; !checked && !failed[role.Agent] {
-			result, err := c.command("", executable(cfg, role.Agent), "--help")
+			result, err := c.command("", facts.executable(cfg), "--help")
 			if err != nil {
 				failed[role.Agent] = true
 			} else {
@@ -49,11 +43,7 @@ func (c *checker) capabilities(cfg config.Config) {
 			c.report.add(Unverifiable, "harness.capabilities_unverifiable", assigned.scope, "cannot inspect harness help for requested model/effort capabilities")
 			continue
 		}
-		effortFlag := "--effort"
-		if role.Agent == "codex" {
-			effortFlag = "--config"
-		}
-		for _, request := range []struct{ value, name, flag string }{{role.Model, "model", "--model"}, {role.Effort, "effort", effortFlag}} {
+		for _, request := range []struct{ value, name, flag string }{{role.Model, "model", "--model"}, {role.Effort, "effort", facts.effortFlag}} {
 			if request.value != "" && !hasFlag(help[role.Agent], request.flag) {
 				c.report.add(Error, "harness.capability_unsupported", assigned.scope, "harness does not advertise requested "+request.name+" selection ("+request.flag+")")
 			}

@@ -17,6 +17,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/harness"
+	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/web"
 	"github.com/rcpassos/mergeyard/internal/workflow"
@@ -86,8 +87,8 @@ func (c *runtimeClient) request(ctx context.Context, method, path string, result
 }
 
 func operate(ctx context.Context, path, action string, args []string, stdout, stderr io.Writer) error {
-	if action == "harness check" && args[0] != "claude" && args[0] != "codex" {
-		return fmt.Errorf("harness check requires claude or codex")
+	if action == "harness check" && !registry.Known(args[0]) {
+		return fmt.Errorf("harness check requires %s", strings.Join(registry.Names(), " or "))
 	}
 	client, status, err := connect(ctx, path)
 	if err != nil {
