@@ -34,10 +34,10 @@ type Executor struct {
 	Now       func() time.Time
 }
 
-// Attempt is the journal entry for one phase execution: the role that owns it,
-// its persisted session identity, owned process reference and continuation
-// state. It is the single attempt shape shared by durable execution and the
-// scheduler's phase workflows.
+// Attempt is the journal entry for one phase execution: the harness (agent)
+// that ran it, its persisted session identity, owned process reference and
+// continuation state. It is the single attempt shape shared by durable
+// execution and the scheduler's phase workflows.
 type Attempt struct {
 	ID, Agent             string
 	Number                int
