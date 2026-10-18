@@ -50,6 +50,27 @@ the repository harness. The implementer account gate runs per issue; restricted
 issues are skipped without preventing later issues in the repository from being
 considered. A restricted reviewer waits at its phase gate.
 
+Candidate inspection reads the implementer gate before the expensive per-issue
+trust, blocker and fresh-issue calls, because a gated candidate is never claimed
+and would otherwise respend them on every poll for the whole limit. The early
+gate resolves the implementer from the labels the listing already carries, and
+decides only whether to wait: it never supplies the run's settings, which stay
+resolved from the claim snapshot as [ADR-0001](adr/0001-role-settings-resolved-at-claim.md)
+requires. When the listing reports the implementer available, the gate is
+rechecked on the fresh pre-claim issue, whose labels can name a different
+harness. A candidate the listing reports as limited waits for the next poll
+instead of reading an issue it cannot claim.
+
+That ordering also defers work a gated candidate would otherwise do. An untrusted
+or unverifiable issue keeps its ready label until the harness is available
+instead of being refused during the limit. An issue that was already refused and
+has its ready label back is the exception: it still spends the cached trust
+verification, so a trusted relabel clears the refusal and an untrusted one is
+refused again, instead of the dashboard showing a stale refusal for the whole
+limit. An override or role configuration that does not resolve is still refused
+from the fresh issue. None of these paths can claim anything, and each resumes on
+the first poll once the harness is available.
+
 Claims first persist `CLAIMING` with both resolved roles and their harness
 sources (`label` or `config`), then add running, remove ready, persist
 `PREPARING`, and prepare the managed base/worktree. Label failure aborts the

@@ -12,6 +12,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -139,6 +140,34 @@ func (s *Scheduler) harnessGate(ctx context.Context, agent string) (*workflow.Ha
 		return nil, err
 	}
 	return limit.Gate(s.deps.Now()), nil
+}
+
+// harnessLimited reports whether an account-wide usage limit withholds one
+// harness. It reads only local state, so it can run before and after the claim
+// reads that cost GitHub calls.
+func (s *Scheduler) harnessLimited(ctx context.Context, agent string) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	gate, err := s.harnessGate(ctx, agent)
+	if err != nil {
+		return false, err
+	}
+	return gate != nil, nil
+}
+
+// gateLimitedIssue withholds a candidate whose implementer harness is limited,
+// resolving that harness from the labels the issue already carries. A gated
+// candidate is never claimed, so this keeps the trust, blocker and fresh-read
+// calls that would otherwise repeat on every tick.
+func (s *Scheduler) gateLimitedIssue(ctx context.Context, repo config.Repository, issue github.Issue) (bool, error) {
+	settings, err := s.resolveIssueRoleSettings(repo, issue)
+	if err != nil {
+		// An override or role configuration that does not resolve is refused from
+		// the fresh snapshot, so its implementer is not guessed at here.
+		return false, nil
+	}
+	return s.harnessLimited(ctx, settings.Implementer.Agent)
 }
 
 func (s *Scheduler) gatePhase(ctx context.Context, run workflow.Run, agent string) (bool, error) {
