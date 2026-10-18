@@ -207,7 +207,11 @@ func (c *checker) machine(cfg config.Config) {
 	}
 	if c.tools["gh"] {
 		if _, err := c.command("", "gh", "auth", "status", "--hostname", "github.com"); err != nil {
-			c.report.add(Error, "github.not_logged_in", "gh", "GitHub authentication failed; run gh auth login: "+err.Error())
+			if c.probeUnreachable() {
+				c.report.add(Unverifiable, "github.not_logged_in", "gh", "cannot verify GitHub authentication while GitHub is unreachable: "+err.Error())
+			} else {
+				c.report.add(Error, "github.not_logged_in", "gh", "GitHub authentication failed; run gh auth login: "+err.Error())
+			}
 		}
 	}
 	assigned := make(map[string]bool)

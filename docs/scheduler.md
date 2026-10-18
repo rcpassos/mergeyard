@@ -30,6 +30,17 @@ own transport. See [git.md](git.md) for the operation budgets.
 before enabling new claims and reports its findings. The CLI starts this
 scheduler and shares its controls with the dashboard.
 
+Startup treats a reconcile failure as retryable only when the GitHub boundary
+could not answer cleanly: unreachable, rate limited, cancelled, or an unclean
+response. Listing issues, reading or writing labels, comments, or pull requests
+can fail that way without stopping the dashboard; the failure is printed and the
+running loop retries the same reconcile on later ticks. A coded wrapper
+classifies by its cause, so pending handback publication wrapped around a GitHub
+failure is deferred too. Local-state failures (database, workspace, Git
+ownership) and conclusive GitHub answers (missing repository or permission,
+expired login, invalid input) still abort startup. No issue is claimed before a
+reconcile succeeds.
+
 `Stop(ctx, runID)` serializes with phase advancement and first persists stop
 intent. It interrupts running attempts through the runner, preserves the
 worktree/branch/PR, removes ready and running labels, adds attention if work was created,
@@ -191,7 +202,9 @@ at capacity. Running labels are never silently reset on orphaned issues. Worktre
 directories, registered worktree metadata, and managed tmux sessions without
 persisted ownership are reported and preserved. Terminal runs' retained artifacts
 remain owned. Startup uses the same boundary before serving the dashboard and
-running the scheduler.
+running the scheduler; its retryable GitHub failures are reported and left for
+later ticks, while local-state failures and conclusive GitHub answers still
+refuse to start.
 
 ## Tests
 
@@ -202,8 +215,11 @@ prevention after restart. They require `git` and `tmux` but no agent credentials
 Reconciliation tests kill a real control-plane subprocess during implement,
 recover agents still running or finished offline, and verify one attempt, commit,
 and PR. They also cover orphan reporting and preservation, unrecoverable claims,
-and missing owned worktrees. CLI tests use fake GitHub/tmux commands to verify
-configuration selection, reporting, and workspace lock release.
+and missing owned worktrees, and that a deferred GitHub failure still gates
+claims until a reconcile succeeds. CLI tests use fake GitHub/tmux commands to
+verify configuration selection, reporting, and workspace lock release, and that
+startup defers a retryable GitHub reconcile failure to later ticks while a
+local-state failure refuses to start.
 
 The live test is opt-in and uses only the issue explicitly provided. Prepare a
 dedicated `owner/mergeyard-integration-test` repository with an initial commit,

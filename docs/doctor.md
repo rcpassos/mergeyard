@@ -78,6 +78,15 @@ uncommitted local files. If fetching fails, dependent checks are reported as
 unverifiable; personal skills can still be checked. Instruction files also
 must resolve to regular files before counting as available.
 
+When GitHub itself cannot be reached (a transport failure, a rate limit, a
+server error, or a command that outlasts its deadline), every check that needs
+it reports unverifiable instead of an error, and checks that depend on the
+unreachable data follow. The GitHub login check is included: it probes the API
+once, because gh reports a connection failure as an invalid token. Start serves
+and reconciles while the service recovers. Failures GitHub answered stay errors:
+an invalid token, missing labels, denied push permission, and unresolvable base
+branches are setup problems.
+
 Doctor never changes labels, creates remote branches, logs in, invokes a model,
 or alters a managed checkout. Temporary probes are removed. Git hooks are
 disabled, shell repository/index overrides are cleared, existing credential

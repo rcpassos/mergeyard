@@ -2,7 +2,9 @@ package doctor
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,16 +12,41 @@ import (
 	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/harness/registry"
+	"github.com/rcpassos/mergeyard/internal/runner"
 )
 
-func (c *checker) api(endpoint string, paginate bool) ([]byte, error) {
+// accessSeverity keeps a check unverifiable when GitHub could not be reached,
+// including a command that ran past the doctor's deadline, so a transient
+// outage does not stop start from serving; failures GitHub answered stay
+// errors.
+func accessSeverity(stderr []byte, err error) Severity {
+	if githubUnreachable(stderr, err) {
+		return Unverifiable
+	}
+	return Error
+}
+
+// githubUnreachable reports whether a failed GitHub command could not be
+// reached or never answered before the deadline.
+func githubUnreachable(stderr []byte, err error) bool {
+	return github.Unavailable(stderr) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// probeUnreachable probes the API once, because gh reports a connection
+// failure during an authentication check as an invalid token.
+func (c *checker) probeUnreachable() bool {
+	result, err := c.api("rate_limit", false)
+	return err != nil && githubUnreachable(result.Stderr, err)
+}
+
+func (c *checker) api(endpoint string, paginate bool) (runner.ExecResult, error) {
 	args := []string{"api", "--hostname", "github.com", "--method", "GET"}
 	if paginate {
 		args = append(args, "--paginate")
 	}
-	result, err := c.command("", "gh", append(args, endpoint)...)
-	return result.Stdout, err
+	return c.command("", "gh", append(args, endpoint)...)
 }
 
 func (c *checker) repository(repo config.Repository) {
@@ -63,7 +90,7 @@ func (c *checker) pushPermission(repository config.Repository) bool {
 			Push *bool `json:"push"`
 		} `json:"permissions"`
 	}
-	if json.Unmarshal(data, &metadata) != nil || metadata == nil {
+	if json.Unmarshal(data.Stdout, &metadata) != nil || metadata == nil {
 		c.report.add(Error, "github.invalid_response", repo, "expected repository metadata from GitHub")
 		return true
 	}
@@ -88,10 +115,10 @@ func (c *checker) labels(repo config.Repository) {
 	}
 	data, err := c.api("repos/"+repo.Repo+"/labels?per_page=100", true)
 	if err != nil {
-		c.report.add(Error, "github.labels_check_failed", repo.Repo, "cannot list repository labels: "+err.Error())
+		c.report.add(accessSeverity(data.Stderr, err), "github.labels_check_failed", repo.Repo, "cannot list repository labels: "+err.Error())
 		return
 	}
-	names, err := labelNames(data)
+	names, err := labelNames(data.Stdout)
 	if err != nil {
 		c.report.add(Error, "github.invalid_response", repo.Repo, err.Error())
 		return
@@ -142,7 +169,11 @@ func (c *checker) repositoryFiles(repo config.Repository, pushAllowed bool) map[
 	remote := "https://github.com/" + repo.Repo + ".git"
 	refs, err := c.command("", "git", "ls-remote", "--symref", "--", remote, "HEAD")
 	if err != nil {
-		c.report.add(Error, "git.origin_inaccessible", repo.Repo, "cannot access origin with the machine's Git credentials: "+err.Error())
+		if githubUnreachable(refs.Stderr, err) {
+			c.report.add(Unverifiable, "git.origin_inaccessible", repo.Repo, "origin is unreachable while GitHub is unavailable: "+err.Error())
+		} else {
+			c.report.add(Error, "git.origin_inaccessible", repo.Repo, "cannot access origin with the machine's Git credentials: "+err.Error())
+		}
 		return nil
 	}
 	branch := repo.BaseBranch
@@ -165,7 +196,13 @@ func (c *checker) repositoryFiles(repo config.Repository, pushAllowed bool) map[
 	}
 	result, err := c.command("", "git", "ls-remote", "--exit-code", "--heads", "--", remote, ref)
 	if err != nil || !strings.Contains(string(result.Stdout), "\t"+ref+"\n") {
-		c.report.add(Error, "git.base_branch", repo.Repo, fmt.Sprintf("base branch %q cannot be resolved on origin", branch))
+		severity := Error
+		// --exit-code reports 2 for a branch origin does not have; any other
+		// failure may be an unreachable GitHub.
+		if err != nil && result.ExitCode != 2 {
+			severity = accessSeverity(result.Stderr, err)
+		}
+		c.report.add(severity, "git.base_branch", repo.Repo, fmt.Sprintf("base branch %q cannot be resolved on origin", branch))
 		return nil
 	}
 	dir, err := os.MkdirTemp("", "mergeyard-doctor-")
@@ -184,16 +221,16 @@ func (c *checker) repositoryFiles(repo config.Repository, pushAllowed bool) map[
 		c.report.add(Error, "git.fetch", repo.Repo, "cannot initialize temporary fetch probe: "+err.Error())
 		return nil
 	}
-	if _, err := c.command(dir, "git", "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "--", remote, ref+":refs/heads/doctor"); err != nil {
-		c.report.add(Error, "git.fetch", repo.Repo, "fetch failed: "+err.Error())
+	if fetch, err := c.command(dir, "git", "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "--", remote, ref+":refs/heads/doctor"); err != nil {
+		c.report.add(accessSeverity(fetch.Stderr, err), "git.fetch", repo.Repo, "fetch failed: "+err.Error())
 		return nil
 	}
 	if pushAllowed {
 		// --dry-run does not contact receive hooks or prove branch-protection
 		// acceptance. GitHub permissions above establish account authorization.
 		target := "refs/heads/mergeyard/" + filepath.Base(dir)
-		if _, err := c.command(dir, "git", "-c", "push.gpgSign=false", "push", "--dry-run", "--no-verify", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", remote, "refs/heads/doctor:"+target); err != nil {
-			c.report.add(Error, "git.push_access", repo.Repo, "push transport check failed (dry run): "+err.Error())
+		if push, err := c.command(dir, "git", "-c", "push.gpgSign=false", "push", "--dry-run", "--no-verify", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", remote, "refs/heads/doctor:"+target); err != nil {
+			c.report.add(accessSeverity(push.Stderr, err), "git.push_access", repo.Repo, "push transport check failed (dry run): "+err.Error())
 		}
 	}
 	paths := repositoryFilePaths(repo)

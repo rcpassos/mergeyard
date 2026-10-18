@@ -10,8 +10,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -360,8 +358,6 @@ func contextError(err error) *Error {
 	return &Error{Code: "github.canceled", Err: err}
 }
 
-var httpStatusPattern = regexp.MustCompile(`\(HTTP ([0-9]{3})\)`)
-
 // gh reports API statuses on stderr as "(HTTP NNN)". Other command failures
 // stay permanent unless they match a known transport failure.
 func commandError(stderr []byte, cause error) (*Error, bool) {
@@ -370,16 +366,13 @@ func commandError(stderr []byte, cause error) (*Error, bool) {
 		message = cause.Error()
 	}
 	code, transient := "github.command_failed", false
-	status := 0
-	if match := httpStatusPattern.FindStringSubmatch(message); match != nil {
-		status, _ = strconv.Atoi(match[1])
-	}
-	var exit interface{ ExitCode() int }
 	lower := strings.ToLower(message)
+	status := statusOf(lower)
+	var exit interface{ ExitCode() int }
 	switch {
 	case status == 401 || (errors.As(cause, &exit) && exit.ExitCode() == 4) || strings.Contains(lower, "gh auth login"):
 		code = "github.not_logged_in"
-	case status == 429 || (status == 403 && (strings.Contains(lower, "rate limit") || strings.Contains(lower, "abuse"))):
+	case rateLimited(lower):
 		// gh stderr carries no reset/Retry-After headers. Surface the limit
 		// immediately so callers can defer polling rather than retry too soon.
 		code = "github.rate_limited"
@@ -389,15 +382,8 @@ func commandError(stderr []byte, cause error) (*Error, bool) {
 		code = "github.label_not_found"
 	case status == 404 || status == 410:
 		code = "github.not_found"
-	case status == 408 || (status >= 500 && status < 600):
+	case Unavailable([]byte(lower)):
 		code, transient = "github.unavailable", true
-	case status == 0:
-		for _, marker := range []string{"error connecting to", "dial tcp", "i/o timeout", "tls handshake timeout", "connection reset", "connection refused", "unexpected eof", "network is unreachable"} {
-			if strings.Contains(lower, marker) {
-				code, transient = "github.unavailable", true
-				break
-			}
-		}
 	}
 	return codedError(code, message, cause), transient
 }

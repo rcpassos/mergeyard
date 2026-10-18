@@ -3,7 +3,9 @@ package scheduler_test
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/runner"
@@ -354,5 +357,138 @@ func TestRestartAfterControlPlaneKillPreservesImplementAttempt(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestGitHubFailureClassification(t *testing.T) {
+	unavailable := &fault.Error{Code: "github.unavailable", Message: "network is unreachable"}
+	rateLimited := &fault.Error{Code: "github.rate_limited", Message: "API rate limit exceeded"}
+	ownership := &fault.Error{Code: "git.ownership_missing", Message: "Run has no persisted Git ownership"}
+	store := &fault.Error{Code: "internal.run_store", Message: "Could not persist or read the run", Err: sql.ErrConnDone}
+	tmux := &fault.Error{Code: "phase.tmux_failed", Message: "tmux failed", Err: errors.New("exit status 1")}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"none", nil, false},
+		{"unreachable GitHub", unavailable, true},
+		{"rate limited GitHub", rateLimited, true},
+		{"cancelled GitHub", &fault.Error{Code: "github.canceled", Err: context.Canceled}, true},
+		{"timed out GitHub", &fault.Error{Code: "github.timeout", Err: context.DeadlineExceeded}, true},
+		{"unanswered command", &fault.Error{Code: "github.command_failed", Message: "unrecognized failure"}, true},
+		{"unclean response", &fault.Error{Code: "github.invalid_response", Message: "expected an issue array"}, true},
+		{"joined GitHub failures", errors.Join(unavailable, rateLimited), true},
+		{"wrapped GitHub failure", fmt.Errorf("reconcile existing runs: %w", unavailable), true},
+		{"GitHub failure wrapping a transport error", &fault.Error{Code: "github.unavailable", Err: errors.New("dial tcp: connection refused")}, true},
+		{"coded wrapper classifying its cause", &fault.Error{Code: "internal.scheduler", Message: "operation failed", Err: unavailable}, true},
+		{"pending handback around a GitHub failure", &fault.Error{Code: "handback.publication_pending", Message: "Publication or reconciliation is incomplete", Err: unavailable}, true},
+		{"pending handback around a local failure", &fault.Error{Code: "handback.publication_pending", Message: "Publication or reconciliation is incomplete", Err: tmux}, false},
+		{"conclusive forbidden", &fault.Error{Code: "github.forbidden", Message: "Resource not accessible by token"}, false},
+		{"conclusive not found", &fault.Error{Code: "github.not_found", Message: "Not Found"}, false},
+		{"conclusive login", &fault.Error{Code: "github.not_logged_in", Message: "run gh auth login"}, false},
+		{"conclusive input", &fault.Error{Code: "github.invalid_input", Message: "expected owner/repo"}, false},
+		{"scheduler-minted GitHub code", &fault.Error{Code: "github.issue_closed", Message: "Issue is no longer open"}, false},
+		{"Git ownership", ownership, false},
+		{"local store", store, false},
+		{"raw storage error", sql.ErrConnDone, false},
+		{"runner failure", tmux, false},
+		{"GitHub failure joined with local state", errors.Join(unavailable, ownership), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := scheduler.GitHubFailure(tc.err); got != tc.want {
+				t.Fatalf("GitHubFailure(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// handbackGit satisfies HandbackGit; the PR read fails before publication, so
+// every publication call is a bug.
+type handbackGit struct{ rejectingGit }
+
+func (handbackGit) InspectHandback(context.Context, managedgit.Run, string) (string, error) {
+	panic("handback inspection must not run when the PR read fails")
+}
+func (handbackGit) CommitHandback(context.Context, managedgit.Run, string) (managedgit.CommitResult, error) {
+	panic("handback commit must not run when the PR read fails")
+}
+func (handbackGit) PushHandback(context.Context, managedgit.Run, string, string) error {
+	panic("handback push must not run when the PR read fails")
+}
+
+type unavailablePullRequests struct{ *fakeGitHub }
+
+func (unavailablePullRequests) GetPullRequest(context.Context, string, int) (*github.PullRequest, error) {
+	return nil, &fault.Error{Code: "github.unavailable", Message: "dial tcp: connection refused"}
+}
+func (unavailablePullRequests) FindPullRequest(context.Context, string, string) (*github.PullRequest, error) {
+	return nil, &fault.Error{Code: "github.unavailable", Message: "dial tcp: connection refused"}
+}
+
+func TestPendingHandbackDuringOutageDefersInsteadOfRefusingStartup(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {}}}
+	s, runtime := configured(t, unavailablePullRequests{fakeGitHub: api}, "repositories:\n  - repo: owner/repo\n", handbackGit{})
+	ctx := context.Background()
+	run, err := runtime.Workflow.Transition(ctx, "pending-handback", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(runtime.Workspace.Root, "runs", run.ID), 0700); err != nil {
+		t.Fatal(err)
+	}
+	issue := `{"number":7,"title":"Implement this","state":"open","created_at":"2026-01-01T00:00:00Z","labels":[{"name":"ready-for-agent"}]}`
+	if _, err := runtime.DB.ExecContext(ctx, "INSERT INTO scheduler_runs(run_id,issue_json) VALUES(?,?)", run.ID, issue); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.DB.ExecContext(ctx, "INSERT INTO run_handbacks(run_id,pending,snapshot_json) VALUES(?,1,?)", run.ID, `{"pending":true,"requested_at":"2026-01-01T00:00:00Z"}`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Reconcile(ctx)
+	var coded *fault.Error
+	if !errors.As(err, &coded) || coded.Code != "handback.publication_pending" {
+		t.Fatalf("reconcile error = %v, want a pending handback publication", err)
+	}
+	if !scheduler.GitHubFailure(err) {
+		t.Fatalf("pending handback during an outage must defer startup: %v", err)
+	}
+}
+
+type toggledGitHub struct {
+	*fakeGitHub
+	fail bool
+}
+
+func (g *toggledGitHub) ListLabeledIssues(ctx context.Context, repo string, labels []string) ([]github.Issue, error) {
+	if g.fail {
+		return nil, &fault.Error{Code: "github.unavailable", Message: "dial tcp: connection refused"}
+	}
+	return g.fakeGitHub.ListLabeledIssues(ctx, repo, labels)
+}
+
+func TestDeferredGitHubFailureStillGatesClaimsUntilReconcileSucceeds(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
+	gated := &toggledGitHub{fakeGitHub: api, fail: true}
+	s, _ := configured(t, gated, "repositories:\n  - repo: owner/repo\n", rejectingGit{})
+	ctx := context.Background()
+	for range 2 {
+		if _, err := s.Reconcile(ctx); !scheduler.GitHubFailure(err) {
+			t.Fatalf("startup reconcile error = %v, want a deferred GitHub failure", err)
+		}
+		if err := s.Tick(ctx); !scheduler.GitHubFailure(err) {
+			t.Fatalf("tick with GitHub unavailable = %v, want a deferred GitHub failure", err)
+		}
+		runs, err := s.Runs(ctx)
+		if err != nil || len(runs) != 0 {
+			t.Fatalf("claimed before a successful reconcile: %+v, %v", runs, err)
+		}
+	}
+	gated.fail = false
+	if err := s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.Runs(ctx)
+	if err != nil || len(runs) != 1 || runs[0].State != workflow.NeedsAttention {
+		t.Fatalf("recovered reconcile did not resume dispatch: %+v, %v", runs, err)
 	}
 }

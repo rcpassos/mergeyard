@@ -493,13 +493,13 @@ func (g rejectingGit) Prepare(_ context.Context, req managedgit.PrepareRequest) 
 func (rejectingGit) CommitAndPush(context.Context, managedgit.Run, managedgit.Phase) (managedgit.CommitResult, error) {
 	panic("unexpected push")
 }
-func configured(t *testing.T, api *fakeGitHub, yaml string, g scheduler.Git) (*scheduler.Scheduler, *app.Runtime) {
+func configured(t *testing.T, api scheduler.GitHub, yaml string, g scheduler.Git) (*scheduler.Scheduler, *app.Runtime) {
 	return configuredAt(t, api, yaml, g, nil)
 }
 
 // configuredAt additionally controls the scheduler clock, so tests can age
 // discovery snapshots without waiting.
-func configuredAt(t *testing.T, api *fakeGitHub, yaml string, g scheduler.Git, now func() time.Time) (*scheduler.Scheduler, *app.Runtime) {
+func configuredAt(t *testing.T, api scheduler.GitHub, yaml string, g scheduler.Git, now func() time.Time) (*scheduler.Scheduler, *app.Runtime) {
 	t.Helper()
 	runtime, err := app.Open(context.Background(), t.TempDir())
 	if err != nil {
