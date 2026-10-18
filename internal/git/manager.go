@@ -8,9 +8,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/gate"
 	"github.com/rcpassos/mergeyard/internal/pathspec"
 	"github.com/rcpassos/mergeyard/internal/repository"
 	"github.com/rcpassos/mergeyard/internal/workspace"
@@ -20,11 +21,75 @@ import (
 // workspace lock and supply persisted run ownership when preparing a run.
 // Operations are serialized so base checkout and worktree metadata cannot race.
 type Manager struct {
-	root string
-	mu   sync.Mutex
+	root     string
+	timeouts Timeouts
+	// mu serializes operations through a cancellation-aware gate so a caller
+	// that gives up is released instead of waiting for the operation in flight.
+	mu gate.Gate
 }
 
-func New(w *workspace.Workspace) *Manager { return &Manager{root: w.Root} }
+// Timeouts bound each managed operation class so one stalled remote, hook, or
+// repository read cannot hold the scheduler's tick indefinitely. A caller that
+// supplies its own deadline keeps the earlier one.
+type Timeouts struct {
+	// Metadata bounds quick local reads of refs, the index, or single paths.
+	Metadata time.Duration
+	// Worktree bounds operations that may run repository hooks, stage or
+	// restore the worktree, or create and remove one.
+	Worktree time.Duration
+	// Remote bounds operations that contact the configured remote.
+	Remote time.Duration
+}
+
+// Defaults for Timeouts fields left unset.
+const (
+	defaultMetadataTimeout = 2 * time.Minute
+	defaultWorktreeTimeout = 10 * time.Minute
+	defaultRemoteTimeout   = 10 * time.Minute
+)
+
+func New(w *workspace.Workspace) *Manager { return NewWithTimeouts(w, Timeouts{}) }
+
+// NewWithTimeouts selects operation deadlines; tests use shorter ones.
+func NewWithTimeouts(w *workspace.Workspace, timeouts Timeouts) *Manager {
+	if timeouts.Metadata <= 0 {
+		timeouts.Metadata = defaultMetadataTimeout
+	}
+	if timeouts.Worktree <= 0 {
+		timeouts.Worktree = defaultWorktreeTimeout
+	}
+	if timeouts.Remote <= 0 {
+		timeouts.Remote = defaultRemoteTimeout
+	}
+	return &Manager{root: w.Root, timeouts: timeouts}
+}
+
+// publication returns the budget for an operation that commits and publishes:
+// every phase keeps its own class deadline instead of sharing one.
+func (t Timeouts) publication() time.Duration { return t.Worktree + t.Remote }
+
+// begin serializes one managed operation, bounds it with the operation class's
+// deadline, and releases a caller that has already given up. Callers must call
+// the returned release function.
+func (m *Manager) begin(ctx context.Context, timeout time.Duration) (context.Context, func(), error) {
+	if err := m.mu.Lock(ctx); err != nil {
+		return nil, nil, contextFailure("git.wait", "", err)
+	}
+	bounded, cancel := context.WithTimeout(ctx, timeout)
+	return bounded, func() { cancel(); m.mu.Unlock() }, nil
+}
+
+// worktreeDeadline bounds the commit phase inside an operation whose outer
+// budget covers every phase. Callers must call the returned cancel.
+func (m *Manager) worktreeDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, m.timeouts.Worktree)
+}
+
+// remoteDeadline bounds the remote phase inside an operation whose outer budget
+// covers every phase. Callers must call the returned cancel.
+func (m *Manager) remoteDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, m.timeouts.Remote)
+}
 
 // PrepareRequest describes a new or reconcilable run. RemoteURL defaults to
 // https://github.com/<Repository>.git; an override supports local mirrors.
@@ -81,8 +146,11 @@ var shaPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 // Prepare clones or refreshes the managed base and creates one isolated
 // worktree. The base is detached so concurrent runs never check out its branch.
 func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	if err != nil {
+		return Run{}, err
+	}
+	defer release()
 	run, err := m.newRun(req)
 	if err != nil {
 		return Run{}, err

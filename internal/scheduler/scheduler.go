@@ -16,6 +16,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/gate"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/harness"
@@ -75,14 +76,17 @@ type Dependencies struct {
 }
 
 type Scheduler struct {
-	cfg              config.Config
-	db               *sql.DB
-	bus              *events.Bus
-	workflow         *workflow.Workflow
-	workspace        *workspace.Workspace
-	deps             Dependencies
-	harnesses        map[string]harness.HarnessAdapter
-	tick             sync.Mutex
+	cfg       config.Config
+	db        *sql.DB
+	bus       *events.Bus
+	workflow  *workflow.Workflow
+	workspace *workspace.Workspace
+	deps      Dependencies
+	harnesses map[string]harness.HarnessAdapter
+	// tick serializes ticks, lifecycle controls, and dashboard actions. It
+	// honors cancellation, so a stalled tick never blocks a caller that gives
+	// up, disconnects, or shuts down.
+	tick             gate.Gate
 	control          *Control
 	running          atomic.Bool
 	listingFetch     sync.Mutex               // serializes listing fetches so concurrent readers share one
@@ -218,7 +222,9 @@ func (s *Scheduler) Runs(ctx context.Context) ([]workflow.Run, error) {
 // Tick serializes reconciliation and dispatch. It observes running processes
 // once and returns, so long phases do not block new claims or pause/resume.
 func (s *Scheduler) Tick(ctx context.Context) error {
-	s.tick.Lock()
+	if err := s.tick.Lock(ctx); err != nil {
+		return err
+	}
 	defer s.tick.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err

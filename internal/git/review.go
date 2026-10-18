@@ -31,8 +31,11 @@ type ReviewFile struct {
 }
 
 func (m *Manager) SnapshotReview(ctx context.Context, run Run) (ReviewSnapshot, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Worktree)
+	if err != nil {
+		return ReviewSnapshot{}, err
+	}
+	defer release()
 	return m.snapshotReview(ctx, run)
 }
 func (m *Manager) snapshotReview(ctx context.Context, run Run) (ReviewSnapshot, error) {
@@ -108,8 +111,11 @@ func (m *Manager) inspectReview(ctx context.Context, run Run) error {
 	return verifyWorktree(ctx, run)
 }
 func (m *Manager) ReviewDiff(ctx context.Context, run Run, head string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Metadata)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	if err := m.inspectReview(ctx, run); err != nil {
 		return "", err
 	}
@@ -119,8 +125,11 @@ func (m *Manager) ReviewDiff(ctx context.Context, run Run, head string) (string,
 	return command(ctx, run.Path, "git.review_diff", "diff", "--no-ext-diff", "--no-textconv", run.BaseSHA+"..."+head, "--")
 }
 func (m *Manager) ReviewChanged(ctx context.Context, run Run, before ReviewSnapshot) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Worktree)
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	if before.RunID != run.ID {
 		return false, failure("git.review_ambiguous", run.Path, errors.New("snapshot belongs to another run"))
 	}
@@ -134,8 +143,11 @@ func (m *Manager) ReviewChanged(ctx context.Context, run Run, before ReviewSnaps
 // checks ownership before touching files, and refuses unsafe filesystem shapes.
 // The scheduler durably records contamination BEFORE calling this method.
 func (m *Manager) RestoreReview(ctx context.Context, run Run, before ReviewSnapshot) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	ctx, release, err := m.begin(ctx, m.timeouts.Worktree)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := m.inspectReview(ctx, run); err != nil {
 		return err
 	}

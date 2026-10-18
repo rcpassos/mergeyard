@@ -34,7 +34,9 @@ type PlanIssue struct {
 // Plan inspects current persisted state and GitHub without reconciliation,
 // publication, workflow transitions, or agent/worktree operations.
 func (s *Scheduler) Plan(ctx context.Context, repository string) (Plan, error) {
-	s.tick.Lock()
+	if err := s.tick.Lock(ctx); err != nil {
+		return Plan{}, err
+	}
 	defer s.tick.Unlock()
 	// An explicit plan read starts its own poll so it observes current labels.
 	s.beginPoll()

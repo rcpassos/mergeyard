@@ -12,12 +12,13 @@ import (
 )
 
 // Event is a committed entry in the durable, globally ordered event stream.
+// Transient notifications leave ID and CreatedAt empty; they are never stored.
 type Event struct {
-	ID        int64           `json:"id"`
+	ID        int64           `json:"id,omitempty"`
 	RunID     string          `json:"run_id,omitempty"`
 	Type      string          `json:"type"`
 	Payload   json.RawMessage `json:"payload"`
-	CreatedAt string          `json:"created_at"`
+	CreatedAt string          `json:"created_at,omitempty"`
 }
 
 // Draft describes an event before its ID and timestamp have been assigned.
@@ -48,6 +49,38 @@ func New(db *sql.DB, logger *slog.Logger) *Bus {
 // Publish persists a standalone event. Run transitions use Commit instead.
 func (b *Bus) Publish(ctx context.Context, draft Draft) (Event, error) {
 	return b.Commit(ctx, func(*sql.Tx) (Draft, error) { return draft, nil })
+}
+
+// Notify delivers an event to live subscribers without persisting it. Transient
+// events are UI-only notifications: they carry no ID, never appear in History,
+// and never advance a subscriber's replay cursor. Use Publish for anything a
+// reconnecting dashboard must not miss.
+func (b *Bus) Notify(ctx context.Context, draft Draft) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return &fault.Error{Code: "internal.event_closed", Message: "Event bus is closed"}
+	}
+	payload, err := draftPayload(draft)
+	if err != nil {
+		return err
+	}
+	b.logger.DebugContext(ctx, "transient event", "run_id", draft.RunID, "event_type", draft.Type, "payload", payload)
+	b.broadcast(Event{RunID: draft.RunID, Type: draft.Type, Payload: payload})
+	return nil
+}
+
+// draftPayload validates a draft and returns its encoded payload, keeping the
+// persisted and transient paths rejecting the same inputs.
+func draftPayload(draft Draft) (json.RawMessage, error) {
+	if draft.Type == "" {
+		return nil, &fault.Error{Code: "internal.event_invalid", Message: "Event type is required"}
+	}
+	payload, err := json.Marshal(draft.Payload)
+	if err != nil {
+		return nil, &fault.Error{Code: "internal.event_invalid", Message: "Event payload must be valid JSON", Err: err}
+	}
+	return payload, nil
 }
 
 // Commit atomically records an event with the mutation performed by change.
@@ -86,12 +119,9 @@ func (b *Bus) CommitBatch(ctx context.Context, change func(*sql.Tx) ([]Draft, er
 	}
 	committed := make([]Event, 0, len(drafts))
 	for _, draft := range drafts {
-		if draft.Type == "" {
-			return nil, &fault.Error{Code: "internal.event_invalid", Message: "Event type is required"}
-		}
-		payload, err := json.Marshal(draft.Payload)
+		payload, err := draftPayload(draft)
 		if err != nil {
-			return nil, &fault.Error{Code: "internal.event_invalid", Message: "Event payload must be valid JSON", Err: err}
+			return nil, err
 		}
 		var runID any
 		if draft.RunID != "" {
@@ -108,18 +138,25 @@ func (b *Bus) CommitBatch(ctx context.Context, change func(*sql.Tx) ([]Draft, er
 	}
 	for _, event := range committed {
 		b.logger.InfoContext(ctx, "event", "event_id", event.ID, "run_id", event.RunID, "event_type", event.Type, "payload", event.Payload, "created_at", event.CreatedAt)
-		for subscriber := range b.subscribers {
-			copy := event
-			copy.Payload = append(json.RawMessage(nil), event.Payload...)
-			select {
-			case subscriber <- copy:
-			default:
-				close(subscriber)
-				delete(b.subscribers, subscriber)
-			}
-		}
+		b.broadcast(event)
 	}
 	return committed, nil
+}
+
+// broadcast fans an event out under b.mu. A full buffer closes the stream
+// instead of blocking run progress or silently dropping events, so the
+// consumer can reconnect and replay.
+func (b *Bus) broadcast(event Event) {
+	for subscriber := range b.subscribers {
+		copy := event
+		copy.Payload = append(json.RawMessage(nil), event.Payload...)
+		select {
+		case subscriber <- copy:
+		default:
+			close(subscriber)
+			delete(b.subscribers, subscriber)
+		}
+	}
 }
 
 // Subscribe returns a bounded stream and an idempotent cancellation function.

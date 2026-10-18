@@ -22,7 +22,9 @@ import (
 // CheckHarness reserves the same durable gate as selected-run Retry and launches
 // only a minimal request. The scheduler observes it on ticks, including restart.
 func (s *Scheduler) CheckHarness(ctx context.Context, name string) (workflow.HarnessCheck, error) {
-	s.tick.Lock()
+	if err := s.tick.Lock(ctx); err != nil {
+		return workflow.HarnessCheck{}, err
+	}
 	defer s.tick.Unlock()
 	adapter, ok := s.harnesses[name]
 	if !ok || !registry.Known(name) {

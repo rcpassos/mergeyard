@@ -24,7 +24,8 @@ func (p *localGitProbe) Exec(ctx context.Context, req runner.ExecRequest) (runne
 	if req.Executable != "git" {
 		return p.fake.Exec(ctx, req)
 	}
-	if req.Dir != "" {
+	// The machine-configuration probe runs outside any probe repository.
+	if req.Dir != "" && !strings.Contains(strings.Join(req.Args, " "), "config --get core.sshCommand") {
 		p.directories = append(p.directories, req.Dir)
 	}
 	for i, arg := range req.Args {

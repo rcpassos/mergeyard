@@ -13,6 +13,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/runner"
 )
@@ -119,6 +120,9 @@ func Check(ctx context.Context, path string, options Options) Report {
 		c.env[key] = value
 	}
 	c.env["GIT_TERMINAL_PROMPT"], c.env["GH_PROMPT_DISABLED"], c.env["LC_ALL"] = "0", "1", "C"
+	if command := c.sshCommand(); command != "" {
+		c.env["GIT_SSH_COMMAND"] = command
+	}
 	c.access(cfg)
 	c.machine(cfg)
 	c.capabilities(cfg)
@@ -143,6 +147,23 @@ type checker struct {
 
 func (c *checker) command(dir, executable string, args ...string) (runner.ExecResult, error) {
 	return c.commandInput(dir, "", executable, args...)
+}
+
+// sshCommand keeps unattended SSH probes non-interactive unless the machine
+// already selects its own transport. Git ranks GIT_SSH_COMMAND above
+// core.sshCommand, so a configured core.sshCommand must be resolved before the
+// default is applied.
+func (c *checker) sshCommand() string {
+	if c.env["GIT_SSH_COMMAND"] != "" || c.env["GIT_SSH"] != "" {
+		return ""
+	}
+	// The probe runs outside any repository so one checkout cannot answer for
+	// the machine.
+	result, err := c.command(os.TempDir(), "git", "config", "--get", "core.sshCommand")
+	if err == nil && strings.TrimSpace(string(result.Stdout)) != "" {
+		return ""
+	}
+	return managedgit.NonInteractiveSSH
 }
 
 func (c *checker) commandInput(dir, inputPath, executable string, args ...string) (runner.ExecResult, error) {

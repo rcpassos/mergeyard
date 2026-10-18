@@ -112,7 +112,9 @@ that new attempt succeeds without another write.
 
 For reads and label changes, transient transport failures and
 HTTP 408/5xx responses receive at most three attempts with 250ms and 500ms
-context-aware backoff. Rate-limited HTTP 403/429
+context-aware backoff. One two-minute deadline covers the whole request,
+including those attempts, so a stalled `gh` cannot outlive its budget; the
+deadline is `github.timeout` and is not replayed. Rate-limited HTTP 403/429
 responses return immediately so callers can defer polling; the adapter does not
 receive reset or Retry-After headers through gh stderr. Other failures also return
 immediately. `*github.Error` aliases the shared `*fault.Error`, exposes a stable
@@ -127,6 +129,7 @@ immediately. `*github.Error` aliases the shared `*fault.Error`, exposes a stable
 - `github.unavailable`
 - `github.command_failed`
 - `github.canceled`
+- `github.timeout`
 
 ## Trust-boundary fixtures
 

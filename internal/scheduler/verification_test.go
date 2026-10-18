@@ -93,13 +93,18 @@ func TestVerificationFlowsThroughPRReviewAndDashboard(t *testing.T) {
 type evidenceGitHub struct {
 	branchGitHub
 	offline bool
+	code    string
 	updates int
 }
 
 func (f *evidenceGitHub) UpdatePullRequest(ctx context.Context, repo string, n int, content github.PullRequestContent) (*github.PullRequest, error) {
 	f.updates++
 	if f.offline {
-		return nil, &fault.Error{Code: "github.unavailable", Message: "Offline"}
+		code := f.code
+		if code == "" {
+			code = "github.unavailable"
+		}
+		return nil, &fault.Error{Code: code, Message: "Offline"}
 	}
 	return f.fakeGitHub.UpdatePullRequest(ctx, repo, n, content)
 }
@@ -321,6 +326,245 @@ func TestStalledVerificationPublicationReleasesReconciliationAndRetries(t *testi
 	}
 }
 
+// seedVerificationRun inserts a run and its latest implement evidence without
+// launching an agent, so publication reconciliation owns it immediately.
+func seedVerificationRun(t *testing.T, rt *app.Runtime, id, state string, issue, pr int) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO runs(id,repository,issue_number,state,pr_number) VALUES(?,'owner/repo',?,?,?)`, id, issue, state, pr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO scheduler_runs(run_id,issue_json) VALUES(?,?)`, id, fmt.Sprintf(`{"number":%d,"title":"Feature"}`, issue)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Events.Publish(ctx, events.Draft{RunID: id, Type: "phase.completed", Payload: map[string]any{"phase": "implement", "result": map[string]any{"schema_version": 4, "criteria": []any{}, "human_action": nil, "status": "success", "summary": "Valid evidence", "verification": []any{map[string]any{"command": "test", "outcome": "passed", "excerpt": nil}}}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countEvents(t *testing.T, rt *app.Runtime, query string, args ...any) int {
+	t.Helper()
+	var count int
+	if err := rt.DB.QueryRow(query, args...).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+// failingVerificationFlow builds a runtime whose PR body updates fail with code.
+func failingVerificationFlow(t *testing.T, code string) (*scheduler.Scheduler, *app.Runtime, *evidenceGitHub, config.Config) {
+	t.Helper()
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}, prs: map[string]*github.PullRequest{
+		"feature": {Number: 101, State: github.Open, Body: "human body"},
+	}, head: func(string) string { return "" }}
+	_, rt := fixture(t, api)
+	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := &evidenceGitHub{branchGitHub: branchGitHub{api}, offline: true, code: code}
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: publisher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, rt, publisher, cfg
+}
+
+func TestFailingVerificationPublicationKeepsAttemptsBounded(t *testing.T) {
+	s, rt, publisher, cfg := failingVerificationFlow(t, "github.unavailable")
+	ctx := context.Background()
+	// MANUAL keeps the run open so every reconciliation retries, like a live
+	// run whose PR updates keep failing while it waits for a human.
+	seedVerificationRun(t, rt, "probe-manual", "MANUAL", 7, 101)
+	baseline := countEvents(t, rt, `SELECT count(*) FROM events`)
+	growth := []int{}
+	for range 3 {
+		if _, err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		growth = append(growth, countEvents(t, rt, `SELECT count(*) FROM events`))
+	}
+	if publisher.updates != 3 {
+		t.Fatalf("live run publication attempts = %d, want one per reconciliation", publisher.updates)
+	}
+	if attempts := countEvents(t, rt, `SELECT count(*) FROM events WHERE type='verification.attempted'`); attempts != 0 {
+		t.Fatalf("publication attempts saved %d event rows", attempts)
+	}
+	if growth[0] != baseline+1 || growth[1] != growth[0] || growth[2] != growth[0] {
+		t.Fatalf("event rows kept growing: baseline %d, after reconciliations %v", baseline, growth)
+	}
+	if warnings := countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id=? AND type='verification.warning'`, "probe-manual"); warnings != 1 {
+		t.Fatalf("warnings = %d, want one per source and code", warnings)
+	}
+	var warning string
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id=? AND type='verification.warning'`, "probe-manual").Scan(&warning); err != nil || !strings.Contains(warning, "will retry") {
+		t.Fatalf("live-run warning = %q, %v", warning, err)
+	}
+	var attempts int
+	if err := rt.DB.QueryRow(`SELECT attempts FROM verification_attempts WHERE run_id=?`, "probe-manual").Scan(&attempts); err != nil || attempts != 3 {
+		t.Fatalf("durable attempt record = %d, %v", attempts, err)
+	}
+	server, err := web.NewDashboard(rt.Events, rt.Scheduler, web.DashboardOptions{DB: rt.DB, Workspace: rt.Workspace, Scheduler: s, Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/probe-manual", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "verification.warning") || !strings.Contains(response.Body.String(), "will retry") {
+		t.Fatalf("run page lost the publication warning: %d", response.Code)
+	}
+}
+
+func TestFinishedRunStopsRetryingUnresolvableVerificationFailure(t *testing.T) {
+	s, rt, publisher, _ := failingVerificationFlow(t, "github.not_found")
+	ctx := context.Background()
+	seedVerificationRun(t, rt, "probe-stopped", "STOPPED", 7, 101)
+	baseline := countEvents(t, rt, `SELECT count(*) FROM events`)
+	growth := []int{}
+	for range 3 {
+		if _, err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		growth = append(growth, countEvents(t, rt, `SELECT count(*) FROM events`))
+	}
+	if publisher.updates != 1 {
+		t.Fatalf("finished run was retried %d times, want a single delivery attempt", publisher.updates)
+	}
+	if growth[0] != baseline+1 || growth[1] != growth[0] || growth[2] != growth[0] {
+		t.Fatalf("finished run kept growing event rows: baseline %d, after reconciliations %v", baseline, growth)
+	}
+	if warnings := countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id=? AND type='verification.warning'`, "probe-stopped"); warnings != 1 {
+		t.Fatalf("warnings = %d, want one per source and code", warnings)
+	}
+	var warning string
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id=? AND type='verification.warning'`, "probe-stopped").Scan(&warning); err != nil || !strings.Contains(warning, "cannot update this PR") {
+		t.Fatalf("finished-run warning = %q, %v", warning, err)
+	}
+	var failed bool
+	if err := rt.DB.QueryRow(`SELECT failed FROM verification_attempts WHERE run_id=?`, "probe-stopped").Scan(&failed); err != nil || !failed {
+		t.Fatalf("unresolvable failure not recorded: %v, %v", failed, err)
+	}
+	if attempts := countEvents(t, rt, `SELECT count(*) FROM events WHERE type='verification.attempted'`); attempts != 0 {
+		t.Fatalf("publication attempts saved %d event rows", attempts)
+	}
+	// A warning saved by an earlier attempt still records the stop without a
+	// duplicate warning event.
+	if _, err := rt.DB.ExecContext(ctx, `DELETE FROM verification_attempts WHERE run_id=?`, "probe-stopped"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.updates != 2 || countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id=? AND type='verification.warning'`, "probe-stopped") != 1 {
+		t.Fatalf("existing warning duplicated or lost the stop: %d", publisher.updates)
+	}
+	if err := rt.DB.QueryRow(`SELECT failed FROM verification_attempts WHERE run_id=?`, "probe-stopped").Scan(&failed); err != nil || !failed {
+		t.Fatalf("stop marker lost with an existing warning: %v, %v", failed, err)
+	}
+}
+
+// A transport failure, rate limit or shared-budget timeout stays retryable even
+// for a finished run: it does not show the PR can never be updated.
+func TestFinishedRunRetriesTransientVerificationFailure(t *testing.T) {
+	s, rt, publisher, _ := failingVerificationFlow(t, "github.unavailable")
+	ctx := context.Background()
+	seedVerificationRun(t, rt, "probe-transient", "STOPPED", 7, 101)
+	baseline := countEvents(t, rt, `SELECT count(*) FROM events`)
+	growth := []int{}
+	for range 3 {
+		if _, err := s.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		growth = append(growth, countEvents(t, rt, `SELECT count(*) FROM events`))
+	}
+	if publisher.updates != 3 {
+		t.Fatalf("transient failure was not retried: %d calls", publisher.updates)
+	}
+	if growth[0] != baseline+1 || growth[1] != growth[0] || growth[2] != growth[0] {
+		t.Fatalf("transient failures grew event rows: baseline %d, after reconciliations %v", baseline, growth)
+	}
+	if warnings := countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id=? AND type='verification.warning'`, "probe-transient"); warnings != 1 {
+		t.Fatalf("warnings = %d, want one per source and code", warnings)
+	}
+	var warning string
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id=? AND type='verification.warning'`, "probe-transient").Scan(&warning); err != nil || !strings.Contains(warning, "will retry") {
+		t.Fatalf("transient warning = %q, %v", warning, err)
+	}
+	var failed bool
+	if err := rt.DB.QueryRow(`SELECT failed FROM verification_attempts WHERE run_id=?`, "probe-transient").Scan(&failed); err != nil || failed {
+		t.Fatalf("transient failure marked the run stopped: %v, %v", failed, err)
+	}
+}
+
+// A finished run whose attempt hits the shared five-second budget keeps its
+// evidence pending, so a later healthy attempt still publishes it.
+func TestFinishedRunPublishesAfterBudgetTimeoutRecovers(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}, prs: map[string]*github.PullRequest{
+		"feature": {Number: 101, State: github.Open, Body: "human body"},
+	}, head: func(string) string { return "" }}
+	_, rt := fixture(t, api)
+	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stalled := &stalledEvidenceGitHub{branchGitHub: branchGitHub{api}}
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: stalled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	seedVerificationRun(t, rt, "probe-timeout", "STOPPED", 7, 101)
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !stalled.bounded {
+		t.Fatal("publication was not bounded by the shared budget")
+	}
+	var failed bool
+	if err := rt.DB.QueryRow(`SELECT failed FROM verification_attempts WHERE run_id=?`, "probe-timeout").Scan(&failed); err != nil || failed {
+		t.Fatalf("budget timeout marked the run stopped: %v, %v", failed, err)
+	}
+	healthy := &evidenceGitHub{branchGitHub: branchGitHub{api}}
+	s, err = scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: healthy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if healthy.updates != 1 || !strings.Contains(api.prs["feature"].Body, "Valid evidence") {
+		t.Fatalf("timed-out finished-run evidence was not published after recovery: %d", healthy.updates)
+	}
+}
+
+// A recorded attempt whose call never returned (crash, kill) must not stop a
+// finished run: only a returned failure is a delivery result.
+func TestInterruptedVerificationAttemptStaysRetryableForFinishedRun(t *testing.T) {
+	s, rt, publisher, _ := failingVerificationFlow(t, "github.not_found")
+	ctx := context.Background()
+	seedVerificationRun(t, rt, "probe-interrupted", "STOPPED", 7, 101)
+	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO verification_attempts(run_id,source_event,attempts,last_attempt_at,failed)
+		SELECT ?,id,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'),0 FROM events WHERE run_id=? AND type='phase.completed'`, "probe-interrupted", "probe-interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.updates != 1 {
+		t.Fatalf("interrupted attempt blocked retry: %d calls", publisher.updates)
+	}
+	var failed bool
+	if err := rt.DB.QueryRow(`SELECT failed FROM verification_attempts WHERE run_id=?`, "probe-interrupted").Scan(&failed); err != nil || !failed {
+		t.Fatalf("returned failure not recorded: %v, %v", failed, err)
+	}
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.updates != 1 {
+		t.Fatalf("finished run retried after the returned failure: %d calls", publisher.updates)
+	}
+}
+
 type finiteSlowBodyGitHub struct {
 	*fakeGitHub
 	calls []int
@@ -341,6 +585,9 @@ func (f *finiteSlowBodyGitHub) UpdatePullRequest(ctx context.Context, repo strin
 	return f.fakeGitHub.UpdatePullRequest(ctx, repo, n, content)
 }
 func TestSlowVerificationPublicationDoesNotStarveHealthyPRAfterRestart(t *testing.T) {
+	// STOPPED runs keep retrying transient failures, so durable
+	// least-recently-attempted rotation is what lets the healthy PR through
+	// after the restart.
 	api := &fakeGitHub{issues: map[string][]github.Issue{}, prs: map[string]*github.PullRequest{
 		"first": {Number: 101, Body: "human first"}, "second": {Number: 102, Body: "human second"},
 	}}
@@ -358,15 +605,7 @@ func TestSlowVerificationPublicationDoesNotStarveHealthyPRAfterRestart(t *testin
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for i, id := range []string{"probe-first", "probe-second"} {
-		if _, err := rt.DB.ExecContext(ctx, `INSERT INTO runs(id,repository,issue_number,state,pr_number) VALUES(?,'owner/repo',?,'STOPPED',?)`, id, i+1, 101+i); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := rt.DB.ExecContext(ctx, `INSERT INTO scheduler_runs(run_id,issue_json) VALUES(?,?)`, id, fmt.Sprintf(`{"number":%d,"title":"Feature"}`, i+1)); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := rt.Events.Publish(ctx, events.Draft{RunID: id, Type: "phase.completed", Payload: map[string]any{"phase": "implement", "result": map[string]any{"schema_version": 4, "criteria": []any{}, "human_action": nil, "status": "success", "summary": "Valid evidence", "verification": []any{map[string]any{"command": "test", "outcome": "passed", "excerpt": nil}}}}}); err != nil {
-			t.Fatal(err)
-		}
+		seedVerificationRun(t, rt, id, "STOPPED", i+1, 101+i)
 	}
 	if _, err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)

@@ -1,16 +1,16 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/proc"
 	"github.com/rcpassos/mergeyard/internal/sessions"
 )
 
@@ -30,60 +30,36 @@ func NewLocal(options Options) *Local {
 // Exec reports process exits in ExitCode and captures stdout and stderr separately.
 // Launch and cancellation failures are errors. If a successful command leaves
 // output pipes open past the drain limit, it returns internal.exec_output_incomplete
-// with exit code 0 and the output captured so far. It attempts to stop remaining
-// processes in the command's group before returning.
+// with exit code 0 and the output captured so far. It stops remaining processes
+// in the command's group before returning.
 func (l *Local) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
-	var out, errOut bytes.Buffer
-	cmd := exec.CommandContext(ctx, req.Executable, req.Args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		} else {
-			return err
-		}
-	}
-	// Detached descendants may escape the group while retaining output pipes.
-	// Bound pipe draining as well as the lifetime of the direct child.
-	cmd.WaitDelay = time.Second
-	cmd.Dir, cmd.Env = req.Dir, req.Environment()
-	cmd.Stdout, cmd.Stderr = &out, &errOut
+	var input io.Reader
 	if req.StdinPath != "" {
-		input, err := os.Open(req.StdinPath)
+		file, err := os.Open(req.StdinPath)
 		if err != nil {
 			return ExecResult{}, localFailure("internal.exec_input_failed", req.StdinPath, err)
 		}
-		defer input.Close()
-		cmd.Stdin = input
+		defer file.Close()
+		input = file
 	}
-	err := cmd.Run()
-	var cleanupErr error
-	// Wait may prefer a nonzero parent exit over ErrWaitDelay. Clean up every
-	// failed invocation rather than relying on that sentinel to detect pipes.
-	if err != nil && cmd.Process != nil {
-		cleanupErr = cmd.Cancel()
-		if errors.Is(cleanupErr, os.ErrProcessDone) {
-			cleanupErr = nil
-		}
-	}
-	result := ExecResult{Stdout: out.Bytes(), Stderr: errOut.Bytes()}
-	if cmd.ProcessState != nil {
-		result.ExitCode = cmd.ProcessState.ExitCode()
-	}
-	if err != nil && ctx.Err() != nil {
-		return result, localFailure("internal.canceled", req.Executable, errors.Join(ctx.Err(), cleanupErr))
-	}
-	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && result.ExitCode == 0 {
-		return result, localFailure("internal.exec_output_incomplete", req.Executable, errors.Join(err, cleanupErr))
-	}
-	if cleanupErr != nil {
-		return result, localFailure("internal.exec_failed", req.Executable, errors.Join(err, cleanupErr))
+	result, err := proc.Run(ctx, proc.Request{
+		Executable: req.Executable, Args: req.Args, Dir: req.Dir, Env: req.Environment(), Stdin: input,
+		WaitDelay: time.Second,
+	})
+	execResult := ExecResult{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: result.ExitCode}
+	switch {
+	case err == nil:
+		return execResult, nil
+	case ctx.Err() != nil:
+		return execResult, localFailure("internal.canceled", req.Executable, err)
+	case errors.Is(err, exec.ErrWaitDelay) && result.ExitCode == 0:
+		return execResult, localFailure("internal.exec_output_incomplete", req.Executable, err)
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return result, nil
+		return execResult, nil
 	}
-	return result, localFailure("internal.exec_failed", req.Executable, err)
+	return execResult, localFailure("internal.exec_failed", req.Executable, err)
 }
 
 func (l *Local) StartSession(ctx context.Context, req SessionRequest) (SessionRef, error) {
