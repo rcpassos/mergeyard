@@ -2,7 +2,9 @@ package scheduler_test
 
 import (
 	"context"
+	"database/sql"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,7 +68,18 @@ func TestPollListsLabeledIssuesOnceAndSharesTheListing(t *testing.T) {
 		t.Fatalf("queue listings = %d, want the tick's shared listing", api.calls.issueListings)
 	}
 
+	// A snapshot stays reusable for two poll intervals: one for the
+	// scheduler's own refresh and one for timer skew, so the dashboard does
+	// not fetch just before the scheduler refreshes the same listing.
 	now = now.Add(31 * time.Second)
+	if _, err := s.Queue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if api.calls.issueListings != 2 {
+		t.Fatalf("skewed queue listings = %d, want the tick's shared listing", api.calls.issueListings)
+	}
+
+	now = now.Add(30 * time.Second)
 	if _, err := s.Queue(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -103,9 +116,9 @@ func TestQueueReusesBlockerReadsForUnchangedIssues(t *testing.T) {
 		t.Fatalf("blocker reads = %d, want 1", api.calls.blockerReads)
 	}
 
-	// A refreshed listing with the same snapshots reuses the previous reads.
+	// A refreshed listing with the same snapshots reuses the previous read.
 	delete(api.blockers, 7)
-	now = now.Add(31 * time.Second)
+	now = now.Add(61 * time.Second)
 	queue, err = s.Queue(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +130,7 @@ func TestQueueReusesBlockerReadsForUnchangedIssues(t *testing.T) {
 	// A changed issue refreshes its dependency read.
 	api.issues["owner/repo"][0].UpdatedAt = changedAt.Add(time.Minute)
 	api.blockers[7] = []github.Issue{ready(98), ready(99)}
-	now = now.Add(31 * time.Second)
+	now = now.Add(61 * time.Second)
 	queue, err = s.Queue(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +141,8 @@ func TestQueueReusesBlockerReadsForUnchangedIssues(t *testing.T) {
 }
 
 // Refused issues lose the ready label, so the label-filtered listing no longer
-// sees them; the dashboard still shows them and their reason.
+// sees them; the dashboard still shows them and their reason. Refusals whose
+// issue is closed or deleted are forgotten instead of re-read on every refresh.
 func TestQueueKeepsRefusedIssuesVisibleWithoutLabels(t *testing.T) {
 	ctx := context.Background()
 	refused := ready(7)
@@ -151,6 +165,108 @@ func TestQueueKeepsRefusedIssuesVisibleWithoutLabels(t *testing.T) {
 	if len(queue) != 1 || queue[0].Issue.Number != 7 || !queue[0].Attention || queue[0].RefusalReason != "Untrusted label actor." {
 		t.Fatalf("refused issue absent from dashboard: %+v", queue)
 	}
+	rows, err := countRefusals(runtime.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("stale refusal rows = %d, want only the open refusal", rows)
+	}
+
+	// The next refresh spends one read on the visible refusal and none on the
+	// forgotten rows, and reuses the listing.
+	api.calls = githubCalls{}
+	queue, err = s.Queue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue) != 1 || queue[0].Issue.Number != 7 {
+		t.Fatalf("queue after cleanup = %+v", queue)
+	}
+	if api.calls.issueReads != 1 || api.calls.issueListings != 0 {
+		t.Fatalf("refresh calls = %+v, want one read and the shared listing", api.calls)
+	}
+}
+
+// A pending refusal is still reconciliation's to finish: a closed issue keeps
+// its row for the label removal, while a deleted issue can never complete one.
+func TestQueueForgetsOnlyRefusalsNothingCanFinish(t *testing.T) {
+	ctx := context.Background()
+	closed := ready(11)
+	closed.Labels = nil
+	closed.State = github.Closed
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {closed}}}
+	s, runtime := configured(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{})
+	for _, number := range []int{10, 11} {
+		if _, err := runtime.DB.Exec("INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES('owner/repo',?,'Untrusted label actor.','ready-for-agent',1)", number); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Queue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var pending []int
+	rows, err := runtime.DB.Query("SELECT issue_number FROM issue_refusals ORDER BY issue_number")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var number int
+		if err := rows.Scan(&number); err != nil {
+			t.Fatal(err)
+		}
+		pending = append(pending, number)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0] != 11 {
+		t.Fatalf("pending refusal rows = %v, want the closed issue's row", pending)
+	}
+}
+
+// A scheduler poll and a dashboard refresh that start together share one fetch
+// per repository instead of racing duplicate listings.
+func TestConcurrentListingReadersShareOneFetch(t *testing.T) {
+	ctx := context.Background()
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
+	started, release := make(chan struct{}), make(chan struct{})
+	var fetches int32
+	api.listHook = func() {
+		if atomic.AddInt32(&fetches, 1) == 1 {
+			close(started)
+			<-release
+		}
+	}
+	s, _ := configured(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{})
+
+	done := make(chan error, 3)
+	for range 3 {
+		go func() {
+			_, err := s.Queue(ctx)
+			done <- err
+		}()
+	}
+	<-started
+	close(release)
+	for range 3 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := atomic.LoadInt32(&fetches); got != 1 {
+		t.Fatalf("listing fetches = %d, want one shared fetch", got)
+	}
+	if api.calls.issueListings != 1 {
+		t.Fatalf("listing calls = %d, want 1", api.calls.issueListings)
+	}
+}
+
+func countRefusals(db *sql.DB) (int, error) {
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM issue_refusals").Scan(&count)
+	return count, err
 }
 
 // A claim interrupted before saving its issue snapshot still recovers an open

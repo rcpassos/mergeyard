@@ -11,8 +11,7 @@ import (
 )
 
 // keyedCache is a concurrency-safe map of discovery snapshots keyed by
-// repository or issue. Callers own the entry policy: freshness for the poll
-// listing, snapshot matching for dashboard blocker reuse.
+// repository or issue. Callers own the entry policy.
 type keyedCache[T any] struct {
 	mu      sync.Mutex
 	entries map[string]T
@@ -34,25 +33,66 @@ func (c *keyedCache[T]) put(key string, entry T) {
 	c.entries[key] = entry
 }
 
-func (c *keyedCache[T]) clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries = nil
-}
-
-// listingEntry is the shared per-poll snapshot of one repository's open
+// listingCache is the shared per-poll snapshot of each repository's open
 // Mergeyard-labelled issues. Reconcile, dispatch, plan and the dashboard queue
 // read the same snapshot, so one poll lists a repository once instead of paging
 // through every open issue and pull request for each reader.
+type listingCache struct {
+	mu      sync.Mutex
+	poll    uint64
+	entries map[string]listingEntry
+}
+
+// listingEntry is one repository's snapshot of a poll. A fetch is stamped with
+// the poll that started it and the time it started, so a slow fetch can neither
+// pass for a newer poll nor look fresher than it is.
 type listingEntry struct {
 	issues    []github.Issue
 	fetchedAt time.Time
+	poll      uint64
 }
 
-// beginPoll invalidates every repository snapshot so the poll refreshes it,
+// begin starts a new poll and invalidates every snapshot.
+func (c *listingCache) begin() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.poll++
+	c.entries = nil
+}
+
+func (c *listingCache) currentPoll() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.poll
+}
+
+func (c *listingCache) lookup(key string) (listingEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	return entry, ok
+}
+
+// store keeps a completed fetch only while it still belongs to the current
+// poll, so a fetch that began before a new poll cannot replace that poll's
+// listing.
+func (c *listingCache) store(key string, entry listingEntry) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry.poll != c.poll {
+		return false
+	}
+	if c.entries == nil {
+		c.entries = make(map[string]listingEntry)
+	}
+	c.entries[key] = entry
+	return true
+}
+
+// beginPoll starts a new scheduler poll, invalidating the previous snapshots
 // while readers within the same poll keep sharing the refreshed listing.
 func (s *Scheduler) beginPoll() {
-	s.listings.clear()
+	s.listings.begin()
 }
 
 // pollLabels names the labels that place an issue on Mergeyard's radar.
@@ -67,20 +107,43 @@ func (s *Scheduler) pollInterval() time.Duration {
 	return s.cfg.PollInterval
 }
 
+// listingWindow is how long a snapshot stays reusable without a fresh read.
+// One poll interval covers the scheduler's own refresh; the second absorbs
+// timer skew between the scheduler and the dashboard, whose identical tickers
+// would otherwise both fetch at every boundary. A dashboard without a running
+// scheduler refreshes its own listing once the window expires.
+func (s *Scheduler) listingWindow() time.Duration {
+	return 2 * s.pollInterval()
+}
+
 // listIssues returns the poll's label-filtered listing for one repository,
 // fetching it on first use. The returned slice is shared and must not be
-// modified. A reader outside a scheduler poll, such as the dashboard queue
-// without a running scheduler, refreshes a snapshot older than the poll
-// interval so the dashboard still observes GitHub.
+// modified. Concurrent readers share one fetch per repository through
+// listingFetch instead of racing duplicates.
 func (s *Scheduler) listIssues(ctx context.Context, repo config.Repository) ([]github.Issue, error) {
 	key := strings.ToLower(repo.Repo)
-	if entry, ok := s.listings.get(key); ok && s.deps.Now().Sub(entry.fetchedAt) < s.pollInterval() {
-		return entry.issues, nil
+	if issues, ok := s.cachedListing(key); ok {
+		return issues, nil
 	}
+	s.listingFetch.Lock()
+	defer s.listingFetch.Unlock()
+	// Another reader may have fetched while we waited for the lock.
+	if issues, ok := s.cachedListing(key); ok {
+		return issues, nil
+	}
+	poll, fetchedAt := s.listings.currentPoll(), s.deps.Now()
 	issues, err := s.deps.GitHub.ListLabeledIssues(ctx, repo.Repo, pollLabels(repo))
 	if err != nil {
 		return nil, err
 	}
-	s.listings.put(key, listingEntry{issues: issues, fetchedAt: s.deps.Now()})
+	s.listings.store(key, listingEntry{issues: issues, fetchedAt: fetchedAt, poll: poll})
 	return issues, nil
+}
+
+func (s *Scheduler) cachedListing(key string) ([]github.Issue, bool) {
+	entry, ok := s.listings.lookup(key)
+	if !ok || s.deps.Now().Sub(entry.fetchedAt) >= s.listingWindow() {
+		return nil, false
+	}
+	return entry.issues, true
 }

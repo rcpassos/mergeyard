@@ -85,7 +85,8 @@ type Scheduler struct {
 	tick             sync.Mutex
 	control          *Control
 	running          atomic.Bool
-	listings         keyedCache[listingEntry] // this poll's label-filtered issue snapshot per repository
+	listingFetch     sync.Mutex               // serializes listing fetches so concurrent readers share one
+	listings         listingCache             // this poll's label-filtered issue snapshot per repository
 	blockers         keyedCache[blockerEntry] // dashboard blocker reads keyed by unchanged issue snapshots
 	reportedFindings map[string]bool          // protected by tick; unchanged findings emit once per scheduler lifetime
 }

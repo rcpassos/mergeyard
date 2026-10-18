@@ -34,6 +34,7 @@ type fakeGitHub struct {
 	creations        int
 	head             func(string) string
 	mutate           func(action, repo string, n int, label string) error
+	listHook         func() // runs inside each label-filtered listing request
 	calls            githubCalls
 	listings         []listingRequest
 }
@@ -84,6 +85,9 @@ func (f *fakeGitHub) EnsureTrustRefusalComment(_ context.Context, _ string, n in
 // ListLabeledIssues mirrors GitHub's label filter: the repository's open
 // issues carrying any requested label, in adapter-owned order.
 func (f *fakeGitHub) ListLabeledIssues(_ context.Context, repo string, labels []string) ([]github.Issue, error) {
+	if f.listHook != nil {
+		f.listHook()
+	}
 	f.calls.issueListings++
 	f.listings = append(f.listings, listingRequest{repo: repo, labels: append([]string(nil), labels...)})
 	var issues []github.Issue

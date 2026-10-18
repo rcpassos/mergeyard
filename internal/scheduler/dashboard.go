@@ -62,8 +62,9 @@ func (s *Scheduler) queueBlockers(ctx context.Context, repo config.Repository, i
 // withRefusedIssues adds refused issues that no longer carry a Mergeyard label,
 // so the dashboard keeps showing them and their reason until a trusted
 // maintainer relabels them. Only refusals missing from the listing are read
-// back, one per refresh, and refusals are rare. Closed and deleted issues stay
-// absent like any other listing.
+// back. Refusals whose issue is closed or deleted are forgotten, so a stale row
+// cannot be re-read on every refresh forever; the read-back stays bounded by
+// the refusals that can still be shown.
 func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repository, listed []github.Issue) ([]github.Issue, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT issue_number FROM issue_refusals WHERE repository=? ORDER BY issue_number", strings.ToLower(repo.Repo))
 	if err != nil {
@@ -94,14 +95,26 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repositor
 		issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, number)
 		var coded *fault.Error
 		if errors.As(err, &coded) && coded.Code == "github.not_found" {
-			continue // The issue is gone; its stale refusal has no dashboard page.
+			// The issue is gone: no label can be removed and nothing can be
+			// shown, so drop the row instead of re-reading it forever.
+			if err := s.forgetRefusal(ctx, repo.Repo, number); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		if issue.State == github.Open {
-			issues = append(issues, issue)
+		if issue.State != github.Open {
+			// The dashboard cannot show closed issues. A settled row would be
+			// re-read on every refresh forever; a pending one stays for
+			// reconciliation to finish its label removal.
+			if err := s.forgetSettledRefusal(ctx, repo.Repo, number); err != nil {
+				return nil, err
+			}
+			continue
 		}
+		issues = append(issues, issue)
 	}
 	return issues, nil
 }
