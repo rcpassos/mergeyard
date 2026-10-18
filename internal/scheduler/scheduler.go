@@ -237,7 +237,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if s.control.Paused() {
 		return errors.Join(failures...)
 	}
-	runs, err := s.Runs(ctx)
+	runs, err := s.tickRuns(ctx)
 	if err != nil {
 		return errors.Join(append(failures, err)...)
 	}
