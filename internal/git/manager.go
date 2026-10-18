@@ -65,7 +65,7 @@ func NewWithTimeouts(w *workspace.Workspace, timeouts Timeouts) *Manager {
 }
 
 // publication returns the budget for an operation that commits and publishes:
-// each phase keeps its own class deadline instead of sharing one.
+// every phase keeps its own class deadline instead of sharing one.
 func (t Timeouts) publication() time.Duration { return t.Worktree + t.Remote }
 
 // begin serializes one managed operation, bounds it with the operation class's
@@ -83,6 +83,12 @@ func (m *Manager) begin(ctx context.Context, timeout time.Duration) (context.Con
 // budget covers every phase. Callers must call the returned cancel.
 func (m *Manager) worktreeDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, m.timeouts.Worktree)
+}
+
+// remoteDeadline bounds the remote phase inside an operation whose outer budget
+// covers every phase. Callers must call the returned cancel.
+func (m *Manager) remoteDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, m.timeouts.Remote)
 }
 
 // PrepareRequest describes a new or reconcilable run. RemoteURL defaults to

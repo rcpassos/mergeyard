@@ -36,46 +36,52 @@ func command(ctx context.Context, dir, code string, args ...string) (string, err
 // transport the machine already selected. Git ranks GIT_SSH_COMMAND above
 // core.sshCommand, so a configured core.sshCommand must be resolved before the
 // default is applied.
-func sshEnvironment() []string {
+func sshEnvironment(dir string) []string {
 	if os.Getenv("GIT_SSH_COMMAND") != "" || os.Getenv("GIT_SSH") != "" {
 		return nil
 	}
-	if configuredSSHCommand() != "" {
+	if configuredSSHCommand(dir) != "" {
 		return nil
 	}
 	return []string{"GIT_SSH_COMMAND=" + NonInteractiveSSH}
 }
 
-// sshProbe caches the resolved core.sshCommand per configuration source. The
-// environment is read on every call, so a process that changes its
-// configuration paths resolves them again.
-var sshProbe struct {
-	mu    sync.Mutex
-	key   string
-	value string
-	valid bool
-}
+// sshProbeLimit bounds the probe cache so a long-lived daemon cannot grow it
+// without end. Rebuilding an entry costs one bounded configuration read.
+const sshProbeLimit = 128
 
-// configuredSSHCommand reads core.sshCommand from the machine's global and
-// system configuration, outside any repository, so one checked-out repository
-// cannot answer for the machine.
-func configuredSSHCommand() string {
-	key := sshConfigKey()
+// sshProbe caches the resolved core.sshCommand per directory and configuration
+// source. The directory matters: Git evaluates conditional includes such as
+// `gitdir:` and `hasconfig:remote.*.url:` only inside a repository, so the
+// probe runs where the command runs. An edit to a configuration file is picked
+// up on restart.
+var sshProbe = struct {
+	mu      sync.Mutex
+	entries map[string]string
+}{entries: map[string]string{}}
+
+// configuredSSHCommand reads core.sshCommand for one command directory.
+func configuredSSHCommand(dir string) string {
+	key := dir + "\x00" + sshConfigKey()
 	sshProbe.mu.Lock()
 	defer sshProbe.mu.Unlock()
-	if sshProbe.valid && sshProbe.key == key {
-		return sshProbe.value
+	if value, ok := sshProbe.entries[key]; ok {
+		return value
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sshProbeTimeout)
 	defer cancel()
 	result, _ := proc.Run(ctx, proc.Request{
 		Executable: "git",
 		Args:       []string{"config", "--get", "core.sshCommand"},
-		Dir:        os.TempDir(),
+		Dir:        dir,
 		Env:        append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"),
 	})
-	sshProbe.key, sshProbe.value, sshProbe.valid = key, strings.TrimSpace(string(result.Stdout)), true
-	return sshProbe.value
+	value := strings.TrimSpace(string(result.Stdout))
+	if len(sshProbe.entries) >= sshProbeLimit {
+		clear(sshProbe.entries)
+	}
+	sshProbe.entries[key] = value
+	return value
 }
 
 // sshConfigKey identifies the configuration the probe reads.
@@ -90,7 +96,7 @@ func sshConfigKey() string {
 
 func commandWithEnv(ctx context.Context, dir, code string, env []string, args ...string) (string, error) {
 	commandEnv := append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), env...)
-	commandEnv = append(commandEnv, sshEnvironment()...)
+	commandEnv = append(commandEnv, sshEnvironment(dir)...)
 	result, err := proc.Run(ctx, proc.Request{Executable: "git", Args: args, Dir: dir, Env: commandEnv})
 	if ctx.Err() != nil {
 		return string(result.Stdout), contextFailure(code, dir, ctx.Err())

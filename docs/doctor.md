@@ -84,8 +84,12 @@ disabled, shell repository/index overrides are cleared, existing credential
 helpers and transport URL rewrites remain available, and Git never prompts:
 SSH probes use batch mode with keepalive options so a missing credential or a
 dead connection fails instead of hanging, unless the machine chooses its own
-transport through `GIT_SSH`, `GIT_SSH_COMMAND`, or `core.sshCommand`. Every
-external command has a 30-second timeout; SIGINT/SIGTERM cancels the checks.
+transport through `GIT_SSH`, `GIT_SSH_COMMAND`, or a `core.sshCommand` the
+machine resolves for the probe. Probe repositories are disposable and have no
+remote of their own, so repository-scoped conditional includes cannot apply to
+them; a multi-account setup that relies on those should set `GIT_SSH_COMMAND`
+for the daemon. Every external command has a 30-second timeout;
+SIGINT/SIGTERM cancels the checks.
 
 ## Verification
 

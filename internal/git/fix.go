@@ -10,8 +10,8 @@ import (
 // CommitFix is replayable after a crash: already-created implementer or
 // Mergeyard commits are retained, and a clean index never creates a new commit.
 func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target string) (CommitResult, error) {
-	// The fix target is re-observed on the remote before the commit; the
-	// publication budget covers both phases.
+	// The fix target is re-observed on the remote before the commit; the remote
+	// read and the commit each keep their class deadline.
 	ctx, release, err := m.begin(ctx, m.timeouts.publication())
 	if err != nil {
 		return CommitResult{}, err
@@ -30,7 +30,9 @@ func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target st
 	if err != nil {
 		return CommitResult{}, err
 	}
-	remote, err := remoteHead(ctx, run, origin)
+	remoteCtx, remoteCancel := m.remoteDeadline(ctx)
+	remote, err := remoteHead(remoteCtx, run, origin)
+	remoteCancel()
 	if err != nil {
 		return CommitResult{}, err
 	}

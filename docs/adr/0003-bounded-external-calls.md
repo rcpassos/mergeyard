@@ -49,13 +49,16 @@ stops waiting instead of queueing behind an operation it no longer needs.
   cleanly stops its group, and a command that exited successfully still reports
   its own exit status when such a child lingers.
 - A commit and its push keep a budget per phase: the operation's outer bound
-  covers every phase, so a slow hook or repository read cannot consume the
-  push's deadline.
+  covers every phase, the commit and its hooks use the worktree budget, and the
+  push and its remote reads use the remote budget, so a slow hook cannot
+  consume the push's deadline or the other way around.
 - Unattended SSH is non-interactive and keepalive-aware by default (batch mode,
   connect timeout), so a missing credential or dead connection fails instead of
-  prompting. A `GIT_SSH`, `GIT_SSH_COMMAND`, or configured `core.sshCommand` is
-  an explicit transport choice and is left alone; the same policy applies to
-  `mergeyard doctor`'s remote probes.
+  prompting. A `GIT_SSH`, `GIT_SSH_COMMAND`, or a `core.sshCommand` the machine
+  resolves for the command's repository — including repository-scoped
+  conditional includes — is an explicit transport choice and is left alone;
+  `mergeyard doctor` applies the same policy to its remote probes, which run in
+  disposable repositories where repository-scoped includes cannot apply.
 - Timeouts are per operation, not per process: a caller with a shorter deadline
   keeps it, and one stalled call does not consume the budget of the calls that
   follow.

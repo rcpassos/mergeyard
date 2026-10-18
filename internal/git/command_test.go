@@ -3,6 +3,7 @@ package git_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -200,6 +201,72 @@ exec `+gitPath+` "$@"`)
 	}
 	if got := git(t, f.remote, "rev-parse", "refs/heads/"+run.Branch); got != result.SHA {
 		t.Fatalf("push landed %s, want %s", got, result.SHA)
+	}
+}
+
+func TestConditionalIncludeSSHCommandIsPreserved(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	// Git matches gitdir conditions against the resolved repository path.
+	repo, err := filepath.EvalSymlinks(run.BasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	include := filepath.Join(dir, "included.gitconfig")
+	if err := os.WriteFile(include, []byte("[core]\n\tsshCommand = ssh -i from-include\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(dir, "gitconfig")
+	if err := os.WriteFile(config, []byte(fmt.Sprintf("[includeIf \"gitdir:%s/\"]\n\tpath = %s\n", repo, include)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", config)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_SSH", "")
+	t.Setenv("GIT_SSH_COMMAND", "")
+	dump := filepath.Join(dir, "environment")
+	gitPath := realGit(t)
+	installFakeGit(t, `case " $* " in *" config --get core.sshCommand "*) exec `+gitPath+` "$@";; esac
+{ printf 'GIT_SSH_COMMAND=%s\n' "$GIT_SSH_COMMAND"; } > `+dump+`
+exit 1`)
+	manager := managerWithTimeouts(t, f, shortTimeouts(time.Second))
+	// Inspect reads the base repository, so the probe resolves the include
+	// that selects its transport.
+	if err := manager.Inspect(context.Background(), run); err == nil {
+		t.Fatal("expected the fake Git to fail")
+	}
+	data, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "GIT_SSH_COMMAND=" {
+		t.Fatalf("managed default replaced a conditionally included core.sshCommand: %q", got)
+	}
+}
+
+func TestPublicationBoundsThePushByItsOwnBudget(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	write(t, run.Path, "feature.txt", "implemented\n")
+	gitPath := realGit(t)
+	// A fast commit followed by a stalled push: the push must keep the remote
+	// budget instead of running under the longer outer publication bound.
+	installFakeGit(t, `case " $* " in
+  *" push "*) /bin/sleep 30; exec `+gitPath+` "$@";;
+esac
+exec `+gitPath+` "$@"`)
+	manager := managerWithTimeouts(t, f, managedgit.Timeouts{Metadata: 30 * time.Second, Worktree: 10 * time.Second, Remote: 3 * time.Second})
+	start := time.Now()
+	_, err := manager.CommitAndPush(context.Background(), run, managedgit.Phase{Title: "stalled publication", RequireChanges: true})
+	requireCode(t, err, "git.timeout")
+	if !strings.Contains(err.Error(), "push timed out") {
+		t.Fatalf("stalled push did not report its own deadline: %v", err)
+	}
+	// The outer publication bound is 13s here; a push without its own budget
+	// would still be running when the test checks.
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("push ran %s; the outer bound replaced its remote budget", elapsed)
 	}
 }
 

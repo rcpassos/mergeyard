@@ -48,13 +48,16 @@ func (m *Manager) inspectHandbackAncestry(ctx context.Context, run Run) (string,
 
 // CommitHandback is replayable after committing but before saving the new SHA.
 func (m *Manager) CommitHandback(ctx context.Context, run Run, previous string) (CommitResult, error) {
-	// Publication covers the ancestry read and the manual commit.
+	// Publication covers the remote ancestry read and the manual commit, each
+	// with its own class deadline.
 	ctx, release, err := m.begin(ctx, m.timeouts.publication())
 	if err != nil {
 		return CommitResult{}, err
 	}
 	defer release()
-	remote, err := m.inspectHandbackAncestry(ctx, run)
+	remoteCtx, remoteCancel := m.remoteDeadline(ctx)
+	remote, err := m.inspectHandbackAncestry(remoteCtx, run)
+	remoteCancel()
 	if err != nil {
 		return CommitResult{}, err
 	}

@@ -975,7 +975,7 @@ Mergeyard never force-pushes. If the remote branch diverges unexpectedly, the ru
 
 Every managed Git operation has a deadline: `2m` for quick local reads of refs, the index, or single paths, and `10m` for operations that may run repository hooks or touch the whole worktree, and for operations that contact the remote. A caller-supplied deadline always wins, including while waiting for another managed operation, and a command that reaches its deadline ends the whole owned process group, so a repository hook or transport helper that keeps output pipes open cannot extend the call. Deadline and cancellation failures use `git.timeout` and `git.canceled`, and the run continues through the normal retry and attention paths.
 
-Git runs unattended. Terminal prompts are disabled; SSH uses `BatchMode=yes` with connect timeout and keepalive options so a missing credential or dead connection fails instead of hanging, for both managed operations and `doctor` probes. A `GIT_SSH`, `GIT_SSH_COMMAND`, or configured `core.sshCommand` is the machine's own transport choice and is preserved.
+Git runs unattended. Terminal prompts are disabled; SSH uses `BatchMode=yes` with connect timeout and keepalive options so a missing credential or dead connection fails instead of hanging, for both managed operations and `doctor` probes. A `GIT_SSH`, `GIT_SSH_COMMAND`, or a `core.sshCommand` the configuration resolves for the command's repository (including repository-scoped conditional includes) is the machine's own transport choice and is preserved.
 
 ---
 

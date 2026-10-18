@@ -12,8 +12,9 @@ import (
 // commits, and pushes only the run branch without force. RequireChanges compares
 // the resulting tree with the base pinned when the run was first prepared.
 func (m *Manager) CommitAndPush(ctx context.Context, run Run, phase Phase) (CommitResult, error) {
-	// Validation, the commit, and the push each keep their class deadline; the
-	// outer budget covers every phase, so a slow commit cannot starve the push.
+	// The commit, the remote reads, and the push each keep their class deadline
+	// inside an outer bound that covers every phase, so a slow hook cannot
+	// consume the push's deadline and a stalled push cannot run past it.
 	ctx, release, err := m.begin(ctx, m.timeouts.publication())
 	if err != nil {
 		return CommitResult{}, err
@@ -35,7 +36,10 @@ func (m *Manager) CommitAndPush(ctx context.Context, run Run, phase Phase) (Comm
 	if err != nil {
 		return result, err
 	}
-	if err := push(ctx, run, origin, "HEAD"); err != nil {
+	pushCtx, pushCancel := m.remoteDeadline(ctx)
+	err = push(pushCtx, run, origin, "HEAD")
+	pushCancel()
+	if err != nil {
 		return result, err
 	}
 	return result, nil
