@@ -30,9 +30,14 @@ func TestLimitedImplementerHarnessSpendsNoPerIssueCalls(t *testing.T) {
 			ctx := context.Background()
 			api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7), ready(8)}}}
 			s, runtime := configured(t, api, "concurrency: 2\nrepositories: [{repo: owner/repo}]", rejectingGit{})
-			wantDecision, wantCalls := "would_claim", perCandidate
-			wantCalls.issueListings, wantCalls.trustVerifications = 1, 2
-			wantCalls.blockerReads, wantCalls.issueReads, wantCalls.trustRechecks = 2, 2, 2
+			// Two candidates after one listing.
+			wantDecision, wantCalls := "would_claim", githubCalls{
+				issueListings:      1,
+				trustVerifications: 2 * perCandidate.trustVerifications,
+				blockerReads:       2 * perCandidate.blockerReads,
+				issueReads:         2 * perCandidate.issueReads,
+				trustRechecks:      2 * perCandidate.trustRechecks,
+			}
 			wantReason := ""
 			if limited {
 				limitedHarness(t, runtime, "claude", time.Now().Add(time.Hour))
@@ -155,6 +160,67 @@ func TestLimitedHarnessStillRefusesAnUnresolvableOverride(t *testing.T) {
 			}
 			if !has(api.issues["owner/repo"][0], "agent-needs-attention") {
 				t.Fatalf("override refusal labels: %+v", api.issues["owner/repo"][0].Labels)
+			}
+		})
+	}
+}
+
+// A refused issue relabelled during a limit is never claimed either, but its
+// refusal is still settled from cached trust so the dashboard does not keep
+// showing a stale refusal for the whole limit.
+func TestLimitedHarnessStillSettlesARelabelledRefusal(t *testing.T) {
+	for _, trusted := range []bool{true, false} {
+		t.Run(map[bool]string{true: "trusted", false: "untrusted"}[trusted], func(t *testing.T) {
+			ctx := context.Background()
+			api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}, trust: func(github.Issue) (github.TrustDecision, error) {
+				return github.TrustDecision{Reason: "Untrusted label actor."}, nil
+			}}
+			s, runtime := configured(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{})
+			if err := s.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if has(api.issues["owner/repo"][0], "ready-for-agent") {
+				t.Fatal("untrusted issue was not refused")
+			}
+
+			limitedHarness(t, runtime, "claude", time.Now().Add(time.Hour))
+			if trusted {
+				api.trust = func(github.Issue) (github.TrustDecision, error) { return github.TrustDecision{Allowed: true}, nil }
+			}
+			if err := api.AddLabel(ctx, "owner/repo", 7, "ready-for-agent"); err != nil {
+				t.Fatal(err)
+			}
+			api.calls = githubCalls{}
+			if err := s.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			// Only the cached trust verification is spent on the refused issue.
+			if want := (githubCalls{issueListings: 2, trustVerifications: 1}); !reflect.DeepEqual(api.calls, want) {
+				t.Fatalf("tick calls = %+v, want %+v", api.calls, want)
+			}
+			runs, err := s.Runs(ctx)
+			if err != nil || len(runs) != 0 {
+				t.Fatalf("limited implementer was claimed: %+v %v", runs, err)
+			}
+			if got := has(api.issues["owner/repo"][0], "ready-for-agent"); got != trusted {
+				t.Fatalf("ready label kept=%t, want %t", got, trusted)
+			}
+			queue, err := s.Queue(ctx)
+			if err != nil || len(queue) != 1 {
+				t.Fatalf("queue=%+v err=%v", queue, err)
+			}
+			if refused := queue[0].RefusalReason != ""; refused == trusted || queue[0].Attention == trusted {
+				t.Fatalf("dashboard entry = %+v, trusted=%t", queue[0], trusted)
+			}
+			if len(api.trustComments) != 1 {
+				t.Fatalf("refusal explanations = %+v, want one", api.trustComments)
+			}
+			if !trusted {
+				return
+			}
+			plan, err := s.Plan(ctx, "")
+			if err != nil || len(plan.Issues) != 1 || plan.Issues[0].Decision != "waiting" || plan.Issues[0].Reason != "harness_limited" {
+				t.Fatalf("plan=%+v err=%v, want waiting:harness_limited", plan, err)
 			}
 		})
 	}

@@ -103,8 +103,7 @@ func (s *Scheduler) inspectCandidate(ctx context.Context, repo config.Repository
 		return v, err
 	}
 	if limited {
-		v.decision, v.reason = "waiting", "harness_limited"
-		return v, nil
+		return s.inspectLimitedCandidate(ctx, repo, v)
 	}
 	v.trust, v.trustErr = s.deps.GitHub.VerifyIssueTrust(ctx, repo.Repo, issue, repo.Labels.Ready, repo.TrustedLabelers)
 	if ctx.Err() != nil {
@@ -156,6 +155,26 @@ func (s *Scheduler) inspectCandidate(ctx context.Context, repo config.Repository
 	}
 	if limited {
 		v.decision, v.reason = "waiting", "harness_limited"
+	}
+	return v, nil
+}
+
+// inspectLimitedCandidate withholds a candidate the listing reports as limited.
+// A previously refused issue whose ready label is back still has its cached trust
+// read, so dispatch can clear or republish the refusal instead of the dashboard
+// showing a stale refusal for the whole limit.
+func (s *Scheduler) inspectLimitedCandidate(ctx context.Context, repo config.Repository, v candidate) (candidate, error) {
+	v.decision, v.reason = "waiting", "harness_limited"
+	refusal, err := s.refusalReason(ctx, repo.Repo, v.issue.Number)
+	if err != nil || refusal == "" {
+		return v, err
+	}
+	v.trust, v.trustErr = s.deps.GitHub.VerifyIssueTrust(ctx, repo.Repo, v.issue, repo.Labels.Ready, repo.TrustedLabelers)
+	if ctx.Err() != nil {
+		return v, ctx.Err()
+	}
+	if v.trustErr != nil || !v.trust.Allowed {
+		v.decision, v.reason = "skipped", "untrusted_labeler"
 	}
 	return v, nil
 }

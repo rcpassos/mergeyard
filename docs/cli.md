@@ -58,8 +58,10 @@ trust recheck, role settings, and harness availability. The first
 harness-availability gate resolves the implementer from the labels the listing
 already carries, so a limited harness reports its wait without spending a trust,
 blocker or issue-read call; an issue that is both limited and untrusted or blocked
-reports the limit until the harness is available. An override that does not
-resolve is not settled there and is refused from the fresh issue as before.
+reports the limit until the harness is available, unless it was already refused,
+in which case its cached trust is still checked and an untrusted labeler is
+reported. An override that does not resolve is not settled there and is refused
+from the fresh issue as before.
 Nonterminal runs consume capacity except `READY_TO_MERGE`; pending merge cleanup
 still prevents a duplicate claim. GitHub dependency/read failures return an error
 instead of a partial plan; unverifiable trust is skipped as it would be by

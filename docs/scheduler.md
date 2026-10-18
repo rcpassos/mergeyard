@@ -62,11 +62,14 @@ harness. A candidate the listing reports as limited waits for the next poll
 instead of reading an issue it cannot claim.
 
 That ordering also defers work a gated candidate would otherwise do. An untrusted
-or unverifiable issue keeps its ready label until the reset instead of being
-refused during the limit, and a settled refusal is only cleared once the harness
-is available. An override or role configuration that does not resolve is still
-refused from the fresh issue. None of these paths can claim anything, and each
-resumes on the first poll after the reset.
+or unverifiable issue keeps its ready label until the harness is available
+instead of being refused during the limit. An issue that was already refused and
+has its ready label back is the exception: it still spends the cached trust
+verification, so a trusted relabel clears the refusal and an untrusted one is
+refused again, instead of the dashboard showing a stale refusal for the whole
+limit. An override or role configuration that does not resolve is still refused
+from the fresh issue. None of these paths can claim anything, and each resumes on
+the first poll once the harness is available.
 
 Claims first persist `CLAIMING` with both resolved roles and their harness
 sources (`label` or `config`), then add running, remove ready, persist
