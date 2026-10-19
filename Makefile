@@ -1,8 +1,10 @@
 BIN := bin/mergeyard
 # Pinned so lint fails the same way everywhere; v0.8.2 requires Go 1.26.
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
+# Pinned so CI and releases check the same tool and vulnerability database.
+GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.9.0
 
-.PHONY: build assets test test-python lint
+.PHONY: build assets test test-python lint vulncheck
 
 build: assets
 	go build -o $(BIN) ./cmd/mergeyard
@@ -25,3 +27,6 @@ lint:
 	if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	go vet ./...
 	go run $(STATICCHECK) -checks=U1000 ./...
+
+vulncheck:
+	go run $(GOVULNCHECK) ./...

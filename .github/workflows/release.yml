@@ -12,18 +12,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  verify:
+    name: Verify release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/setup-go
         with:
           cache-scope: build
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -34,15 +35,38 @@ jobs:
         run: |
           make lint
           make test
+      - name: Check reachable vulnerabilities
+        run: make vulncheck
       - name: Build dashboard assets
         run: |
           make assets
           git diff --exit-code -- web/static
-      - name: Publish release
-        uses: goreleaser/goreleaser-action@v6
+      - name: Validate release configuration
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
-          version: '~> v2'
+          version: v2.18.3
+          args: check
+
+  release:
+    name: Publish release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache: 'false'
+      - name: Publish release
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: v2.18.3
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

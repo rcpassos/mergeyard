@@ -23,10 +23,17 @@ no version file to update. GoReleaser embeds the version in the binary, availabl
 through `mergeyard version` and `mergeyard --version`. Ordinary local builds show
 `dev`.
 
-The workflow runs lint and tests (with tmux installed), rebuilds the dashboard,
-and verifies that the generated assets match the committed files before
-publishing. Release notes are generated from commits since the previous tag.
-All release assets are uploaded to a draft before GoReleaser publishes it.
+The workflow verifies the tagged commit in a read-only job before anything is
+published: lint, tests (with tmux installed), the same reachable-vulnerability
+check as CI, a dashboard rebuild that must match the committed assets, and
+GoReleaser config validation. That job checks out without persisting
+credentials and is the only place npm install scripts run in the release
+workflow. The publishing job checks out again without persisted credentials,
+restores no Go caches from the verification job, then runs the pinned
+GoReleaser version with the repository-scoped token. Workflow actions are
+pinned to commit SHAs. Release notes are generated from commits since the
+previous tag. All release assets are uploaded to a draft before GoReleaser
+publishes it.
 
 Each release contains:
 
@@ -59,14 +66,16 @@ Install GoReleaser v2, Go from `go.mod`, Node.js 24, and tmux, then run:
 ```sh
 make lint
 make test
+make vulncheck
 make assets
 git diff --exit-code -- web/static
 goreleaser check
 goreleaser release --snapshot --clean
 ```
 
-`make lint` downloads its pinned Staticcheck release on first use, so allow Go
-module-proxy access for that run. It makes no other network call.
+`make lint` downloads its pinned Staticcheck release on first use, and
+`make vulncheck` downloads its pinned tool and the vulnerability database, so
+allow network access for those runs.
 
 Snapshot mode builds archives and checksums in the ignored `dist/` directory
 without publishing or requiring a release tag. It uses the committed dashboard
