@@ -30,7 +30,7 @@ runtime returns only the prepared run snapshot.
   port, and the secret keeps one boundary for both.
 - **Require the workspace secret itself in the browser.** Rejected: a browser
   cannot read the workspace file. Instead the runtime prints a single-use link
-  that hands over an origin-scoped session (ADR-0004 replaced the first cookie
+  that hands over an origin-scoped session (ADR-0005 replaced the first cookie
   mechanism after it proved port-shared). Without that session the dashboard
   renders a lock page, hands out no CSRF token, and refuses every action, while
   keeping its origin and CSRF checks for owner pages.
