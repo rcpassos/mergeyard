@@ -11,7 +11,7 @@
 <a href="/queue" {{if eq .Page "queue"}}aria-current="page"{{end}}>Queue</a>
 <a href="/settings" {{if eq .Page "settings"}}aria-current="page"{{end}}>Settings</a></nav>
 <p id="action-error" class="action-error" role="alert"></p><p id="copy-status" class="connection" role="status"></p>
-{{template "content" .}}</div></body></html>{{end}}
+{{if .Boot}}{{template "boot" .}}{{else}}{{template "content" .}}{{end}}</div></body></html>{{end}}
 
 {{define "content"}}<main id="content" class="workbench" hx-get="{{.Path}}" hx-trigger="dashboard-update from:body" hx-target="this" hx-swap="outerHTML" hx-sync="this:queue last">
 <h1>{{.Title}}</h1>

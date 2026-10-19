@@ -15,8 +15,10 @@ and `Paused() bool`. The scheduler owns its pause/resume events.
 shutdown. The caller closes the runtime and event bus after Serve returns.
 
 The dashboard serves `GET /`, the scheduler fragment at `GET /scheduler`,
-embedded files at `GET /static/`, and SSE at `GET /events`. Scheduler actions
-are `POST /scheduler/pause` and `POST /scheduler/resume`.
+embedded files at `GET /static/`, and SSE at `GET /events`; every route except
+`/static/` needs the owner session header described below, and SSE answers HTTP
+403 without it. Scheduler actions are `POST /scheduler/pause` and
+`POST /scheduler/resume`.
 
 `web.NewWithOperations` additionally exposes the CLI API, sharing the scheduler,
 workflow, and workspace with the dashboard:
@@ -63,18 +65,30 @@ recovery guidance.
 The dashboard is locked to the workspace owner. `mergeyard start` prints a
 dashboard link carrying a single-use token, and opens it when `open_browser` is
 enabled; `mergeyard open` mints a fresh link through the proof-protected API.
-The exchange sets an `HttpOnly`, `SameSite=Strict` session cookie and redirects
-to the page without the token, so the link does not linger in the address bar.
-Tokens expire and cannot be replayed. The session rotates with the process, so
-a restarted runtime locks old browser sessions out; the lock page points at
-`mergeyard open`. Browsers share cookies across ports on one host, so the
-cookie name carries the port and runtimes for different workspaces keep
-separate sessions.
+The exchange hands the owner session to the browser in the redirect fragment.
+Fragments are never sent in a request, and the dashboard script moves the value
+into origin-scoped storage for the exact scheme, host and port before removing
+it from the address bar. Every dashboard request then carries it in the
+`X-Mergeyard-Session` header. Tokens expire and cannot be replayed. The session
+rotates with the process, so a restarted runtime locks old browser sessions
+out; the lock page points at `mergeyard open`.
 
-Without that session, every dashboard route answers with the lock page (or HTTP
-403 for a mutation), and no page renders the CSRF token. `/static/` stays
-public so the lock page is styled. A local process that never followed the link
-can read nothing and control nothing.
+The runtime sets no dashboard cookie. Cookies are not isolated by port (RFC
+6265 §8.5) and SameSite treats every port on a host as the same site, so a
+cookie for `127.0.0.1` reaches whichever local process holds any loopback port.
+Storage and headers are scoped to the full origin instead: a page served from
+another loopback port receives no cookie (there is none) and no header (the
+browser attaches it only when the dashboard script addresses this runtime's
+exact scheme, host and port). The runtime also refuses the session at any other
+authority, and no CORS headers exist for another origin to relay it.
+
+Without that session, a document request answers with the lock page and no page
+renders the CSRF token; a mutation answers HTTP 403. `/static/` stays public so
+the lock page is styled. The lock page loads the dashboard script, which
+attaches the stored session and completes the page with the requested content;
+a script-free browser stays on the lock page and should use the CLI instead. A
+local process that never followed the link can read nothing and control
+nothing.
 
 Every POST still requires an exact `Origin: http://127.0.0.1:<port>` and a
 random per-process token, supplied as the `csrf_token` form field or
@@ -85,8 +99,8 @@ invalidates tokens; refresh open dashboard pages after a restart.
 
 The dashboard link is printed to the runtime's terminal and briefly visible in
 the browser launcher's process arguments while it opens. The token is
-single-use and short-lived, and the session it sets dies with the process, so a
-stolen link only races the browser once.
+single-use and short-lived, and the session it hands over dies with the
+process, so a stolen link only races the browser once.
 
 Failed scheduler actions return HTTP 500 with a safe diagnostic code in the
 response body and `X-Mergeyard-Error-Code` header. The dashboard displays that
@@ -120,8 +134,11 @@ Third-party asset licenses are included under `web/static/licenses/`.
 
 `GET /`, `/queue`, `/runs/{id}`, and `/settings` are server-rendered pages.
 HTMX requests to the same URLs return the `#content` fragment; responses vary
-by `HX-Request` and are never cached. Navigation and ordinary forms also work
-without JavaScript. Missing run IDs return 404.
+by `HX-Request` and are never cached. A navigation without the owner session
+header gets the boot layout: the dashboard script attaches the stored session
+and requests the same URL with `HX-Request`, so pages and forms work with
+JavaScript enabled. Script-free browsers get the lock page; the CLI remains the
+script-free control path. Missing run IDs return 404.
 
 `web.NewDashboard` takes the event bus, shared scheduler control, and
 `DashboardOptions`: runtime database, workspace, scheduler engine, effective

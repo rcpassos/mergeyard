@@ -1709,9 +1709,11 @@ settings rather than accepted from the runtime, so a process that impersonates
 the port cannot choose what runs.
 
 The dashboard is locked to the workspace owner. `mergeyard start` prints a
-single-use link; exchanging it sets an owner-only session cookie. Without that
-session the dashboard renders a lock page with no CSRF token and refuses every
-action, so another local user cannot stop, retry, pause or take over runs.
+single-use link; exchanging it hands the browser an owner-only session in
+origin-scoped storage, which the dashboard attaches as a header only for the
+runtime's exact scheme, host and port. Without that session the dashboard
+renders a lock page with no CSRF token and refuses every action, so another
+local user cannot stop, retry, pause or take over runs.
 
 ### Issue trust boundary
 

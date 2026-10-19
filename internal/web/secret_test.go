@@ -6,11 +6,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,23 +66,61 @@ func newAPIServer(t *testing.T) (*web.Server, *httptest.Server, []byte, func() b
 	return server, httptest.NewServer(server), secret, control.Paused
 }
 
-// ownerSession follows a one-time dashboard link at base and returns the
-// session cookie a browser would hold for that address.
-func ownerSession(t *testing.T, server *web.Server, base string) *http.Cookie {
+// sessionFromExchange reads the owner session a browser would keep in
+// origin-scoped storage out of a one-time link exchange. The exchange hands the
+// session over in the URL fragment and sets no cookie.
+func sessionFromExchange(t *testing.T, exchange *httptest.ResponseRecorder) string {
+	t.Helper()
+	if exchange.Code != http.StatusSeeOther {
+		t.Fatalf("dashboard link: %d %s", exchange.Code, exchange.Body)
+	}
+	if cookies := exchange.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("dashboard link set browser cookies: %v", cookies)
+	}
+	location, err := url.Parse(exchange.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("dashboard link location: %v", err)
+	}
+	fragment, err := url.ParseQuery(location.Fragment)
+	if err != nil {
+		t.Fatalf("dashboard link fragment: %v", err)
+	}
+	value := fragment.Get("session")
+	if value == "" {
+		t.Fatalf("dashboard link carried no owner session: %q", location)
+	}
+	return value
+}
+
+// ownerSession follows a one-time dashboard link at base and returns the owner
+// session a browser would keep in origin-scoped storage for that address.
+func ownerSession(t *testing.T, server *web.Server, base string) string {
 	t.Helper()
 	exchange := httptest.NewRequest(http.MethodGet, base+"/?token="+server.NewDashboardToken(), nil)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, exchange)
-	if recorder.Code != http.StatusSeeOther {
-		t.Fatalf("dashboard link: %d %s", recorder.Code, recorder.Body)
+	return sessionFromExchange(t, recorder)
+}
+
+// dashboardGET loads url carrying the stored owner session, like the dashboard
+// script completes a navigation.
+func dashboardGET(t *testing.T, client *http.Client, url, session string) string {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, cookie := range recorder.Result().Cookies() {
-		if strings.HasPrefix(cookie.Name, "mergeyard_dashboard") {
-			return cookie
-		}
+	request.Header.Set(web.DashboardSessionHeader, session)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("dashboard link did not set the owner session")
-	return nil
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
 }
 
 func TestAPIRequestsRequireTheWorkspaceSecret(t *testing.T) {
@@ -153,13 +193,27 @@ func TestDashboardIsLockedToTheOwnerSession(t *testing.T) {
 	}
 	body, _ := io.ReadAll(page.Body)
 	page.Body.Close()
-	if page.StatusCode != http.StatusOK || !strings.Contains(string(body), "Dashboard locked") {
+	if page.StatusCode != http.StatusOK || !strings.Contains(string(body), "Dashboard locked") || !strings.Contains(string(body), `data-boot="true"`) {
 		t.Fatalf("locked page: %d %s", page.StatusCode, body)
 	}
 	for _, forbidden := range []string{"csrf_token", "Pause scheduler", "Resume scheduler"} {
 		if strings.Contains(string(body), forbidden) {
 			t.Fatalf("locked page exposed %q: %s", forbidden, body)
 		}
+	}
+	// The script's own content request without a session swaps in the lock
+	// fragment, and the event stream is never public.
+	hxLocked := httptest.NewRecorder()
+	hxRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil)
+	hxRequest.Header.Set("HX-Request", "true")
+	server.ServeHTTP(hxLocked, hxRequest)
+	if !strings.Contains(hxLocked.Body.String(), `data-locked="true"`) || strings.Contains(hxLocked.Body.String(), "csrf_token") {
+		t.Fatalf("locked content: %d %s", hxLocked.Code, hxLocked.Body)
+	}
+	events := httptest.NewRecorder()
+	server.ServeHTTP(events, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/events", nil))
+	if events.Code != http.StatusForbidden {
+		t.Fatalf("unauthenticated stream: %d", events.Code)
 	}
 	attack, err := http.NewRequest(http.MethodPost, httpServer.URL+"/scheduler/pause", strings.NewReader("csrf_token=stolen"))
 	if err != nil {
@@ -176,35 +230,77 @@ func TestDashboardIsLockedToTheOwnerSession(t *testing.T) {
 		t.Fatalf("locked dashboard accepted a control: %d paused=%v", response.StatusCode, paused())
 	}
 
-	// Following a one-time link sets the owner session; the page then renders
-	// the CSRF token and controls work.
-	cookie := ownerSession(t, server, httpServer.URL)
-	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Value == "" {
-		t.Fatalf("owner session cookie: %+v", cookie)
-	}
-	pageRequest, err := http.NewRequest(http.MethodGet, httpServer.URL+"/", nil)
+	// The exchange keeps the session out of cookies; a cookie carrying the
+	// owner session cannot unlock the dashboard either.
+	token := ownerSession(t, server, httpServer.URL)
+	cookieAttack, err := http.NewRequest(http.MethodGet, httpServer.URL+"/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pageRequest.AddCookie(cookie)
-	page, err = client.Do(pageRequest)
+	cookieAttack.AddCookie(&http.Cookie{Name: "mergeyard_dashboard_7331", Value: token})
+	page, err = client.Do(cookieAttack)
 	if err != nil {
 		t.Fatal(err)
 	}
 	body, _ = io.ReadAll(page.Body)
 	page.Body.Close()
-	token := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(string(body))
-	if page.StatusCode != http.StatusOK || len(token) != 2 || !strings.Contains(string(body), "Pause scheduler") {
-		t.Fatalf("owner page: %d %s", page.StatusCode, body)
+	if strings.Contains(string(body), "csrf_token") || !strings.Contains(string(body), "Dashboard locked") {
+		t.Fatalf("cookie-shaped credential unlocked the dashboard: %s", body)
 	}
-	form := url.Values{"csrf_token": {token[1]}}
+
+	// The stored session rides in the origin-scoped header; the page then
+	// renders the CSRF token and controls work.
+	ownerPage := dashboardGET(t, client, httpServer.URL+"/", token)
+	formToken := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(ownerPage)
+	if len(formToken) != 2 || !strings.Contains(ownerPage, "Pause scheduler") {
+		t.Fatalf("owner page: %s", ownerPage)
+	}
+
+	// A reload keeps working with the stored session.
+	if reload := dashboardGET(t, client, httpServer.URL+"/", token); !strings.Contains(reload, "Pause scheduler") {
+		t.Fatalf("reload lost the owner session: %s", reload)
+	}
+
+	// State changes still need the CSRF token and an exact Origin.
+	form := url.Values{"csrf_token": {formToken[1]}}
+	missingCSRF, err := http.NewRequest(http.MethodPost, httpServer.URL+"/scheduler/pause", strings.NewReader("csrf_token=wrong"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingCSRF.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	missingCSRF.Header.Set("Origin", httpServer.URL)
+	missingCSRF.Header.Set(web.DashboardSessionHeader, token)
+	response, err = client.Do(missingCSRF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden || paused() {
+		t.Fatalf("wrong CSRF accepted: %d paused=%v", response.StatusCode, paused())
+	}
+	foreignOrigin, err := http.NewRequest(http.MethodPost, httpServer.URL+"/scheduler/pause", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignOrigin.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	foreignOrigin.Header.Set("Origin", "https://attacker.example")
+	foreignOrigin.Header.Set(web.DashboardSessionHeader, token)
+	response, err = client.Do(foreignOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusForbidden || paused() {
+		t.Fatalf("foreign origin accepted: %d paused=%v", response.StatusCode, paused())
+	}
+
 	request, err := http.NewRequest(http.MethodPost, httpServer.URL+"/scheduler/pause", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Origin", httpServer.URL)
-	request.AddCookie(cookie)
+	request.Header.Set(web.DashboardSessionHeader, token)
 	response, err = client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +315,7 @@ func TestDashboardIsLockedToTheOwnerSession(t *testing.T) {
 	first := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/run-1?token="+link, nil)
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, first)
-	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/runs/run-1" {
+	if recorder.Code != http.StatusSeeOther || !strings.HasPrefix(recorder.Header().Get("Location"), "/runs/run-1#session=") {
 		t.Fatalf("link exchange: %d %q", recorder.Code, recorder.Header().Get("Location"))
 	}
 	replay := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/run-1?token="+link, nil)
@@ -227,6 +323,106 @@ func TestDashboardIsLockedToTheOwnerSession(t *testing.T) {
 	server.ServeHTTP(recorder, replay)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("replayed link accepted: %d", recorder.Code)
+	}
+}
+
+func TestOwnerSessionNeverReachesAnotherLoopbackPort(t *testing.T) {
+	server, httpServer, _, _ := newAPIServer(t)
+	defer httpServer.Close()
+	var (
+		mu       sync.Mutex
+		received http.Header
+	)
+	impostor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		received = r.Header.Clone()
+		mu.Unlock()
+		io.WriteString(w, "impostor")
+	}))
+	defer impostor.Close()
+
+	// The exchange hands the session over in the fragment and stores no
+	// cookie, so a shared cookie jar has nothing to replay to another port.
+	exchange := httptest.NewRecorder()
+	server.ServeHTTP(exchange, httptest.NewRequest(http.MethodGet, httpServer.URL+"/?token="+server.NewDashboardToken(), nil))
+	sessionFromExchange(t, exchange)
+
+	// Follow a printed link exactly like a browser with a shared cookie jar,
+	// then visit the impostor port with the same jar. A loopback cookie would
+	// be replayed to every port on 127.0.0.1, which is the leak this boundary
+	// removes.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser := &http.Client{Timeout: 5 * time.Second, Jar: jar}
+	page, err := browser.Get(httpServer.URL + "/?token=" + server.NewDashboardToken())
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.Body.Close()
+	if page.StatusCode != http.StatusOK {
+		t.Fatalf("boot page: %d", page.StatusCode)
+	}
+	real, err := url.Parse(httpServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cookies := jar.Cookies(real); len(cookies) != 0 {
+		t.Fatalf("the exchange stored a browser cookie: %v", cookies)
+	}
+
+	impostorPage, err := browser.Get(impostor.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impostorPage.Body.Close()
+	mu.Lock()
+	headers := received
+	mu.Unlock()
+	if cookie := headers.Get("Cookie"); cookie != "" {
+		t.Fatalf("another loopback port received a cookie: %q", cookie)
+	}
+	if session := headers.Get(web.DashboardSessionHeader); session != "" {
+		t.Fatalf("another loopback port received the owner session: %q", session)
+	}
+}
+
+func TestOwnerSessionIsBoundToItsExchangeOrigin(t *testing.T) {
+	// The session is exchanged for one exact scheme, host and port. A request
+	// to another authority on the same host stays locked even if it presents
+	// the value, and the runtime itself never hands out a cookie.
+	server, _, _, _ := newAPIServer(t)
+	session := ownerSession(t, server, "http://127.0.0.1:7331")
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7332/", nil)
+	request.Header.Set(web.DashboardSessionHeader, session)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	if strings.Contains(recorder.Body.String(), "csrf_token") || !strings.Contains(recorder.Body.String(), "Dashboard locked") {
+		t.Fatalf("another port's request used the owner session: %s", recorder.Body)
+	}
+}
+
+func TestOwnerSessionSurvivesReloadAndRotatesWithTheProcess(t *testing.T) {
+	server, httpServer, _, _ := newAPIServer(t)
+	defer httpServer.Close()
+	session := ownerSession(t, server, httpServer.URL)
+	for attempt := 0; attempt < 2; attempt++ {
+		if body := dashboardGET(t, http.DefaultClient, httpServer.URL+"/", session); !strings.Contains(body, `name="csrf_token"`) {
+			t.Fatalf("reload %d lost the owner session: %s", attempt, body)
+		}
+	}
+
+	// A restarted runtime rotates the session. The old value locks out and a
+	// fresh printed link hands over the new one.
+	restarted, restartedHTTP, _, _ := newAPIServer(t)
+	defer restartedHTTP.Close()
+	if body := dashboardGET(t, http.DefaultClient, restartedHTTP.URL+"/", session); strings.Contains(body, "csrf_token") || !strings.Contains(body, "Dashboard locked") {
+		t.Fatalf("a pre-restart session survived: %s", body)
+	}
+	fresh := ownerSession(t, restarted, restartedHTTP.URL)
+	if body := dashboardGET(t, http.DefaultClient, restartedHTTP.URL+"/", fresh); !strings.Contains(body, `name="csrf_token"`) {
+		t.Fatalf("fresh link after restart: %s", body)
 	}
 }
 
@@ -243,22 +439,24 @@ func TestDashboardAssetsNeverSendTheWorkspaceSecret(t *testing.T) {
 	}
 }
 
-func TestDashboardSessionsAreScopedToThePort(t *testing.T) {
-	// Browsers share cookies across ports on one host. Each runtime's session
-	// must use its own name, or opening one workspace's dashboard would
-	// overwrite another's session.
-	server, httpServer, _, _ := newAPIServer(t)
-	defer httpServer.Close()
-	first := ownerSession(t, server, "http://127.0.0.1:7331")
-	second := ownerSession(t, server, "http://127.0.0.1:7332")
-	if first.Name == second.Name {
-		t.Fatalf("sessions for different ports share the cookie name %q", first.Name)
+func TestDashboardScriptKeepsTheSessionOriginScoped(t *testing.T) {
+	// Cookies ignore ports, so the dashboard must not use them for the owner
+	// session. The script keeps it in origin-scoped storage and attaches it as
+	// a header; the event stream needs that header too, so it cannot use a
+	// native EventSource.
+	data, err := webassets.Files.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil)
-	request.AddCookie(second)
-	recorder := httptest.NewRecorder()
-	server.ServeHTTP(recorder, request)
-	if strings.Contains(recorder.Body.String(), "csrf_token") || !strings.Contains(recorder.Body.String(), "Dashboard locked") {
-		t.Fatalf("another port's session unlocked the dashboard: %s", recorder.Body)
+	script := string(data)
+	for _, required := range []string{"localStorage", web.DashboardSessionHeader, "'/events'"} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("dashboard script lost %q", required)
+		}
+	}
+	for _, forbidden := range []string{"document.cookie", "new EventSource("} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("dashboard script still uses %q", forbidden)
+		}
 	}
 }

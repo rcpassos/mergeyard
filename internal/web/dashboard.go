@@ -180,6 +180,7 @@ type pageData struct {
 	Harnesses                                 []scheduler.HarnessAvailability
 	RecoveryRuns                              []workflow.Run
 	Page, Title, Path, Token                  string
+	Boot                                      bool
 	Paused                                    bool
 	Used, Limit                               int
 	Sections                                  []queueSection
@@ -221,7 +222,8 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
 		name = "content"
 	}
-	w.Header().Set("Vary", "HX-Request")
+	w.Header().Add("Vary", "HX-Request")
+	w.Header().Add("Vary", DashboardSessionHeader)
 	s.renderData(w, name, data)
 }
 
