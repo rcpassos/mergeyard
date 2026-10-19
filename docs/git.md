@@ -72,10 +72,12 @@ succeeds. If `worktree add` is interrupted, the next attempt for that run
 recognizes the deterministic branch and path from the matching intent, removes
 the partial worktree and local branch, and creates them again from the fetched
 base. The leftover branch is discarded only while it still points at the
-recorded start; commits past it are preserved and refused with
-`git.branch_conflict`. A matching intent never adopts a remote branch, and any
-branch, worktree, or remote branch without a recorded run or intent is still
-refused with `git.branch_conflict`.
+recorded start, and an existing checkout must still be on the run branch and
+attached to the managed base; anything else is preserved and refused with
+`git.branch_conflict`. Cleanup removes an interrupted initialization lock so
+Git no longer treats the branch as checked out. A matching intent never adopts
+a remote branch, and any branch, worktree, or remote branch without a recorded
+run or intent is still refused with `git.branch_conflict`.
 
 ## Finishing a phase
 

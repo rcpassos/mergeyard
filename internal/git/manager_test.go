@@ -3,6 +3,7 @@ package git_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -447,6 +448,62 @@ func TestPreparePreservesInterruptedWorktreeWithCommits(t *testing.T) {
 	requireCode(t, err, "git.branch_conflict")
 	if got := git(t, path, "rev-parse", "HEAD"); got != head {
 		t.Fatal("interrupted worktree with commits was changed")
+	}
+}
+
+func TestPreparePreservesInterruptedWorktreeSwitchedToAnotherBranch(t *testing.T) {
+	f := newFixture(t)
+	path := interruptWorktreeCreation(t, f)
+	git(t, path, "checkout", "-b", "human-work")
+	write(t, path, "human.txt", "uncommitted human work\n")
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireCode(t, err, "git.branch_conflict")
+	if data, err := os.ReadFile(filepath.Join(path, "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("foreign worktree was changed: %q, %v", data, err)
+	}
+	if got := git(t, path, "branch", "--show-current"); got != "human-work" {
+		t.Fatalf("foreign worktree branch = %q", got)
+	}
+}
+
+func TestPrepareRecoversWorktreeInterruptedDuringCheckout(t *testing.T) {
+	f := newFixture(t)
+	setup := f.request
+	setup.RunID, setup.IssueNumber = "setup", 6
+	if _, err := f.manager.Prepare(context.Background(), setup); err != nil {
+		t.Fatal(err)
+	}
+	write(t, f.seed, ".gitattributes", "payload filter=slow\n")
+	write(t, f.seed, "payload", "smudged content\n")
+	git(t, f.seed, "add", ".")
+	git(t, f.seed, "commit", "-m", "filtered payload")
+	git(t, f.seed, "push", "origin", "main")
+
+	base := filepath.Join(f.root, "repos", "owner-repo", "base")
+	marker := filepath.Join(t.TempDir(), "smudge-started")
+	smudge := filepath.Join(t.TempDir(), "smudge.sh")
+	script := fmt.Sprintf("#!/bin/sh\ncase \"$PWD\" in\n  */worktrees/*) : > '%s'; /bin/sleep 30 ;;\nesac\ncat\n", marker)
+	if err := os.WriteFile(smudge, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	git(t, base, "config", "filter.slow.smudge", smudge)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := f.manager.Prepare(ctx, f.request)
+	requireCode(t, err, "git.timeout")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("smudge filter did not stall in the worktree: %v", err)
+	}
+	locks, err := filepath.Glob(filepath.Join(base, ".git", "worktrees", "*", "locked"))
+	if err != nil || len(locks) == 0 {
+		t.Fatalf("interrupted checkout did not leave an initialization lock: %v, %v", locks, err)
+	}
+
+	git(t, base, "config", "filter.slow.smudge", "cat")
+	run := prepare(t, f)
+	if data, err := os.ReadFile(filepath.Join(run.Path, "payload")); err != nil || string(data) != "smudged content\n" {
+		t.Fatalf("recovered payload = %q, %v", data, err)
 	}
 }
 

@@ -421,7 +421,8 @@ func removePrepareIntent(run Run) error {
 
 // removeInterruptedWorktree discards a partial creation that never reached an
 // agent. The intent proves the deterministic path and branch belong to this
-// run, and the branch must still sit at the interrupted start.
+// run, the branch must still sit at the interrupted start, and an existing
+// checkout must still be the run branch attached to the managed base.
 func removeInterruptedWorktree(ctx context.Context, run Run, start string) error {
 	exists, err := refExists(ctx, run.BasePath, "refs/heads/"+run.Branch)
 	if err != nil {
@@ -436,9 +437,21 @@ func removeInterruptedWorktree(ctx context.Context, run Run, start string) error
 			return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree creation left commits; preserved for inspection"))
 		}
 	}
+	ours, err := interruptedWorktreeOurs(ctx, run)
+	if err != nil {
+		return err
+	}
+	if !ours {
+		return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree was changed; preserved for inspection"))
+	}
 	if err := os.RemoveAll(run.Path); err != nil {
 		return failure("git.worktree", run.Path, err)
 	}
+	// A killed 'worktree add' can leave an initialization lock, and prune
+	// preserves locked metadata, which would keep the branch checked out.
+	// Unlocking an unregistered or unlocked tree fails harmlessly; prune and
+	// branch deletion below report any real problem.
+	_, _ = command(ctx, run.BasePath, "git.worktree", "worktree", "unlock", "--", run.Path)
 	if _, err := command(ctx, run.BasePath, "git.worktree", "worktree", "prune", "--expire", "now"); err != nil {
 		return err
 	}
@@ -447,6 +460,58 @@ func removeInterruptedWorktree(ctx context.Context, run Run, start string) error
 	}
 	_, err = command(ctx, run.BasePath, "git.worktree", "branch", "-D", "--", run.Branch)
 	return err
+}
+
+// interruptedWorktreeOurs reports whether a leftover path is safe to discard:
+// it has no checkout yet, or it is still the run branch attached to the
+// managed base. A checkout on another branch, detached work, or a tree
+// attached elsewhere is preserved.
+func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
+	if _, err := os.Lstat(run.Path); errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	if _, err := os.Lstat(filepath.Join(run.Path, ".git")); errors.Is(err, os.ErrNotExist) {
+		// The initialization has not created a checkout yet.
+		return true, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	branch, err := command(ctx, run.Path, "git.worktree", "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, contextFailure("git.worktree", run.Path, ctx.Err())
+		}
+		// A readable HEAD is work on a detached checkout. A repository that
+		// cannot resolve HEAD never completed initialization.
+		if _, headErr := command(ctx, run.Path, "git.worktree", "rev-parse", "--verify", "HEAD"); headErr == nil {
+			return false, nil
+		}
+		return true, nil
+	}
+	if branch != run.Branch {
+		return false, nil
+	}
+	common, err := command(ctx, run.Path, "git.worktree", "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, contextFailure("git.worktree", run.Path, ctx.Err())
+		}
+		// The checkout named the run branch but its metadata is incomplete.
+		return true, nil
+	}
+	got, err := os.Stat(common)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	want, err := os.Stat(filepath.Join(run.BasePath, ".git"))
+	if err != nil {
+		return false, failure("git.worktree", run.BasePath, err)
+	}
+	return os.SameFile(got, want), nil
 }
 
 func (m *Manager) validateRun(run Run) error {
