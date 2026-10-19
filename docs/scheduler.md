@@ -196,8 +196,9 @@ read failed: reconciliation reports `reconcile.repository_failed` or
 when one refused issue cannot be read, and each appears in the needs-attention
 section. A scoped failure skips only that repository or issue while other work
 continues, and stays visible until a later pass observes the subject
-successfully. Closed issues/PRs, missing worktrees, and missing
-sessions require attention. Manual and attention runs are never automatically
+successfully. Findings persist only the fixed GitHub code and a safe human
+message; raw `gh` diagnostics stay on the error for application logs. Closed
+issues/PRs, missing worktrees, and missing sessions require attention. Manual and attention runs are never automatically
 resumed. First review progresses through the same reconciliation boundary. CI/merge
 progression remains outside this slice.
 

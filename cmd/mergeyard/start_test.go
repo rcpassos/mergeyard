@@ -167,12 +167,13 @@ exit 128
 }
 
 func TestRepositoryScopedDoctorErrorsDoNotStopStartup(t *testing.T) {
-	cfg, _, err := config.Parse([]byte("repositories: [{repo: owner/broken}]\n"))
+	cfg, _, err := config.Parse([]byte("repositories: [{repo: owner/broken}, {repo: owner/disabled, enabled: false}]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	report := doctor.Report{Findings: []doctor.Finding{
 		{Severity: doctor.Error, Code: "github.labels_check_failed", Scope: "owner/broken", Message: "repository is gone"},
+		{Severity: doctor.Error, Code: "github.invalid_response", Scope: "owner/disabled", Message: "malformed GitHub response"},
 		{Severity: doctor.Error, Code: "git.origin_inaccessible", Scope: "owner/broken implementer", Message: "repository is gone"},
 	}}
 	if blockingDoctorErrors(report, cfg) {

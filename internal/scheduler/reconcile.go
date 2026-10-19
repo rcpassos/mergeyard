@@ -41,7 +41,9 @@ type scopedFailure struct {
 	err     error
 }
 
-func (f *scopedFailure) Error() string { return f.finding.String() }
+// Error keeps the raw GitHub diagnostic for logs, while the finding carries the
+// safe message that events and the dashboard persist.
+func (f *scopedFailure) Error() string { return fmt.Sprintf("%s: %v", f.finding.String(), f.err) }
 func (f *scopedFailure) Unwrap() error { return f.err }
 
 // classifyGitHub reports whether err is made entirely of failures from the
@@ -77,13 +79,74 @@ func classifyGitHub(err error, conclusive bool) bool {
 // failures, including conclusive answers.
 func githubFailure(err error) bool { return classifyGitHub(err, true) }
 
+// githubFaultCode returns the first GitHub code in err. Codes are fixed
+// vocabulary; unlike the underlying message they are safe to persist.
+func githubFaultCode(err error) string {
+	switch failure := err.(type) {
+	case *scopedFailure:
+		return githubFaultCode(failure.err)
+	case *fault.Error:
+		if strings.HasPrefix(failure.Code, "github.") {
+			return failure.Code
+		}
+		if failure.Err != nil {
+			return githubFaultCode(failure.Err)
+		}
+	case interface{ Unwrap() []error }:
+		for _, joined := range failure.Unwrap() {
+			if code := githubFaultCode(joined); code != "" {
+				return code
+			}
+		}
+	case interface{ Unwrap() error }:
+		return githubFaultCode(failure.Unwrap())
+	}
+	return ""
+}
+
+// githubFailureMessage is the fixed human explanation persisted with a scoped
+// finding. Raw gh diagnostics can contain credentials, so they stay on the
+// retained error for logs and never enter events or the dashboard.
+func githubFailureMessage(code string) string {
+	switch code {
+	case "github.not_found":
+		return "GitHub could not find the configured repository or item; check its name and access"
+	case "github.forbidden":
+		return "GitHub denied access to the configured repository or item; check token permissions"
+	case "github.not_logged_in":
+		return "GitHub authentication failed; run gh auth login"
+	case "github.rate_limited":
+		return "GitHub rate limit exceeded; the request will retry"
+	case "github.unavailable":
+		return "GitHub is unreachable; the request will retry"
+	case "github.timeout":
+		return "The GitHub request timed out; it will retry"
+	case "github.canceled":
+		return "The GitHub request was canceled; it will retry"
+	case "github.invalid_response":
+		return "GitHub returned an invalid response"
+	case "github.invalid_input":
+		return "GitHub rejected the request as invalid"
+	case "github.label_not_found":
+		return "GitHub reported a missing label"
+	default:
+		return "GitHub request failed; inspect the application log"
+	}
+}
+
 // scopeGitHubFailure wraps err as a finding when it is a GitHub failure. Local
-// state stays unwrapped so it can still stop dispatch.
+// state stays unwrapped so it can still stop dispatch. The finding keeps only a
+// fixed code and message; the raw error remains available through Unwrap for
+// diagnostics.
 func scopeGitHubFailure(code, repository string, issue int, runID string, err error) *scopedFailure {
 	if !githubFailure(err) {
 		return nil
 	}
-	finding := Finding{Code: code, Repository: repository, IssueNumber: issue, RunID: runID, Message: err.Error()}
+	cause := githubFaultCode(err)
+	if cause == "" {
+		cause = "github.failed"
+	}
+	finding := Finding{Code: code, Repository: repository, IssueNumber: issue, RunID: runID, Message: cause + ": " + githubFailureMessage(cause)}
 	return &scopedFailure{finding: finding, err: err}
 }
 

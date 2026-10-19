@@ -593,6 +593,44 @@ func TestQueueReportKeepsReadableRepositoriesWhenOneFails(t *testing.T) {
 	}
 }
 
+func TestScopedGitHubFindingsDoNotPersistRawDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	secret := "ghp_example_secret_value"
+	api := &fakeGitHub{issues: map[string][]github.Issue{
+		"owner/broken": {ready(1)},
+		"owner/ok":     {ready(2)},
+	}}
+	failing := &repositoryFailureGitHub{fakeGitHub: api, failures: map[string]error{
+		"owner/broken": &fault.Error{Code: "github.unavailable", Message: "authorization: token " + secret, Err: errors.New("stderr: token " + secret)},
+	}}
+	s, runtime := configured(t, failing, "repositories:\n  - repo: owner/broken\n  - repo: owner/ok\n", rejectingGit{})
+
+	report, err := s.Reconcile(ctx)
+	if !scheduler.GitHubFailure(err) {
+		t.Fatalf("reconcile error = %v, want a scoped GitHub failure", err)
+	}
+	if !strings.Contains(err.Error(), secret) {
+		t.Fatalf("reconcile error discarded the raw diagnostic: %v", err)
+	}
+	for _, finding := range append(report.Findings, s.ReconcileFailures()...) {
+		if strings.Contains(finding.Message, secret) {
+			t.Fatalf("finding persisted raw diagnostics: %+v", finding)
+		}
+		if !strings.Contains(finding.Message, "github.unavailable") || !strings.Contains(finding.Message, "GitHub is unreachable") {
+			t.Fatalf("finding lacks its safe code and explanation: %+v", finding)
+		}
+	}
+	history, err := runtime.Events.History(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range history {
+		if strings.Contains(string(event.Payload), secret) {
+			t.Fatalf("durable event persisted raw diagnostics: %s", event.Payload)
+		}
+	}
+}
+
 func TestDisabledRepositoryGitHubFailureDoesNotBlockDispatch(t *testing.T) {
 	ctx := context.Background()
 	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/ok": {ready(2)}}}

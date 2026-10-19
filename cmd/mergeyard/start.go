@@ -149,7 +149,7 @@ func blockingDoctorErrors(report doctor.Report, cfg config.Config) bool {
 
 func repositoryAccessFailure(code string) bool {
 	switch code {
-	case "github.labels_check_failed", "github.push_forbidden", "git.origin_inaccessible":
+	case "github.labels_check_failed", "github.push_forbidden", "github.invalid_response", "git.origin_inaccessible":
 		return true
 	}
 	return false
