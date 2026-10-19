@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/scheduler"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -141,18 +144,22 @@ func TestQueueReusesBlockerReadsForUnchangedIssues(t *testing.T) {
 }
 
 // Refused issues lose the ready label, so the label-filtered listing no longer
-// sees them; the dashboard still shows them and their reason. Refusals whose
-// issue is closed or deleted are forgotten instead of re-read on every refresh.
-func TestQueueKeepsRefusedIssuesVisibleWithoutLabels(t *testing.T) {
+// sees them; the dashboard still shows them and their reason. The snapshot is
+// reused across refreshes, and a long TTL rereads it to forget issues that have
+// closed or been deleted since.
+func TestQueueCachesRefusedIssueSnapshotsAcrossRefreshes(t *testing.T) {
 	ctx := context.Background()
 	refused := ready(7)
 	refused.Labels = nil
-	closed := ready(8)
+	deleted := ready(8)
+	deleted.Labels = nil
+	closed := ready(9)
 	closed.Labels = nil
 	closed.State = github.Closed
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {refused, closed}}}
-	s, runtime := configured(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{})
-	for _, number := range []int{7, 8, 9} {
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {refused, deleted, closed}}}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	s, runtime := configuredAt(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{}, func() time.Time { return now })
+	for _, number := range []int{7, 8, 9, 10} {
 		if _, err := runtime.DB.Exec("INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES('owner/repo',?,'Untrusted label actor.','ready-for-agent',0)", number); err != nil {
 			t.Fatal(err)
 		}
@@ -161,30 +168,203 @@ func TestQueueKeepsRefusedIssuesVisibleWithoutLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// #7 is open and refused, #8 is closed, and #9 is gone.
-	if len(queue) != 1 || queue[0].Issue.Number != 7 || !queue[0].Attention || queue[0].RefusalReason != "Untrusted label actor." {
-		t.Fatalf("refused issue absent from dashboard: %+v", queue)
+	// #7 and #8 are open and refused; #9 is closed, and #10 is gone.
+	if len(queue) != 2 || queue[0].Issue.Number != 7 || queue[1].Issue.Number != 8 || !queue[0].Attention || queue[0].RefusalReason != "Untrusted label actor." {
+		t.Fatalf("refused issues absent from dashboard: %+v", queue)
 	}
 	rows, err := countRefusals(runtime.DB)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rows != 1 {
-		t.Fatalf("stale refusal rows = %d, want only the open refusal", rows)
+	if rows != 2 {
+		t.Fatalf("stale refusal rows = %d, want only the open refusals", rows)
+	}
+	if api.calls.issueReads != 4 {
+		t.Fatalf("initial refused-issue reads = %d, want one per refusal", api.calls.issueReads)
 	}
 
-	// The next refresh spends one read on the visible refusal and none on the
-	// forgotten rows, and reuses the listing.
+	// Several refreshes reuse the open issues' snapshots without reading them
+	// again, even as the label-filtered listing itself expires and refreshes.
 	api.calls = githubCalls{}
+	for range 3 {
+		now = now.Add(30 * time.Second)
+		queue, err = s.Queue(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(queue) != 2 || queue[0].Issue.Number != 7 || queue[1].Issue.Number != 8 {
+			t.Fatalf("refused issues disappeared on refresh: %+v", queue)
+		}
+	}
+	if api.calls.issueReads != 0 {
+		t.Fatalf("steady-state refused-issue reads = %d, want none", api.calls.issueReads)
+	}
+
+	// Once the TTL expires, the cached issues are read again: the now-closed
+	// and deleted ones are forgotten instead of staying visible forever.
+	closedAfter := ready(7)
+	closedAfter.Labels = nil
+	closedAfter.State = github.Closed
+	api.issues["owner/repo"] = []github.Issue{closedAfter}
+	now = now.Add(16 * time.Minute)
 	queue, err = s.Queue(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(queue) != 1 || queue[0].Issue.Number != 7 {
-		t.Fatalf("queue after cleanup = %+v", queue)
+	if len(queue) != 0 {
+		t.Fatalf("closed or deleted refusals stayed visible: %+v", queue)
 	}
-	if api.calls.issueReads != 1 || api.calls.issueListings != 0 {
-		t.Fatalf("refresh calls = %+v, want one read and the shared listing", api.calls)
+	if rows, err = countRefusals(runtime.DB); err != nil || rows != 0 {
+		t.Fatalf("stale refusal rows = %d, want none: %v", rows, err)
+	}
+	if api.calls.issueReads != 2 {
+		t.Fatalf("expired refused-issue reads = %d, want one per open refusal", api.calls.issueReads)
+	}
+}
+
+// A failed refusal reread keeps the last snapshot and backs off instead of
+// failing the queue or spending another call on the next refresh.
+func TestQueueKeepsLastRefusedSnapshotWhenRereadFails(t *testing.T) {
+	ctx := context.Background()
+	refused := ready(7)
+	refused.Labels = nil
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {refused, ready(8)}}}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	s, runtime := configuredAt(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{}, func() time.Time { return now })
+	if _, err := runtime.DB.Exec("INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES('owner/repo',7,'Untrusted label actor.','ready-for-agent',0)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Queue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	api.calls = githubCalls{}
+	now = now.Add(30 * time.Second)
+	if _, err := s.Queue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if api.calls.issueReads != 0 {
+		t.Fatalf("cached refusal read = %d, want none", api.calls.issueReads)
+	}
+
+	now = now.Add(16 * time.Minute)
+	api.getIssue = func(string, int) (github.Issue, error) {
+		return github.Issue{}, &fault.Error{Code: "github.rate_limited", Message: "API rate limit exceeded"}
+	}
+	queue, err := s.Queue(ctx)
+	if err != nil {
+		t.Fatalf("failed refusal reread failed the queue: %v", err)
+	}
+	if len(queue) != 2 || queue[0].Issue.Number != 7 || queue[0].RefusalReason != "Untrusted label actor." {
+		t.Fatalf("failed reread lost the refused snapshot: %+v", queue)
+	}
+	if api.calls.issueReads != 1 {
+		t.Fatalf("expired refusal reads = %d, want 1", api.calls.issueReads)
+	}
+
+	// The failed read backs off for a full window rather than retrying on
+	// every dashboard refresh.
+	api.calls = githubCalls{}
+	now = now.Add(30 * time.Second)
+	if _, err := s.Queue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if api.calls.issueReads != 0 {
+		t.Fatalf("failed refusal reread retried immediately: %d reads", api.calls.issueReads)
+	}
+}
+
+// A refused issue that cannot be read at all is scoped to that issue: the rest
+// of the repository and every other repository stay visible.
+func TestQueueScopesUnreadableRefusedIssues(t *testing.T) {
+	ctx := context.Background()
+	broken := ready(1)
+	broken.Labels = nil
+	healthy := ready(1)
+	healthy.Labels = nil
+	healthy.Title = "Healthy refusal"
+	api := &fakeGitHub{issues: map[string][]github.Issue{
+		"owner/broken": {broken},
+		"owner/ok":     {healthy},
+	}}
+	api.getIssue = func(repo string, _ int) (github.Issue, error) {
+		if repo == "owner/broken" {
+			return github.Issue{}, &fault.Error{Code: "github.unavailable", Message: "dial tcp: connection refused"}
+		}
+		return healthy, nil
+	}
+	s, runtime := configured(t, api, "repositories:\n  - repo: owner/broken\n  - repo: owner/ok\n", rejectingGit{})
+	for _, repo := range []string{"owner/broken", "owner/ok"} {
+		if _, err := runtime.DB.Exec("INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES(?,1,'Untrusted label actor.','ready-for-agent',0)", repo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := s.QueueReport(ctx)
+	if !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want a scoped refused-issue failure", err)
+	}
+	if len(report.Issues) != 1 || !strings.EqualFold(report.Issues[0].Repository, "owner/ok") || report.Issues[0].Issue.Number != 1 || report.Issues[0].RefusalReason == "" {
+		t.Fatalf("readable refusal disappeared from the queue: %+v", report.Issues)
+	}
+	if len(report.Failures) != 1 || report.Failures[0].Code != "reconcile.issue_failed" || report.Failures[0].IssueNumber != 1 || !strings.EqualFold(report.Failures[0].Repository, "owner/broken") {
+		t.Fatalf("queue failures = %+v", report.Failures)
+	}
+
+	// A failed first read is remembered for the window: the next refresh keeps
+	// reporting the issue's failure without spending another call.
+	api.calls = githubCalls{}
+	report, err = s.QueueReport(ctx)
+	if !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want the remembered refused-issue failure", err)
+	}
+	if api.calls.issueReads != 0 {
+		t.Fatalf("failed refused issue was retried on the next refresh: %d reads", api.calls.issueReads)
+	}
+	if len(report.Failures) != 1 || report.Failures[0].IssueNumber != 1 {
+		t.Fatalf("queue failures = %+v", report.Failures)
+	}
+}
+
+// A trusted relabel returns the issue to the label-filtered listing, so the
+// dashboard uses that current snapshot instead of the cached label-less one.
+func TestQueueUsesRelabelledIssueFromListing(t *testing.T) {
+	ctx := context.Background()
+	refused := ready(7)
+	refused.Labels = nil
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {refused}}}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	s, runtime := configuredAt(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{}, func() time.Time { return now })
+	if _, err := runtime.DB.Exec("INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES('owner/repo',7,'Untrusted label actor.','ready-for-agent',0)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Queue(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	api.issues["owner/repo"][0].Labels = []github.Label{{Name: "ready-for-agent"}}
+	api.calls = githubCalls{}
+	now = now.Add(61 * time.Second)
+	queue, err := s.Queue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue) != 1 || !has(queue[0].Issue, "ready-for-agent") || queue[0].RefusalReason != "Untrusted label actor." {
+		t.Fatalf("relabelled issue did not use the listing: %+v", queue)
+	}
+	if api.calls.issueReads != 0 {
+		t.Fatalf("relabelled issue spent a refused-issue read: %d", api.calls.issueReads)
+	}
+
+	// If the label disappears again, the stale snapshot is gone and the issue
+	// is read back once.
+	api.issues["owner/repo"][0].Labels = nil
+	api.calls = githubCalls{}
+	now = now.Add(61 * time.Second)
+	queue, err = s.Queue(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue) != 1 || queue[0].Issue.Number != 7 || api.calls.issueReads != 1 {
+		t.Fatalf("relabelled issue snapshot was reused after the label was removed: %+v reads=%d", queue, api.calls.issueReads)
 	}
 }
 
@@ -204,6 +384,15 @@ func TestQueueForgetsOnlyRefusalsNothingCanFinish(t *testing.T) {
 	}
 	if _, err := s.Queue(ctx); err != nil {
 		t.Fatal(err)
+	}
+	// The closed pending issue keeps its snapshot because reconciliation still
+	// owns its row: the next refresh must not read it again.
+	api.calls = githubCalls{}
+	if _, err := s.Queue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if api.calls.issueReads != 0 {
+		t.Fatalf("pending closed refusal was re-read: %d reads", api.calls.issueReads)
 	}
 	var pending []int
 	rows, err := runtime.DB.Query("SELECT issue_number FROM issue_refusals ORDER BY issue_number")

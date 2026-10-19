@@ -65,12 +65,31 @@ type issueReadFailure struct {
 	err    error
 }
 
+// refusedIssueSnapshot is the last readable GitHub snapshot of one refused
+// issue that the label-filtered listing no longer includes, and when it was
+// read. It survives polls because a refusal removes the ready label. A refused
+// issue with no readable snapshot yet keeps its read failure instead, so an
+// outage does not spend one call per refused issue on every refresh.
+type refusedIssueSnapshot struct {
+	issue     github.Issue
+	fetchedAt time.Time
+	err       error
+}
+
+// issueNotFound reports GitHub's conclusive answer that an issue no longer
+// exists.
+func issueNotFound(err error) bool {
+	var coded *fault.Error
+	return errors.As(err, &coded) && coded.Code == "github.not_found"
+}
+
 // withRefusedIssues adds refused issues that no longer carry a Mergeyard label,
 // so the dashboard keeps showing them and their reason until a trusted
 // maintainer relabels them. Only refusals missing from the listing are read
-// back. Refusals whose issue is closed or deleted are forgotten, so a stale row
-// cannot be re-read on every refresh forever; the read-back stays bounded by
-// the refusals that can still be shown.
+// back, and a readable snapshot is reused across refreshes until the refusal
+// row changes or the window expires. Refusals whose issue is closed or deleted
+// are forgotten when that snapshot is refreshed, so a stale row cannot be
+// re-read on every refresh forever.
 func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repository, listed []github.Issue) ([]github.Issue, []issueReadFailure, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT issue_number FROM issue_refusals WHERE repository=? ORDER BY issue_number", strings.ToLower(repo.Repo))
 	if err != nil {
@@ -79,6 +98,9 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repositor
 	seen := make(map[int]bool, len(listed))
 	for _, issue := range listed {
 		seen[issue.Number] = true
+		// The label-filtered listing is authoritative: a relabelled issue is
+		// current and its old snapshot must not outlive the listing entry.
+		s.refusalSnapshots.delete(issueKey(repo.Repo, issue.Number))
 	}
 	var missing []int
 	for rows.Next() {
@@ -99,9 +121,8 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repositor
 	issues := append([]github.Issue(nil), listed...)
 	var failed []issueReadFailure
 	for _, number := range missing {
-		issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, number)
-		var coded *fault.Error
-		if errors.As(err, &coded) && coded.Code == "github.not_found" {
+		issue, err := s.refusedIssue(ctx, repo, number)
+		if issueNotFound(err) {
 			// The issue is gone: no label can be removed and nothing can be
 			// shown, so drop the row instead of re-reading it forever.
 			if err := s.forgetRefusal(ctx, repo.Repo, number); err != nil {
@@ -110,6 +131,9 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repositor
 			continue
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
 			if githubFailure(err) {
 				// Only this refusal is unreadable; keep the rest of the
 				// repository's queue visible.
@@ -130,6 +154,59 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repositor
 		issues = append(issues, issue)
 	}
 	return issues, failed, nil
+}
+
+// refusedIssue returns a refused issue's last readable snapshot. It reads
+// GitHub only when no usable snapshot is cached. A failed read keeps the last
+// snapshot, or records the failure when there is none, and backs off for a full
+// window so a rate limit or outage does not turn every dashboard refresh into
+// another failing call.
+func (s *Scheduler) refusedIssue(ctx context.Context, repo config.Repository, number int) (github.Issue, error) {
+	key := issueKey(repo.Repo, number)
+	if entry, ok := s.cachedRefusedIssue(key); ok {
+		return entry.issue, entry.err
+	}
+	if err := s.refusalFetch.Lock(ctx); err != nil {
+		return github.Issue{}, err
+	}
+	defer s.refusalFetch.Unlock()
+	// Another reader may have read it while we waited for the gate.
+	if entry, ok := s.cachedRefusedIssue(key); ok {
+		return entry.issue, entry.err
+	}
+	now := s.deps.Now()
+	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, number)
+	if err != nil {
+		// A missing issue is a conclusive answer, not a failed read: the row
+		// must be forgotten rather than kept visible from a stale snapshot.
+		if issueNotFound(err) {
+			return github.Issue{}, err
+		}
+		if entry, ok := s.refusalSnapshots.get(key); ok && entry.err == nil {
+			entry.fetchedAt = now
+			s.refusalSnapshots.put(key, entry)
+			return entry.issue, nil
+		}
+		if ctx.Err() != nil || !githubFailure(err) {
+			// A canceled pass or local failure must not be remembered as the
+			// issue's state; the next refresh retries it.
+			return github.Issue{}, err
+		}
+		// No snapshot to show: remember the failure so the next refreshes back
+		// off, but keep returning it so the issue stays in needs-attention.
+		s.refusalSnapshots.put(key, refusedIssueSnapshot{fetchedAt: now, err: err})
+		return github.Issue{}, err
+	}
+	s.refusalSnapshots.put(key, refusedIssueSnapshot{issue: issue, fetchedAt: now})
+	return issue, nil
+}
+
+func (s *Scheduler) cachedRefusedIssue(key string) (refusedIssueSnapshot, bool) {
+	entry, ok := s.refusalSnapshots.get(key)
+	if !ok || s.deps.Now().Sub(entry.fetchedAt) >= s.refusalWindow() {
+		return refusedIssueSnapshot{}, false
+	}
+	return entry, true
 }
 
 // QueueSnapshot is one dashboard discovery pass. Issues contains every
