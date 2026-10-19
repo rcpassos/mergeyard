@@ -15,10 +15,10 @@ and `Paused() bool`. The scheduler owns its pause/resume events.
 shutdown. The caller closes the runtime and event bus after Serve returns.
 
 The dashboard serves `GET /`, the scheduler fragment at `GET /scheduler`,
-embedded files at `GET /static/`, and SSE at `GET /events`; every route except
-`/static/` needs the owner session header described below, and SSE answers HTTP
-403 without it. Scheduler actions are `POST /scheduler/pause` and
-`POST /scheduler/resume`.
+embedded files at `GET /static/`, and SSE at `GET /events`. Every dashboard
+route except `/static/` needs the owner session header described below, and SSE
+answers HTTP 403 without it; the `/api/` routes keep their own workspace-secret
+proof. Scheduler actions are `POST /scheduler/pause` and `POST /scheduler/resume`.
 
 `web.NewWithOperations` additionally exposes the CLI API, sharing the scheduler,
 workflow, and workspace with the dashboard:
