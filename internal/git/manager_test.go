@@ -522,6 +522,54 @@ func TestPrepareRecoversWorktreeInterruptedDuringCheckout(t *testing.T) {
 	}
 }
 
+func TestPrepareRecoversWorktreeInterruptedBeforeHead(t *testing.T) {
+	f := newFixture(t)
+	setup := f.request
+	setup.RunID, setup.IssueNumber = "setup", 6
+	if _, err := f.manager.Prepare(context.Background(), setup); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(f.root, "repos", "owner-repo", "base")
+	marker := filepath.Join(t.TempDir(), "head-prepared")
+	hook := filepath.Join(base, ".git", "hooks", "reference-transaction")
+	script := fmt.Sprintf(`#!/bin/sh
+[ "$1" = prepared ] || exit 0
+while read old new ref; do
+  if [ "$ref" = HEAD ] && [ "$new" = ref:refs/heads/mergeyard/issue-7 ]; then
+    : > '%s'
+    /bin/sleep 30
+  fi
+done
+`, marker)
+	if err := os.MkdirAll(filepath.Dir(hook), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := f.manager.Prepare(ctx, f.request)
+	requireCode(t, err, "git.timeout")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("reference-transaction hook did not stall before HEAD: %v", err)
+	}
+	locks, err := filepath.Glob(filepath.Join(base, ".git", "worktrees", "*", "locked"))
+	if err != nil || len(locks) == 0 {
+		t.Fatalf("interrupted initialization did not leave a lock: %v, %v", locks, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(locks[0]), "HEAD")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("interrupted initialization already wrote HEAD: %v", err)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	run := prepare(t, f)
+	if got := git(t, run.Path, "branch", "--show-current"); got != run.Branch {
+		t.Fatalf("recovered worktree branch = %q", got)
+	}
+}
+
 func TestPhaseStagesTrackedEditsAndDeletionsWithoutPushingOtherRefs(t *testing.T) {
 	f := newFixture(t)
 	run := prepare(t, f)

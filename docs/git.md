@@ -73,11 +73,14 @@ recognizes the deterministic branch and path from the matching intent, removes
 the partial worktree and local branch, and creates them again from the fetched
 base. The leftover branch is discarded only while it still points at the
 recorded start, and an existing checkout must still be on the run branch and
-attached to the managed base. Anything else, including a non-empty path whose
-Git metadata is missing or unreadable, is preserved because ownership cannot
-be established, and is refused with `git.branch_conflict`. Cleanup removes an
-interrupted initialization lock so Git no longer treats the branch as checked
-out. A matching intent never adopts
+attached to the managed base. Git writes the worktree link, reciprocal
+registration, and common directory before HEAD, so a deadline in that window
+leaves no readable checkout; that state is recognizable only when those links
+point back to this run's managed base. Anything else, including a non-empty
+path whose Git metadata is missing or unreadable, is preserved because
+ownership cannot be established, and is refused with `git.branch_conflict`.
+Cleanup removes an interrupted initialization lock so Git no longer treats the
+branch as checked out. A matching intent never adopts
 a remote branch, and any branch, worktree, or remote branch without a recorded
 run or intent is still refused with `git.branch_conflict`.
 

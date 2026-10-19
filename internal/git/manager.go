@@ -486,8 +486,10 @@ func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
 		if ctx.Err() != nil {
 			return false, contextFailure("git.worktree", run.Path, ctx.Err())
 		}
-		// Detached work and unreadable metadata cannot prove ownership.
-		return false, nil
+		// Git writes the linked registration before HEAD, so a deadline here
+		// leaves no readable checkout. Accept it only when the link, backlink,
+		// and common directory point at this run's managed base.
+		return managedInitialization(run)
 	}
 	if branch != run.Branch {
 		return false, nil
@@ -510,6 +512,116 @@ func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
 		return false, failure("git.worktree", run.BasePath, err)
 	}
 	return os.SameFile(got, want), nil
+}
+
+// managedInitialization reports whether a checkout without HEAD is positively
+// linked to this run's managed base. A matching worktree link, reciprocal
+// registration, and common directory prove Git reached the linked worktree
+// before HEAD was committed; missing or foreign metadata is preserved.
+func managedInitialization(run Run) (bool, error) {
+	link := filepath.Join(run.Path, ".git")
+	info, err := os.Lstat(link)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, nil
+	}
+	data, err := os.ReadFile(link)
+	if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	admin, ok := gitDirTarget(string(data), run.Path)
+	if !ok {
+		return false, nil
+	}
+	root := filepath.Join(run.BasePath, ".git", "worktrees")
+	rootInfo, err := os.Stat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.BasePath, err)
+	}
+	parent, err := os.Stat(filepath.Dir(admin))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	adminInfo, err := os.Stat(admin)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	if !adminInfo.IsDir() || !os.SameFile(parent, rootInfo) {
+		return false, nil
+	}
+	back, err := os.ReadFile(filepath.Join(admin, "gitdir"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	backPath := strings.TrimSpace(string(back))
+	if !filepath.IsAbs(backPath) {
+		backPath = filepath.Join(admin, backPath)
+	}
+	backInfo, err := os.Stat(backPath)
+	if err != nil {
+		return false, nil
+	}
+	if !os.SameFile(backInfo, info) {
+		return false, nil
+	}
+	common, err := os.ReadFile(filepath.Join(admin, "commondir"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	commonPath := strings.TrimSpace(string(common))
+	if !filepath.IsAbs(commonPath) {
+		commonPath = filepath.Join(admin, commonPath)
+	}
+	got, err := os.Stat(commonPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	want, err := os.Stat(filepath.Join(run.BasePath, ".git"))
+	if err != nil {
+		return false, failure("git.worktree", run.BasePath, err)
+	}
+	if !os.SameFile(got, want) {
+		return false, nil
+	}
+	if _, err := os.Stat(filepath.Join(admin, "HEAD")); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	return true, nil
+}
+
+// gitDirTarget parses a linked worktree's ".git" file and resolves a relative
+// target against the worktree directory.
+func gitDirTarget(content, worktree string) (string, bool) {
+	target, ok := strings.CutPrefix(strings.TrimSpace(content), "gitdir:")
+	if !ok {
+		return "", false
+	}
+	target = strings.TrimSpace(target)
+	if target == "" || strings.ContainsAny(target, "\x00\r\n") {
+		return "", false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(worktree, target)
+	}
+	return filepath.Clean(target), true
 }
 
 func (m *Manager) validateRun(run Run) error {
