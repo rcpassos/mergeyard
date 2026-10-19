@@ -2,7 +2,9 @@ package git
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +59,10 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 	if err := cleanupPublished(ctx, run); err != nil {
 		return err
 	}
+	removalStarted, err := cleanupStarted(run)
+	if err != nil {
+		return err
+	}
 	if _, err := os.Lstat(run.Path); err == nil {
 		linkGone := false
 		if _, err := os.Lstat(filepath.Join(run.Path, ".git")); errors.Is(err, os.ErrNotExist) {
@@ -64,13 +70,15 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 		} else if err != nil {
 			return failure("git.cleanup", run.Path, err)
 		}
-		if linkGone && run.RemovalIntent {
-			// Git deletes the worktree link before the rest of the tree, so a
-			// killed removal leaves files that no longer form a checkout. The
-			// durable intent recorded before the attempt authorizes finishing
-			// it instead of failing verification on every later tick.
-			if err := os.RemoveAll(run.Path); err != nil {
-				return failure("git.cleanup", run.Path, err)
+		if removalStarted || (linkGone && run.RemovalIntent) {
+			// A recorded removal already proved ownership, publication, and
+			// cleanliness, so any remaining files belong to that deletion.
+			// Git may have deleted tracked files, the link, or neither before
+			// it was killed; finish it without treating the leftovers as
+			// human work. The link-gone case without a local record covers
+			// removals interrupted before cleanup kept its own record.
+			if err := removeTree(ctx, run.Path); err != nil {
+				return err
 			}
 		} else {
 			if err := verifyWorktree(ctx, run); err != nil {
@@ -94,6 +102,12 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 				args = append(args, "--force")
 			}
 			args = append(args, "--", run.Path)
+			// Record the boundary after cleanliness is proven and before Git
+			// starts deleting, so an interruption on either side of the link
+			// can be finished on a later tick.
+			if err := writeCleanupIntent(run); err != nil {
+				return err
+			}
 			if _, err := command(ctx, run.BasePath, "git.cleanup", args...); err != nil {
 				return err
 			}
@@ -104,7 +118,7 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 	if _, err := command(ctx, run.BasePath, "git.cleanup", "worktree", "prune", "--expire", "now"); err != nil {
 		return err
 	}
-	if run.RemovalIntent {
+	if removalStarted || run.RemovalIntent {
 		registered, err := worktreeRegistered(ctx, run)
 		if err != nil {
 			return err
@@ -114,6 +128,101 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 			// recording removal and leaving branch deletion to fail forever.
 			return failure("git.cleanup", run.Path, errors.New("worktree registration remains after removal"))
 		}
+	}
+	return removeCleanupIntent(run)
+}
+
+// cleanupIntent records where a deletion started after ownership, publication,
+// and cleanliness checks passed. Its presence makes the leftover files part of
+// an authorized removal regardless of whether Git's link survived.
+type cleanupIntent struct {
+	ID       string `json:"id"`
+	Path     string `json:"path"`
+	BasePath string `json:"base_path"`
+	Branch   string `json:"branch"`
+}
+
+func cleanupIntentPath(run Run) string {
+	return filepath.Join(filepath.Dir(run.Path), run.ID+".cleanup")
+}
+
+func newCleanupIntent(run Run) cleanupIntent {
+	return cleanupIntent{ID: run.ID, Path: run.Path, BasePath: run.BasePath, Branch: run.Branch}
+}
+
+func cleanupStarted(run Run) (bool, error) {
+	data, err := os.ReadFile(cleanupIntentPath(run))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, failure("git.cleanup", run.Path, err)
+	}
+	var intent cleanupIntent
+	if err := json.Unmarshal(data, &intent); err != nil {
+		return false, failure("git.cleanup", run.Path, fmt.Errorf("invalid cleanup intent: %w", err))
+	}
+	if intent != newCleanupIntent(run) {
+		return false, failure("git.cleanup", run.Path, errors.New("cleanup intent does not match the run"))
+	}
+	return true, nil
+}
+
+func writeCleanupIntent(run Run) error {
+	if err := writeAtomicJSON(cleanupIntentPath(run), newCleanupIntent(run)); err != nil {
+		return failure("git.cleanup", run.Path, err)
+	}
+	return nil
+}
+
+func removeCleanupIntent(run Run) error {
+	if err := os.Remove(cleanupIntentPath(run)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return failure("git.cleanup", run.Path, err)
+	}
+	return nil
+}
+
+// removeTree deletes path recursively, checking the managed context between
+// entries so an expired deadline or cancellation stops the work before the
+// manager releases its gate.
+func removeTree(ctx context.Context, path string) error {
+	return removeTreeEntries(ctx, path, os.ReadDir)
+}
+
+func removeTreeEntries(ctx context.Context, path string, readDir func(string) ([]os.DirEntry, error)) error {
+	if err := ctx.Err(); err != nil {
+		return contextFailure(ctx, "git.cleanup", path, err)
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return failure("git.cleanup", path, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return failure("git.cleanup", path, err)
+		}
+		return nil
+	}
+	entries, err := readDir(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return failure("git.cleanup", path, err)
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return contextFailure(ctx, "git.cleanup", path, err)
+		}
+		if err := removeTreeEntries(ctx, filepath.Join(path, entry.Name()), readDir); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return failure("git.cleanup", path, err)
 	}
 	return nil
 }

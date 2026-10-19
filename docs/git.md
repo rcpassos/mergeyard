@@ -147,13 +147,21 @@ and needs-attention runs must keep their artifacts. Completed cleanup permits
 excluded untracked leftovers and removes them with the worktree after verifying
 ownership, publication and absence of other dirty work.
 
-Removal accepts `Run.RemovalIntent`, the durable authorization the scheduler
-records after an ownership inspection and before removal. If the removal is
-interrupted after Git deleted the worktree link, a later call carrying that
-intent deletes the leftover files and prunes the registration. Without the
-intent, a missing link is still a verification failure and the tree is
-preserved. After pruning, a registration that remains (for example because it
-is locked) is reported instead of being recorded as removed.
+Removal writes `<run-id>.cleanup` after ownership, publication, and
+cleanliness checks pass and before Git starts deleting. An interrupted removal
+is finished on a later call from that record, whether Git had already deleted
+tracked files, the worktree link, or neither. The record is removed after the
+registration is pruned.
+
+`Run.RemovalIntent` carries the scheduler's durable authorization recorded
+before removal. It additionally finishes a missing-link state left by a removal
+that predates the local record. Without either record, a missing link is still a
+verification failure and the tree is preserved. After pruning, a registration
+that remains (for example because it is locked) is reported instead of being
+recorded as removed.
+
+Leftover deletion checks the operation context between entries, so an expired
+deadline or cancellation stops it before the manager releases its gate.
 
 ## Errors and verification
 

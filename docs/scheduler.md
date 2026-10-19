@@ -507,8 +507,9 @@ restoration must succeed before deletion, preserving preexisting human edits.
 Worktree removal intent is recorded after ownership inspection and before removal.
 A missing worktree with recorded intent can be reconciled as an interrupted
 cleanup; unexplained disappearance requires inspection and retains the branch.
-Cleanup passes that intent to Git, so if removal is interrupted after Git
-deletes the worktree link, a later tick finishes deleting the leftover files and
+Git also records a cleanup boundary after the cleanliness checks pass and before
+deletion. If removal is interrupted, whether it deleted tracked files, the
+worktree link, or neither, a later tick finishes deleting the leftovers and
 prunes the registration without manual steps. A registration that survives
 pruning, such as a deliberately locked one, is reported and retried instead of
 recording a false removal.

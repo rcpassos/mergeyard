@@ -888,50 +888,73 @@ func TestMergeCleanupRemovesSlowWorktreeBeyondMaintenanceBudget(t *testing.T) {
 }
 
 func TestMergeCleanupRecoversInterruptedWorktreeRemoval(t *testing.T) {
-	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
-	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	worktree := runWorktree(t, runtime.Workspace.Root, run)
-	control := filepath.Join(t.TempDir(), "interrupt")
-	if err := os.WriteFile(control, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	// The first removal deletes the linked metadata and part of the tree, then
-	// fails; later removals go straight to the real Git.
-	installGitWrapper(t, "worktree remove", `if [ -f "`+control+`" ]; then
+	for _, linkGone := range []bool{false, true} {
+		name := "link survives"
+		if linkGone {
+			name = "link removed"
+		}
+		t.Run(name, func(t *testing.T) {
+			_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+			api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+			worktree := runWorktree(t, runtime.Workspace.Root, run)
+			control := filepath.Join(t.TempDir(), "interrupt")
+			if err := os.WriteFile(control, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			// The first removal deletes tracked files and may or may not reach
+			// the link, then fails; later removals go straight to the real Git.
+			remove := `rm -f "$last/README.md"`
+			if linkGone {
+				remove += `; rm -f "$last/.git"`
+			}
+			installGitWrapper(t, "worktree remove", `if [ -f "`+control+`" ]; then
   rm -f "`+control+`"
   for last; do :; done
-  rm -f "$last/.git" "$last/README.md"
+  `+remove+`
   exit 1
 fi`)
-	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	saved, err := runtime.Workflow.Get(context.Background(), run.ID)
-	if err != nil || saved.State != workflow.Completed || !saved.Merge.WorktreeStarted || saved.Merge.WorktreeRemoved || saved.Merge.Error == "" {
-		t.Fatalf("interrupted removal not recorded: %+v %v", saved.Merge, err)
-	}
-	if _, err := os.Stat(filepath.Join(worktree, ".git")); !os.IsNotExist(err) {
-		t.Fatalf("fixture did not remove the worktree link: %v", err)
-	}
-	if _, err := os.Stat(worktree); err != nil {
-		t.Fatalf("fixture removed the whole worktree: %v", err)
-	}
-	// A later tick finishes the authorized removal without manual steps.
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	saved, err = runtime.Workflow.Get(context.Background(), run.ID)
-	if err != nil || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted || saved.Merge.Error != "" {
-		t.Fatalf("interrupted removal did not recover: %+v %v", saved.Merge, err)
-	}
-	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
-		t.Fatal("worktree retained")
+			api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+			if err != nil || saved.State != workflow.Completed || !saved.Merge.WorktreeStarted || saved.Merge.WorktreeRemoved || saved.Merge.Error == "" {
+				t.Fatalf("interrupted removal not recorded: %+v %v", saved.Merge, err)
+			}
+			_, linkErr := os.Stat(filepath.Join(worktree, ".git"))
+			if linkGone && !os.IsNotExist(linkErr) {
+				t.Fatalf("fixture did not remove the worktree link: %v", linkErr)
+			}
+			if !linkGone && linkErr != nil {
+				t.Fatalf("fixture did not keep the worktree link: %v", linkErr)
+			}
+			if _, err := os.Stat(worktree); err != nil {
+				t.Fatalf("fixture removed the whole worktree: %v", err)
+			}
+			intent := filepath.Join(filepath.Dir(worktree), run.ID+".cleanup")
+			if _, err := os.Stat(intent); err != nil {
+				t.Fatalf("removal boundary not recorded: %v", err)
+			}
+			// A later tick finishes the authorized removal without manual steps.
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			saved, err = runtime.Workflow.Get(context.Background(), run.ID)
+			if err != nil || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted || saved.Merge.Error != "" {
+				t.Fatalf("interrupted removal did not recover: %+v %v", saved.Merge, err)
+			}
+			if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+				t.Fatal("worktree retained")
+			}
+			if _, err := os.Stat(intent); !os.IsNotExist(err) {
+				t.Fatal("cleanup intent retained")
+			}
+		})
 	}
 }
 

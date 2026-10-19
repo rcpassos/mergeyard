@@ -91,6 +91,23 @@ func prepare(t *testing.T, f fixture) managedgit.Run {
 	return run
 }
 
+// installGitWrapper puts a shell wrapper first in PATH. A matching invocation
+// runs body instead of Git and then delegates unless the body exits; every
+// other invocation goes straight to the real Git resolved before PATH changed.
+func installGitWrapper(t *testing.T, match, body string) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is unavailable")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \" $* \" in\n*\" " + match + " \"*)\n" + body + "\n;;\nesac\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func TestPrepareClonesAndCreatesWorktreeFromRemoteDefault(t *testing.T) {
 	f := newFixture(t)
 	run := prepare(t, f)
@@ -650,6 +667,39 @@ func TestCleanupWorktreeFinishesInterruptedRemovalWithIntent(t *testing.T) {
 	}
 	if git(t, run.BasePath, "branch", "--list", run.Branch) == "" {
 		t.Fatal("worktree cleanup deleted the local branch")
+	}
+}
+
+func TestCleanupWorktreeFinishesInterruptedRemovalWithLink(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	control := filepath.Join(t.TempDir(), "interrupt")
+	if err := os.WriteFile(control, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The first removal deletes tracked work but leaves the link, as a killed
+	// real removal may, and fails. Later removals go straight to real Git.
+	installGitWrapper(t, "worktree remove", `if [ -f "`+control+`" ]; then
+  rm -f "`+control+`"
+  for last; do :; done
+  rm -f "$last/README.md"
+  exit 1
+fi`)
+	requireCode(t, f.manager.CleanupWorktree(context.Background(), run), "git.cleanup")
+	if _, err := os.Stat(filepath.Join(run.Path, ".git")); err != nil {
+		t.Fatalf("fixture removed the worktree link: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(run.Path, "README.md")); !os.IsNotExist(err) {
+		t.Fatal("fixture did not delete tracked work")
+	}
+	if err := f.manager.CleanupWorktree(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(run.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("interrupted removal with a surviving link not finished: %v", err)
+	}
+	if strings.Contains(git(t, run.BasePath, "worktree", "list", "--porcelain"), run.Path) {
+		t.Fatal("worktree registration remains")
 	}
 }
 
