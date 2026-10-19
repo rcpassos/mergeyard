@@ -24,7 +24,7 @@ selecting the HTTP browser rather than the HTML file association:
 The browser follows the page's redirect to the single-use link. The token
 therefore never appears in a process command line; a local user who reads the
 launcher arguments sees a path they cannot read. The page holds only the link
-token, never the owner session; ADR-0004 still keeps the session out of URLs. A
+token, never the owner session; ADR-0005 still keeps the session out of URLs. A
 later launch removes the page once the token lifetime has passed.
 
 ## Considered Options

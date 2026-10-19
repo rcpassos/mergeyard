@@ -52,4 +52,4 @@ stored session.
   and `mergeyard open` hands over a fresh one. Tokens remain single-use and
   short-lived, so a stolen link only races the browser once. The link reaches
   the browser through an owner-only handoff page instead of a process argument
-  (ADR-0005).
+  (ADR-0006).

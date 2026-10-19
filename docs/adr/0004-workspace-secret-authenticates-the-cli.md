@@ -48,7 +48,7 @@ runtime returns only the prepared run snapshot.
   running pre-restart process would be refused.
 - The dashboard link is printed to the runtime's terminal and reaches the
   browser through an owner-only handoff page rather than a process argument
-  (ADR-0005). The token is single-use and expires, and the session it hands over
+  (ADR-0006). The token is single-use and expires, and the session it hands over
   rotates when the runtime restarts, so a stolen link only races the browser
   once.
 - The API proof binds the exact status and body, and unproven requests receive
