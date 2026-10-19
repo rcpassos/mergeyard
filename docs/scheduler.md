@@ -261,7 +261,9 @@ refusal or the 15-minute window spends another read, while a relabelled issue
 returns to the listing. Refusals whose issue is closed or deleted are forgotten
 when that snapshot refreshes. A failed refresh keeps the last snapshot, or
 records the issue's scoped failure until a snapshot exists, and backs off for
-the same window instead of retrying on every pass. Open
+the same window instead of retrying on every pass. Each refused read gets a
+bounded child context, so a slow request cannot consume the budget reserved for
+the rest of discovery. Open
 blockers are reused while the issue's snapshot and open-blocker count are
 unchanged, and a listing summary that reports no open blockers needs no
 dependency read at all; a missing summary falls back to reading, so an unknown

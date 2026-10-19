@@ -83,6 +83,22 @@ func issueNotFound(err error) bool {
 	return errors.As(err, &coded) && coded.Code == "github.not_found"
 }
 
+// refusalReadWindow bounds one refused-issue read. A refusal is display-only,
+// so a slow request must not consume the dashboard's whole discovery budget.
+const refusalReadWindow = 5 * time.Second
+
+// refusalReadContext bounds one refused-issue read to at most half of the
+// caller's remaining discovery budget, leaving room for the rest of the pass.
+func refusalReadContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	window := refusalReadWindow
+	if deadline, ok := ctx.Deadline(); ok {
+		if half := time.Until(deadline) / 2; half < window {
+			window = half
+		}
+	}
+	return context.WithTimeout(ctx, window)
+}
+
 // refusedReadTimedOut distinguishes the dashboard refresh deadline from a
 // shutdown or disconnected caller. The GitHub adapter reports an expired
 // deadline as github.timeout and any other cancellation as github.canceled.
@@ -207,7 +223,9 @@ func (s *Scheduler) refusedIssue(ctx context.Context, repo config.Repository, nu
 		return entry.issue, entry.err
 	}
 	now := s.deps.Now()
-	issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, number)
+	readCtx, cancel := refusalReadContext(ctx)
+	issue, err := s.deps.GitHub.GetIssue(readCtx, repo.Repo, number)
+	cancel()
 	if err != nil {
 		// A missing issue is a conclusive answer, not a failed read: the row
 		// must be forgotten rather than kept visible from a stale snapshot.

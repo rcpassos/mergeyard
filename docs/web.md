@@ -155,7 +155,9 @@ an issue's listing snapshot is unchanged. A refused issue that no longer carries
 a Mergeyard label uses the same snapshot until its refusal changes, the listing
 sees it again, or a 15-minute window expires. A failed reread keeps the last
 snapshot, or records the issue's scoped failure when no snapshot exists, and
-backs off instead of retrying on every pass. A GitHub failure scoped to one
+backs off instead of retrying on every pass. Each refused read is bounded so a
+slow request cannot consume the refresh budget reserved for the rest of
+discovery. A GitHub failure scoped to one
 repository or run does not hide the others: readable repositories refresh, and
 the failed repository or issue is shown in the needs-attention section with its
 diagnostic code until a later pass succeeds. Other discovery errors fail closed

@@ -349,36 +349,54 @@ func (g *deadlineGitHub) GetIssue(ctx context.Context, repo string, number int) 
 	return github.Issue{}, &fault.Error{Code: "github.timeout", Message: "The GitHub request timed out; it will retry", Err: ctx.Err()}
 }
 
-// A refused-issue read that consumes the dashboard refresh deadline stays
-// scoped to its issue instead of discarding other repositories' discoveries,
-// and backs off so the next refresh does not return to the same slow read.
+// A refused-issue read that hits its bounded deadline stays scoped to its
+// issue instead of discarding discoveries from the rest of the pass, and backs
+// off so the next refresh does not return to the same slow read.
 func TestQueueScopesRefusedIssueDeadlineAndBacksOff(t *testing.T) {
 	ctx := context.Background()
-	api := &fakeGitHub{issues: map[string][]github.Issue{
-		"owner/healthy": {ready(1)},
-		"owner/broken":  {},
-	}}
-	gated := &deadlineGitHub{fakeGitHub: api, slowRepo: "owner/broken"}
-	s, runtime := configured(t, gated, "repositories:\n  - repo: owner/healthy\n  - repo: owner/broken\n", rejectingGit{})
-	if _, err := runtime.DB.Exec("INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES('owner/broken',7,'Untrusted label actor.','ready-for-agent',0)"); err != nil {
-		t.Fatal(err)
-	}
-	for pass := 1; pass <= 2; pass++ {
-		refreshCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
-		report, err := s.QueueReport(refreshCtx)
-		cancel()
-		if err == nil || !scheduler.GitHubFailure(err) {
-			t.Fatalf("pass %d queue error = %v, want a scoped refused-issue timeout", pass, err)
-		}
-		if len(report.Issues) != 1 || !strings.EqualFold(report.Issues[0].Repository, "owner/healthy") || report.Issues[0].Issue.Number != 1 {
-			t.Fatalf("pass %d lost the healthy repository: %+v", pass, report.Issues)
-		}
-		if len(report.Failures) != 1 || report.Failures[0].Code != "reconcile.issue_failed" || report.Failures[0].IssueNumber != 7 || !strings.Contains(report.Failures[0].Message, "github.timeout") {
-			t.Fatalf("pass %d queue failures = %+v", pass, report.Failures)
-		}
-	}
-	if api.calls.issueReads != 1 {
-		t.Fatalf("refused-issue reads across deadline passes = %d, want one before backoff", api.calls.issueReads)
+	for _, tc := range []struct {
+		name, repositories string
+	}{
+		{"healthy repository first", "repositories:\n  - repo: owner/healthy\n  - repo: owner/broken\n"},
+		{"broken repository first", "repositories:\n  - repo: owner/broken\n  - repo: owner/healthy\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := &fakeGitHub{issues: map[string][]github.Issue{
+				"owner/healthy": {ready(1)},
+				"owner/broken":  {ready(8)},
+			}}
+			gated := &deadlineGitHub{fakeGitHub: api, slowRepo: "owner/broken"}
+			s, runtime := configured(t, gated, tc.repositories, rejectingGit{})
+			if _, err := runtime.DB.Exec("INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES('owner/broken',7,'Untrusted label actor.','ready-for-agent',0)"); err != nil {
+				t.Fatal(err)
+			}
+			for pass := 1; pass <= 2; pass++ {
+				refreshCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+				report, err := s.QueueReport(refreshCtx)
+				cancel()
+				if err == nil || !scheduler.GitHubFailure(err) {
+					t.Fatalf("pass %d queue error = %v, want a scoped refused-issue timeout", pass, err)
+				}
+				var healthy, beside bool
+				for _, item := range report.Issues {
+					if strings.EqualFold(item.Repository, "owner/healthy") && item.Issue.Number == 1 {
+						healthy = true
+					}
+					if strings.EqualFold(item.Repository, "owner/broken") && item.Issue.Number == 8 {
+						beside = true
+					}
+				}
+				if !healthy || !beside || len(report.Issues) != 2 {
+					t.Fatalf("pass %d lost healthy issues: %+v", pass, report.Issues)
+				}
+				if len(report.Failures) != 1 || report.Failures[0].Code != "reconcile.issue_failed" || report.Failures[0].IssueNumber != 7 || !strings.Contains(report.Failures[0].Message, "github.timeout") {
+					t.Fatalf("pass %d queue failures = %+v", pass, report.Failures)
+				}
+			}
+			if api.calls.issueReads != 1 {
+				t.Fatalf("refused-issue reads across deadline passes = %d, want one before backoff", api.calls.issueReads)
+			}
+		})
 	}
 }
 
