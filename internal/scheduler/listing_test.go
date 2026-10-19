@@ -6,7 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -529,19 +529,128 @@ func TestQueueForgetsOnlyRefusalsNothingCanFinish(t *testing.T) {
 	}
 }
 
+// stallListing blocks the first label-filtered listing fetch until unblock is
+// called, so a test can hold the shared listing gate.
+func stallListing(api *fakeGitHub) (<-chan struct{}, func()) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	stalled := false
+	api.listHook = func() {
+		if !stalled {
+			stalled = true
+			close(started)
+			<-release
+		}
+	}
+	return started, func() { once.Do(func() { close(release) }) }
+}
+
+// A caller waiting behind a stalled listing fetch returns on its own deadline
+// instead of waiting for the fetch to finish.
+func TestListingWaiterReturnsWhenItsDeadlineExpires(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
+	started, unblock := stallListing(api)
+	defer unblock()
+	s, _ := configured(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := s.Queue(context.Background())
+		firstDone <- err
+	}()
+	<-started
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Queue(waitCtx)
+		done <- err
+	}()
+	start := time.Now()
+	select {
+	case err := <-done:
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("waiter returned after %s", elapsed)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("waiter error = %v, want its deadline", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter ignored its deadline while the listing fetch was stalled")
+	}
+
+	unblock()
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A dashboard refresh that runs out of budget behind a stalled listing fetch
+// returns the last good queue instead of failing discovery.
+func TestQueueReportsLastGoodListingWhenRefreshDeadlineExpires(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
+	s, _ := configuredAt(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{}, func() time.Time { return now })
+	if _, err := s.Queue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Age the shared listing so the next reader must fetch again, then stall
+	// that fetch while a second reader waits.
+	now = now.Add(61 * time.Second)
+	started, unblock := stallListing(api)
+	defer unblock()
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := s.Queue(context.Background())
+		firstDone <- err
+	}()
+	<-started
+
+	type result struct {
+		report scheduler.QueueSnapshot
+		err    error
+	}
+	refreshCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan result, 1)
+	go func() {
+		report, err := s.QueueReport(refreshCtx)
+		done <- result{report: report, err: err}
+	}()
+	start := time.Now()
+	select {
+	case got := <-done:
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("refresh returned after %s", elapsed)
+		}
+		if got.err != nil {
+			t.Fatalf("refresh error = %v, want the last good listing", got.err)
+		}
+		if !got.report.Stale {
+			t.Fatal("expired refresh did not report a stale snapshot")
+		}
+		if len(got.report.Issues) != 1 || got.report.Issues[0].Issue.Number != 7 {
+			t.Fatalf("refresh lost the last good listing: %+v", got.report.Issues)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh ignored its deadline while the listing fetch was stalled")
+	}
+
+	unblock()
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A scheduler poll and a dashboard refresh that start together share one fetch
 // per repository instead of racing duplicate listings.
 func TestConcurrentListingReadersShareOneFetch(t *testing.T) {
 	ctx := context.Background()
 	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
-	started, release := make(chan struct{}), make(chan struct{})
-	var fetches int32
-	api.listHook = func() {
-		if atomic.AddInt32(&fetches, 1) == 1 {
-			close(started)
-			<-release
-		}
-	}
+	started, unblock := stallListing(api)
+	defer unblock()
 	s, _ := configured(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{})
 
 	done := make(chan error, 3)
@@ -552,14 +661,11 @@ func TestConcurrentListingReadersShareOneFetch(t *testing.T) {
 		}()
 	}
 	<-started
-	close(release)
+	unblock()
 	for range 3 {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-	}
-	if got := atomic.LoadInt32(&fetches); got != 1 {
-		t.Fatalf("listing fetches = %d, want one shared fetch", got)
 	}
 	if api.calls.issueListings != 1 {
 		t.Fatalf("listing calls = %d, want 1", api.calls.issueListings)

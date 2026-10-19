@@ -267,10 +267,44 @@ func (s *Scheduler) cachedRefusedIssue(key string) (refusedIssueSnapshot, bool) 
 
 // QueueSnapshot is one dashboard discovery pass. Issues contains every
 // readable repository's queue; Failures names the repositories or issues whose
-// GitHub reads failed without hiding the rest.
+// GitHub reads failed without hiding the rest. Stale marks a copy of the last
+// usable pass that is returned when the caller's deadline expires before a
+// shared listing can refresh.
 type QueueSnapshot struct {
 	Issues   []QueueIssue
 	Failures []Finding
+	Stale    bool
+}
+
+// cloneQueueSnapshot copies a snapshot's slices. QueueIssue values and the
+// blocker slices they share are immutable after discovery.
+func cloneQueueSnapshot(snapshot QueueSnapshot) QueueSnapshot {
+	return QueueSnapshot{
+		Issues:   append([]QueueIssue(nil), snapshot.Issues...),
+		Failures: append([]Finding(nil), snapshot.Failures...),
+	}
+}
+
+// rememberQueue keeps the last usable discovery pass for a refresh that runs
+// out of budget waiting for a shared listing.
+func (s *Scheduler) rememberQueue(snapshot QueueSnapshot) {
+	kept := cloneQueueSnapshot(snapshot)
+	s.queueMu.Lock()
+	s.lastQueue = &kept
+	s.queueMu.Unlock()
+}
+
+// staleQueueSnapshot returns the last usable discovery pass, marked stale so
+// a caller can tell it did not refresh.
+func (s *Scheduler) staleQueueSnapshot() (QueueSnapshot, bool) {
+	s.queueMu.RLock()
+	defer s.queueMu.RUnlock()
+	if s.lastQueue == nil {
+		return QueueSnapshot{}, false
+	}
+	snapshot := cloneQueueSnapshot(*s.lastQueue)
+	snapshot.Stale = true
+	return snapshot, true
 }
 
 // Queue discovers issues without claiming them, even when paused or at capacity.
@@ -304,6 +338,15 @@ func (s *Scheduler) QueueReport(ctx context.Context) (QueueSnapshot, error) {
 		}
 		issues, err := s.listIssues(ctx, repo)
 		if err != nil {
+			// The shared listing may be held by a slow fetch. Once the
+			// caller's budget is spent waiting, keep the last usable queue
+			// visible instead of turning the wait into a discovery failure.
+			var waited *listingWaitError
+			if errors.As(err, &waited) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				if previous, ok := s.staleQueueSnapshot(); ok {
+					return previous, nil
+				}
+			}
 			if scopedFailure("reconcile.repository_failed", repo.Repo, 0, err) {
 				continue
 			}
@@ -348,5 +391,9 @@ func (s *Scheduler) QueueReport(ctx context.Context) (QueueSnapshot, error) {
 			snapshot.Issues = append(snapshot.Issues, item)
 		}
 	}
-	return snapshot, errors.Join(scoped...)
+	err := errors.Join(scoped...)
+	if err == nil || githubFailure(err) {
+		s.rememberQueue(snapshot)
+	}
+	return snapshot, err
 }

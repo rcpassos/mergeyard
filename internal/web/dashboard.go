@@ -117,21 +117,7 @@ func (s *Server) RunUpdates(ctx context.Context) {
 		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		report, err := d.Scheduler.QueueReport(refreshCtx)
 		cancel()
-		d.mu.Lock()
-		if err == nil || scheduler.GitHubFailure(err) {
-			// A scoped GitHub failure only hides the affected repository. The
-			// readable repositories still refresh, and the failure is shown
-			// beside them until a later poll succeeds.
-			d.queue, d.queueFailure, d.queueError = report.Issues, report.Failures, ""
-			d.queueTime = time.Now().UTC().Format(time.RFC3339)
-		} else {
-			d.queueError = errorCode(err, "internal.dashboard") + ": GitHub discovery failed. Check the application log; discovery will retry."
-			if d.queueTime != "" {
-				d.queueError += " Showing the last successful snapshot."
-			}
-		}
-		d.queueReady = true
-		d.mu.Unlock()
+		d.applyQueueReport(report, err)
 		if ctx.Err() != nil {
 			return
 		}
@@ -145,6 +131,36 @@ func (s *Server) RunUpdates(ctx context.Context) {
 		case <-timer.C:
 		}
 	}
+}
+
+// applyQueueReport records one discovery pass. A stale report means the
+// refresh budget expired while the shared listing was still being fetched, so
+// the dashboard keeps its last successful snapshot and sync time instead of
+// presenting the timeout as a discovery error.
+func (d *dashboard) applyQueueReport(report scheduler.QueueSnapshot, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch {
+	case report.Stale:
+		// The scheduler returned its last usable pass. Keep the snapshot and
+		// sync time already on screen; without a previous sync, show what it
+		// returned but never present stale data as freshly synced.
+		if d.queueTime == "" {
+			d.queue, d.queueFailure, d.queueError = report.Issues, report.Failures, ""
+		}
+	case err == nil || scheduler.GitHubFailure(err):
+		// A scoped GitHub failure only hides the affected repository. The
+		// readable repositories still refresh, and the failure is shown
+		// beside them until a later poll succeeds.
+		d.queue, d.queueFailure, d.queueError = report.Issues, report.Failures, ""
+		d.queueTime = time.Now().UTC().Format(time.RFC3339)
+	default:
+		d.queueError = errorCode(err, "internal.dashboard") + ": GitHub discovery failed. Check the application log; discovery will retry."
+		if d.queueTime != "" {
+			d.queueError += " Showing the last successful snapshot."
+		}
+	}
+	d.queueReady = true
 }
 
 type runView struct {
