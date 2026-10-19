@@ -354,16 +354,13 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 		}
 	}
 	var implementReport *harness.PhaseResult
-	var resultPath string
-	if err := s.db.QueryRowContext(ctx, "SELECT result_path FROM phase_attempts WHERE run_id=? AND phase='implement' AND step='' AND status='succeeded' ORDER BY attempt DESC LIMIT 1", run.ID).Scan(&resultPath); err == nil {
-		raw, err := s.deps.Runner.ReadFile(ctx, resultPath)
+	var reportJSON string
+	if err := s.db.QueryRowContext(ctx, "SELECT report_json FROM phase_attempts WHERE run_id=? AND phase='implement' AND step='' AND status='succeeded' AND report_json IS NOT NULL ORDER BY attempt DESC LIMIT 1", run.ID).Scan(&reportJSON); err == nil {
+		result, err := savedImplementResult(json.RawMessage(reportJSON))
 		if err != nil {
 			return fail(err)
 		}
-		implementReport = &harness.PhaseResult{}
-		if err := json.Unmarshal(raw, implementReport); err != nil {
-			return fail(err)
-		}
+		implementReport = &result
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return fail(err)
 	}

@@ -227,8 +227,14 @@ func TestBlockedActionSurvivesFailedAttemptRestart(t *testing.T) {
 				}
 				run := finish(t, s, workflow.NeedsAttention, phase)
 				expected := run.HumanAction
+				// Continue from the attempt report, never the phase directory.
+				if phase == workflow.Implement {
+					if err := os.Remove(filepath.Join(initial.Workspace.Root, "runs", run.ID, "phases", "implement-0-1", "result.json")); err != nil {
+						t.Fatal(err)
+					}
+				}
 				// Recreate the durable boundary after the failed-attempt commit but before
-				// its attention transition. The saved result and attempt fault remain.
+				// its attention transition. The saved report and attempt fault remain.
 				if _, err := initial.DB.Exec(`UPDATE runs SET state='ACTIVE',last_error_code=NULL,last_error_message=NULL,human_action_json=NULL WHERE id=?`, run.ID); err != nil {
 					t.Fatal(err)
 				}

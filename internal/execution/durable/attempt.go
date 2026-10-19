@@ -35,9 +35,9 @@ type Executor struct {
 }
 
 // Attempt is the journal entry for one phase execution: the harness (agent)
-// that ran it, its persisted session identity, owned process reference and
-// continuation state. It is the single attempt shape shared by durable
-// execution and the scheduler's phase workflows.
+// that ran it, its persisted session identity, owned process reference,
+// continuation state and saved structured report. It is the single attempt
+// shape shared by durable execution and the scheduler's phase workflows.
 type Attempt struct {
 	ID, Agent             string
 	Number                int
@@ -45,6 +45,7 @@ type Attempt struct {
 	Ref                   runner.SessionRef
 	SessionID             string
 	Resumed               bool
+	Report                json.RawMessage // structured report saved with the attempt, if any
 	Failure, CheckRetryOf string
 }
 
@@ -70,10 +71,13 @@ func sessionIdentity(roleSession string) string {
 // Load recovers the durable process reference and conversation for one phase round.
 func (e Executor) Load(ctx context.Context, id string, phase workflow.Phase, round int) (Attempt, error) {
 	var a Attempt
-	var input string
+	var input, report string
 	identity := sessionIdentity("(SELECT " + phase.Role() + "_session_id FROM runs WHERE id=a.run_id)")
-	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,`+identity+`,a.check_retry_of FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf)
+	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,`+identity+`,a.check_retry_of,COALESCE(a.report_json,'') FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf, &report)
 	a.Ref.PhaseDir = filepath.Dir(input)
+	if err == nil && report != "" {
+		a.Report = json.RawMessage(report)
+	}
 	return a, err
 }
 
