@@ -82,6 +82,10 @@ func TestDelayedVerificationPreservesPublishedEscalation(t *testing.T) {
 	prefix, suffix := "Human introduction\r\n\r\n", "\n\nHuman checklist\n"
 	pr.Body = prefix + pr.Body + suffix
 	api.failVerification = false
+	// The deferred attempt backs off; age it so the improved body can publish.
+	if _, err := rt.DB.Exec(`UPDATE verification_attempts SET last_attempt_at='2000-01-01T00:00:00Z' WHERE run_id=?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
 	assertPublication := func(rt *app.Runtime) {
 		t.Helper()
 		saved, err := rt.Workflow.Get(ctx, run.ID)

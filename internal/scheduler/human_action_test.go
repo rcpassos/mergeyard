@@ -123,8 +123,9 @@ func TestAttentionCommentRetriesAfterRestartWithoutDuplicating(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The pending comment survives clearing the current fault.
-			if _, err := restarted.Workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Stop}); err != nil {
+			// The pending comment survives clearing the current fault. Age the
+			// failed attempt past its backoff so the ambiguous write is replayed.
+			if _, err := restarted.DB.ExecContext(ctx, `UPDATE attention_publications SET last_attempt_at='2000-01-01T00:00:00Z' WHERE run_id=?`, run.ID); err != nil {
 				t.Fatal(err)
 			}
 			for i := 0; i < 2; i++ {

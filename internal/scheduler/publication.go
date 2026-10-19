@@ -14,6 +14,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/review"
+	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
 // ReportPublisher performs inspect-before-create, including after ambiguous writes.
@@ -23,7 +24,9 @@ type ReportPublisher interface {
 
 type pendingReport struct {
 	id, runID, repository, phase, body, warning, checkRetryOf string
-	pr, round, attempt                                        int
+	lastAttempt                                               string
+	pr, round, attempt, attempts                              int
+	finished, failed                                          bool
 }
 
 // queueReports reconstructs missing publication intents from locally saved
@@ -126,23 +129,48 @@ func (s *Scheduler) publishReports(ctx context.Context) error {
 	if !s.cfg.PRComments {
 		return nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT attempt_id,run_id,repository,pr_number,phase,round,attempt,body,warning_code FROM report_publications WHERE state='pending' ORDER BY COALESCE(last_attempt_at,''),run_id,round,CASE phase WHEN 'review' THEN 0 ELSE 1 END,attempt`)
+	rows, err := s.db.QueryContext(ctx, `SELECT p.attempt_id,p.run_id,p.repository,p.pr_number,p.phase,p.round,p.attempt,p.body,p.warning_code,p.attempts,COALESCE(p.last_attempt_at,''),r.state,p.failed
+		FROM report_publications p JOIN runs r ON r.id=p.run_id
+		WHERE p.state='pending' AND p.stopped=0
+		ORDER BY COALESCE(p.last_attempt_at,''),p.run_id,p.round,CASE p.phase WHEN 'review' THEN 0 ELSE 1 END,p.attempt`)
 	if err != nil {
 		return err
 	}
-	var pending []pendingReport
+	var loaded []pendingReport
 	for rows.Next() {
 		var p pendingReport
-		if err := rows.Scan(&p.id, &p.runID, &p.repository, &p.pr, &p.phase, &p.round, &p.attempt, &p.body, &p.warning); err != nil {
+		var runState string
+		if err := rows.Scan(&p.id, &p.runID, &p.repository, &p.pr, &p.phase, &p.round, &p.attempt, &p.body, &p.warning, &p.attempts, &p.lastAttempt, &runState, &p.failed); err != nil {
 			rows.Close()
 			return err
 		}
-		pending = append(pending, p)
+		p.finished = workflow.State(runState).Terminal()
+		loaded = append(loaded, p)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
 		return err
+	}
+	var pending []pendingReport
+	for _, p := range loaded {
+		// A finished run that already returned a failure has no later reader;
+		// record the stop without another read or write.
+		if p.finished && p.failed {
+			warning := "Report is saved locally. This run is finished, so PR comment publication will not retry."
+			if _, err := s.db.ExecContext(ctx, `UPDATE report_publications SET stopped=1,warning=? WHERE attempt_id=?`, warning, p.id); err != nil {
+				return err
+			}
+			continue
+		}
+		due, err := publicationDue(p.lastAttempt, p.attempts, s.deps.Now())
+		if err != nil {
+			return err
+		}
+		if !due {
+			continue
+		}
+		pending = append(pending, p)
 	}
 	deliveries := make([]commentDelivery, 0, len(pending))
 	for _, p := range pending {
@@ -152,27 +180,35 @@ func (s *Scheduler) publishReports(ctx context.Context) error {
 }
 
 func (p pendingReport) delivery(s *Scheduler) commentDelivery {
-	warning := "Report is saved locally. PR comment publication will retry without stopping work."
 	return commentDelivery{
-		repository: p.repository, number: p.pr, body: p.body, warningCode: p.warning,
+		repository: p.repository, number: p.pr, body: p.body, warningCode: p.warning, finished: p.finished,
 		startAttempt: func(ctx context.Context) error {
-			_, err := s.db.ExecContext(ctx, `UPDATE report_publications SET attempts=attempts+1,last_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE attempt_id=?`, p.id)
+			_, err := s.db.ExecContext(ctx, `UPDATE report_publications SET attempts=attempts+1,last_attempt_at=?,failed=0 WHERE attempt_id=?`, publicationTimestamp(s.deps.Now()), p.id)
 			return err
 		},
-		saveWarning: func(ctx context.Context, tx *sql.Tx, code string) (events.Draft, error) {
-			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET warning_code=?,warning=? WHERE attempt_id=?`, code, warning, p.id)
+		saveWarning: func(ctx context.Context, tx *sql.Tx, code string, failed, terminal bool) (events.Draft, error) {
+			warning := "Report is saved locally. PR comment publication is deferred."
+			if terminal {
+				warning = "Report is saved locally. PR comment publication cannot deliver this comment."
+			}
+			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET warning_code=?,warning=?,failed=?,stopped=? WHERE attempt_id=?`, code, warning, failed, terminal, p.id)
 			return events.Draft{RunID: p.runID, Type: "publication.warning", Payload: map[string]any{"report_id": p.id, "code": code, "message": warning}}, err
 		},
+		saveAttemptResult: func(ctx context.Context, failed, terminal bool) error {
+			_, err := s.db.ExecContext(ctx, `UPDATE report_publications SET failed=?,stopped=? WHERE attempt_id=?`, failed, terminal, p.id)
+			return err
+		},
 		saveReceipt: func(ctx context.Context, tx *sql.Tx, comment *github.Comment) (events.Draft, error) {
-			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET state='published',comment_id=?,comment_url=?,warning_code='',warning='' WHERE attempt_id=?`, comment.ID, comment.URL, p.id)
+			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET state='published',comment_id=?,comment_url=?,warning_code='',warning='',failed=0,stopped=0 WHERE attempt_id=?`, comment.ID, comment.URL, p.id)
 			return events.Draft{RunID: p.runID, Type: "publication.published", Payload: map[string]any{"report_id": p.id, "comment_id": comment.ID, "comment_url": comment.URL}}, err
 		},
 	}
 }
 
 // persistentPublicationFailure reports whether retrying cannot resolve a
-// returned body-publication failure: the PR is closed or inaccessible, or this
-// runtime cannot write PR bodies at all. Transport errors, rate limits, invalid
+// returned publication failure: the PR or comment target is inaccessible,
+// authentication fails, the request is invalid (including GitHub's 400/422),
+// or this runtime cannot publish at all. Transport errors, rate limits, invalid
 // responses and a shared-budget expiry stay retryable.
 func persistentPublicationFailure(cause error, publicationCtx context.Context) bool {
 	var coded *fault.Error
@@ -180,7 +216,7 @@ func persistentPublicationFailure(cause error, publicationCtx context.Context) b
 		return false
 	}
 	switch coded.Code {
-	case "github.not_found", "github.forbidden", "github.invalid_input", "publication.unsupported", "publication.multiple_matches":
+	case "github.not_found", "github.forbidden", "github.not_logged_in", "github.invalid_input", "github.command_failed", "publication.unsupported", "publication.multiple_matches":
 		return true
 	}
 	return false
@@ -191,7 +227,7 @@ func publicationCode(err error) string {
 	var coded *fault.Error
 	if errors.As(err, &coded) {
 		switch coded.Code {
-		case "github.unavailable", "github.rate_limited", "github.forbidden", "github.not_found", "github.not_logged_in", "github.canceled", "github.timeout", "github.invalid_response", "github.invalid_input", "publication.multiple_matches", "publication.unsupported":
+		case "github.unavailable", "github.rate_limited", "github.forbidden", "github.not_found", "github.not_logged_in", "github.canceled", "github.timeout", "github.invalid_response", "github.invalid_input", "github.command_failed", "publication.multiple_matches", "publication.unsupported":
 			return coded.Code
 		}
 	}

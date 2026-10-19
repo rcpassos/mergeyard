@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rcpassos/mergeyard/internal/github"
 )
@@ -169,4 +170,22 @@ func TestReportCommentDoesNotWriteAfterFailedOrAmbiguousInspection(t *testing.T)
 	if len(r.calls) != 0 {
 		t.Fatal("invalid/canceled request reached gh")
 	}
+}
+
+func TestCapCommentBodyPreservesMarkerAndUTF8(t *testing.T) {
+	body := "<!-- mergeyard:report:abc -->\n" + strings.Repeat("é", github.MaxBodyBytes)
+	capped := github.CapCommentBody(body)
+	if len(capped) > github.MaxBodyBytes {
+		t.Fatalf("capped body = %d bytes", len(capped))
+	}
+	if !strings.HasPrefix(capped, "<!-- mergeyard:report:abc -->\n") || !strings.Contains(capped, "[truncated by Mergeyard") {
+		t.Fatalf("marker or truncation lost: %q", capped[:80])
+	}
+	if !utf8.ValidString(capped) {
+		t.Fatal("truncation split a UTF-8 rune")
+	}
+	if capped == github.CapCommentBody(capped) {
+		return
+	}
+	t.Fatal("comment cap was not idempotent")
 }

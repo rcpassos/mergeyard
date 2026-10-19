@@ -125,6 +125,7 @@ func (c *Client) EnsureReportComment(ctx context.Context, repo string, number in
 }
 
 func (c *Client) ensureComment(ctx context.Context, repo string, number int, body string, match func(Comment) bool) (*Comment, error) {
+	body = CapCommentBody(body)
 	marker, _, _ := strings.Cut(body, "\n")
 	if number <= 0 {
 		return nil, codedError("github.invalid_input", "expected a positive issue number", nil)

@@ -97,10 +97,13 @@ approval, and is independent of `pr_comments`. Unflagged runs show no badge.
 Deferred verification evidence updates preserve the escalation section.
 Diff evaluation or PR body publication failures produce advisory warnings and
 retry on subsequent readiness observations, including after restart, while the
-failure can still resolve. A finished run stops retrying body publication once a
-failure retrying cannot resolve is returned, such as a closed or inaccessible
-PR. Neither failures nor retries prevent readiness. Incomplete or ambiguous PR
-ownership markers are left intact for human repair.
+failure can still resolve. Permanent answers, such as a closed or inaccessible
+PR or a 422 size or validation rejection, stop retrying and keep the warning.
+Transient failures back off from one minute up to one hour, and a finished run
+stops after a returned failure. Published bodies are capped at GitHub's 65536-byte
+limit by truncating verification evidence and then the summary. Neither failures
+nor retries prevent readiness. Incomplete or ambiguous PR ownership markers are
+left intact for human repair.
 
 ## Agent ports and session isolation
 

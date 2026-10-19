@@ -13,6 +13,7 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/ci"
+	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
@@ -24,16 +25,23 @@ type reportGitHub struct {
 	branchGitHub
 	bodies    []string
 	failure   bool
+	code      string
+	calls     int
 	ambiguous bool
 	before    func()
 }
 
 func (f *reportGitHub) EnsureReportComment(_ context.Context, _ string, _ int, body string) (*github.Comment, error) {
+	f.calls++
 	if f.before != nil {
 		f.before()
 	}
 	if f.failure {
-		return nil, &fault.Error{Code: "github.unavailable", Message: "secret token <script> unsafe upstream diagnostic"}
+		code := f.code
+		if code == "" {
+			code = "github.unavailable"
+		}
+		return nil, &fault.Error{Code: code, Message: "secret token <script> unsafe upstream diagnostic"}
 	}
 	for i, old := range f.bodies {
 		if old == body {
@@ -117,7 +125,7 @@ func TestReportPublicationEnabledDisabledAndFailureDoesNotBlockLoop(t *testing.T
 	}
 }
 
-func TestCompletedRunPublicationReplaysAfterLostSuccessAndRuntimeRestart(t *testing.T) {
+func TestCompletedRunStopsRetryingReportPublicationAfterFailure(t *testing.T) {
 	_, runtime, api, _, cfg, r := localFlow(t, loopScript(disputedReport))
 	publisher := &reportGitHub{branchGitHub: branchGitHub{api}, ambiguous: true}
 	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: publisher, Runner: r})
@@ -128,6 +136,7 @@ func TestCompletedRunPublicationReplaysAfterLostSuccessAndRuntimeRestart(t *test
 	if len(publisher.bodies) != 1 || len(run.Publications) != 3 {
 		t.Fatalf("ambiguous success not pending: %+v", run.Publications)
 	}
+	calls := publisher.calls
 	for _, trigger := range []workflow.Trigger{workflow.CIPassed, workflow.PRMerged} {
 		if _, err := runtime.Workflow.Transition(context.Background(), run.ID, workflow.Request{Trigger: trigger}); err != nil {
 			t.Fatal(err)
@@ -157,8 +166,61 @@ func TestCompletedRunPublicationReplaysAfterLostSuccessAndRuntimeRestart(t *test
 		}
 	}
 	saved, err = reopened.Workflow.Get(context.Background(), run.ID)
-	if err != nil || saved.State != workflow.Completed || len(publisher.bodies) != 3 {
-		t.Fatalf("completed replay duplicated reports: %d %+v %v", len(publisher.bodies), saved, err)
+	if err != nil || saved.State != workflow.Completed || publisher.calls != calls {
+		t.Fatalf("completed run retried reports: %d calls, want %d; %+v %v", publisher.calls, calls, saved, err)
+	}
+	for _, p := range saved.Publications {
+		if p.State != "pending" || p.WarningCode != "github.unavailable" || !strings.Contains(p.Warning, "will not retry") {
+			t.Fatalf("warning lost or still promises retries: %+v", p)
+		}
+	}
+	var stopped int
+	if err := reopened.DB.QueryRow(`SELECT count(*) FROM report_publications WHERE run_id=? AND stopped=1`, run.ID).Scan(&stopped); err != nil || stopped != 3 {
+		t.Fatalf("finished reports were not stopped: %d, %v", stopped, err)
+	}
+}
+
+func TestAmbiguousReportPublicationReplaysOnActiveRun(t *testing.T) {
+	_, runtime, api, _, cfg, r := localFlow(t, loopScript(disputedReport))
+	publisher := &reportGitHub{branchGitHub: branchGitHub{api}, ambiguous: true}
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: publisher, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	if len(publisher.bodies) != 1 || len(run.Publications) != 3 {
+		t.Fatalf("ambiguous success not pending: %+v", run.Publications)
+	}
+	if _, err := runtime.DB.Exec(`UPDATE runs SET state='MANUAL' WHERE id=?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	root := runtime.Workspace.Root
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := app.Open(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	// Age the failed attempts past their backoff; the ambiguous comment must be
+	// found before a second one is posted.
+	if _, err := reopened.DB.Exec(`UPDATE report_publications SET last_attempt_at='2000-01-01T00:00:00Z' WHERE run_id=?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	publisher.failure = false
+	restarted, err := scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: publisher, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := restarted.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saved, err := reopened.Workflow.Get(context.Background(), run.ID)
+	if err != nil || len(publisher.bodies) != 3 {
+		t.Fatalf("ambiguous replay duplicated reports: %d %+v %v", len(publisher.bodies), saved, err)
 	}
 	for _, p := range saved.Publications {
 		if p.State != "published" || p.CommentID <= 0 || p.WarningCode != "" {
@@ -297,5 +359,216 @@ func TestPublicationWarningDoesNotBlockCIReadiness(t *testing.T) {
 		if !strings.Contains(response.Body.String(), event) {
 			t.Fatalf("missing live update %q", event)
 		}
+	}
+}
+
+func seedReportPublication(t *testing.T, rt *app.Runtime, id, state string, pr int) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO runs(id,repository,issue_number,state,pr_number) VALUES(?,'owner/repo',7,?,?)`, id, state, pr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO phase_attempts(id,run_id,phase,role,round,attempt,agent,status,step) VALUES(?,?,'review','reviewer',1,1,'claude','succeeded','')`, id+"-attempt", id); err != nil {
+		t.Fatal(err)
+	}
+	marker := fmt.Sprintf("<!-- mergeyard:report:%s -->", strings.ReplaceAll(id, "-", ""))
+	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO report_publications(attempt_id,run_id,repository,pr_number,phase,round,attempt,body) VALUES(?,?,'owner/repo',?,'review',1,1,?)`, id+"-attempt", id, pr, marker+"\nReport"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedAttentionPublication(t *testing.T, rt *app.Runtime, id, state string, pr int) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO runs(id,repository,issue_number,state,pr_number) VALUES(?,'owner/repo',7,?,?)`, id, state, pr); err != nil {
+		t.Fatal(err)
+	}
+	payload := fmt.Sprintf(`{"run":{"id":%q,"repository":"owner/repo","issue_number":7,"pr_number":%d,"state":%q,"human_action":{"decision":"Choose","files":[],"options":["Retry"]}}}`, id, pr, state)
+	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO events(run_id,type,payload_json) VALUES(?,'run.needs_attention',?)`, id, payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func commentFlow(t *testing.T, publisher *reportGitHub, now func() time.Time) (*scheduler.Scheduler, *app.Runtime, config.Config) {
+	t.Helper()
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {{Number: 7, State: github.Open}}}, prs: map[string]*github.PullRequest{
+		"feature": {Number: 101, State: github.Open},
+	}, head: func(string) string { return "" }}
+	_, rt := fixture(t, api)
+	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.PRComments = true
+	publisher.branchGitHub = branchGitHub{api}
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: publisher, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, rt, cfg
+}
+
+func TestReportPublicationBacksOffTransientFailure(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	publisher := &reportGitHub{failure: true}
+	s, rt, _ := commentFlow(t, publisher, func() time.Time { return now })
+	seedReportPublication(t, rt, "report-transient", "MANUAL", 101)
+	for range 2 {
+		if _, err := s.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("report retried before its backoff: %d calls", publisher.calls)
+	}
+	now = now.Add(time.Minute + time.Second)
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.calls != 2 {
+		t.Fatalf("report did not retry after backoff: %d calls", publisher.calls)
+	}
+	var attempts int
+	var stopped, failed bool
+	if err := rt.DB.QueryRow(`SELECT attempts,failed,stopped FROM report_publications WHERE run_id='report-transient'`).Scan(&attempts, &failed, &stopped); err != nil || attempts != 2 || !failed || stopped {
+		t.Fatalf("report retry state = %d %v %v, %v", attempts, failed, stopped, err)
+	}
+	if warnings := countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id='report-transient' AND type='publication.warning'`); warnings != 1 {
+		t.Fatalf("report warnings = %d, want one", warnings)
+	}
+}
+
+func TestReportPublicationStopsOnPermanentFailure(t *testing.T) {
+	publisher := &reportGitHub{failure: true, code: "github.invalid_input"}
+	s, rt, _ := commentFlow(t, publisher, time.Now)
+	seedReportPublication(t, rt, "report-permanent", "MANUAL", 101)
+	for range 3 {
+		if _, err := s.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("permanent report failure retried: %d calls", publisher.calls)
+	}
+	var stopped bool
+	var code, warning string
+	if err := rt.DB.QueryRow(`SELECT stopped,warning_code,warning FROM report_publications WHERE run_id='report-permanent'`).Scan(&stopped, &code, &warning); err != nil || !stopped || code != "github.invalid_input" || !strings.Contains(warning, "cannot deliver") {
+		t.Fatalf("permanent report state = %v %q %q, %v", stopped, code, warning, err)
+	}
+}
+
+func TestFinishedRunStopsRetryingReportPublication(t *testing.T) {
+	publisher := &reportGitHub{failure: true}
+	s, rt, _ := commentFlow(t, publisher, time.Now)
+	seedReportPublication(t, rt, "report-finished", "STOPPED", 101)
+	for range 3 {
+		if _, err := s.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("finished report retried: %d calls", publisher.calls)
+	}
+	var stopped bool
+	if err := rt.DB.QueryRow(`SELECT stopped FROM report_publications WHERE run_id='report-finished'`).Scan(&stopped); err != nil || !stopped {
+		t.Fatalf("finished report was not stopped: %v, %v", stopped, err)
+	}
+	if warnings := countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id='report-finished' AND type='publication.warning'`); warnings != 1 {
+		t.Fatalf("finished report warnings = %d, want one", warnings)
+	}
+}
+
+func TestAttentionPublicationBacksOffTransientFailure(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	publisher := &reportGitHub{failure: true}
+	s, rt, _ := commentFlow(t, publisher, func() time.Time { return now })
+	seedAttentionPublication(t, rt, "attention-transient", "MANUAL", 101)
+	for range 2 {
+		if _, err := s.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("attention retried before its backoff: %d calls", publisher.calls)
+	}
+	now = now.Add(time.Minute + time.Second)
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.calls != 2 {
+		t.Fatalf("attention did not retry after backoff: %d calls", publisher.calls)
+	}
+	var attempts int
+	var stopped, failed bool
+	if err := rt.DB.QueryRow(`SELECT attempts,failed,stopped FROM attention_publications WHERE run_id='attention-transient'`).Scan(&attempts, &failed, &stopped); err != nil || attempts != 2 || !failed || stopped {
+		t.Fatalf("attention retry state = %d %v %v, %v", attempts, failed, stopped, err)
+	}
+}
+
+func TestAttentionPublicationStopsOnPermanentFailure(t *testing.T) {
+	publisher := &reportGitHub{failure: true, code: "github.invalid_input"}
+	s, rt, _ := commentFlow(t, publisher, time.Now)
+	seedAttentionPublication(t, rt, "attention-permanent", "MANUAL", 101)
+	for range 3 {
+		if _, err := s.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("permanent attention failure retried: %d calls", publisher.calls)
+	}
+	var stopped bool
+	if err := rt.DB.QueryRow(`SELECT stopped FROM attention_publications WHERE run_id='attention-permanent'`).Scan(&stopped); err != nil || !stopped {
+		t.Fatalf("permanent attention was not stopped: %v, %v", stopped, err)
+	}
+	if warnings := countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id='attention-permanent' AND type='publication.warning'`); warnings != 1 {
+		t.Fatalf("permanent attention warnings = %d, want one", warnings)
+	}
+}
+
+func TestFinishedRunStopsRetryingAttentionPublication(t *testing.T) {
+	publisher := &reportGitHub{failure: true}
+	s, rt, _ := commentFlow(t, publisher, time.Now)
+	seedAttentionPublication(t, rt, "attention-finished", "STOPPED", 101)
+	for range 3 {
+		if _, err := s.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("finished attention retried: %d calls", publisher.calls)
+	}
+	var stopped bool
+	if err := rt.DB.QueryRow(`SELECT stopped FROM attention_publications WHERE run_id='attention-finished'`).Scan(&stopped); err != nil || !stopped {
+		t.Fatalf("finished attention was not stopped: %v, %v", stopped, err)
+	}
+	if warnings := countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id='attention-finished' AND type='publication.warning'`); warnings != 1 {
+		t.Fatalf("finished attention warnings = %d, want one", warnings)
+	}
+}
+
+func TestRunFinishingAfterTransientFailureStopsReportPublication(t *testing.T) {
+	publisher := &reportGitHub{failure: true}
+	s, rt, _ := commentFlow(t, publisher, time.Now)
+	seedReportPublication(t, rt, "report-finishes-later", "MANUAL", 101)
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("report attempts = %d, want 1", publisher.calls)
+	}
+	if _, err := rt.DB.Exec(`UPDATE runs SET state='STOPPED' WHERE id='report-finishes-later'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("finished report retried: %d calls", publisher.calls)
+	}
+	var stopped bool
+	var warning string
+	if err := rt.DB.QueryRow(`SELECT stopped,warning FROM report_publications WHERE run_id='report-finishes-later'`).Scan(&stopped, &warning); err != nil || !stopped || !strings.Contains(warning, "will not retry") {
+		t.Fatalf("finished report state = %v %q, %v", stopped, warning, err)
 	}
 }

@@ -434,7 +434,10 @@ func TestUnexplainedMissingMergeWorktreeRequiresAttention(t *testing.T) {
 
 func TestReadyMergeAndCompletedPublicationRemainIndependent(t *testing.T) {
 	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
-	publisher := &reportGitHub{branchGitHub: branchGitHub{base}, failure: true}
+	// Queue the report without delivering it, so its first attempt happens
+	// after completion. A completed run still gets that never-attempted chance.
+	cfg.PRComments = false
+	publisher := &reportGitHub{branchGitHub: branchGitHub{base}}
 	api := &mergedPublisher{mergeGitHub: &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base, applyReady: true, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}, applyClose: true}, publisher: publisher}
 	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
@@ -449,7 +452,11 @@ func TestReadyMergeAndCompletedPublicationRemainIndependent(t *testing.T) {
 	if saved.State != workflow.Completed || saved.Merge.Early || saved.Merge.Pending() || len(saved.Publications) != 1 || saved.Publications[0].State != "pending" {
 		t.Fatalf("ready merge: %+v %+v", saved, saved.Merge)
 	}
-	publisher.failure = false
+	cfg.PRComments = true
+	s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for range 2 {
 		if err := s.Tick(context.Background()); err != nil {
 			t.Fatal(err)
