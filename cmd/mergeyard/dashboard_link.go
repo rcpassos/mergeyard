@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,7 +40,7 @@ func openBrowser(ctx context.Context, root, address string) error {
 	if err != nil {
 		return err
 	}
-	return launchHandoffPage(ctx, browserPlatform, page)
+	return launchHandoffPage(ctx, page)
 }
 
 // openMacBrowser uses the HTTP handler rather than the HTML file association.
@@ -60,25 +61,32 @@ func appleScriptString(value string) string {
 
 // launchHandoffPage opens the page with the default web browser, not the
 // handler for text/html. That matters because a user may associate HTML files
-// with an editor while keeping a separate HTTP browser.
-func launchHandoffPage(ctx context.Context, platform, page string) error {
-	if platform == "linux" {
-		if id := defaultBrowserID(ctx); id != "" {
-			if desktop, ok := desktopFilePath(id); ok {
-				if wait, err := startLauncher(ctx, "gio", "launch", desktop, page); err == nil {
-					return wait()
-				}
+// with an editor while keeping a separate HTTP browser. If neither gio nor
+// gtk-launch is installed, the browser command is read from the selected
+// desktop entry. The page is never handed to xdg-open, which would use the
+// HTML association.
+func launchHandoffPage(ctx context.Context, page string) error {
+	if id := defaultBrowserID(ctx); id != "" {
+		if desktop, ok := desktopFilePath(id); ok {
+			if wait, err := startLauncher(ctx, "gio", "launch", desktop, page); err == nil {
+				return wait()
 			}
 			if wait, err := startLauncher(ctx, "gtk-launch", id, page); err == nil {
 				return wait()
 			}
+			if wait, err := startDesktopBrowser(ctx, desktop, page); err == nil {
+				return wait()
+			}
+		} else if wait, err := startLauncher(ctx, "gtk-launch", id, page); err == nil {
+			return wait()
 		}
 	}
-	wait, err := startLauncher(ctx, "xdg-open", page)
-	if err != nil {
-		return err
+	for _, name := range []string{"sensible-browser", "x-www-browser"} {
+		if wait, err := startLauncher(ctx, name, page); err == nil {
+			return wait()
+		}
 	}
-	return wait()
+	return fmt.Errorf("could not find an HTTP browser launcher; install gio or open the printed dashboard link")
 }
 
 func defaultBrowserID(ctx context.Context) string {
@@ -122,6 +130,163 @@ func desktopFilePath(id string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// startDesktopBrowser reads the selected desktop entry's Exec command, expands
+// its file field codes, and starts that browser directly. It preserves the HTTP
+// browser choice when gio and gtk-launch are not installed.
+func startDesktopBrowser(ctx context.Context, desktopPath, page string) (func() error, error) {
+	command, err := desktopExec(desktopPath)
+	if err != nil {
+		return nil, err
+	}
+	args, ok := desktopLaunchArgs(command, page, desktopPath)
+	if !ok {
+		return nil, fmt.Errorf("desktop entry has no executable command")
+	}
+	return startLauncher(ctx, args[0], args[1:]...)
+}
+
+func desktopExec(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	inEntry := false
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			inEntry = line == "[Desktop Entry]"
+			continue
+		}
+		if !inEntry || !strings.HasPrefix(line, "Exec=") {
+			continue
+		}
+		command, err := splitDesktopCommand(strings.TrimPrefix(line, "Exec="))
+		if err != nil {
+			return nil, err
+		}
+		if len(command) == 0 {
+			return nil, fmt.Errorf("desktop entry has an empty Exec command")
+		}
+		return command, nil
+	}
+	return nil, fmt.Errorf("desktop entry has no Exec command")
+}
+
+// splitDesktopCommand parses the quoting and escapes used by a desktop Exec
+// value. Single quotes are accepted because some desktop files use them even
+// though the specification names only double quotes.
+func splitDesktopCommand(value string) ([]string, error) {
+	var fields []string
+	var current strings.Builder
+	var quote rune
+	escaped, started := false, false
+	flush := func() {
+		if started {
+			fields = append(fields, current.String())
+			current.Reset()
+			started = false
+		}
+	}
+	for _, r := range value {
+		if escaped {
+			switch r {
+			case 's':
+				current.WriteByte(' ')
+			case 'n':
+				current.WriteByte('\n')
+			case 't':
+				current.WriteByte('\t')
+			case 'r':
+				current.WriteByte('\r')
+			default:
+				current.WriteRune(r)
+			}
+			escaped, started = false, true
+			continue
+		}
+		switch {
+		case r == '\\' && quote != '\'':
+			escaped = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				current.WriteRune(r)
+			}
+			started = true
+		case r == '\'' || r == '"':
+			quote = r
+			started = true
+		case r == ' ' || r == '\t':
+			flush()
+		default:
+			current.WriteRune(r)
+			started = true
+		}
+	}
+	if escaped {
+		current.WriteByte('\\')
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("desktop entry has an unterminated quote")
+	}
+	flush()
+	return fields, nil
+}
+
+func desktopLaunchArgs(command []string, page, desktopPath string) ([]string, bool) {
+	fileURL := (&url.URL{Scheme: "file", Path: page}).String()
+	args := make([]string, 0, len(command)+1)
+	placed := false
+	for _, field := range command {
+		if field == "%i" {
+			continue
+		}
+		expanded, hasFile := expandDesktopFieldCodes(field, page, fileURL, desktopPath)
+		if expanded == "" {
+			continue
+		}
+		args = append(args, expanded)
+		placed = placed || hasFile
+	}
+	if len(args) == 0 {
+		return nil, false
+	}
+	if !placed {
+		args = append(args, fileURL)
+	}
+	return args, true
+}
+
+func expandDesktopFieldCodes(value, page, fileURL, desktopPath string) (string, bool) {
+	var expanded strings.Builder
+	placed := false
+	for i := 0; i < len(value); i++ {
+		if value[i] != '%' || i+1 >= len(value) {
+			expanded.WriteByte(value[i])
+			continue
+		}
+		switch value[i+1] {
+		case 'f', 'F':
+			expanded.WriteString(page)
+			placed = true
+		case 'u', 'U':
+			expanded.WriteString(fileURL)
+			placed = true
+		case 'k':
+			expanded.WriteString(desktopPath)
+		case '%':
+			expanded.WriteByte('%')
+		case 'c', 'i':
+			// Application name and icon expansion are not needed here.
+		default:
+			// Unknown field codes are removed rather than passed literally.
+		}
+		i++
+	}
+	return expanded.String(), placed
 }
 
 // startLauncher starts name and returns its Wait function. A start error means

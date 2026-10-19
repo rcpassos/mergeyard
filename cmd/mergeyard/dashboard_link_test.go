@@ -137,6 +137,80 @@ func TestOpenBrowserUsesDefaultWebBrowserAndSnapAccessiblePage(t *testing.T) {
 	}
 }
 
+func TestOpenBrowserFallbackLaunchesTheResolvedBrowserCommand(t *testing.T) {
+	useBrowserPlatform(t, "linux")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tools := t.TempDir()
+	launched, htmlHandler := filepath.Join(tools, "launched"), filepath.Join(tools, "html-handler")
+	browser := filepath.Join(tools, "review-browser")
+	writeTool(t, tools, "review-browser", "#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+launched+"'\n")
+	writeTool(t, tools, "xdg-settings", "#!/bin/sh\necho review-browser.desktop\n")
+	writeTool(t, tools, "xdg-open", "#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+htmlHandler+"'\n")
+	t.Setenv("PATH", tools)
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_DATA_DIRS", "")
+	desktop := filepath.Join(dataHome, "applications", "review-browser.desktop")
+	if err := os.MkdirAll(filepath.Dir(desktop), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(desktop, []byte("[Desktop Entry]\nExec="+browser+" %u\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	address := "http://127.0.0.1:7331/?token=one-time"
+
+	if err := openBrowser(context.Background(), t.TempDir(), address); err != nil {
+		t.Fatal(err)
+	}
+
+	args, err := os.ReadFile(launched)
+	if err != nil {
+		t.Fatalf("resolved browser was not launched: %v", err)
+	}
+	if strings.Contains(string(args), "one-time") || strings.Contains(string(args), "token=") {
+		t.Fatalf("browser command received the dashboard token: %q", args)
+	}
+	if !strings.Contains(string(args), "file://") || !strings.Contains(string(args), dashboardHandoffFile) {
+		t.Fatalf("browser command did not receive the handoff page: %q", args)
+	}
+	links, err := filepath.Glob(filepath.Join(home, linuxDashboardLinksDirName, dashboardHandoffPrefix+"*", dashboardHandoffFile))
+	if err != nil || len(links) != 1 {
+		t.Fatalf("handoff page: %q %v", links, err)
+	}
+	assertHandoffPage(t, links[0])
+	page, err := os.ReadFile(links[0])
+	if err != nil || !strings.Contains(string(page), address) {
+		t.Fatalf("handoff page does not redirect to the link: %q %v", page, err)
+	}
+	if _, err := os.Stat(htmlHandler); !os.IsNotExist(err) {
+		t.Fatalf("html file association was used instead of the web browser: %v", err)
+	}
+}
+
+func TestOpenBrowserReportsMissingBrowserWithoutUsingTheHTMLHandler(t *testing.T) {
+	useBrowserPlatform(t, "linux")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tools := t.TempDir()
+	htmlHandler := filepath.Join(tools, "html-handler")
+	writeTool(t, tools, "xdg-settings", "#!/bin/sh\necho missing-browser.desktop\n")
+	writeTool(t, tools, "xdg-open", "#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+htmlHandler+"'\n")
+	t.Setenv("PATH", tools)
+	emptyData := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", emptyData)
+	t.Setenv("XDG_DATA_DIRS", emptyData)
+
+	if err := openBrowser(context.Background(), t.TempDir(), "http://127.0.0.1:7331/?token=one-time"); err == nil {
+		t.Fatal("openBrowser accepted a browser that could not be selected")
+	} else if !strings.Contains(err.Error(), "HTTP browser launcher") {
+		t.Fatalf("missing browser guidance: %v", err)
+	}
+	if _, err := os.Stat(htmlHandler); !os.IsNotExist(err) {
+		t.Fatalf("html file association was used instead of reporting the missing browser: %v", err)
+	}
+}
+
 func TestOpenMacBrowserKeepsTokenOffTheCommandLine(t *testing.T) {
 	useBrowserPlatform(t, "darwin")
 	tools := t.TempDir()

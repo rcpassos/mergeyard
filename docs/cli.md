@@ -8,9 +8,10 @@ launches it independently of HTTP serving with the platform browser launcher,
 so the single-use token stays out of process arguments; a delayed launcher does
 not block the dashboard or CLI controls. macOS uses the default HTTP browser
 through stdin-fed AppleScript. Linux selects the default web browser explicitly
-and opens a non-hidden owner-only handoff page that confined browsers can read.
-Launch failures are reported without stopping the runtime. Shutdown cancels and
-waits for the launcher. `--config <path>` works with every command.
+and opens a non-hidden owner-only handoff page that confined browsers can read;
+it never falls back to the HTML file association. Launch failures are reported
+without stopping the runtime. Shutdown cancels and waits for the launcher.
+`--config <path>` works with every command.
 
 Every command that contacts a running control plane first reads the workspace's
 owner-only `runtime.secret` and proves knowledge of it on each request; the

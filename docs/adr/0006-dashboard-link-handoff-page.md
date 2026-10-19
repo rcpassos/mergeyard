@@ -17,9 +17,11 @@ selecting the HTTP browser rather than the HTML file association:
   and page (`0600`). The directory is not hidden, so confined browsers such as
   the Firefox snap can read it through the snap `home` interface. The CLI
   resolves the default web browser with `xdg-settings` or
-  `x-scheme-handler/http`, then launches it explicitly with `gio launch` or
-  `gtk-launch` and only the page path. `xdg-open` is a last-resort fallback when
-  no browser desktop entry can be resolved.
+  `x-scheme-handler/http`, then launches it explicitly with `gio launch`,
+  `gtk-launch`, or the browser command from the selected desktop entry and only
+  the page path. The page is never handed to `xdg-open`, which would use the
+  HTML association. If no HTTP browser can be resolved, the command reports the
+  missing launcher and leaves the printed link.
 
 The browser follows the page's redirect to the single-use link. The token
 therefore never appears in a process command line; a local user who reads the
@@ -34,7 +36,9 @@ later launch removes the page once the token lifetime has passed.
   so the token still becomes visible as an argument.
 - **Use `open`/`xdg-open` on the handoff page without selecting an
   application.** Rejected: that uses the file association for `text/html`, which
-  may be an editor, while HTTP URLs keep a separate web-browser association.
+  may be an editor, while HTTP URLs keep a separate web-browser association. A
+  last-resort fallback to `xdg-open` would reintroduce that failure whenever the
+  desktop helper tools are absent.
 - **Keep the handoff under the default hidden workspace.** Rejected: the snap
   `home` interface excludes hidden home paths, so a confined Firefox cannot read
   the page.
@@ -59,6 +63,6 @@ later launch removes the page once the token lifetime has passed.
   `mergeyard open`.
 - Tests launch a fake browser and assert that its arguments are the handoff
   path or AppleScript stdin marker with no token or token-bearing URL, that the
-  default web browser is selected rather than the HTML handler, and that the
-  handoff directory and page are `0700` and `0600` in a Snap-accessible
-  location.
+  default web browser is selected rather than the HTML handler even when
+  `gio`/`gtk-launch` are absent, and that the handoff directory and page are
+  `0700` and `0600` in a Snap-accessible location.
