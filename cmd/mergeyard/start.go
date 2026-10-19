@@ -101,8 +101,8 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 	go func() { defer close(updatesDone); dashboard.RunUpdates(liveCtx) }()
 	address := "http://" + listener.Addr().String()
 	// The dashboard is locked to the workspace owner; the printed link carries
-	// a single-use token that sets the owner session cookie. mergeyard open
-	// mints a fresh link when this one expires.
+	// a single-use token that hands the owner session to origin-scoped browser
+	// storage. mergeyard open mints a fresh link when this one expires.
 	dashboardURL := address + "/?token=" + dashboard.NewDashboardToken()
 	fmt.Fprintf(stdout, "mergeyard: workspace ready at %s; dashboard at %s\n", owner.Workspace.Root, dashboardURL)
 	// Browser launch is optional and must not delay HTTP controls. Keep it

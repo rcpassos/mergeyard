@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"net/url"
 	"testing"
 	"time"
 
@@ -39,8 +39,8 @@ func apiRequest(t *testing.T, root, method, target string) *http.Request {
 }
 
 // dashboardSession exchanges a fresh one-time dashboard link at host for the
-// owner session cookie a browser would hold for that address.
-func dashboardSession(t *testing.T, server *web.Server, host string) *http.Cookie {
+// owner session a browser would keep in origin-scoped storage for that address.
+func dashboardSession(t *testing.T, server *web.Server, host string) string {
 	t.Helper()
 	exchange := httptest.NewRequest(http.MethodGet, "http://"+host+"/?token="+server.NewDashboardToken(), nil)
 	recorder := httptest.NewRecorder()
@@ -48,21 +48,28 @@ func dashboardSession(t *testing.T, server *web.Server, host string) *http.Cooki
 	if recorder.Code != http.StatusSeeOther {
 		t.Fatalf("dashboard link: %d %s", recorder.Code, recorder.Body)
 	}
-	for _, cookie := range recorder.Result().Cookies() {
-		if strings.HasPrefix(cookie.Name, "mergeyard_dashboard") {
-			return cookie
-		}
+	location, err := url.Parse(recorder.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("dashboard link location: %v", err)
 	}
-	t.Fatal("dashboard link did not set the owner session")
-	return nil
+	fragment, err := url.ParseQuery(location.Fragment)
+	if err != nil {
+		t.Fatalf("dashboard link fragment: %v", err)
+	}
+	value := fragment.Get("session")
+	if value == "" {
+		t.Fatalf("dashboard link carried no owner session: %q", location)
+	}
+	return value
 }
 
-// dashboardRequest builds a browser request that carries the owner session
-// cookie, like a user who followed the link printed by mergeyard start.
+// dashboardRequest builds a browser request that carries the owner session in
+// the header the dashboard script attaches, like a user who followed the link
+// printed by mergeyard start.
 func dashboardRequest(t *testing.T, server *web.Server, method, target string, body io.Reader) *http.Request {
 	t.Helper()
 	request := httptest.NewRequest(method, target, body)
-	request.AddCookie(dashboardSession(t, server, request.Host))
+	request.Header.Set(web.DashboardSessionHeader, dashboardSession(t, server, request.Host))
 	return request
 }
 
