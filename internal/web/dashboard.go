@@ -193,18 +193,25 @@ type pageData struct {
 	ConfigPath, ConfigText, Workspace, Doctor string
 }
 
-func (s *Server) page(w http.ResponseWriter, r *http.Request) {
-	data := pageData{Token: s.token, Paused: s.scheduler.Paused(), Path: r.URL.Path}
-	switch r.URL.Path {
+// pageMeta names the page and title served at path. The locked boot layout
+// uses it too, so a tab keeps the correct title and current-navigation state
+// while the dashboard script completes the page.
+func pageMeta(path string) (page, title string) {
+	switch path {
 	case "/":
-		data.Page, data.Title = "dashboard", "Dashboard"
+		return "dashboard", "Dashboard"
 	case "/queue":
-		data.Page, data.Title = "queue", "Queue"
+		return "queue", "Queue"
 	case "/settings":
-		data.Page, data.Title = "settings", "Settings & diagnostics"
+		return "settings", "Settings & diagnostics"
 	default:
-		data.Page, data.Title = "run", "Run detail"
+		return "run", "Run detail"
 	}
+}
+
+func (s *Server) page(w http.ResponseWriter, r *http.Request) {
+	page, title := pageMeta(r.URL.Path)
+	data := pageData{Token: s.token, Paused: s.scheduler.Paused(), Path: r.URL.Path, Page: page, Title: title}
 	if s.dashboard != nil {
 		if err := s.dashboard.populate(r.Context(), &data, r.PathValue("id")); err != nil {
 			s.respondError(w, r, err, "internal.dashboard_data", http.StatusInternalServerError, "Could not load dashboard data. Check the application log.")

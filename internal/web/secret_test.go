@@ -326,6 +326,32 @@ func TestDashboardIsLockedToTheOwnerSession(t *testing.T) {
 	}
 }
 
+func TestLockedBootPageKeepsPageMetadata(t *testing.T) {
+	// The lock layout shells every native navigation, so it carries the real
+	// document title and current-navigation state for the requested page.
+	server, _, _, _ := newAPIServer(t)
+	for _, tc := range []struct {
+		path    string
+		title   string
+		current string
+	}{
+		{"/", "Dashboard · Mergeyard", `<a href="/" aria-current="page">Dashboard</a>`},
+		{"/queue", "Queue · Mergeyard", `<a href="/queue" aria-current="page">Queue</a>`},
+		{"/settings", "Settings &amp; diagnostics · Mergeyard", `<a href="/settings" aria-current="page">Settings</a>`},
+		{"/runs/run-1", "Run detail · Mergeyard", ""},
+	} {
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331"+tc.path, nil))
+		body := recorder.Body.String()
+		if recorder.Code != http.StatusOK || !strings.Contains(body, "<title>"+tc.title+"</title>") {
+			t.Fatalf("boot %s: %d %s", tc.path, recorder.Code, body)
+		}
+		if tc.current != "" && !strings.Contains(body, tc.current) {
+			t.Fatalf("boot %s lost its current page: %s", tc.path, body)
+		}
+	}
+}
+
 func TestOwnerSessionNeverReachesAnotherLoopbackPort(t *testing.T) {
 	server, httpServer, _, _ := newAPIServer(t)
 	defer httpServer.Close()

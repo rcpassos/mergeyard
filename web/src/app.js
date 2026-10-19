@@ -37,7 +37,16 @@ if (exchanged) {
 }
 let session = readSession();
 
-function lockDashboard() {
+// A rejected request carries the credential this tab has been using since it
+// loaded. If shared storage already holds a different one, another tab
+// exchanged a fresh link while the request was in flight: adopt it by
+// reloading instead of deleting the shared credential.
+function lockDashboard(rejected) {
+  const stored = readSession();
+  if (stored && stored !== rejected) {
+    location.reload();
+    return;
+  }
   clearSession();
   session = '';
   status.textContent = 'Dashboard locked';
@@ -98,13 +107,14 @@ async function startEvents() {
   if (streamController || !session) return;
   const controller = new AbortController();
   streamController = controller;
-  const headers = { [SESSION_HEADER]: session };
+  const sent = session;
+  const headers = { [SESSION_HEADER]: sent };
   if (lastEventID) headers['Last-Event-ID'] = lastEventID;
   try {
     const response = await fetch('/events', { headers, cache: 'no-store', signal: controller.signal });
     if (response.status === 403) {
       streamController = null;
-      lockDashboard();
+      lockDashboard(sent);
       return;
     }
     if (!response.ok || !response.body) throw new Error(`live updates: ${response.status}`);
@@ -136,7 +146,7 @@ document.body.addEventListener('htmx:afterSwap', () => {
   const current = document.querySelector('#content');
   if (!current) return;
   if (current.hasAttribute('data-locked')) {
-    lockDashboard();
+    lockDashboard(session);
     return;
   }
   startEvents();
@@ -167,7 +177,7 @@ addEventListener('pageshow', (event) => {
 document.body.addEventListener('htmx:responseError', (event) => {
   const xhr = event.detail.xhr;
   if (xhr.status === 403 && xhr.responseText.includes('locked to the workspace owner')) {
-    lockDashboard();
+    lockDashboard(session);
     return;
   }
   const code = xhr.getResponseHeader('X-Mergeyard-Error-Code');

@@ -231,7 +231,8 @@ func (s *Server) dashboardGate(next http.Handler) http.Handler {
 					s.renderData(w, "locked-content", nil)
 					return
 				}
-				s.renderData(w, "layout", pageData{Boot: true, Page: "boot", Title: "Dashboard locked", Path: r.URL.Path})
+				page, title := pageMeta(r.URL.Path)
+				s.renderData(w, "layout", pageData{Boot: true, Page: page, Title: title, Path: r.URL.Path})
 				return
 			}
 			http.Error(w, "This dashboard is locked to the workspace owner; run mergeyard open for a new link.", http.StatusForbidden)
