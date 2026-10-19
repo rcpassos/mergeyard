@@ -193,10 +193,10 @@ Local-state reconciliation failures prevent new dispatch. A GitHub failure is
 scoped to the repository whose listing failed or the run whose issue/PR/label
 read failed: reconciliation reports `reconcile.repository_failed` or
 `reconcile.run_failed`, dashboard discovery reports `reconcile.issue_failed`
-when one refused issue cannot be read, and each appears in the needs-attention
-section. A scoped failure skips only that repository or issue while other work
-continues, and stays visible until a later pass observes the subject
-successfully. Findings persist only the fixed GitHub code and a safe human
+when one refused issue has no snapshot to show after a failed read, and each
+appears in the needs-attention section. A scoped failure skips only that
+repository or issue while other work continues, and stays visible until a later
+pass observes the subject successfully. Findings persist only the fixed GitHub code and a safe human
 message; raw `gh` diagnostics stay on the error for application logs. Closed
 issues/PRs, missing worktrees, and missing sessions require attention. Manual and attention runs are never automatically
 resumed. First review progresses through the same reconciliation boundary. CI/merge
@@ -256,14 +256,20 @@ manual removal of these test artifacts.
 configuration and issue creation order, from the scheduler's shared poll listing.
 An issue refused earlier no longer carries a Mergeyard label, so it is read back
 individually and stays visible with its reason until a trusted maintainer
-relabels it; refusals whose issue is closed or deleted are forgotten, so a stale
-row is never re-read. Open blockers are reused while the issue's snapshot and
-open-blocker count are unchanged, and a listing summary that reports no open
-blockers needs no dependency read at all; a missing summary falls back to
-reading, so an unknown status is never shown as ready. `Queue(ctx)` does not
-mutate labels or claim runs,
-and works independently of pause and concurrency. Dependency lookup failures
-return an error rather than reporting an issue as unblocked.
+relabels it. The readable snapshot is reused across refreshes: only a changed
+refusal or the 15-minute window spends another read, while a relabelled issue
+returns to the listing. Refusals whose issue is closed or deleted are forgotten
+when that snapshot refreshes. A failed refresh keeps the last snapshot, or
+records the issue's scoped failure until a snapshot exists, and backs off for
+the same window instead of retrying on every pass. Each refused read gets a
+bounded child context, so a slow request cannot consume the budget reserved for
+the rest of discovery. Open
+blockers are reused while the issue's snapshot and open-blocker count are
+unchanged, and a listing summary that reports no open blockers needs no
+dependency read at all; a missing summary falls back to reading, so an unknown
+status is never shown as ready. `Queue(ctx)` does not mutate labels or claim
+runs, and works independently of pause and concurrency. Dependency lookup
+failures return an error rather than reporting an issue as unblocked.
 
 `Stop(ctx, runID)` shares the workflow operation lock with dispatch. It preserves
 Git artifacts, terminates running attempts, removes ready and running labels,
