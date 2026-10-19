@@ -83,9 +83,17 @@ func TestMergeCleanupPendingIsVisible(t *testing.T) {
 
 type mergeGitHub struct {
 	*ciGitHub
-	closeCalls int
-	closeError error
-	applyClose bool
+	closeCalls   int
+	closeError   error
+	applyClose   bool
+	removeBudget time.Duration
+}
+
+func (f *mergeGitHub) RemoveLabel(ctx context.Context, repo string, n int, label string) error {
+	if deadline, ok := ctx.Deadline(); ok {
+		f.removeBudget = time.Until(deadline)
+	}
+	return f.ciGitHub.RemoveLabel(ctx, repo, n, label)
 }
 
 func (f *mergeGitHub) CloseIssue(_ context.Context, repo string, n int) error {
@@ -826,6 +834,127 @@ func (g *heldMergeCleanupGit) CleanupWorktree(ctx context.Context, run managedgi
 		return g.Manager.CleanupWorktree(ctx, run)
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// installGitWrapper puts a shell wrapper first in PATH. A matching invocation
+// runs body instead of Git and then delegates unless the body exits; every
+// other invocation goes straight to the real Git resolved before PATH changed.
+func installGitWrapper(t *testing.T, match, body string) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is unavailable")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \" $* \" in\n*\" " + match + " \"*)\n" + body + "\n;;\nesac\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestMergeCleanupRemovesSlowWorktreeBeyondMaintenanceBudget(t *testing.T) {
+	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	worktree := runWorktree(t, runtime.Workspace.Root, run)
+	marker := filepath.Join(t.TempDir(), "removal-started")
+	// Removal is slower than the optional GitHub maintenance budget. The
+	// marker proves the Git step ran instead of being cancelled at five
+	// seconds, as it was when both kinds of cleanup shared one deadline.
+	installGitWrapper(t, "worktree remove", `printf started > "`+marker+`"; /bin/sleep 6`)
+	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+	if err != nil || saved.State != workflow.Completed || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted || saved.Merge.Error != "" {
+		t.Fatalf("slow removal: %+v %v", saved.Merge, err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("worktree removal was not exercised")
+	}
+	if api.removeBudget <= 0 || api.removeBudget > 5*time.Second {
+		t.Fatalf("GitHub maintenance budget = %s", api.removeBudget)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatal("worktree retained")
+	}
+}
+
+func TestMergeCleanupRecoversInterruptedWorktreeRemoval(t *testing.T) {
+	for _, linkGone := range []bool{false, true} {
+		name := "link survives"
+		if linkGone {
+			name = "link removed"
+		}
+		t.Run(name, func(t *testing.T) {
+			_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+			api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
+			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+			worktree := runWorktree(t, runtime.Workspace.Root, run)
+			control := filepath.Join(t.TempDir(), "interrupt")
+			if err := os.WriteFile(control, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			// The first removal deletes tracked files and may or may not reach
+			// the link, then fails; later removals go straight to the real Git.
+			remove := `rm -f "$last/README.md"`
+			if linkGone {
+				remove += `; rm -f "$last/.git"`
+			}
+			installGitWrapper(t, "worktree remove", `if [ -f "`+control+`" ]; then
+  rm -f "`+control+`"
+  for last; do :; done
+  `+remove+`
+  exit 1
+fi`)
+			api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+			if err != nil || saved.State != workflow.Completed || !saved.Merge.WorktreeStarted || saved.Merge.WorktreeRemoved || saved.Merge.Error == "" {
+				t.Fatalf("interrupted removal not recorded: %+v %v", saved.Merge, err)
+			}
+			_, linkErr := os.Stat(filepath.Join(worktree, ".git"))
+			if linkGone && !os.IsNotExist(linkErr) {
+				t.Fatalf("fixture did not remove the worktree link: %v", linkErr)
+			}
+			if !linkGone && linkErr != nil {
+				t.Fatalf("fixture did not keep the worktree link: %v", linkErr)
+			}
+			if _, err := os.Stat(worktree); err != nil {
+				t.Fatalf("fixture removed the whole worktree: %v", err)
+			}
+			intent := filepath.Join(filepath.Dir(worktree), run.ID+".cleanup")
+			if _, err := os.Stat(intent); err != nil {
+				t.Fatalf("removal boundary not recorded: %v", err)
+			}
+			// A later tick finishes the authorized removal without manual steps.
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			saved, err = runtime.Workflow.Get(context.Background(), run.ID)
+			if err != nil || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted || saved.Merge.Error != "" {
+				t.Fatalf("interrupted removal did not recover: %+v %v", saved.Merge, err)
+			}
+			if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+				t.Fatal("worktree retained")
+			}
+			if _, err := os.Stat(intent); !os.IsNotExist(err) {
+				t.Fatal("cleanup intent retained")
+			}
+		})
 	}
 }
 

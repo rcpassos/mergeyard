@@ -16,7 +16,9 @@ managed base gets `Timeouts.Clone` (`1h`). Routine fetches and remote reads get
 `Timeouts.Push` (`30m`). `New` uses those defaults; `NewWithTimeouts` selects
 shorter or longer ones. A caller-supplied deadline always wins, including while
 waiting for another managed operation to finish, so the scheduler's
-five-second publication and cleanup budgets stay authoritative.
+five-second publication budget stays authoritative. Worktree cleanup keeps the
+manager's own deadlines instead: removing a large tree can outlast optional
+network maintenance, and a killed removal must remain resumable.
 
 An operation that commits and publishes keeps a budget per phase: `Worktree`
 for the commit and its hooks, `Fetch` for remote reads, and `Push` for the push
@@ -144,6 +146,25 @@ refuses dirty worktrees or worktrees on a different branch. Stopped, manual,
 and needs-attention runs must keep their artifacts. Completed cleanup permits
 excluded untracked leftovers and removes them with the worktree after verifying
 ownership, publication and absence of other dirty work.
+
+Removal writes `<run-id>.cleanup` after ownership, publication, and
+cleanliness checks pass and before Git starts deleting. If Git refuses without
+deleting anything, for example because the worktree is locked, that record is
+cleared so a later attempt still requires a clean worktree. If Git is killed,
+the record survives and a later call finishes the removal, whether it deleted
+tracked files, the worktree link, or both. On such a retry an intact tree is
+rechecked: a lock, or any change other than the tracked deletions a killed
+removal leaves, preserves it for human attention.
+
+`Run.RemovalIntent` carries the scheduler's durable authorization recorded
+before removal. It additionally finishes a missing-link state left by a removal
+that predates the local record. Without either record, a missing link is still a
+verification failure and the tree is preserved. After pruning, a registration
+that remains (for example because it is locked) is reported instead of being
+recorded as removed.
+
+Leftover deletion checks the operation context between entries, so an expired
+deadline or cancellation stops it before the manager releases its gate.
 
 ## Errors and verification
 

@@ -110,8 +110,11 @@ func (s *Scheduler) cleanupMerge(ctx context.Context, run workflow.Run) error {
 	if !v.Pending() {
 		return nil
 	}
-	// Bound optional maintenance so unavailable adapters cannot monopolize a tick.
-	cleanupContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Bound only the optional GitHub maintenance so an unavailable adapter
+	// cannot monopolize a tick. Local Git cleanup keeps the manager's own
+	// operation deadlines: removing a large worktree can take longer than a
+	// GitHub call, and its interrupted removal must be resumable.
+	githubContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	step := func(done *bool, action func() error) error {
 		if *done {
@@ -130,13 +133,13 @@ func (s *Scheduler) cleanupMerge(ctx context.Context, run workflow.Run) error {
 		name string
 	}{{&v.ReadyRemoved, v.ReadyLabel}, {&v.RunningRemoved, v.RunningLabel}, {&v.AttentionRemoved, v.AttentionLabel}} {
 		if err := step(label.done, func() error {
-			return s.deps.GitHub.RemoveLabel(cleanupContext, run.Repository, run.IssueNumber, label.name)
+			return s.deps.GitHub.RemoveLabel(githubContext, run.Repository, run.IssueNumber, label.name)
 		}); err != nil {
 			failures = append(failures, err)
 		}
 	}
 	if err := step(&v.IssueClosed, func() error {
-		issue, err := s.deps.GitHub.GetIssue(cleanupContext, run.Repository, run.IssueNumber)
+		issue, err := s.deps.GitHub.GetIssue(githubContext, run.Repository, run.IssueNumber)
 		if err != nil || issue.State == github.Closed {
 			return err
 		}
@@ -144,10 +147,10 @@ func (s *Scheduler) cleanupMerge(ctx context.Context, run workflow.Run) error {
 		if !ok {
 			return &fault.Error{Code: "github.cleanup_unsupported", Message: "GitHub adapter cannot close issues"}
 		}
-		if err := api.CloseIssue(cleanupContext, run.Repository, run.IssueNumber); err != nil {
+		if err := api.CloseIssue(githubContext, run.Repository, run.IssueNumber); err != nil {
 			return err
 		}
-		issue, err = s.deps.GitHub.GetIssue(cleanupContext, run.Repository, run.IssueNumber)
+		issue, err = s.deps.GitHub.GetIssue(githubContext, run.Repository, run.IssueNumber)
 		if err != nil {
 			return err
 		}
@@ -176,12 +179,12 @@ func (s *Scheduler) cleanupMerge(ctx context.Context, run workflow.Run) error {
 			if err != nil {
 				return err
 			}
-			return s.restoreReview(cleanupContext, gitRun, &a)
+			return s.restoreReview(ctx, gitRun, &a)
 		})
 	}
 	if gitErr == nil && !v.WorktreeRemoved {
 		if !v.WorktreeStarted {
-			gitErr = s.deps.Git.Inspect(cleanupContext, gitRun)
+			gitErr = s.deps.Git.Inspect(ctx, gitRun)
 			if gitErr == nil {
 				v.WorktreeStarted = true
 				gitErr = s.saveMerge(ctx, run, v, "merge.cleanup_updated")
@@ -192,7 +195,10 @@ func (s *Scheduler) cleanupMerge(ctx context.Context, run workflow.Run) error {
 			if !ok {
 				gitErr = &fault.Error{Code: "git.cleanup_unsupported", Message: "Git adapter cannot clean merged runs"}
 			} else {
-				gitErr = step(&v.WorktreeRemoved, func() error { return g.CleanupWorktree(cleanupContext, gitRun) })
+				// The saved intent lets Git finish a removal interrupted after
+				// it deleted the worktree link.
+				gitRun.RemovalIntent = v.WorktreeStarted
+				gitErr = step(&v.WorktreeRemoved, func() error { return g.CleanupWorktree(ctx, gitRun) })
 			}
 		}
 	}
@@ -201,7 +207,7 @@ func (s *Scheduler) cleanupMerge(ctx context.Context, run workflow.Run) error {
 		if !ok {
 			gitErr = &fault.Error{Code: "git.cleanup_unsupported", Message: "Git adapter cannot delete local branches"}
 		} else {
-			gitErr = step(&v.BranchDeleted, func() error { return g.CleanupBranch(cleanupContext, gitRun) })
+			gitErr = step(&v.BranchDeleted, func() error { return g.CleanupBranch(ctx, gitRun) })
 		}
 	}
 	failures = append(failures, gitErr)

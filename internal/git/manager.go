@@ -180,6 +180,12 @@ type Run struct {
 	BaseSHA     string
 	// PublishedSHA is optional durable evidence from the observed merged PR head.
 	PublishedSHA string
+	// RemovalIntent reports durable authorization to remove this worktree,
+	// recorded by the caller after an ownership inspection. It lets cleanup
+	// finish an interrupted removal whose Git link is already gone but that
+	// predates the manager's own cleanup record. It is caller evidence, not
+	// part of the prepared run's persisted identity.
+	RemovalIntent bool `json:"-"`
 }
 
 // Phase describes commit metadata and whether a diff is required. Implement
@@ -482,35 +488,39 @@ func newPrepareIntent(run Run) prepareIntent {
 // writePrepareIntent atomically replaces the intent so a crash mid-write
 // never leaves a partial claim behind.
 func writePrepareIntent(run Run) error {
-	fail := func(err error) error { return failure("git.worktree", run.Path, err) }
-	data, err := json.Marshal(newPrepareIntent(run))
-	if err != nil {
-		return fail(err)
+	if err := writeAtomicJSON(prepareIntentPath(run), newPrepareIntent(run)); err != nil {
+		return failure("git.worktree", run.Path, err)
 	}
-	path := prepareIntentPath(run)
+	return nil
+}
+
+// writeAtomicJSON replaces path with value in one rename so an interrupted
+// write never leaves a partial intent behind.
+func writeAtomicJSON(path string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return fail(err)
+		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+run.ID+".intent-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	defer os.Remove(tmp.Name())
 	if err := tmp.Chmod(0600); err != nil {
 		tmp.Close()
-		return fail(err)
+		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return fail(err)
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return fail(err)
+		return err
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fail(err)
-	}
-	return nil
+	return os.Rename(tmp.Name(), path)
 }
 
 func loadPrepareIntent(run Run) (prepareIntent, bool, error) {
