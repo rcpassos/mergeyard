@@ -463,9 +463,8 @@ func removeInterruptedWorktree(ctx context.Context, run Run, start string) error
 }
 
 // interruptedWorktreeOurs reports whether a leftover path is safe to discard:
-// it has no checkout yet, or it is still the run branch attached to the
-// managed base. A checkout on another branch, detached work, or a tree
-// attached elsewhere is preserved.
+// it is empty, or it is still the run branch attached to the managed base.
+// Anything whose ownership cannot be established is preserved.
 func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
 	if _, err := os.Lstat(run.Path); errors.Is(err, os.ErrNotExist) {
 		return true, nil
@@ -473,8 +472,12 @@ func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
 		return false, failure("git.worktree", run.Path, err)
 	}
 	if _, err := os.Lstat(filepath.Join(run.Path, ".git")); errors.Is(err, os.ErrNotExist) {
-		// The initialization has not created a checkout yet.
-		return true, nil
+		// Only an empty directory is provably unused before a checkout exists.
+		entries, err := os.ReadDir(run.Path)
+		if err != nil {
+			return false, failure("git.worktree", run.Path, err)
+		}
+		return len(entries) == 0, nil
 	} else if err != nil {
 		return false, failure("git.worktree", run.Path, err)
 	}
@@ -483,12 +486,8 @@ func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
 		if ctx.Err() != nil {
 			return false, contextFailure("git.worktree", run.Path, ctx.Err())
 		}
-		// A readable HEAD is work on a detached checkout. A repository that
-		// cannot resolve HEAD never completed initialization.
-		if _, headErr := command(ctx, run.Path, "git.worktree", "rev-parse", "--verify", "HEAD"); headErr == nil {
-			return false, nil
-		}
-		return true, nil
+		// Detached work and unreadable metadata cannot prove ownership.
+		return false, nil
 	}
 	if branch != run.Branch {
 		return false, nil
@@ -498,12 +497,11 @@ func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
 		if ctx.Err() != nil {
 			return false, contextFailure("git.worktree", run.Path, ctx.Err())
 		}
-		// The checkout named the run branch but its metadata is incomplete.
-		return true, nil
+		return false, nil
 	}
 	got, err := os.Stat(common)
 	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
+		return false, nil
 	} else if err != nil {
 		return false, failure("git.worktree", run.Path, err)
 	}

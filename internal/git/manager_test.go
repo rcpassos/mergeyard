@@ -466,6 +466,21 @@ func TestPreparePreservesInterruptedWorktreeSwitchedToAnotherBranch(t *testing.T
 	}
 }
 
+func TestPreparePreservesInterruptedWorktreeWithMissingMetadata(t *testing.T) {
+	f := newFixture(t)
+	path := interruptWorktreeCreation(t, f)
+	write(t, path, "human.txt", "human work\n")
+	base := filepath.Join(f.root, "repos", "owner-repo", "base")
+	if err := os.RemoveAll(filepath.Join(base, ".git", "worktrees", f.request.RunID)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireCode(t, err, "git.branch_conflict")
+	if data, err := os.ReadFile(filepath.Join(path, "human.txt")); err != nil || string(data) != "human work\n" {
+		t.Fatalf("worktree with missing metadata was changed: %q, %v", data, err)
+	}
+}
+
 func TestPrepareRecoversWorktreeInterruptedDuringCheckout(t *testing.T) {
 	f := newFixture(t)
 	setup := f.request
