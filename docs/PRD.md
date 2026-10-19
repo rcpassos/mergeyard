@@ -1710,8 +1710,9 @@ settings rather than accepted from the runtime, so a process that impersonates
 the port cannot choose what runs.
 
 The dashboard is locked to the workspace owner. `mergeyard start` prints a
-single-use link and hands it to the browser through an owner-only handoff page,
-never as a process argument. Exchanging it hands the browser an owner-only
+single-use link and hands it to the default HTTP browser without putting the URL
+in a process argument. Linux uses a non-hidden owner-only handoff page so
+confined browsers can read it; macOS passes an AppleScript command over stdin. Exchanging it hands the browser an owner-only
 session in origin-scoped storage, which the dashboard attaches as a header only
 for the runtime's exact scheme, host and port. Without that session the dashboard
 renders a lock page with no CSRF token and refuses every action, so another

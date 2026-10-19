@@ -1,4 +1,4 @@
-# The dashboard link reaches the browser through an owner-only handoff page
+# The dashboard link reaches the browser without entering process arguments
 
 `mergeyard start` and `mergeyard open` launched the browser with the dashboard
 URL as an argument. On a machine shared with other users, `ps -axww` on macOS
@@ -6,23 +6,41 @@ and the world-readable `/proc/<pid>/cmdline` on Linux expose that argument. A
 polling attacker could exchange the single-use token before the browser did,
 take the owner session, and leave the owner with an expired-link message.
 
-The CLI now writes a small handoff page into `<workspace>/.dashboard-links/`,
-with an owner-only directory (`0700`) and page (`0600`), and passes only that
-path to `open` or `xdg-open`. The browser follows the page's redirect to the
-single-use link. The token therefore never appears in a process command line; a
-local user who reads the launcher arguments sees a path they cannot read. The
-page holds only the link token, never the owner session; ADR-0004 still keeps
-the session out of URLs. A later launch removes the page once the token
-lifetime has passed.
+The CLI now keeps the token out of every process command line while still
+selecting the HTTP browser rather than the HTML file association:
+
+- On macOS, `osascript` receives `open location "<url>"` over stdin. LaunchServices
+  resolves the default HTTP browser; the script and URL never appear in
+  arguments.
+- On Linux, a handoff page is written under
+  `$HOME/mergeyard-dashboard-handoff/` with an owner-only directory (`0700`)
+  and page (`0600`). The directory is not hidden, so confined browsers such as
+  the Firefox snap can read it through the snap `home` interface. The CLI
+  resolves the default web browser with `xdg-settings` or
+  `x-scheme-handler/http`, then launches it explicitly with `gio launch` or
+  `gtk-launch` and only the page path. `xdg-open` is a last-resort fallback when
+  no browser desktop entry can be resolved.
+
+The browser follows the page's redirect to the single-use link. The token
+therefore never appears in a process command line; a local user who reads the
+launcher arguments sees a path they cannot read. The page holds only the link
+token, never the owner session; ADR-0004 still keeps the session out of URLs. A
+later launch removes the page once the token lifetime has passed.
 
 ## Considered Options
 
 - **Pass the URL in an environment variable to the launcher.** Rejected: the
   launcher expands it into its own argument vector before starting the browser,
   so the token still becomes visible as an argument.
-- **Use a platform-specific AppleScript or desktop-entry launcher.** Rejected:
-  it adds macOS/Linux branches for the same handoff when the redirect page works
-  on both.
+- **Use `open`/`xdg-open` on the handoff page without selecting an
+  application.** Rejected: that uses the file association for `text/html`, which
+  may be an editor, while HTTP URLs keep a separate web-browser association.
+- **Keep the handoff under the default hidden workspace.** Rejected: the snap
+  `home` interface excludes hidden home paths, so a confined Firefox cannot read
+  the page.
+- **Mediate the file through the XDG document portal.** Rejected for now: it
+  adds a D-Bus dependency and a desktop-portal requirement for a redirect page
+  that a non-hidden owner-only home directory already makes readable.
 - **Open the dashboard URL directly and rely on the token's single use.**
   Rejected: the attacker only has to poll faster than the browser, and the
   owner loses the session.
@@ -33,11 +51,14 @@ lifetime has passed.
 
 - `mergeyard start` and `mergeyard open` still take one command and land the
   owner signed in; the extra redirect is local and immediate.
-- The handoff page lives under `<workspace>/.dashboard-links/` and is readable
-  only by its owner. A later launch removes pages once their token lifetime has
-  passed, so an old page cannot be replayed.
+- Linux handoff pages live in a non-hidden, owner-only home directory so a
+  confined browser can read them. Other platforms use
+  `<workspace>/.dashboard-links/` when they cannot use the macOS HTTP-handler
+  path. A later launch removes pages once their token lifetime has passed.
 - Expired and reused links keep the existing message pointing at
   `mergeyard open`.
 - Tests launch a fake browser and assert that its arguments are the handoff
-  path with no token or token-bearing URL, and that the handoff directory and
-  page are `0700` and `0600`.
+  path or AppleScript stdin marker with no token or token-bearing URL, that the
+  default web browser is selected rather than the HTML handler, and that the
+  handoff directory and page are `0700` and `0600` in a Snap-accessible
+  location.

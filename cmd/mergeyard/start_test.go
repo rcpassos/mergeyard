@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -249,13 +250,33 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	}
 	// Keep the browser launcher blocked throughout startup and control requests.
 	// SIGINT/SIGTERM must also terminate and reap it during runtime shutdown.
+	// The platform launcher records its arguments; the macOS AppleScript path
+	// also records stdin because the tokenized URL travels there.
 	browserStarted := filepath.Join(home, "browser-started")
 	browserArgs := filepath.Join(home, "browser-args")
-	browserScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + browserArgs + "'\nprintf '%s\\n' \"$$\" >> '" + browserStarted + "'\nexec /bin/sleep 60\n"
-	for _, name := range []string{"open", "xdg-open"} {
-		if err := os.WriteFile(filepath.Join(tools, name), []byte(browserScript), 0700); err != nil {
+	browserStdin := filepath.Join(home, "browser-stdin")
+	htmlHandler := filepath.Join(home, "html-handler")
+	blockingScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + browserArgs + "'\nprintf '%s\\n' \"$$\" >> '" + browserStarted + "'\nexec /bin/sleep 60\n"
+	osascriptScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + browserArgs + "'\n/bin/cat > '" + browserStdin + "'\nprintf '%s\\n' \"$$\" >> '" + browserStarted + "'\nexec /bin/sleep 60\n"
+	htmlHandlerScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + htmlHandler + "'\n"
+	for name, script := range map[string]string{
+		"osascript":    osascriptScript,
+		"gio":          blockingScript,
+		"gtk-launch":   blockingScript,
+		"xdg-open":     htmlHandlerScript,
+		"xdg-settings": "#!/bin/sh\necho browser.desktop\n",
+	} {
+		if err := os.WriteFile(filepath.Join(tools, name), []byte(script), 0700); err != nil {
 			t.Fatal(err)
 		}
+	}
+	dataHome := filepath.Join(home, "data")
+	desktop := filepath.Join(dataHome, "applications", "browser.desktop")
+	if err := os.MkdirAll(filepath.Dir(desktop), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(desktop, []byte("[Desktop Entry]\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		data, _ := os.ReadFile(browserStarted)
@@ -278,7 +299,7 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	if err := os.WriteFile(path, []byte(fmt.Sprintf("port: %d\nopen_browser: true\nagents: {claude: {permission_mode: acceptEdits}}\n", port)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	env := append(os.Environ(), "HOME="+home, "PATH="+tools)
+	env := append(os.Environ(), "HOME="+home, "PATH="+tools, "XDG_DATA_HOME="+dataHome, "XDG_DATA_DIRS=")
 
 	start := func(args ...string) (*exec.Cmd, string) {
 		t.Helper()
@@ -356,8 +377,41 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	if strings.Contains(string(launcherArgs), token) || strings.Contains(string(launcherArgs), "token=") {
 		t.Fatalf("browser launcher received the dashboard token: %q", launcherArgs)
 	}
-	pagePath := strings.TrimSpace(string(launcherArgs))
-	assertHandoffPage(t, pagePath)
+	urlAt := strings.Index(readyLine, "dashboard at ")
+	if urlAt < 0 {
+		t.Fatalf("startup link carried no dashboard URL: %q", readyLine)
+	}
+	dashboardURL := readyLine[urlAt+len("dashboard at "):]
+	switch runtime.GOOS {
+	case "darwin":
+		if strings.TrimSpace(string(launcherArgs)) != "-" {
+			t.Fatalf("macOS launcher arguments: %q", launcherArgs)
+		}
+		stdin, err := os.ReadFile(browserStdin)
+		if err != nil || !strings.Contains(string(stdin), `open location "`+dashboardURL+`"`) {
+			t.Fatalf("AppleScript did not open the default browser: %q %v", stdin, err)
+		}
+	case "linux":
+		fields := strings.Split(strings.TrimSpace(string(launcherArgs)), "\n")
+		if len(fields) != 3 || fields[0] != "launch" || fields[1] != desktop {
+			t.Fatalf("Linux launcher did not select the default web browser: %q", launcherArgs)
+		}
+		pagePath := fields[2]
+		assertHandoffPage(t, pagePath)
+		relative, err := filepath.Rel(home, pagePath)
+		if err != nil || strings.HasPrefix(relative, ".") || !strings.HasPrefix(relative, linuxDashboardLinksDirName+string(filepath.Separator)) {
+			t.Fatalf("handoff page is not in a Snap-accessible home location: %q %v", relative, err)
+		}
+		page, err := os.ReadFile(pagePath)
+		if err != nil || !strings.Contains(string(page), dashboardURL) {
+			t.Fatalf("handoff page does not redirect to the link: %q %v", page, err)
+		}
+		if _, err := os.Stat(htmlHandler); !os.IsNotExist(err) {
+			t.Fatalf("html file association was used instead of the web browser: %v", err)
+		}
+	default:
+		assertHandoffPage(t, strings.TrimSpace(string(launcherArgs)))
+	}
 	browserClient := &http.Client{Timeout: 2 * time.Second}
 	response, err := browserClient.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
 	if err != nil {
