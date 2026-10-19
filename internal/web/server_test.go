@@ -41,10 +41,10 @@ func TestSchedulerDatabaseFailurePreservesSafeDiagnostics(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cookie := ownerSession(t, server, "http://127.0.0.1:7331")
+			session := ownerSession(t, server, "http://127.0.0.1:7331")
 			page := httptest.NewRecorder()
 			pageRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/", nil)
-			pageRequest.AddCookie(cookie)
+			pageRequest.Header.Set(web.DashboardSessionHeader, session)
 			server.ServeHTTP(page, pageRequest)
 			token := regexp.MustCompile(`name="csrf_token" value="([^"]+)"`).FindStringSubmatch(page.Body.String())
 			if len(token) != 2 {
@@ -64,7 +64,7 @@ func TestSchedulerDatabaseFailurePreservesSafeDiagnostics(t *testing.T) {
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			request.Header.Set("Origin", "http://127.0.0.1:7331")
 			request.Header.Set("HX-Request", "true")
-			request.AddCookie(cookie)
+			request.Header.Set(web.DashboardSessionHeader, session)
 			response := httptest.NewRecorder()
 			server.ServeHTTP(response, request)
 			if response.Code != http.StatusInternalServerError {

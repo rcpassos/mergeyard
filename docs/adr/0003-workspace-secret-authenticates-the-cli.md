@@ -30,10 +30,10 @@ runtime returns only the prepared run snapshot.
   port, and the secret keeps one boundary for both.
 - **Require the workspace secret itself in the browser.** Rejected: a browser
   cannot read the workspace file. Instead the runtime prints a single-use link
-  that exchanges for an `HttpOnly`, `SameSite=Strict` session cookie. Without
-  that session the dashboard renders a lock page, hands out no CSRF token, and
-  refuses every action, while keeping its origin and CSRF checks for owner
-  pages.
+  that hands over an origin-scoped session (ADR-0004 replaced the first cookie
+  mechanism after it proved port-shared). Without that session the dashboard
+  renders a lock page, hands out no CSRF token, and refuses every action, while
+  keeping its origin and CSRF checks for owner pages.
 - **Keep returning the takeover command from the API.** Rejected: even a proven
   runtime would then choose what the user's machine executes. The CLI owns that
   decision.
@@ -48,8 +48,8 @@ runtime returns only the prepared run snapshot.
   running pre-restart process would be refused.
 - The dashboard link is printed to the runtime's terminal and is briefly
   visible in the browser launcher's process arguments while it opens. The token
-  is single-use and expires, and the session it sets rotates when the runtime
-  restarts, so a stolen link only races the browser once.
+  is single-use and expires, and the session it hands over rotates when the
+  runtime restarts, so a stolen link only races the browser once.
 - The API proof binds the exact status and body, and unproven requests receive
   no proof, so a process that relays between the CLI and a runtime on another
   port cannot edit an answer or use the runtime as an oracle.

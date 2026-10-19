@@ -44,9 +44,10 @@ type Server struct {
 	token string
 	// secret authenticates the CLI API. It is never rendered into a page.
 	secret []byte
-	// session is the dashboard session cookie value; it rotates with the
-	// process, so a restarted runtime locks old browser sessions out.
-	session string
+	// owner is the dashboard owner credential held in origin-scoped browser
+	// storage; it rotates with the process, so a restarted runtime locks old
+	// browser sessions out.
+	owner ownerCredential
 	// tokens holds single-use dashboard link tokens until they are exchanged.
 	tokens   map[string]time.Time
 	tokensMu sync.Mutex
@@ -58,16 +59,47 @@ type Server struct {
 }
 
 const (
-	// dashboardCookie prefixes the owner session set by the one-time link.
-	// Browsers share cookies across ports on one host, so the name carries the
-	// port and runtimes for different workspaces keep separate sessions.
-	dashboardCookie = "mergeyard_dashboard"
+	// DashboardSessionHeader carries the owner session. The dashboard script
+	// keeps the value in origin-scoped storage, so the browser sends it only to
+	// the runtime's exact scheme, host and port. Cookies cannot do that: a
+	// cookie for 127.0.0.1 is shared with every port on the host.
+	DashboardSessionHeader = "X-Mergeyard-Session"
+	// dashboardSessionFragment hand-off key. The exchange redirect puts the
+	// session in the URL fragment, which the browser never sends to a server,
+	// and the dashboard script moves it into origin-scoped storage.
+	dashboardSessionFragment = "session"
 	// dashboardTokenTTL bounds how long a printed link stays usable.
 	dashboardTokenTTL = 15 * time.Minute
-	// dashboardCookieMaxAge keeps the owner session across browser restarts
-	// until the runtime rotates it.
-	dashboardCookieMaxAge = 7 * 24 * 60 * 60
 )
+
+// ownerCredential is the dashboard owner session value together with the exact
+// authority it was handed over for. Browser storage already binds the value to
+// scheme, host and port; the runtime checks the authority as well, so a request
+// to another loopback port stays locked even if it somehow presents the value.
+type ownerCredential struct {
+	mu     sync.RWMutex
+	value  string
+	origin string
+}
+
+// bindOrigin records the authority the owner followed the one-time link at.
+func (o *ownerCredential) bindOrigin(origin string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.origin = origin
+}
+
+// authenticated reports whether the request carries the credential for the
+// authority it was handed over at.
+func (o *ownerCredential) authenticated(r *http.Request) bool {
+	o.mu.RLock()
+	origin := o.origin
+	o.mu.RUnlock()
+	if origin == "" || r.Host != origin {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get(DashboardSessionHeader)), []byte(o.value)) == 1
+}
 
 // New constructs an HTTP handler without opening a socket. The caller owns the
 // bus and scheduler and must keep them alive until the server stops.
@@ -91,7 +123,7 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 		return nil, &fault.Error{Code: "internal.web_session", Message: "Could not generate the dashboard session", Err: err}
 	}
 	s := &Server{bus: bus, scheduler: scheduler, operations: operations, workspace: workspace, templates: templates,
-		token: hex.EncodeToString(csrf[:]), session: hex.EncodeToString(session[:]), tokens: make(map[string]time.Time)}
+		token: hex.EncodeToString(csrf[:]), owner: ownerCredential{value: hex.EncodeToString(session[:])}, tokens: make(map[string]time.Time)}
 	static, err := fs.Sub(webassets.Files, "static")
 	if err != nil {
 		return nil, &fault.Error{Code: "internal.web_assets", Message: "Could not open embedded assets", Err: err}
@@ -140,8 +172,8 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 }
 
 // NewDashboardToken mints a single-use dashboard link token. mergeyard start
-// prints it and mergeyard open requests a fresh one; the exchange sets the
-// owner session cookie.
+// prints it and mergeyard open requests a fresh one; the exchange hands the
+// owner session to origin-scoped browser storage.
 func (s *Server) NewDashboardToken() string {
 	var token [32]byte
 	if _, err := rand.Read(token[:]); err != nil {
@@ -173,21 +205,6 @@ func (s *Server) consumeToken(token string) bool {
 	return time.Now().Before(expiry)
 }
 
-// authenticated reports whether the request carries the owner session cookie.
-func (s *Server) authenticated(r *http.Request) bool {
-	cookie, err := r.Cookie(dashboardCookieName(r))
-	return err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.session)) == 1
-}
-
-// dashboardCookieName returns the owner session cookie for the port the
-// browser addressed.
-func dashboardCookieName(r *http.Request) string {
-	if _, port, err := net.SplitHostPort(r.Host); err == nil && port != "" {
-		return dashboardCookie + "_" + port
-	}
-	return dashboardCookie
-}
-
 // dashboardGate locks the dashboard to the owner session. API and asset routes
 // pass through to their own boundary. Every POST still requires an exact Origin
 // and the CSRF token: dashboard forms get it from an owner page, and the CLI
@@ -199,9 +216,23 @@ func (s *Server) dashboardGate(next http.Handler) http.Handler {
 			return
 		}
 		api := strings.HasPrefix(r.URL.Path, "/api/")
-		if !api && !s.authenticated(r) {
+		if !api && !s.owner.authenticated(r) {
 			if r.Method == http.MethodGet || r.Method == http.MethodHead {
-				s.renderData(w, "locked", nil)
+				w.Header().Add("Vary", "HX-Request")
+				w.Header().Add("Vary", DashboardSessionHeader)
+				if r.URL.Path == "/events" {
+					http.Error(w, "This dashboard is locked to the workspace owner; run mergeyard open for a new link.", http.StatusForbidden)
+					return
+				}
+				// A browser navigation has no script-provided header yet. The
+				// script moves the stored session into the request; a page
+				// without one stays on the lock message.
+				if r.Header.Get("HX-Request") == "true" {
+					s.renderData(w, "locked-content", nil)
+					return
+				}
+				page, title := pageMeta(r.URL.Path)
+				s.renderData(w, "layout", pageData{Boot: true, Page: page, Title: title, Path: r.URL.Path})
 				return
 			}
 			http.Error(w, "This dashboard is locked to the workspace owner; run mergeyard open for a new link.", http.StatusForbidden)
@@ -303,22 +334,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handler.ServeHTTP(w, r)
 }
 
-// exchangeToken trades the one-time link for the owner session cookie and
-// redirects to the requested page without the token in the address bar.
+// exchangeToken trades the one-time link for the owner session. The session
+// travels in the redirect fragment, which browsers keep out of requests, and
+// the dashboard script stores it for this exact origin. No cookie is set, so a
+// page on any other loopback port cannot receive it.
 func (s *Server) exchangeToken(w http.ResponseWriter, r *http.Request, token string) {
 	if !s.consumeToken(token) {
 		http.Error(w, "This dashboard link is invalid or expired; run mergeyard open for a new one.", http.StatusForbidden)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: dashboardCookieName(r), Value: s.session, Path: "/",
-		MaxAge: dashboardCookieMaxAge, HttpOnly: true, SameSite: http.SameSiteStrictMode,
-	})
+	s.owner.bindOrigin(r.Host)
 	target := r.URL.Path
 	if target == "" {
 		target = "/"
 	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, target+"#"+dashboardSessionFragment+"="+s.owner.value, http.StatusSeeOther)
 }
 
 func (s *Server) render(w http.ResponseWriter, name string) {

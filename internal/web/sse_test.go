@@ -26,7 +26,7 @@ func openStream(t *testing.T, server *web.Server, url, lastEventID string) (*htt
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.AddCookie(ownerSession(t, server, url))
+	request.Header.Set(web.DashboardSessionHeader, ownerSession(t, server, url))
 	if lastEventID != "" {
 		request.Header.Set("Last-Event-ID", lastEventID)
 	}

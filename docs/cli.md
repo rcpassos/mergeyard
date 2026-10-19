@@ -22,9 +22,11 @@ reports `runtime.secret_insecure` with the `chmod 600` fix. Each
 
 The dashboard itself is locked to the owner. `mergeyard start` prints a
 single-use dashboard link (and opens it when `open_browser` is enabled), and
-`mergeyard open` mints a fresh link and opens it. The exchange sets an owner
-session cookie; without it the dashboard shows a lock page, renders no CSRF
-token, and refuses every action.
+`mergeyard open` mints a fresh link and opens it. The exchange hands the owner
+session to origin-scoped browser storage through the URL fragment, and the
+dashboard attaches it as a header for that exact scheme, host and port; without
+it the dashboard shows a lock page, renders no CSRF token, and refuses every
+action.
 
 SIGINT and SIGTERM cancel scheduler polling and HTTP/SSE requests, wait for
 scheduler operations to return, and close SQLite before releasing the workspace
@@ -198,8 +200,8 @@ process. Settings shows the same effective configuration and durable handback
 grants, including grants without a usage-limit wait. Both Claude and Codex
 are supported in either role. `open` prints the owning runtime's single-use
 dashboard link and hands it to the platform browser launcher; the URL stays
-valid until it is used or expires, and the session it sets lasts until the
-runtime restarts.
+valid until it is used or expires, and the session it hands the browser lasts
+until the runtime restarts.
 
 Both production adapters enable temporary-limit detection for their captured
 signals: Claude's headless weekly rejection and Codex's Plus-plan same-day
