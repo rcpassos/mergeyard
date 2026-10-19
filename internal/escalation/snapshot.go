@@ -13,6 +13,10 @@ type Snapshot struct {
 	Reasons            []Flag `json:"reasons"`
 	EvaluationWarning  string `json:"evaluation_warning,omitempty"`
 	PublicationWarning string `json:"publication_warning,omitempty"`
+	LastAttemptAt      string `json:"last_attempt_at,omitempty"`
+	Attempts           int    `json:"attempts,omitempty"`
+	Failed             bool   `json:"failed,omitempty"`
+	Stopped            bool   `json:"stopped,omitempty"`
 	Published          bool   `json:"published"`
 }
 

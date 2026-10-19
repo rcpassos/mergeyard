@@ -26,12 +26,16 @@ import (
 type escalationGitHub struct {
 	*ciGitHub
 	failBody  bool
+	bodyCode  string
 	bodyCalls int
 }
 
 func (f *escalationGitHub) UpdateEscalation(_ context.Context, _ string, number int, snapshot escalation.Snapshot) error {
 	f.bodyCalls++
 	if f.failBody {
+		if f.bodyCode != "" {
+			return &fault.Error{Code: f.bodyCode, Message: "Publication rejected"}
+		}
 		return errors.New("GitHub unavailable")
 	}
 	for _, pr := range f.prs {
@@ -236,6 +240,17 @@ func TestEscalationReadinessRestartAndSurfaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	calls := api.bodyCalls
+	if _, err := s.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if api.bodyCalls != calls {
+		t.Fatal("escalation retried before its backoff")
+	}
+	if _, err := rt.DB.Exec(`UPDATE runs SET escalation_json=json_set(escalation_json,'$.last_attempt_at','2000-01-01T00:00:00Z') WHERE id=?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+
 	if _, err := s.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -322,5 +337,28 @@ func TestEscalationUnavailableDiffDoesNotBlockAndRetries(t *testing.T) {
 	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
 	if response.Code != 200 || strings.Contains(response.Body.String(), "Needs careful review") || strings.Contains(api.prs["mergeyard/issue-7"].Body, "Needs careful review") {
 		t.Fatal("unflagged run shows badge")
+	}
+}
+
+func TestEscalationPermanentPublicationFailureStops(t *testing.T) {
+	script := "mkdir -p .github/workflows; printf 'workflow\\n' > .github/workflows/ci.yml; " + successfulScript
+	_, rt, base, _, cfg, r := localFlow(t, script)
+	api := &escalationGitHub{ciGitHub: &ciGitHub{fakeGitHub: base, applyReady: true, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}, failBody: true, bodyCode: "github.invalid_input"}
+	g := &escalationGit{Manager: managedgit.New(rt.Workspace)}
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: api, Git: g, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.ReadyToMerge, workflow.Review)
+	if run.Escalation == nil || !run.Escalation.Stopped || run.Escalation.Published || !strings.Contains(run.Escalation.PublicationWarning, "cannot update") || api.bodyCalls != 1 {
+		t.Fatalf("permanent escalation failure: %+v calls=%d", run.Escalation, api.bodyCalls)
+	}
+	for range 2 {
+		if _, err := s.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if api.bodyCalls != 1 {
+		t.Fatalf("stopped escalation retried: %d calls", api.bodyCalls)
 	}
 }

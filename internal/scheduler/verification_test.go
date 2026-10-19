@@ -666,7 +666,7 @@ func TestSlowVerificationPublicationDoesNotStarveHealthyPRAfterRestart(t *testin
 }
 
 func TestVerificationPublicationStopsOnPermanentFailure(t *testing.T) {
-	for _, code := range []string{"github.invalid_input", "github.command_failed", "github.not_logged_in", "github.forbidden"} {
+	for _, code := range []string{"github.invalid_input", "github.forbidden", "github.not_found"} {
 		t.Run(code, func(t *testing.T) {
 			s, rt, publisher, _ := failingVerificationFlow(t, code)
 			ctx := context.Background()
@@ -718,5 +718,38 @@ func TestRunFinishingAfterTransientFailureStopsVerificationPublication(t *testin
 	}
 	if warnings := countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id='probe-finishes-later' AND type='verification.warning'`); warnings != 1 {
 		t.Fatalf("warnings = %d, want one", warnings)
+	}
+	var message string
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id='probe-finishes-later' AND type='verification.warning'`).Scan(&message); err != nil || !strings.Contains(message, "will not retry") || !strings.Contains(message, "No further retries") {
+		t.Fatalf("verification warning = %q, %v", message, err)
+	}
+}
+
+func TestVerificationPublicationBacksOffRecoverableFailures(t *testing.T) {
+	for _, code := range []string{"github.command_failed", "github.not_logged_in", "github.timeout"} {
+		t.Run(code, func(t *testing.T) {
+			now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+			s, rt, publisher, _ := failingVerificationFlowAt(t, code, func() time.Time { return now })
+			seedVerificationRun(t, rt, "probe-recoverable", "MANUAL", 7, 101)
+			for range 2 {
+				if _, err := s.Reconcile(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if publisher.updates != 1 {
+				t.Fatalf("recoverable failure retried before backoff: %d calls", publisher.updates)
+			}
+			now = now.Add(time.Minute + time.Second)
+			if _, err := s.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if publisher.updates != 2 {
+				t.Fatalf("recoverable failure did not retry after backoff: %d calls", publisher.updates)
+			}
+			var failed, stopped bool
+			if err := rt.DB.QueryRow(`SELECT failed,stopped FROM verification_attempts WHERE run_id=?`, "probe-recoverable").Scan(&failed, &stopped); err != nil || !failed || stopped {
+				t.Fatalf("recoverable failure state = %v %v, %v", failed, stopped, err)
+			}
+		})
 	}
 }

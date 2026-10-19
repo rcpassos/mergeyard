@@ -568,7 +568,39 @@ func TestRunFinishingAfterTransientFailureStopsReportPublication(t *testing.T) {
 	}
 	var stopped bool
 	var warning string
-	if err := rt.DB.QueryRow(`SELECT stopped,warning FROM report_publications WHERE run_id='report-finishes-later'`).Scan(&stopped, &warning); err != nil || !stopped || !strings.Contains(warning, "will not retry") {
+	if err := rt.DB.QueryRow(`SELECT stopped,warning FROM report_publications WHERE run_id='report-finishes-later'`).Scan(&stopped, &warning); err != nil || !stopped || !strings.Contains(warning, "will not retry") || !strings.Contains(warning, "No further retries") {
 		t.Fatalf("finished report state = %v %q, %v", stopped, warning, err)
+	}
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.warning' AND json_extract(payload_json,'$.report_id')=(SELECT attempt_id FROM report_publications WHERE run_id='report-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&warning); err != nil || !strings.Contains(warning, "will not retry") || !strings.Contains(warning, "No further retries") {
+		t.Fatalf("finished report event = %q, %v", warning, err)
+	}
+}
+
+func TestRunFinishingAfterTransientFailureStopsAttentionPublication(t *testing.T) {
+	publisher := &reportGitHub{failure: true}
+	s, rt, _ := commentFlow(t, publisher, time.Now)
+	seedAttentionPublication(t, rt, "attention-finishes-later", "MANUAL", 101)
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("attention attempts = %d, want 1", publisher.calls)
+	}
+	if _, err := rt.DB.Exec(`UPDATE runs SET state='STOPPED' WHERE id='attention-finishes-later'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("finished attention retried: %d calls", publisher.calls)
+	}
+	var stopped bool
+	if err := rt.DB.QueryRow(`SELECT stopped FROM attention_publications WHERE run_id='attention-finishes-later'`).Scan(&stopped); err != nil || !stopped {
+		t.Fatalf("finished attention was not stopped: %v, %v", stopped, err)
+	}
+	var message string
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.warning' AND json_extract(payload_json,'$.attention_event_id')=(SELECT event_id FROM attention_publications WHERE run_id='attention-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&message); err != nil || !strings.Contains(message, "will not retry") || !strings.Contains(message, "No further retries") {
+		t.Fatalf("attention warning = %q, %v", message, err)
 	}
 }

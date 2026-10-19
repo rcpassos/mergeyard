@@ -250,10 +250,24 @@ type PullRequestContent struct {
 	RoleSettings *config.RunRoleSettings
 }
 
+const (
+	summaryTruncatedSuffix = "\n\n[truncated]"
+	excerptTruncatedSuffix = "\n[truncated]"
+	commandTruncatedSuffix = " [truncated]"
+)
+
 // GeneratePullRequestBody encloses the generated text in stable ownership markers.
-// Verification evidence is truncated first when the result would exceed
-// GitHub's size limit, then the summary, while the ownership markers stay whole.
 func GeneratePullRequestBody(content PullRequestContent) (string, error) {
+	return generatePullRequestBody(content, MaxBodyBytes)
+}
+
+// generatePullRequestBody caps one generated block at limit. Verification
+// excerpts shrink first, then the summary, then the number of entries; evidence
+// that still cannot fit is cut rather than misreported as empty.
+func generatePullRequestBody(content PullRequestContent, limit int) (string, error) {
+	if limit < 1 {
+		return "", codedError("github.invalid_input", "generated PR body exceeds GitHub's size limit", nil)
+	}
 	if content.IssueNumber <= 0 || strings.TrimSpace(content.IssueTitle) == "" || strings.TrimSpace(content.Summary) == "" || strings.TrimSpace(content.RunID) == "" || strings.ContainsAny(content.RunID, "\r\n`") {
 		return "", codedError("github.invalid_input", "expected an issue number, title, summary, and single-line run ID", nil)
 	}
@@ -272,66 +286,132 @@ func GeneratePullRequestBody(content PullRequestContent) (string, error) {
 		entries = verification.Capped(entries)
 	}
 	summary := content.Summary
-	body, err := renderPullRequestBody(content, summary, entries)
+	omitted := 0
+	body, err := renderPullRequestBody(content, summary, entries, omitted)
 	if err != nil {
 		return "", err
 	}
-	for len(body) > MaxBodyBytes {
-		if len(entries) > 0 {
-			trimmed := false
-			for i := range entries {
-				if entries[i].Excerpt == nil {
-					continue
-				}
-				runes := []rune(*entries[i].Excerpt)
-				if len(runes) <= 64 {
-					continue
-				}
-				excerpt := string(runes[:len(runes)/2])
-				entries[i].Excerpt = &excerpt
-				trimmed = true
-			}
-			if trimmed {
-				if body, err = renderPullRequestBody(content, summary, entries); err != nil {
-					return "", err
-				}
+	for len(body) > limit {
+		trimmed := false
+		for i := range entries {
+			if entries[i].Excerpt == nil {
 				continue
 			}
-			entries = entries[:len(entries)-1]
-			if body, err = renderPullRequestBody(content, summary, entries); err != nil {
+			runes := []rune(*entries[i].Excerpt)
+			if len(runes) <= 64 {
+				continue
+			}
+			excerpt := truncateRunes(*entries[i].Excerpt, excerptTruncatedSuffix, len(runes)/2)
+			entries[i].Excerpt = &excerpt
+			trimmed = true
+		}
+		if trimmed {
+			if body, err = renderPullRequestBody(content, summary, entries, omitted); err != nil {
 				return "", err
 			}
 			continue
 		}
-		const summarySuffix = "\n\n[truncated]"
-		overflow := len(body) - MaxBodyBytes
-		target := len(summary) - overflow - len(summarySuffix)
-		if target <= 1 {
-			summary = truncateUTF8(summary, 1) + summarySuffix
-			if body, err = renderPullRequestBody(content, summary, entries); err != nil {
+		summaryRunes := []rune(summary)
+		if len(summaryRunes) > 200 {
+			target := len(summaryRunes) / 2
+			if target < 200 {
+				target = 200
+			}
+			summary = truncateRunes(summary, summaryTruncatedSuffix, target)
+			if body, err = renderPullRequestBody(content, summary, entries, omitted); err != nil {
 				return "", err
 			}
-			if len(body) > MaxBodyBytes {
-				return "", codedError("github.invalid_input", "generated PR body exceeds GitHub's size limit", nil)
+			continue
+		}
+		if len(entries) > 1 {
+			// Keep failed evidence for as long as possible when dropping.
+			drop := len(entries) - 1
+			if entries[drop].Outcome == "failed" {
+				for i := len(entries) - 2; i >= 0; i-- {
+					if entries[i].Outcome != "failed" {
+						drop = i
+						break
+					}
+				}
 			}
-			return body, nil
+			entries = append(entries[:drop:drop], entries[drop+1:]...)
+			omitted++
+			if body, err = renderPullRequestBody(content, summary, entries, omitted); err != nil {
+				return "", err
+			}
+			continue
 		}
-		summary = truncateUTF8(summary, target) + summarySuffix
-		if body, err = renderPullRequestBody(content, summary, entries); err != nil {
-			return "", err
+		if len(summaryRunes) > 1 {
+			target := len(summaryRunes) / 2
+			if target < 1 {
+				target = 1
+			}
+			summary = truncateRunes(summary, summaryTruncatedSuffix, target)
+			if body, err = renderPullRequestBody(content, summary, entries, omitted); err != nil {
+				return "", err
+			}
+			continue
 		}
+		if len(entries) == 1 {
+			entry := &entries[0]
+			if entry.Excerpt != nil {
+				runes := []rune(*entry.Excerpt)
+				if len(runes) > 1 {
+					excerpt := truncateRunes(*entry.Excerpt, excerptTruncatedSuffix, len(runes)/2)
+					entry.Excerpt = &excerpt
+					if body, err = renderPullRequestBody(content, summary, entries, omitted); err != nil {
+						return "", err
+					}
+					continue
+				}
+			}
+			runes := []rune(entry.Command)
+			if len(runes) > 1 {
+				entry.Command = truncateRunes(entry.Command, commandTruncatedSuffix, len(runes)/2)
+				if body, err = renderPullRequestBody(content, summary, entries, omitted); err != nil {
+					return "", err
+				}
+				continue
+			}
+		}
+		return "", codedError("github.invalid_input", "generated PR body exceeds GitHub's size limit", nil)
 	}
 	return body, nil
 }
 
-func renderPullRequestBody(content PullRequestContent, summary string, entries []verification.Entry) (string, error) {
+func truncateRunes(text, suffix string, limit int) string {
+	text = strings.TrimSuffix(text, suffix)
+	if limit >= len([]rune(text)) {
+		return text
+	}
+	suffixRunes := []rune(suffix)
+	if limit <= len(suffixRunes) {
+		return suffix
+	}
+	return string([]rune(text)[:limit-len(suffixRunes)]) + suffix
+}
+
+func omittedEvidenceEntry(n int) verification.Entry {
+	excerpt := "Mergeyard omitted evidence to fit GitHub's size limit."
+	return verification.Entry{
+		Command: fmt.Sprintf("[%d verification entries omitted]", n),
+		Outcome: "skipped",
+		Excerpt: &excerpt,
+	}
+}
+
+func renderPullRequestBody(content PullRequestContent, summary string, entries []verification.Entry, omitted int) (string, error) {
 	evidence := ""
 	if entries != nil {
 		evidence = "\n\n<details>\n<summary>Verification evidence</summary>\n\n"
-		if len(entries) == 0 {
+		rendered := entries
+		if omitted > 0 {
+			rendered = append(append([]verification.Entry{}, entries...), omittedEvidenceEntry(omitted))
+		}
+		if len(rendered) == 0 {
 			evidence += "no verification reported\n"
 		} else {
-			encoded, err := json.MarshalIndent(entries, "", "  ")
+			encoded, err := json.MarshalIndent(rendered, "", "  ")
 			if err != nil {
 				return "", err
 			}
@@ -375,12 +455,32 @@ func roleSettingLiteral(value, fallback string) string {
 
 // UpdatePullRequestBody replaces only the owned section, preserving all other
 // bytes and the separately published escalation subsection. Without an owned
-// section, it appends one after the existing user text.
+// section, it appends one after the existing user text. The generated block
+// receives only the space the preserved body leaves, so the final result stays
+// within GitHub's limit.
 func UpdatePullRequestBody(body string, content PullRequestContent) (string, error) {
-	generated, err := GeneratePullRequestBody(content)
-	if err != nil {
-		return "", err
+	budget := MaxBodyBytes
+	for {
+		generated, err := generatePullRequestBody(content, budget)
+		if err != nil {
+			return "", err
+		}
+		updated, err := splicePullRequestBody(body, generated)
+		if err != nil {
+			return "", err
+		}
+		if len(updated) <= MaxBodyBytes {
+			return updated, nil
+		}
+		overflow := len(updated) - MaxBodyBytes
+		if budget <= overflow {
+			return "", codedError("github.invalid_input", "PR body exceeds GitHub's size limit", nil)
+		}
+		budget -= overflow
 	}
+}
+
+func splicePullRequestBody(body, generated string) (string, error) {
 	start, end := strings.Index(body, generatedStart), strings.Index(body, generatedEnd)
 	if start < 0 && end < 0 {
 		if body == "" {

@@ -90,6 +90,10 @@ ORDER BY COALESCE(a.last_attempt_at,''),e.seq`)
 			if _, err := s.db.ExecContext(ctx, `UPDATE verification_attempts SET stopped=1 WHERE run_id=? AND source_attempt=?`, p.runID, p.source); err != nil {
 				return err
 			}
+			message := stoppedPublicationWarning("Verification evidence is saved locally. This run is finished, so PR body publication will not retry.")
+			if err := s.updateVerificationWarning(ctx, p.runID, p.source, "", message); err != nil {
+				return err
+			}
 			continue
 		}
 		due, err := publicationDue(p.lastAttempt, p.attempts, s.deps.Now())
@@ -151,9 +155,9 @@ ORDER BY COALESCE(a.last_attempt_at,''),e.seq`)
 			stop := terminalPublicationFailure(cause, publicationCtx, p.finished)
 			message := "Verification evidence is saved locally. PR body publication is deferred."
 			if permanent {
-				message = "Verification evidence is saved locally. PR body publication cannot update this PR."
+				message = stoppedPublicationWarning("Verification evidence is saved locally. PR body publication cannot update this PR.")
 			} else if stop {
-				message = "Verification evidence is saved locally. This run is finished, so PR body publication will not retry."
+				message = stoppedPublicationWarning("Verification evidence is saved locally. This run is finished, so PR body publication will not retry.")
 			}
 			// Keep publication failures visible without repeating the same warning on every tick.
 			var exists bool
@@ -175,6 +179,11 @@ ORDER BY COALESCE(a.last_attempt_at,''),e.seq`)
 			} else {
 				if _, err := s.db.ExecContext(ctx, `UPDATE verification_attempts SET failed=?,stopped=? WHERE run_id=? AND source_attempt=?`, returned, stop, p.runID, p.source); err != nil {
 					return err
+				}
+				if stop {
+					if err := s.updateVerificationWarning(ctx, p.runID, p.source, code, message); err != nil {
+						return err
+					}
 				}
 			}
 			continue

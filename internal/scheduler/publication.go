@@ -157,8 +157,11 @@ func (s *Scheduler) publishReports(ctx context.Context) error {
 		// A finished run that already returned a failure has no later reader;
 		// record the stop without another read or write.
 		if p.finished && p.failed {
-			warning := "Report is saved locally. This run is finished, so PR comment publication will not retry."
+			warning := stoppedPublicationWarning("Report is saved locally. This run is finished, so PR comment publication will not retry.")
 			if _, err := s.db.ExecContext(ctx, `UPDATE report_publications SET stopped=1,warning=? WHERE attempt_id=?`, warning, p.id); err != nil {
+				return err
+			}
+			if err := s.updateReportWarning(ctx, p.id, warning); err != nil {
 				return err
 			}
 			continue
@@ -182,21 +185,26 @@ func (s *Scheduler) publishReports(ctx context.Context) error {
 func (p pendingReport) delivery(s *Scheduler) commentDelivery {
 	return commentDelivery{
 		repository: p.repository, number: p.pr, body: p.body, warningCode: p.warning, finished: p.finished,
+		deferredWarning: "Report is saved locally. PR comment publication is deferred.",
+		terminalWarning: stoppedPublicationWarning("Report is saved locally. PR comment publication cannot deliver this comment."),
+		finishedWarning: stoppedPublicationWarning("Report is saved locally. This run is finished, so PR comment publication will not retry."),
 		startAttempt: func(ctx context.Context) error {
 			_, err := s.db.ExecContext(ctx, `UPDATE report_publications SET attempts=attempts+1,last_attempt_at=?,failed=0 WHERE attempt_id=?`, publicationTimestamp(s.deps.Now()), p.id)
 			return err
 		},
-		saveWarning: func(ctx context.Context, tx *sql.Tx, code string, failed, terminal bool) (events.Draft, error) {
-			warning := "Report is saved locally. PR comment publication is deferred."
-			if terminal {
-				warning = "Report is saved locally. PR comment publication cannot deliver this comment."
-			}
-			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET warning_code=?,warning=?,failed=?,stopped=? WHERE attempt_id=?`, code, warning, failed, terminal, p.id)
-			return events.Draft{RunID: p.runID, Type: "publication.warning", Payload: map[string]any{"report_id": p.id, "code": code, "message": warning}}, err
+		saveWarning: func(ctx context.Context, tx *sql.Tx, code, message string, failed, terminal bool) (events.Draft, error) {
+			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET warning_code=?,warning=?,failed=?,stopped=? WHERE attempt_id=?`, code, message, failed, terminal, p.id)
+			return events.Draft{RunID: p.runID, Type: "publication.warning", Payload: map[string]any{"report_id": p.id, "code": code, "message": message}}, err
 		},
-		saveAttemptResult: func(ctx context.Context, failed, terminal bool) error {
-			_, err := s.db.ExecContext(ctx, `UPDATE report_publications SET failed=?,stopped=? WHERE attempt_id=?`, failed, terminal, p.id)
-			return err
+		saveAttemptResult: func(ctx context.Context, _ string, message string, failed, terminal bool) error {
+			if !terminal {
+				_, err := s.db.ExecContext(ctx, `UPDATE report_publications SET failed=?,stopped=0 WHERE attempt_id=?`, failed, p.id)
+				return err
+			}
+			if _, err := s.db.ExecContext(ctx, `UPDATE report_publications SET failed=?,stopped=1,warning=? WHERE attempt_id=?`, failed, message, p.id); err != nil {
+				return err
+			}
+			return s.updateReportWarning(ctx, p.id, message)
 		},
 		saveReceipt: func(ctx context.Context, tx *sql.Tx, comment *github.Comment) (events.Draft, error) {
 			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET state='published',comment_id=?,comment_url=?,warning_code='',warning='',failed=0,stopped=0 WHERE attempt_id=?`, comment.ID, comment.URL, p.id)
@@ -206,17 +214,18 @@ func (p pendingReport) delivery(s *Scheduler) commentDelivery {
 }
 
 // persistentPublicationFailure reports whether retrying cannot resolve a
-// returned publication failure: the PR or comment target is inaccessible,
-// authentication fails, the request is invalid (including GitHub's 400/422),
-// or this runtime cannot publish at all. Transport errors, rate limits, invalid
-// responses and a shared-budget expiry stay retryable.
+// returned publication failure: the PR or comment target is inaccessible, the
+// request is invalid (including GitHub's 400/422), or this runtime cannot
+// publish at all. Transport errors, rate limits, authentication failures,
+// unrecognized command failures, invalid responses and a shared-budget expiry
+// stay retryable.
 func persistentPublicationFailure(cause error, publicationCtx context.Context) bool {
 	var coded *fault.Error
 	if publicationCtx.Err() != nil || !errors.As(cause, &coded) {
 		return false
 	}
 	switch coded.Code {
-	case "github.not_found", "github.forbidden", "github.not_logged_in", "github.invalid_input", "github.command_failed", "publication.unsupported", "publication.multiple_matches":
+	case "github.not_found", "github.forbidden", "github.invalid_input", "publication.unsupported", "publication.multiple_matches":
 		return true
 	}
 	return false

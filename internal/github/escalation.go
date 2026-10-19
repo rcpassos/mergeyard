@@ -57,6 +57,9 @@ func (c *Client) UpdateEscalation(ctx context.Context, repo string, number int, 
 	if err != nil || body == pr.Body {
 		return err
 	}
+	if len(body) > MaxBodyBytes {
+		return codedError("github.invalid_input", "PR body exceeds GitHub's size limit", nil)
+	}
 	input, err := json.Marshal(struct {
 		Body string `json:"body"`
 	}{body})

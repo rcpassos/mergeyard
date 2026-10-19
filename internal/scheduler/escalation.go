@@ -9,6 +9,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/events"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -60,21 +61,55 @@ func (s *Scheduler) evaluateEscalation(ctx context.Context, repo config.Reposito
 }
 
 func (s *Scheduler) publishEscalation(ctx context.Context, run *workflow.Run) error {
-	if run.Escalation == nil || run.Escalation.EvaluationWarning != "" || run.Escalation.Published {
+	if run.Escalation == nil || run.Escalation.EvaluationWarning != "" || run.Escalation.Published || run.Escalation.Stopped {
+		return nil
+	}
+	due, err := publicationDue(run.Escalation.LastAttemptAt, run.Escalation.Attempts, s.deps.Now())
+	if err != nil {
+		return err
+	}
+	if !due {
 		return nil
 	}
 	next := *run.Escalation
+	next.Attempts++
+	next.LastAttemptAt = publicationTimestamp(s.deps.Now())
+	next.Failed = false
+	if err := s.saveEscalation(ctx, run, next); err != nil {
+		return err
+	}
 	api, ok := s.deps.GitHub.(EscalationGitHub)
 	// Bound advisory publication so an unavailable GitHub cannot hold dispatch.
 	publicationContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if !ok || api.UpdateEscalation(publicationContext, run.Repository, run.PRNumber, next) != nil {
-		next.PublicationWarning = "Escalation reasons are saved locally. PR body update will retry."
+	var cause error
+	if !ok {
+		cause = &fault.Error{Code: "publication.unsupported"}
 	} else {
-		next.Published, next.PublicationWarning = true, ""
+		cause = api.UpdateEscalation(publicationContext, run.Repository, run.PRNumber, next)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	next = *run.Escalation
+	if cause != nil {
+		returned := publicationContext.Err() == nil
+		permanent := persistentPublicationFailure(cause, publicationContext)
+		terminal := terminalPublicationFailure(cause, publicationContext, run.State.Terminal())
+		next.PublicationWarning = "Escalation reasons are saved locally. PR body publication is deferred."
+		if terminal {
+			next.PublicationWarning = stoppedPublicationWarning("Escalation reasons are saved locally. PR body publication cannot update this PR.")
+			if !permanent {
+				next.PublicationWarning = stoppedPublicationWarning("Escalation reasons are saved locally. This run is finished, so PR body publication will not retry.")
+			}
+		}
+		next.Failed = returned
+		next.Stopped = terminal
+	} else {
+		next.Published = true
+		next.PublicationWarning = ""
+		next.Failed = false
+		next.Stopped = false
 	}
 	return s.saveEscalation(ctx, run, next)
 }

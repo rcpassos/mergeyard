@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -11,7 +12,12 @@ const (
 	// publicationTimeFormat matches SQLite's strftime('%f') so text ordering
 	// stays chronological for old and new rows.
 	publicationTimeFormat = "2006-01-02T15:04:05.000Z"
+	publicationStopped    = " No further retries will be made."
 )
+
+func stoppedPublicationWarning(message string) string {
+	return strings.TrimSpace(message) + publicationStopped
+}
 
 func publicationTimestamp(t time.Time) string {
 	return t.UTC().Format(publicationTimeFormat)
@@ -59,4 +65,34 @@ func terminalPublicationFailure(cause error, publicationCtx context.Context, fin
 		return true
 	}
 	return finished
+}
+
+// The warning events are advisory display text. When a publication stops, only
+// that text is corrected; identity, code and ordering stay unchanged.
+func (s *Scheduler) updateVerificationWarning(ctx context.Context, runID, source, code, message string) error {
+	query := `UPDATE events SET payload_json=json_set(payload_json,'$.message',?)
+		WHERE id=(SELECT id FROM events WHERE run_id=? AND type='verification.warning'
+			AND json_extract(payload_json,'$.source_attempt')=?`
+	args := []any{message, runID, source}
+	if code != "" {
+		query += ` AND json_extract(payload_json,'$.code')=?`
+		args = append(args, code)
+	}
+	query += ` ORDER BY id DESC LIMIT 1)`
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (s *Scheduler) updateReportWarning(ctx context.Context, reportID, message string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE events SET payload_json=json_set(payload_json,'$.message',?)
+		WHERE id=(SELECT id FROM events WHERE type='publication.warning'
+			AND json_extract(payload_json,'$.report_id')=? ORDER BY id DESC LIMIT 1)`, message, reportID)
+	return err
+}
+
+func (s *Scheduler) updateAttentionWarning(ctx context.Context, eventID int64, message string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE events SET payload_json=json_set(payload_json,'$.message',?)
+		WHERE id=(SELECT id FROM events WHERE type='publication.warning'
+			AND json_extract(payload_json,'$.attention_event_id')=? ORDER BY id DESC LIMIT 1)`, message, eventID)
+	return err
 }

@@ -507,3 +507,60 @@ func TestUpdatePullRequestRejectsBodyOverGitHubLimit(t *testing.T) {
 		t.Fatalf("oversized body reached a write: %+v", runner.calls)
 	}
 }
+
+func TestUpdatePullRequestBodyFitsGeneratedContentIntoRemainingBudget(t *testing.T) {
+	excerpt := strings.Repeat("é", verification.MaxExcerptRunes)
+	entries := make([]verification.Entry, 30)
+	for i := range entries {
+		copy := excerpt
+		entries[i] = verification.Entry{Command: "go test", Outcome: "passed", Excerpt: &copy}
+	}
+	content := github.PullRequestContent{IssueNumber: 12, IssueTitle: "Size", Summary: "Implemented", RunID: "run-1", Verification: entries}
+	prefix := strings.Repeat("human ", 10000)
+	suffix := "\n\nchecklist"
+	old, err := github.GeneratePullRequestBody(github.PullRequestContent{IssueNumber: 12, IssueTitle: "Size", Summary: "Old summary", RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := github.UpdatePullRequestBody(prefix+old+suffix, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) > github.MaxBodyBytes || !strings.HasPrefix(updated, prefix) || !strings.HasSuffix(updated, suffix) {
+		t.Fatalf("updated body = %d bytes, prefix/suffix preserved = %v/%v", len(updated), strings.HasPrefix(updated, prefix), strings.HasSuffix(updated, suffix))
+	}
+	if !strings.Contains(updated, "<!-- mergeyard:generated:start -->") || !strings.Contains(updated, "<!-- mergeyard:generated:end -->") {
+		t.Fatal("ownership markers lost")
+	}
+}
+
+func TestGeneratePullRequestBodyMarksOmittedEvidence(t *testing.T) {
+	entries := make([]verification.Entry, 20)
+	for i := range entries {
+		entries[i] = verification.Entry{Command: strings.Repeat("cmd ", 5000), Outcome: "passed", Excerpt: nil}
+	}
+	entries[len(entries)-1] = verification.Entry{Command: "go test failed", Outcome: "failed", Excerpt: nil}
+	body, err := github.GeneratePullRequestBody(github.PullRequestContent{
+		IssueNumber: 12, IssueTitle: "Size", Summary: "Implemented", RunID: "run-1", Verification: entries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > github.MaxBodyBytes || strings.Contains(body, "no verification reported") {
+		t.Fatalf("omitted evidence misreported: %d bytes", len(body))
+	}
+	if !strings.Contains(body, "go test failed") || !strings.Contains(body, "verification entries omitted") {
+		t.Fatal("omitted evidence or failed entry lost")
+	}
+
+	body, err = github.GeneratePullRequestBody(github.PullRequestContent{
+		IssueNumber: 12, IssueTitle: "Size", Summary: strings.Repeat("summary ", 10000), RunID: "run-1",
+		Verification: []verification.Entry{{Command: "go test failed", Outcome: "failed", Excerpt: nil}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > github.MaxBodyBytes || strings.Contains(body, "no verification reported") || !strings.Contains(body, "go test failed") {
+		t.Fatalf("single entry lost under summary pressure: %d bytes", len(body))
+	}
+}

@@ -15,15 +15,15 @@ import (
 // validation, cancellation, terminal state and warning suppression for both
 // publication kinds.
 type commentDelivery struct {
-	repository        string
-	number            int
-	body              string
-	warningCode       string
-	finished          bool
-	startAttempt      func(context.Context) error
-	saveWarning       func(context.Context, *sql.Tx, string, bool, bool) (events.Draft, error)
-	saveAttemptResult func(context.Context, bool, bool) error
-	saveReceipt       func(context.Context, *sql.Tx, *github.Comment) (events.Draft, error)
+	repository, body, warningCode    string
+	deferredWarning, terminalWarning string
+	finishedWarning                  string
+	number                           int
+	finished                         bool
+	startAttempt                     func(context.Context) error
+	saveWarning                      func(context.Context, *sql.Tx, string, string, bool, bool) (events.Draft, error)
+	saveAttemptResult                func(context.Context, string, string, bool, bool) error
+	saveReceipt                      func(context.Context, *sql.Tx, *github.Comment) (events.Draft, error)
 }
 
 func (s *Scheduler) publishComments(ctx context.Context, pending []commentDelivery) error {
@@ -58,16 +58,24 @@ func (s *Scheduler) publishComments(ctx context.Context, pending []commentDelive
 			// A shared-budget expiry returns no delivery result; keep the
 			// attempt retryable and do not mark the last result as failed.
 			returned := publicationCtx.Err() == nil
+			permanent := persistentPublicationFailure(cause, publicationCtx)
 			terminal := terminalPublicationFailure(cause, publicationCtx, p.finished)
+			message := p.deferredWarning
+			if terminal {
+				message = p.terminalWarning
+				if !permanent {
+					message = p.finishedWarning
+				}
+			}
 			if code == p.warningCode {
-				// The warning is already visible; only record the attempt result.
-				if err := p.saveAttemptResult(ctx, returned, terminal); err != nil {
+				// The warning is already visible; correct its text if retries stop.
+				if err := p.saveAttemptResult(ctx, code, message, returned, terminal); err != nil {
 					return err
 				}
 				continue
 			}
 			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				return p.saveWarning(ctx, tx, code, returned, terminal)
+				return p.saveWarning(ctx, tx, code, message, returned, terminal)
 			})
 		} else {
 			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
