@@ -212,6 +212,64 @@ func TestPrePushHookKeepsItsOwnBudget(t *testing.T) {
 	}
 }
 
+// prepareCommittedRun prepares a run with one committed change so publication
+// preflight has a target to verify.
+func prepareCommittedRun(t *testing.T) (fixture, managedgit.Run) {
+	t.Helper()
+	f := newFixture(t)
+	run := prepare(t, f)
+	write(t, run.Path, "feature.txt", "implemented\n")
+	if _, err := f.manager.CommitImplement(context.Background(), run, managedgit.Phase{Title: "preflight", RequireChanges: true}); err != nil {
+		t.Fatal(err)
+	}
+	return f, run
+}
+
+// hangGitStatus installs a fake Git that stalls only on the full status scan.
+func hangGitStatus(t *testing.T) {
+	t.Helper()
+	gitPath := realGit(t)
+	installFakeGit(t, `case " $* " in *" status "*) exec /bin/sleep 600;; esac
+exec `+gitPath+` "$@"`)
+}
+
+func TestPushImplementPreflightUsesTheWorktreeBudget(t *testing.T) {
+	f, run := prepareCommittedRun(t)
+	hangGitStatus(t)
+	manager := managerWithTimeouts(t, f, managedgit.Timeouts{
+		Metadata: 2 * time.Second, Worktree: 3 * time.Second,
+		Clone: 2 * time.Second, Fetch: 2 * time.Second, Push: 2 * time.Second,
+	})
+	start := time.Now()
+	err := manager.PushImplement(context.Background(), run, git(t, run.Path, "rev-parse", "HEAD"))
+	requireCode(t, err, "git.timeout")
+	if !strings.Contains(err.Error(), "status timed out") || !strings.Contains(err.Error(), "worktree budget") {
+		t.Fatalf("publication preflight did not use the worktree budget: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("preflight consumed the publication budget for %s", elapsed)
+	}
+}
+
+func TestPushFixPreflightUsesTheWorktreeBudget(t *testing.T) {
+	f, run := prepareCommittedRun(t)
+	hangGitStatus(t)
+	manager := managerWithTimeouts(t, f, managedgit.Timeouts{
+		Metadata: 2 * time.Second, Worktree: 3 * time.Second,
+		Clone: 2 * time.Second, Fetch: 2 * time.Second, Push: 2 * time.Second,
+	})
+	target := git(t, run.Path, "rev-parse", "HEAD")
+	start := time.Now()
+	err := manager.PushFix(context.Background(), run, target, target)
+	requireCode(t, err, "git.timeout")
+	if !strings.Contains(err.Error(), "status timed out") || !strings.Contains(err.Error(), "worktree budget") {
+		t.Fatalf("publication preflight did not use the worktree budget: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("preflight consumed the publication budget for %s", elapsed)
+	}
+}
+
 func TestCallerDeadlineBoundsAnOperation(t *testing.T) {
 	f := newFixture(t)
 	installFakeGit(t, "exec /bin/sleep 600")

@@ -71,7 +71,8 @@ no longer needs.
   reads use the fetch budget, and the push and its pre-push hook use the push
   budget, so a slow hook cannot consume the push's deadline, a hook longer than
   a routine fetch can still publish, and the other phases cannot consume the
-  push's deadline.
+  push's deadline. Publication preflight, including a full status scan, uses
+  the worktree budget before the remote read and push phases start.
 - A first clone runs under the larger clone budget. It is staged beside the
   base and renamed into place only on success, so an interrupted attempt leaves
   no base for a routine fetch to reuse and the next attempt runs a real clone

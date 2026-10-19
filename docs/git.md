@@ -23,8 +23,10 @@ for the commit and its hooks, `Fetch` for remote reads, and `Push` for the push
 and its pre-push hook, inside an outer bound that covers every phase. A hook
 that outlasts the routine fetch budget but fits the push budget therefore
 publishes, while a stalled push cannot run longer than `Push`. `CommitAndPush`,
-`CommitFix`, and `CommitHandback` behave this way; the checks path calls
-`CommitImplement` and `PushImplement`, which each bound one phase.
+`CommitFix`, and `CommitHandback` behave this way. The checks path calls
+`CommitImplement` for the worktree phase; `PushImplement`, `PushFix`, and
+`PushHandback` run their local preflight, including the full status scan, under
+the worktree budget, then bind remote reads to `Fetch` and the push to `Push`.
 
 A command that reaches its deadline is killed with its owned process group, and
 the call returns once its output pipes are drained, so a repository hook or

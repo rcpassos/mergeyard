@@ -78,38 +78,40 @@ func (m *Manager) PushHandback(ctx context.Context, run Run, previous, target st
 		return err
 	}
 	defer release()
-	remoteCtx, remoteCancel := m.fetchDeadline(ctx)
-	origin, publish, err := m.inspectHandbackPush(remoteCtx, run, previous, target)
-	remoteCancel()
-	if err != nil || !publish {
+	// Local preflight keeps the worktree budget; the remote read and the push
+	// keep their own class deadlines.
+	preflightCtx, preflightCancel := m.worktreeDeadline(ctx)
+	origin, err := m.handbackPreflight(preflightCtx, run, target)
+	preflightCancel()
+	if err != nil {
 		return err
+	}
+	remoteCtx, remoteCancel := m.fetchDeadline(ctx)
+	remote, err := optionalRemoteHead(remoteCtx, run, origin)
+	remoteCancel()
+	if err != nil {
+		return err
+	}
+	if remote == target {
+		return nil
+	}
+	if remote != previous {
+		return failure("handback.head_ambiguous", run.Path, errors.New("remote changed during manual publication"))
 	}
 	return m.pushWithinBudget(ctx, run, origin, target)
 }
 
-func (m *Manager) inspectHandbackPush(ctx context.Context, run Run, previous, target string) (string, bool, error) {
+// handbackPreflight verifies the preserved work and target commit under the
+// caller's worktree deadline before the remote is observed.
+func (m *Manager) handbackPreflight(ctx context.Context, run Run, target string) (string, error) {
 	if err := m.inspectReview(ctx, run); err != nil {
-		return "", false, err
+		return "", err
 	}
 	if !shaPattern.MatchString(target) {
-		return "", false, failure("handback.head_ambiguous", run.Path, errors.New("invalid manual commit"))
+		return "", failure("handback.head_ambiguous", run.Path, errors.New("invalid manual commit"))
 	}
 	if err := inspectFixTarget(ctx, run, target); err != nil {
-		return "", false, err
+		return "", err
 	}
-	origin, err := verifyOrigin(ctx, run)
-	if err != nil {
-		return "", false, err
-	}
-	remote, err := optionalRemoteHead(ctx, run, origin)
-	if err != nil {
-		return "", false, err
-	}
-	if remote == target {
-		return origin, false, nil
-	}
-	if remote != previous {
-		return "", false, failure("handback.head_ambiguous", run.Path, errors.New("remote changed during manual publication"))
-	}
-	return origin, true, nil
+	return verifyOrigin(ctx, run)
 }

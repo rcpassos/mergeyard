@@ -30,20 +30,12 @@ func (m *Manager) PushImplement(ctx context.Context, run Run, target string) err
 		return err
 	}
 	defer release()
-	if err := m.validateRun(run); err != nil {
-		return err
-	}
-	if !shaPattern.MatchString(target) {
-		return failure("git.fix_target_invalid", run.Path, nil)
-	}
-	if err := verifyWorktree(ctx, run); err != nil {
-		return err
-	}
-	origin, err := verifyOrigin(ctx, run)
+	// Local preflight, including the full status scan, keeps the worktree
+	// budget; only the push itself uses the push budget.
+	preflightCtx, preflightCancel := m.worktreeDeadline(ctx)
+	origin, err := m.pushPreflight(preflightCtx, run, target)
+	preflightCancel()
 	if err != nil {
-		return err
-	}
-	if err := inspectFixTarget(ctx, run, target); err != nil {
 		return err
 	}
 	return m.pushWithinBudget(ctx, run, origin, target)

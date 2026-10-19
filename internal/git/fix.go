@@ -73,17 +73,15 @@ func (m *Manager) PushFix(ctx context.Context, run Run, previous, target string)
 	if err := m.validateRun(run); err != nil {
 		return err
 	}
-	if !shaPattern.MatchString(previous) || !shaPattern.MatchString(target) {
+	if !shaPattern.MatchString(previous) {
 		return failure("git.fix_target_invalid", run.Path, errors.New("invalid fix target"))
 	}
-	if err := verifyWorktree(ctx, run); err != nil {
-		return err
-	}
-	origin, err := verifyOrigin(ctx, run)
+	// Local preflight keeps the worktree budget; the remote read and the push
+	// keep their own class deadlines.
+	preflightCtx, preflightCancel := m.worktreeDeadline(ctx)
+	origin, err := m.pushPreflight(preflightCtx, run, target)
+	preflightCancel()
 	if err != nil {
-		return err
-	}
-	if err := inspectFixTarget(ctx, run, target); err != nil {
 		return err
 	}
 	remoteCtx, remoteCancel := m.fetchDeadline(ctx)
@@ -99,6 +97,29 @@ func (m *Manager) PushFix(ctx context.Context, run Run, previous, target string)
 		return nil
 	}
 	return m.pushWithinBudget(ctx, run, origin, target)
+}
+
+// pushPreflight verifies run ownership, the target commit and a clean worktree
+// before publication. It runs under the caller's worktree deadline so a full
+// status scan cannot consume the fetch or push budgets.
+func (m *Manager) pushPreflight(ctx context.Context, run Run, target string) (string, error) {
+	if err := m.validateRun(run); err != nil {
+		return "", err
+	}
+	if !shaPattern.MatchString(target) {
+		return "", failure("git.fix_target_invalid", run.Path, errors.New("invalid fix target"))
+	}
+	if err := verifyWorktree(ctx, run); err != nil {
+		return "", err
+	}
+	origin, err := verifyOrigin(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	if err := inspectFixTarget(ctx, run, target); err != nil {
+		return "", err
+	}
+	return origin, nil
 }
 
 // InspectFixTarget prevents a re-review from testing unpublished edits after
