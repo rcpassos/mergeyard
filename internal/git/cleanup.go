@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -57,29 +58,45 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 		return err
 	}
 	if _, err := os.Lstat(run.Path); err == nil {
-		if err := verifyWorktree(ctx, run); err != nil {
-			return err
+		linkGone := false
+		if _, err := os.Lstat(filepath.Join(run.Path, ".git")); errors.Is(err, os.ErrNotExist) {
+			linkGone = true
+		} else if err != nil {
+			return failure("git.cleanup", run.Path, err)
 		}
-		dirty, err := worktreeDirty(ctx, run)
-		if err != nil {
-			return err
-		}
-		if dirty {
-			return failure("git.cleanup", run.Path, errors.New("dirty work is preserved for human attention"))
-		}
-		leftovers, err := excludedUntracked(ctx, run)
-		if err != nil {
-			return err
-		}
-		args := []string{"worktree", "remove"}
-		if len(leftovers) > 0 {
-			// Only configured untracked leftovers remain. Ownership and
-			// publication checks above still guard the complete worktree.
-			args = append(args, "--force")
-		}
-		args = append(args, "--", run.Path)
-		if _, err := command(ctx, run.BasePath, "git.cleanup", args...); err != nil {
-			return err
+		if linkGone && run.RemovalIntent {
+			// Git deletes the worktree link before the rest of the tree, so a
+			// killed removal leaves files that no longer form a checkout. The
+			// durable intent recorded before the attempt authorizes finishing
+			// it instead of failing verification on every later tick.
+			if err := os.RemoveAll(run.Path); err != nil {
+				return failure("git.cleanup", run.Path, err)
+			}
+		} else {
+			if err := verifyWorktree(ctx, run); err != nil {
+				return err
+			}
+			dirty, err := worktreeDirty(ctx, run)
+			if err != nil {
+				return err
+			}
+			if dirty {
+				return failure("git.cleanup", run.Path, errors.New("dirty work is preserved for human attention"))
+			}
+			leftovers, err := excludedUntracked(ctx, run)
+			if err != nil {
+				return err
+			}
+			args := []string{"worktree", "remove"}
+			if len(leftovers) > 0 {
+				// Only configured untracked leftovers remain. Ownership and
+				// publication checks above still guard the complete worktree.
+				args = append(args, "--force")
+			}
+			args = append(args, "--", run.Path)
+			if _, err := command(ctx, run.BasePath, "git.cleanup", args...); err != nil {
+				return err
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return failure("git.cleanup", run.Path, err)
@@ -87,7 +104,38 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 	if _, err := command(ctx, run.BasePath, "git.cleanup", "worktree", "prune", "--expire", "now"); err != nil {
 		return err
 	}
+	if run.RemovalIntent {
+		registered, err := worktreeRegistered(ctx, run)
+		if err != nil {
+			return err
+		}
+		if registered {
+			// Prune keeps a locked registration. Report it instead of
+			// recording removal and leaving branch deletion to fail forever.
+			return failure("git.cleanup", run.Path, errors.New("worktree registration remains after removal"))
+		}
+	}
 	return nil
+}
+
+// worktreeRegistered reports whether the base still lists a worktree at the
+// run's path after pruning. Git prints physical paths, so resolve the parent
+// directory to compare against the managed path.
+func worktreeRegistered(ctx context.Context, run Run) (bool, error) {
+	out, err := command(ctx, run.BasePath, "git.cleanup", "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return false, err
+	}
+	path := run.Path
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		path = filepath.Join(parent, filepath.Base(path))
+	}
+	for _, field := range strings.Split(out, "\x00") {
+		if field == "worktree "+path {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // CleanupBranch deletes a completed run's published local ref; remote refs are retained.

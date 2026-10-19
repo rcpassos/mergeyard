@@ -490,12 +490,15 @@ A durable maintenance record tracks each label removal, closure of an issue that
 is still open, review workspace restoration, worktree removal/pruning, and local
 branch deletion. Maintenance continues for completed runs and while claims are
 paused. Pending cleanup excludes the source issue from redispatch but allows
-unrelated eligible issues to start. Remote branches are retained.
+unrelated eligible issues to start. Remote branches are retained. Optional
+GitHub maintenance for each completed run keeps a five-second budget; local Git
+cleanup uses the Git manager's own operation deadlines, so a large worktree is
+not killed at the GitHub budget.
 
 Run detail, the queue, and status show “Merged — cleanup pending”, early-merge
 information, the concrete remaining actions, and the latest maintenance error.
 Transient failures retry on later ticks and after restart. Dirty work
-is preserved for human attention; cleanup never force-removes a worktree. A clean worktree and local branch are also
+is preserved for human attention and an intact worktree is never force-removed. A clean worktree and local branch are also
 preserved when their history contains unpublished commits. Merge observation
 records the published PR head; cleanup checks publication before both deletions
 and keeps unknown publication pending. Review
@@ -504,6 +507,11 @@ restoration must succeed before deletion, preserving preexisting human edits.
 Worktree removal intent is recorded after ownership inspection and before removal.
 A missing worktree with recorded intent can be reconciled as an interrupted
 cleanup; unexplained disappearance requires inspection and retains the branch.
+Cleanup passes that intent to Git, so if removal is interrupted after Git
+deletes the worktree link, a later tick finishes deleting the leftover files and
+prunes the registration without manual steps. A registration that survives
+pruning, such as a deliberately locked one, is reported and retried instead of
+recording a false removal.
 Already absent labels, closed issues, removed trees, and deleted local branches
 are tolerated at their recorded boundaries. Independent report publication keeps
 retrying for completed runs after Git cleanup finishes.

@@ -16,7 +16,9 @@ managed base gets `Timeouts.Clone` (`1h`). Routine fetches and remote reads get
 `Timeouts.Push` (`30m`). `New` uses those defaults; `NewWithTimeouts` selects
 shorter or longer ones. A caller-supplied deadline always wins, including while
 waiting for another managed operation to finish, so the scheduler's
-five-second publication and cleanup budgets stay authoritative.
+five-second publication budget stays authoritative. Worktree cleanup keeps the
+manager's own deadlines instead: removing a large tree can outlast optional
+network maintenance, and a killed removal must remain resumable.
 
 An operation that commits and publishes keeps a budget per phase: `Worktree`
 for the commit and its hooks, `Fetch` for remote reads, and `Push` for the push
@@ -144,6 +146,14 @@ refuses dirty worktrees or worktrees on a different branch. Stopped, manual,
 and needs-attention runs must keep their artifacts. Completed cleanup permits
 excluded untracked leftovers and removes them with the worktree after verifying
 ownership, publication and absence of other dirty work.
+
+Removal accepts `Run.RemovalIntent`, the durable authorization the scheduler
+records after an ownership inspection and before removal. If the removal is
+interrupted after Git deleted the worktree link, a later call carrying that
+intent deletes the leftover files and prunes the registration. Without the
+intent, a missing link is still a verification failure and the tree is
+preserved. After pruning, a registration that remains (for example because it
+is locked) is reported instead of being recorded as removed.
 
 ## Errors and verification
 

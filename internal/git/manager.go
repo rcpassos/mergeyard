@@ -180,6 +180,11 @@ type Run struct {
 	BaseSHA     string
 	// PublishedSHA is optional durable evidence from the observed merged PR head.
 	PublishedSHA string
+	// RemovalIntent reports durable authorization to remove this worktree,
+	// recorded by the caller after an ownership inspection. It lets cleanup
+	// finish an interrupted removal whose Git link is already gone. It is
+	// caller evidence, not part of the prepared run's persisted identity.
+	RemovalIntent bool `json:"-"`
 }
 
 // Phase describes commit metadata and whether a diff is required. Implement
