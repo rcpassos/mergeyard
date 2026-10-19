@@ -15,7 +15,7 @@ func (m *Manager) CommitAndPush(ctx context.Context, run Run, phase Phase) (Comm
 	// The commit, the remote reads, and the push each keep their class deadline
 	// inside an outer bound that covers every phase, so a slow hook cannot
 	// consume the push's deadline and a stalled push cannot run past it.
-	ctx, release, err := m.begin(ctx, m.timeouts.publication())
+	ctx, release, err := m.begin(ctx, m.timeouts.publicationBudget())
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -36,9 +36,7 @@ func (m *Manager) CommitAndPush(ctx context.Context, run Run, phase Phase) (Comm
 	if err != nil {
 		return result, err
 	}
-	pushCtx, pushCancel := m.remoteDeadline(ctx)
-	err = push(pushCtx, run, origin, "HEAD")
-	pushCancel()
+	err = m.pushWithinBudget(ctx, run, origin, "HEAD")
 	if err != nil {
 		return result, err
 	}
@@ -57,6 +55,14 @@ func push(ctx context.Context, run Run, origin, source string) error {
 		}
 	}
 	return err
+}
+
+// pushWithinBudget publishes under the push budget, which includes the
+// repository's pre-push hook.
+func (m *Manager) pushWithinBudget(ctx context.Context, run Run, origin, source string) error {
+	pushCtx, pushCancel := m.pushDeadline(ctx)
+	defer pushCancel()
+	return push(pushCtx, run, origin, source)
 }
 
 func commit(ctx context.Context, run Run, phase Phase) (CommitResult, error) {

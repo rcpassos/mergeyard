@@ -99,7 +99,7 @@ func commandWithEnv(ctx context.Context, dir, code string, env []string, args ..
 	commandEnv = append(commandEnv, sshEnvironment(dir)...)
 	result, err := proc.Run(ctx, proc.Request{Executable: "git", Args: args, Dir: dir, Env: commandEnv})
 	if ctx.Err() != nil {
-		return string(result.Stdout), contextFailure(code, dir, ctx.Err())
+		return string(result.Stdout), contextFailure(ctx, code, dir, ctx.Err())
 	}
 	if errors.Is(err, exec.ErrWaitDelay) && result.ExitCode == 0 {
 		// Git exited successfully; a hook or helper outlived it holding the
@@ -118,11 +118,25 @@ func commandWithEnv(ctx context.Context, dir, code string, env []string, args ..
 }
 
 // contextFailure reports why a managed operation stopped. A deadline is a
-// distinct, bounded outcome: it names the operation that stalled so the retry
-// and attention paths can report it without leaking command arguments.
-func contextFailure(code, dir string, err error) *fault.Error {
+// distinct, bounded outcome: it names the operation and, for a phase deadline,
+// the class budget so the dashboard can explain a budget-exhausted failure
+// without leaking command arguments.
+func contextFailure(ctx context.Context, code, dir string, err error) *fault.Error {
+	operation := strings.TrimPrefix(code, "git.")
 	if errors.Is(err, context.DeadlineExceeded) {
-		return failure("git.timeout", dir, fmt.Errorf("%s timed out: %w", strings.TrimPrefix(code, "git."), err))
+		message := fmt.Sprintf("%s timed out", operation)
+		if b, ok := ctx.Value(budgetKey{}).(budget); ok {
+			elapsed := time.Since(b.started).Round(time.Second)
+			if elapsed <= 0 {
+				elapsed = time.Second
+			}
+			if elapsed >= b.limit {
+				message = fmt.Sprintf("%s timed out after %s; its %s budget is %s", operation, elapsed, b.name, b.limit)
+			} else {
+				message = fmt.Sprintf("%s timed out after %s, before its %s budget of %s expired", operation, elapsed, b.name, b.limit)
+			}
+		}
+		return &fault.Error{Code: "git.timeout", Path: dir, Message: message, Err: err}
 	}
 	return failure("git.canceled", dir, err)
 }
