@@ -132,17 +132,33 @@ func (s *Scheduler) refusalWindow() time.Duration {
 	return 15 * time.Minute
 }
 
+// listingWaitError reports that a caller stopped waiting for a shared listing
+// fetch before it could start. It keeps the context error for callers that
+// distinguish a spent budget from a failed GitHub request.
+type listingWaitError struct{ err error }
+
+func (e *listingWaitError) Error() string { return e.err.Error() }
+func (e *listingWaitError) Unwrap() error { return e.err }
+
 // listIssues returns the poll's label-filtered listing for one repository,
 // fetching it on first use. The returned slice is shared and must not be
 // modified. Concurrent readers share one fetch per repository through
-// listingFetch instead of racing duplicates.
+// listingFetch instead of racing duplicates, and a reader that gives up while
+// waiting is released instead of fetching again with an expired context.
 func (s *Scheduler) listIssues(ctx context.Context, repo config.Repository) ([]github.Issue, error) {
 	key := strings.ToLower(repo.Repo)
 	if issues, ok := s.cachedListing(key); ok {
 		return issues, nil
 	}
-	s.listingFetch.Lock()
+	if err := s.listingFetch.Lock(ctx); err != nil {
+		return nil, &listingWaitError{err: err}
+	}
 	defer s.listingFetch.Unlock()
+	// The gate can be released at the same moment the caller gives up. Do not
+	// start a request that already has an expired context.
+	if err := ctx.Err(); err != nil {
+		return nil, &listingWaitError{err: err}
+	}
 	// Another reader may have fetched while we waited for the lock.
 	if issues, ok := s.cachedListing(key); ok {
 		return issues, nil

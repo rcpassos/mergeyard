@@ -72,11 +72,15 @@ Reconcile and dispatch share the poll's snapshot and the dashboard queue reuses
 it, so a repository is listed once per poll instead of once per reader; an
 explicit `Plan` read starts its own poll. Concurrent readers share one fetch per
 repository instead of racing duplicates, and a fetch that began before a new
-poll cannot replace that poll's listing. A snapshot stays reusable for two poll
-intervals: one covers the scheduler's own refresh and the second absorbs timer
-skew between the scheduler and the dashboard. A reader outside a scheduler poll
-(the dashboard without a running scheduler) refreshes its own listing once the
-window expires. Readers never mutate the shared snapshot.
+poll cannot replace that poll's listing. Waiting for a shared fetch honors the
+caller's context: a reader that gives up is released instead of fetching again
+with an expired context. A snapshot stays reusable for two poll intervals: one
+covers the scheduler's own refresh and the second absorbs timer skew between the
+scheduler and the dashboard. A reader outside a scheduler poll (the dashboard
+without a running scheduler) refreshes its own listing once the window expires.
+A dashboard pass that spends its refresh budget waiting for a listing returns
+the last usable queue marked stale, so it does not replace discovery with an
+error. Readers never mutate the shared snapshot.
 
 `Plan(ctx, repository)` uses the same read-only candidate inspection and pure
 capacity/label eligibility policy as `Tick`. It reserves prospective slots in

@@ -171,8 +171,11 @@ discovery. A GitHub failure scoped to one
 repository or run does not hide the others: readable repositories refresh, and
 the failed repository or issue is shown in the needs-attention section with its
 diagnostic code until a later pass succeeds. Other discovery errors fail closed
-and preserve the last successful snapshot with a stale-data notice. An issue with
-unknown dependency status is never displayed as ready. Run lifecycle data always
+and preserve the last successful snapshot with a stale-data notice. If the
+refresh budget expires while the shared listing is still being fetched,
+discovery keeps the last successful snapshot and its sync time without
+reporting an error. An issue with unknown dependency status is never displayed
+as ready. Run lifecycle data always
 comes from SQLite, so claims and phase/PR transitions immediately supersede stale
 issue snapshots. The doctor callback runs once with a bounded context outside
 HTTP requests. Cancel and join RunUpdates before closing the runtime.
