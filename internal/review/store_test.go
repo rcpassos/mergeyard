@@ -47,3 +47,35 @@ func TestStoredReviewPriorFindingsByVersion(t *testing.T) {
 		})
 	}
 }
+
+// Fix snapshots expose the eligibility frozen with the report so review input
+// can use the same rule as publication.
+func TestFixHistoryExposesSavedEligibility(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	const report = `{"schema_version":4,"status":"success","summary":"Fixed","responses":[],"verification":[],"criteria":[],"human_action":null}`
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO runs (id,repository,issue_number,state) VALUES ('eligibility','owner/repo',7,'ACTIVE');
+INSERT INTO phase_attempts (id,run_id,phase,role,round,attempt,agent,status,step,report_json,report_eligible) VALUES
+ ('eligible','eligibility','fix','implementer',1,1,'claude','succeeded','',?,1),
+ ('ineligible','eligibility','fix','implementer',1,2,'claude','failed','',?,0);
+INSERT INTO fix_attempts (attempt_id,session_id,target_sha,findings_json,permission_mode,allowed_tools_json,report_json) VALUES
+ ('eligible','session','sha','[]','default','[]',?),
+ ('ineligible','session','sha','[]','default','[]',?);`, report, report, report, report); err != nil {
+		t.Fatal(err)
+	}
+	history, err := review.LoadFixHistory(ctx, db, "eligibility")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || !history[0].ReportEligible || history[1].ReportEligible {
+		t.Fatalf("fix eligibility = %+v", history)
+	}
+	if !(history[0].Sequence < history[1].Sequence) {
+		t.Fatalf("fix attempt order lost: %+v", history)
+	}
+}

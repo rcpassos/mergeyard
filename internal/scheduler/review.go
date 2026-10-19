@@ -212,6 +212,28 @@ func (s *Scheduler) review(ctx context.Context, repo config.Repository, run work
 func reviewHeadMatches(pr *github.PullRequest, repo config.Repository, run workflow.Run, gitRun managedgit.Run, target string) bool {
 	return pr != nil && pr.Number == run.PRNumber && pr.State == github.Open && pr.Head.SHA == target && pr.Head.Ref == gitRun.Branch && strings.EqualFold(pr.Head.Repo.FullName, repo.Repo)
 }
+
+// latestEligibleVerification mirrors publication: the newest attempt whose
+// completion froze a publishable report with a verification array supplies the
+// evidence. The stored eligibility survives later rewrites of the attempt's
+// error, and an ineligible fix never supersedes earlier evidence. Sequence is
+// the durable attempt order publication uses, so mixed implement/fix histories
+// pick the same report.
+func latestEligibleVerification(run workflow.Run) []verification.Entry {
+	latest := []verification.Entry{}
+	var sequence int64
+	for _, attempt := range run.ImplementHistory {
+		if attempt.ReportEligible && attempt.Report != nil && attempt.Report.Verification != nil && attempt.Sequence >= sequence {
+			latest, sequence = attempt.Report.Verification, attempt.Sequence
+		}
+	}
+	for _, fix := range run.FixHistory {
+		if fix.ReportEligible && fix.Report != nil && fix.Report.Verification != nil && fix.Sequence >= sequence {
+			latest, sequence = fix.Report.Verification, fix.Sequence
+		}
+	}
+	return latest
+}
 func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run workflow.Run, issue github.Issue, gitRun managedgit.Run, number int) error {
 	fail := func(err error) error { return s.recordAttention(ctx, repo, run, err) }
 	if gated, err := s.gatePhase(ctx, run, repo.Reviewer.Agent); gated || err != nil {
@@ -347,19 +369,7 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	}
 	// Already-adjudicated fixes are excluded from dispute context, but their
 	// command verification remains the latest evidence on a same-round Retry.
-	latestVerification := []verification.Entry{}
-	// Manual PR handback can start review after a valid blocked/failed report.
-	// Malformed results may retain partial reports, so include only valid completions.
-	for _, attempt := range run.ImplementHistory {
-		if attempt.Report != nil && (attempt.Error == "" || strings.HasPrefix(attempt.Error, "phase.blocked:") || strings.HasPrefix(attempt.Error, "phase.failed:")) {
-			latestVerification = attempt.Report.Verification
-		}
-	}
-	for _, fix := range run.FixHistory {
-		if fix.Report != nil {
-			latestVerification = fix.Report.Verification
-		}
-	}
+	latestVerification := latestEligibleVerification(run)
 	issueInput, err := s.phaseIssueInput(ctx, repo, run.ID, issue, gitRun.BaseBranch, &phase)
 	if err != nil {
 		return fail(err)

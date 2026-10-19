@@ -34,20 +34,23 @@ func (r ImplementReport) HasVerification() bool {
 // ImplementSnapshot is the last durable implement attempt, retained during review.
 type ImplementSnapshot struct {
 	Report         *ImplementReport `json:"report,omitempty"`
-	CheckRetryOf   string           `json:"check_retry_of,omitempty"`
-	Agent          string           `json:"agent"`
-	SessionID      string           `json:"session_id"`
-	Model          string           `json:"model"`
-	Effort         string           `json:"effort"`
-	Skills         []string         `json:"skills"`
-	Permissions    string           `json:"permissions"`
-	Attempt        int              `json:"attempt"`
-	Status         string           `json:"status"`
-	ProcessSession string           `json:"process_session"`
-	Error          string           `json:"error,omitempty"`
+	ReportEligible bool             `json:"report_eligible"`
+	// Sequence orders evidence exactly like publication; it is not display data.
+	Sequence       int64    `json:"-"`
+	CheckRetryOf   string   `json:"check_retry_of,omitempty"`
+	Agent          string   `json:"agent"`
+	SessionID      string   `json:"session_id"`
+	Model          string   `json:"model"`
+	Effort         string   `json:"effort"`
+	Skills         []string `json:"skills"`
+	Permissions    string   `json:"permissions"`
+	Attempt        int      `json:"attempt"`
+	Status         string   `json:"status"`
+	ProcessSession string   `json:"process_session"`
+	Error          string   `json:"error,omitempty"`
 }
 
-const implementSnapshotQuery = `SELECT a.agent,COALESCE(r.implementer_session_id,''),a.session_id,COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.skills_json,'[]'),COALESCE(a.permissions,'Not recorded for this older attempt'),a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.error,''),a.check_retry_of,a.report_json
+const implementSnapshotQuery = `SELECT a.agent,COALESCE(r.implementer_session_id,''),a.session_id,COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.skills_json,'[]'),COALESCE(a.permissions,'Not recorded for this older attempt'),a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.error,''),a.check_retry_of,a.report_json,a.report_eligible,a.rowid
  FROM phase_attempts a JOIN runs r ON r.id=a.run_id WHERE a.run_id=? AND a.phase='implement' AND a.step=''`
 
 // LoadImplementSnapshot reads the latest attempt for active-session controls.
@@ -90,7 +93,7 @@ func scanImplement(row interface{ Scan(...any) error }) (*implementRecord, error
 	v := &record.snapshot
 	var skills string
 	var raw sql.NullString
-	err := row.Scan(&v.Agent, &v.SessionID, &record.sessionID, &v.Model, &v.Effort, &skills, &v.Permissions, &v.Attempt, &v.Status, &v.ProcessSession, &v.Error, &v.CheckRetryOf, &raw)
+	err := row.Scan(&v.Agent, &v.SessionID, &record.sessionID, &v.Model, &v.Effort, &skills, &v.Permissions, &v.Attempt, &v.Status, &v.ProcessSession, &v.Error, &v.CheckRetryOf, &raw, &v.ReportEligible, &v.Sequence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

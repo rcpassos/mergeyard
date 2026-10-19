@@ -5,6 +5,8 @@ import (
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
+	"github.com/rcpassos/mergeyard/internal/review"
+	"github.com/rcpassos/mergeyard/internal/verification"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 	"github.com/rcpassos/mergeyard/internal/workspace"
 )
@@ -64,6 +66,75 @@ INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permissi
 			}
 			if source != wantSource {
 				t.Fatalf("receipt = %q, want %q", source, wantSource)
+			}
+		})
+	}
+}
+
+// Review input must use the eligibility frozen with the report, not the
+// attempt's later error text, and an ineligible fix must never become the
+// latest evidence.
+func TestLatestEligibleVerificationUsesSavedEligibility(t *testing.T) {
+	entry := func(command string) []verification.Entry {
+		return []verification.Entry{{Command: command, Outcome: "passed"}}
+	}
+	implement := func(sequence int64, eligible bool, err, command string) workflow.ImplementSnapshot {
+		return workflow.ImplementSnapshot{Sequence: sequence, ReportEligible: eligible, Error: err, Report: &workflow.ImplementReport{SchemaVersion: 4, Verification: entry(command)}}
+	}
+	fix := func(sequence int64, eligible bool, command string) review.FixSnapshot {
+		snapshot := review.FixSnapshot{Sequence: sequence, ReportEligible: eligible, Report: &review.FixReport{SchemaVersion: 4}}
+		if command != "" {
+			snapshot.Report.Verification = entry(command)
+		}
+		return snapshot
+	}
+	for _, tc := range []struct {
+		name string
+		run  workflow.Run
+		want string
+	}{
+		{
+			name: "rewritten implement error keeps saved evidence",
+			run:  workflow.Run{ImplementHistory: []workflow.ImplementSnapshot{implement(1, true, "phase.canceled: Stopped by operator", "implement test")}},
+			want: "implement test",
+		},
+		{
+			name: "ineligible fix never reaches the reviewer",
+			run: workflow.Run{
+				ImplementHistory: []workflow.ImplementSnapshot{implement(1, true, "", "implement test")},
+				FixHistory:       []review.FixSnapshot{fix(2, false, "ineligible fix test")},
+			},
+			want: "implement test",
+		},
+		{
+			name: "mixed history keeps the newest eligible evidence",
+			run: workflow.Run{
+				ImplementHistory: []workflow.ImplementSnapshot{implement(1, true, "", "implement test")},
+				FixHistory:       []review.FixSnapshot{fix(2, true, "first fix test"), fix(3, false, "invalid fix test"), fix(4, true, "latest fix test")},
+			},
+			want: "latest fix test",
+		},
+		{
+			name: "later implement evidence supersedes an older fix",
+			run: workflow.Run{
+				ImplementHistory: []workflow.ImplementSnapshot{implement(1, true, "", "implement test"), implement(3, true, "", "latest implement test")},
+				FixHistory:       []review.FixSnapshot{fix(2, true, "fix test")},
+			},
+			want: "latest implement test",
+		},
+		{
+			name: "report without verification follows publication",
+			run: workflow.Run{
+				ImplementHistory: []workflow.ImplementSnapshot{implement(1, true, "", "implement test")},
+				FixHistory:       []review.FixSnapshot{fix(2, true, "")},
+			},
+			want: "implement test",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := latestEligibleVerification(tc.run)
+			if len(got) != 1 || got[0].Command != tc.want {
+				t.Fatalf("verification = %+v, want %q", got, tc.want)
 			}
 		})
 	}
