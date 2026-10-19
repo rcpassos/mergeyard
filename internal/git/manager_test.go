@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
@@ -367,6 +368,85 @@ func TestPrepareRecoversOwnedWorktreeWithMissingDirectory(t *testing.T) {
 	resumed := prepare(t, f)
 	if git(t, resumed.Path, "rev-parse", "HEAD") != run.BaseSHA {
 		t.Fatal("recovered worktree is not on the original base")
+	}
+}
+
+// interruptWorktreeCreation prepares the shared base with a setup run, then
+// makes the requested run's worktree creation hit its deadline inside a
+// post-checkout hook that stalls only in run worktrees. It returns the partial
+// worktree path, with the branch and intent file left behind and the hook gone.
+func interruptWorktreeCreation(t *testing.T, f fixture) string {
+	t.Helper()
+	setup := f.request
+	setup.RunID, setup.IssueNumber = "setup", 6
+	if _, err := f.manager.Prepare(context.Background(), setup); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(f.root, "repos", "owner-repo", "base", ".git", "hooks", "post-checkout")
+	script := `#!/bin/sh
+case "$PWD" in
+  */worktrees/*) /bin/sleep 30 ;;
+esac
+exit 0
+`
+	if err := os.MkdirAll(filepath.Dir(hook), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := f.manager.Prepare(ctx, f.request)
+	requireCode(t, err, "git.timeout")
+	path, err := managedgit.WorktreePath(f.root, f.request.Repository, f.request.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("interrupted attempt did not leave a worktree directory: %v", err)
+	}
+	base := filepath.Join(f.root, "repos", "owner-repo", "base")
+	if err := exec.Command("git", "-C", base, "show-ref", "--verify", "--quiet", "refs/heads/mergeyard/issue-7").Run(); err != nil {
+		t.Fatalf("interrupted attempt did not leave the branch: %v", err)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestPrepareRecoversWorktreeCreationInterruptedByDeadline(t *testing.T) {
+	f := newFixture(t)
+	interruptWorktreeCreation(t, f)
+	// The next attempt has no saved ownership, only the recorded intent.
+	run := prepare(t, f)
+	if run.Path != filepath.Join(f.root, "worktrees", "owner-repo", "run-1") {
+		t.Fatalf("recovery created the wrong worktree: %+v", run)
+	}
+	if got := git(t, run.Path, "branch", "--show-current"); got != run.Branch {
+		t.Fatalf("recovered worktree branch = %q", got)
+	}
+	if got := git(t, run.Path, "rev-parse", "HEAD"); got != run.BaseSHA {
+		t.Fatalf("recovered worktree started at %s, want %s", got, run.BaseSHA)
+	}
+	if got := git(t, run.Path, "status", "--porcelain"); got != "" {
+		t.Fatalf("recovered worktree is not clean: %q", got)
+	}
+}
+
+func TestPreparePreservesInterruptedWorktreeWithCommits(t *testing.T) {
+	f := newFixture(t)
+	path := interruptWorktreeCreation(t, f)
+	// Work in the interrupted tree moves the branch past its recorded start.
+	write(t, path, "manual.txt", "human work\n")
+	git(t, path, "add", "manual.txt")
+	git(t, path, "commit", "-m", "manual commit")
+	head := git(t, path, "rev-parse", "HEAD")
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireCode(t, err, "git.branch_conflict")
+	if got := git(t, path, "rev-parse", "HEAD"); got != head {
+		t.Fatal("interrupted worktree with commits was changed")
 	}
 }
 

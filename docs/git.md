@@ -66,6 +66,17 @@ Otherwise preparation returns `git.branch_conflict`. Resuming keeps local
 commits and partial changes, restores a missing worktree from an owned local or
 remote branch, and retains the original base SHA for comparison.
 
+Before creating the branch and worktree, preparation writes
+`worktrees/<owner>-<repo>/<run-id>.intent` and removes it once creation
+succeeds. If `worktree add` is interrupted, the next attempt for that run
+recognizes the deterministic branch and path from the matching intent, removes
+the partial worktree and local branch, and creates them again from the fetched
+base. The leftover branch is discarded only while it still points at the
+recorded start; commits past it are preserved and refused with
+`git.branch_conflict`. A matching intent never adopts a remote branch, and any
+branch, worktree, or remote branch without a recorded run or intent is still
+refused with `git.branch_conflict`.
+
 ## Finishing a phase
 
 `Manager.CommitAndPush` accepts the saved run and a `Phase` containing the issue

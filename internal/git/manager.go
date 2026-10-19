@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -226,20 +227,52 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 	if pathErr != nil && !errors.Is(pathErr, os.ErrNotExist) {
 		return Run{}, failure("git.worktree", run.Path, pathErr)
 	}
-	if (remoteExists || localExists || pathExists) && !owned {
+	// A prepared intent proves this run created its deterministic branch and
+	// path before a deadline could interrupt worktree creation. A remote branch
+	// cannot come from worktree creation, so only persisted ownership covers it.
+	var intent prepareIntent
+	intentOwned := false
+	if !owned {
+		var err error
+		intent, intentOwned, err = loadPrepareIntent(run)
+		if err != nil {
+			return Run{}, err
+		}
+	}
+	if remoteExists && !owned {
+		return Run{}, failure("git.branch_conflict", run.Path, errors.New("existing branch or worktree is not owned by this run"))
+	}
+	if (localExists || pathExists) && !owned && !intentOwned {
 		return Run{}, failure("git.branch_conflict", run.Path, errors.New("existing branch or worktree is not owned by this run"))
 	}
 	if pathExists {
-		if err := verifyWorktree(ctx, run); err != nil {
-			return Run{}, err
+		if !owned {
+			// Creation stopped partway, so the tree never reached an agent.
+			if err := removeInterruptedWorktree(ctx, run, intent.BaseSHA); err != nil {
+				return Run{}, err
+			}
+			localExists = false
+		} else {
+			if err := verifyWorktree(ctx, run); err != nil {
+				return Run{}, err
+			}
+			return run, nil
 		}
-		return run, nil
-	}
-	if owned {
+	} else if owned {
 		// A removed directory may still have registered worktree metadata.
 		if _, err := command(ctx, run.BasePath, "git.worktree", "worktree", "prune", "--expire", "now"); err != nil {
 			return Run{}, err
 		}
+	}
+	if intentOwned && localExists {
+		// A killed 'worktree add -b' may create the branch before its directory.
+		if err := removeInterruptedWorktree(ctx, run, intent.BaseSHA); err != nil {
+			return Run{}, err
+		}
+		localExists = false
+	}
+	if err := writePrepareIntent(run); err != nil {
+		return Run{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(run.Path), 0700); err != nil {
 		return Run{}, failure("git.worktree", run.Path, err)
@@ -257,7 +290,9 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 	if _, err := command(ctx, run.BasePath, "git.worktree", args...); err != nil {
 		return Run{}, err
 	}
-	return run, nil
+	// A completed creation is durable once its caller persists the run, so the
+	// intent lasts only while worktree add can still be interrupted.
+	return run, removePrepareIntent(run)
 }
 
 func (m *Manager) newRun(req PrepareRequest) (Run, error) {
@@ -293,6 +328,125 @@ func WorktreePath(root, repo, runID string) (string, error) {
 		return "", failure("git.invalid_input", "", errors.New("expected owner/repo and a safe run ID"))
 	}
 	return filepath.Join(root, "worktrees", strings.ReplaceAll(repo, "/", "-"), runID), nil
+}
+
+// prepareIntent is a claim written before branch and worktree creation and
+// removed once creation succeeds. If the deadline interrupts 'worktree add',
+// the next attempt recognizes the deterministic branch and path as its own
+// leftovers. BaseSHA is the interrupted branch's start, so a branch that moved
+// past it carries work and is preserved instead of deleted.
+type prepareIntent struct {
+	ID          string `json:"id"`
+	Repository  string `json:"repository"`
+	RemoteURL   string `json:"remote_url"`
+	IssueNumber int    `json:"issue_number"`
+	Branch      string `json:"branch"`
+	Path        string `json:"path"`
+	BasePath    string `json:"base_path"`
+	BaseSHA     string `json:"base_sha"`
+}
+
+func prepareIntentPath(run Run) string {
+	return filepath.Join(filepath.Dir(run.Path), run.ID+".intent")
+}
+
+func newPrepareIntent(run Run) prepareIntent {
+	return prepareIntent{
+		ID: run.ID, Repository: run.Repository, RemoteURL: run.RemoteURL,
+		IssueNumber: run.IssueNumber, Branch: run.Branch, Path: run.Path,
+		BasePath: run.BasePath, BaseSHA: run.BaseSHA,
+	}
+}
+
+// writePrepareIntent atomically replaces the intent so a crash mid-write
+// never leaves a partial claim behind.
+func writePrepareIntent(run Run) error {
+	fail := func(err error) error { return failure("git.worktree", run.Path, err) }
+	data, err := json.Marshal(newPrepareIntent(run))
+	if err != nil {
+		return fail(err)
+	}
+	path := prepareIntentPath(run)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fail(err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+run.ID+".intent-*")
+	if err != nil {
+		return fail(err)
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return fail(err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fail(err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return fail(err)
+	}
+	return nil
+}
+
+func loadPrepareIntent(run Run) (prepareIntent, bool, error) {
+	data, err := os.ReadFile(prepareIntentPath(run))
+	if errors.Is(err, os.ErrNotExist) {
+		return prepareIntent{}, false, nil
+	}
+	if err != nil {
+		return prepareIntent{}, false, failure("git.worktree", run.Path, err)
+	}
+	var intent prepareIntent
+	if err := json.Unmarshal(data, &intent); err != nil {
+		return prepareIntent{}, false, failure("git.worktree", run.Path, fmt.Errorf("invalid prepare intent: %w", err))
+	}
+	want := newPrepareIntent(run)
+	// The fetched base may have advanced since the interrupted attempt, so the
+	// identity match ignores BaseSHA; the recorded start still guards cleanup.
+	identity := intent
+	identity.BaseSHA, want.BaseSHA = "", ""
+	return intent, identity == want, nil
+}
+
+func removePrepareIntent(run Run) error {
+	if err := os.Remove(prepareIntentPath(run)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return failure("git.worktree", run.Path, err)
+	}
+	return nil
+}
+
+// removeInterruptedWorktree discards a partial creation that never reached an
+// agent. The intent proves the deterministic path and branch belong to this
+// run, and the branch must still sit at the interrupted start.
+func removeInterruptedWorktree(ctx context.Context, run Run, start string) error {
+	exists, err := refExists(ctx, run.BasePath, "refs/heads/"+run.Branch)
+	if err != nil {
+		return err
+	}
+	if exists {
+		head, err := command(ctx, run.BasePath, "git.worktree", "rev-parse", "--verify", "refs/heads/"+run.Branch)
+		if err != nil {
+			return err
+		}
+		if head != start {
+			return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree creation left commits; preserved for inspection"))
+		}
+	}
+	if err := os.RemoveAll(run.Path); err != nil {
+		return failure("git.worktree", run.Path, err)
+	}
+	if _, err := command(ctx, run.BasePath, "git.worktree", "worktree", "prune", "--expire", "now"); err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	_, err = command(ctx, run.BasePath, "git.worktree", "branch", "-D", "--", run.Branch)
+	return err
 }
 
 func (m *Manager) validateRun(run Run) error {
