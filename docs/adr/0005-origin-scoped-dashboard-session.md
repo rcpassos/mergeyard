@@ -50,4 +50,6 @@ stored session.
   sets a strict `script-src 'self'` CSP.
 - A restarted runtime rotates the session, so a stale stored value locks out
   and `mergeyard open` hands over a fresh one. Tokens remain single-use and
-  short-lived, so a stolen link only races the browser once.
+  short-lived, so a stolen link only races the browser once. The link reaches
+  the browser through an owner-only handoff page instead of a process argument
+  (ADR-0005).

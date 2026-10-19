@@ -321,8 +321,8 @@ func TestDashboardIsLockedToTheOwnerSession(t *testing.T) {
 	replay := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/runs/run-1?token="+link, nil)
 	recorder = httptest.NewRecorder()
 	server.ServeHTTP(recorder, replay)
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("replayed link accepted: %d", recorder.Code)
+	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "mergeyard open") {
+		t.Fatalf("replayed link guidance: %d %q", recorder.Code, recorder.Body)
 	}
 }
 

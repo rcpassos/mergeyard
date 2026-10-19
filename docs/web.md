@@ -97,10 +97,13 @@ clients, which take the token from the proof-protected status snapshot. Host
 checks also protect GET requests against DNS rebinding. Restarting the server
 invalidates tokens; refresh open dashboard pages after a restart.
 
-The dashboard link is printed to the runtime's terminal and briefly visible in
-the browser launcher's process arguments while it opens. The token is
-single-use and short-lived, and the session it hands over dies with the
-process, so a stolen link only races the browser once.
+The dashboard link is printed to the runtime's terminal. `mergeyard start` and
+`mergeyard open` write it into an owner-only handoff page under
+`<workspace>/.dashboard-links/` (a `0700` directory holding a `0600` page) and
+pass only that path to `open` or `xdg-open`, so another local user polling
+process arguments sees a path, not the token. The token remains single-use and
+short-lived, and the session it hands over dies with the process, so a stolen
+link only races the browser once.
 
 Failed scheduler actions return HTTP 500 with a safe diagnostic code in the
 response body and `X-Mergeyard-Error-Code` header. The dashboard displays that

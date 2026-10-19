@@ -673,8 +673,18 @@ func TestCLIOpenFollowsTheOneTimeDashboardLink(t *testing.T) {
 		t.Fatalf("open: %d %t %q %s", code, opened, out, errOut)
 	}
 	data, err := os.ReadFile(launched)
-	if err != nil || string(data) != "http://127.0.0.1:7331/?token=one-time\n" {
-		t.Fatalf("launcher did not receive the link: %q %v", data, err)
+	args := strings.TrimSpace(string(data))
+	if err != nil || strings.Contains(args, "one-time") || strings.Contains(args, "token=") {
+		t.Fatalf("launcher received the link or its token: %q %v", data, err)
+	}
+	links, err := filepath.Glob(filepath.Join(root, dashboardLinksDirName, dashboardHandoffPrefix+"*", dashboardHandoffFile))
+	if err != nil || len(links) != 1 || links[0] != args {
+		t.Fatalf("launcher did not receive the private handoff page: %q %v", links, err)
+	}
+	assertHandoffPage(t, links[0])
+	page, err := os.ReadFile(links[0])
+	if err != nil || !strings.Contains(string(page), "http://127.0.0.1:7331/?token=one-time") {
+		t.Fatalf("handoff page does not redirect to the link: %q %v", page, err)
 	}
 }
 

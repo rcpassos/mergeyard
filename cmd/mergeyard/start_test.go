@@ -250,7 +250,8 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	// Keep the browser launcher blocked throughout startup and control requests.
 	// SIGINT/SIGTERM must also terminate and reap it during runtime shutdown.
 	browserStarted := filepath.Join(home, "browser-started")
-	browserScript := "#!/bin/sh\nprintf '%s\\n' \"$$\" >> '" + browserStarted + "'\nexec /bin/sleep 60\n"
+	browserArgs := filepath.Join(home, "browser-args")
+	browserScript := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + browserArgs + "'\nprintf '%s\\n' \"$$\" >> '" + browserStarted + "'\nexec /bin/sleep 60\n"
 	for _, name := range []string{"open", "xdg-open"} {
 		if err := os.WriteFile(filepath.Join(tools, name), []byte(browserScript), 0700); err != nil {
 			t.Fatal(err)
@@ -279,7 +280,7 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	}
 	env := append(os.Environ(), "HOME="+home, "PATH="+tools)
 
-	start := func(args ...string) *exec.Cmd {
+	start := func(args ...string) (*exec.Cmd, string) {
 		t.Helper()
 		cmd := exec.CommandContext(ctx, binary, append(args, "--config", path)...)
 		cmd.Env = env
@@ -306,12 +307,13 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 				cmd.Wait()
 				t.Fatalf("CLI not ready: %q, stderr: %s", line, &stderr)
 			}
+			return cmd, line
 		case <-ctx.Done():
 			t.Fatal("CLI did not become ready")
 		}
-		return cmd
+		return nil, ""
 	}
-	first := start("start")
+	first, readyLine := start("start")
 	root := filepath.Join(home, ".mergeyard")
 	for _, name := range []string{"state.db", "mergeyard.lock", "runtime.secret", "repos", "worktrees", "runs"} {
 		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
@@ -342,6 +344,20 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	tokenAt := strings.Index(readyLine, "?token=")
+	if tokenAt < 0 {
+		t.Fatalf("startup link carried no dashboard token: %q", readyLine)
+	}
+	token := readyLine[tokenAt+len("?token="):]
+	launcherArgs, err := os.ReadFile(browserArgs)
+	if err != nil {
+		t.Fatalf("browser launcher arguments: %v", err)
+	}
+	if strings.Contains(string(launcherArgs), token) || strings.Contains(string(launcherArgs), "token=") {
+		t.Fatalf("browser launcher received the dashboard token: %q", launcherArgs)
+	}
+	pagePath := strings.TrimSpace(string(launcherArgs))
+	assertHandoffPage(t, pagePath)
 	browserClient := &http.Client{Timeout: 2 * time.Second}
 	response, err := browserClient.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
 	if err != nil {
@@ -373,7 +389,7 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	}
 	// No arguments also dispatches start; the persistent lock file is reusable
 	// and the restarted runtime rotates the secret it shares with the CLI.
-	restarted := start()
+	restarted, _ := start()
 	rotated, err := runtimeauth.LoadSecret(root)
 	if err != nil || string(rotated) == string(firstSecret) {
 		t.Fatalf("restart did not rotate the runtime secret: %v", err)
@@ -385,12 +401,12 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 		t.Fatalf("SIGINT shutdown: %v", err)
 	}
 	// An ungraceful exit must also release the OS lock.
-	killed := start("start")
+	killed, _ := start("start")
 	if err := killed.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
 	killed.Wait()
-	afterKill := start("start")
+	afterKill, _ := start("start")
 	afterKill.Process.Signal(syscall.SIGTERM)
 	if err := afterKill.Wait(); err != nil {
 		t.Fatalf("restart after kill: %v", err)
