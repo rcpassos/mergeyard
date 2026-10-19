@@ -508,11 +508,13 @@ Worktree removal intent is recorded after ownership inspection and before remova
 A missing worktree with recorded intent can be reconciled as an interrupted
 cleanup; unexplained disappearance requires inspection and retains the branch.
 Git also records a cleanup boundary after the cleanliness checks pass and before
-deletion. If removal is interrupted, whether it deleted tracked files, the
-worktree link, or neither, a later tick finishes deleting the leftovers and
-prunes the registration without manual steps. A registration that survives
-pruning, such as a deliberately locked one, is reported and retried instead of
-recording a false removal.
+deletion. A refusal that deletes nothing clears it again, so locked or failed
+removals keep their worktree safeguards. An interruption leaves the boundary
+behind, and a later tick finishes the tracked deletions or missing link. On a
+retry with an intact link, a lock or any change other than those deletions
+preserves the tree for human attention. A registration that survives pruning,
+such as a deliberately locked one, is reported and retried instead of recording
+a false removal.
 Already absent labels, closed issues, removed trees, and deleted local branches
 are tolerated at their recorded boundaries. Independent report publication keeps
 retrying for completed runs after Git cleanup finishes.

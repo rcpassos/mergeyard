@@ -148,10 +148,13 @@ excluded untracked leftovers and removes them with the worktree after verifying
 ownership, publication and absence of other dirty work.
 
 Removal writes `<run-id>.cleanup` after ownership, publication, and
-cleanliness checks pass and before Git starts deleting. An interrupted removal
-is finished on a later call from that record, whether Git had already deleted
-tracked files, the worktree link, or neither. The record is removed after the
-registration is pruned.
+cleanliness checks pass and before Git starts deleting. If Git refuses without
+deleting anything, for example because the worktree is locked, that record is
+cleared so a later attempt still requires a clean worktree. If Git is killed,
+the record survives and a later call finishes the removal, whether it deleted
+tracked files, the worktree link, or both. On such a retry an intact tree is
+rechecked: a lock, or any change other than the tracked deletions a killed
+removal leaves, preserves it for human attention.
 
 `Run.RemovalIntent` carries the scheduler's durable authorization recorded
 before removal. It additionally finishes a missing-link state left by a removal

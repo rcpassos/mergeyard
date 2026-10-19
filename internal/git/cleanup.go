@@ -72,45 +72,14 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 		}
 		if removalStarted || (linkGone && run.RemovalIntent) {
 			// A recorded removal already proved ownership, publication, and
-			// cleanliness, so any remaining files belong to that deletion.
-			// Git may have deleted tracked files, the link, or neither before
-			// it was killed; finish it without treating the leftovers as
-			// human work. The link-gone case without a local record covers
-			// removals interrupted before cleanup kept its own record.
-			if err := removeTree(ctx, run.Path); err != nil {
+			// cleanliness. Finish it only when the worktree was actually
+			// changed by that removal, so a refusal that deleted nothing
+			// cannot discard later human work.
+			if err := m.finishRemoval(ctx, run); err != nil {
 				return err
 			}
-		} else {
-			if err := verifyWorktree(ctx, run); err != nil {
-				return err
-			}
-			dirty, err := worktreeDirty(ctx, run)
-			if err != nil {
-				return err
-			}
-			if dirty {
-				return failure("git.cleanup", run.Path, errors.New("dirty work is preserved for human attention"))
-			}
-			leftovers, err := excludedUntracked(ctx, run)
-			if err != nil {
-				return err
-			}
-			args := []string{"worktree", "remove"}
-			if len(leftovers) > 0 {
-				// Only configured untracked leftovers remain. Ownership and
-				// publication checks above still guard the complete worktree.
-				args = append(args, "--force")
-			}
-			args = append(args, "--", run.Path)
-			// Record the boundary after cleanliness is proven and before Git
-			// starts deleting, so an interruption on either side of the link
-			// can be finished on a later tick.
-			if err := writeCleanupIntent(run); err != nil {
-				return err
-			}
-			if _, err := command(ctx, run.BasePath, "git.cleanup", args...); err != nil {
-				return err
-			}
+		} else if err := m.removeLinkedWorktree(ctx, run); err != nil {
+			return err
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return failure("git.cleanup", run.Path, err)
@@ -119,7 +88,7 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 		return err
 	}
 	if removalStarted || run.RemovalIntent {
-		registered, err := worktreeRegistered(ctx, run)
+		registered, _, err := worktreeState(ctx, run)
 		if err != nil {
 			return err
 		}
@@ -130,6 +99,126 @@ func (m *Manager) cleanupWorktree(ctx context.Context, run Run) error {
 		}
 	}
 	return removeCleanupIntent(run)
+}
+
+// removeLinkedWorktree removes a verified, clean checkout. It records the
+// cleanup boundary only after cleanliness is proven and before Git starts
+// deleting; a refusal that deletes nothing clears it again below.
+func (m *Manager) removeLinkedWorktree(ctx context.Context, run Run) error {
+	if err := verifyWorktree(ctx, run); err != nil {
+		return err
+	}
+	dirty, err := worktreeDirty(ctx, run)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return failure("git.cleanup", run.Path, errors.New("dirty work is preserved for human attention"))
+	}
+	leftovers, err := excludedUntracked(ctx, run)
+	if err != nil {
+		return err
+	}
+	args := []string{"worktree", "remove"}
+	if len(leftovers) > 0 {
+		// Only configured untracked leftovers remain. Ownership and
+		// publication checks above still guard the complete worktree.
+		args = append(args, "--force")
+	}
+	args = append(args, "--", run.Path)
+	if err := writeCleanupIntent(run); err != nil {
+		return err
+	}
+	if _, err := command(ctx, run.BasePath, "git.cleanup", args...); err != nil {
+		// Git may have refused before deleting anything, such as for a locked
+		// worktree. Keep the boundary only when the removal left evidence;
+		// otherwise a later retry would treat human edits as leftovers.
+		if progress, checkErr := removalProgress(ctx, run); checkErr == nil && !progress {
+			_ = removeCleanupIntent(run)
+		}
+		return err
+	}
+	return nil
+}
+
+// finishRemoval completes a removal with a recorded boundary. An intact tree
+// is rechecked first: a lock is human protection, and changes other than the
+// tracked deletions a killed removal leaves mean the tree is no longer the
+// clean checkout that removal authorized.
+func (m *Manager) finishRemoval(ctx context.Context, run Run) error {
+	_, locked, err := worktreeState(ctx, run)
+	if err != nil {
+		return err
+	}
+	if locked {
+		return failure("git.cleanup", run.Path, errors.New("worktree is locked; removal preserved for human attention"))
+	}
+	if _, err := os.Lstat(filepath.Join(run.Path, ".git")); errors.Is(err, os.ErrNotExist) {
+		return removeTree(ctx, run.Path)
+	} else if err != nil {
+		return failure("git.cleanup", run.Path, err)
+	}
+	if err := verifyWorktree(ctx, run); err != nil {
+		return err
+	}
+	progress, err := removalProgress(ctx, run)
+	if err != nil {
+		return err
+	}
+	if progress {
+		return removeTree(ctx, run.Path)
+	}
+	dirty, err := worktreeDirty(ctx, run)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return failure("git.cleanup", run.Path, errors.New("worktree changed after removal started; preserved for human attention"))
+	}
+	// The removal deleted nothing, so retry the ordinary path while the link
+	// is still readable. Git keeps its own lock and cleanliness safeguards.
+	return m.removeLinkedWorktree(ctx, run)
+}
+
+// removalProgress reports whether the worktree differs from HEAD only by
+// tracked deletions and untracked files the run already excludes. A killed
+// removal leaves that shape; any edit or added file means human work arrived
+// after removal was authorized.
+func removalProgress(ctx context.Context, run Run) (bool, error) {
+	status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "-z", "--untracked-files=all")
+	if err != nil {
+		return false, err
+	}
+	excluded := map[string]bool{}
+	if len(run.Exclude) > 0 {
+		leftovers, err := excludedUntracked(ctx, run)
+		if err != nil {
+			return false, err
+		}
+		for _, path := range leftovers {
+			excluded[path] = true
+		}
+	}
+	progress := false
+	for _, record := range strings.Split(status, "\x00") {
+		if record == "" {
+			continue
+		}
+		if len(record) < 3 {
+			return false, nil
+		}
+		code, path := record[:2], record[3:]
+		switch {
+		case code == " D":
+			progress = true
+		case code == "??" && excluded[path]:
+			// An allowed leftover does not prove deletion started, but it
+			// does not block finishing one that did.
+		default:
+			return false, nil
+		}
+	}
+	return progress, nil
 }
 
 // cleanupIntent records where a deletion started after ownership, publication,
@@ -230,21 +319,31 @@ func removeTreeEntries(ctx context.Context, path string, readDir func(string) ([
 // worktreeRegistered reports whether the base still lists a worktree at the
 // run's path after pruning. Git prints physical paths, so resolve the parent
 // directory to compare against the managed path.
-func worktreeRegistered(ctx context.Context, run Run) (bool, error) {
+// worktreeState reports whether the base still lists a worktree at the run's
+// path after pruning, and whether that registration is locked. Git prints
+// physical paths, so resolve the parent directory to compare against the
+// managed path.
+func worktreeState(ctx context.Context, run Run) (registered, locked bool, err error) {
 	out, err := command(ctx, run.BasePath, "git.cleanup", "worktree", "list", "--porcelain", "-z")
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	path := run.Path
 	if parent, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
 		path = filepath.Join(parent, filepath.Base(path))
 	}
+	ours := false
 	for _, field := range strings.Split(out, "\x00") {
-		if field == "worktree "+path {
-			return true, nil
+		if worktree, ok := strings.CutPrefix(field, "worktree "); ok {
+			ours = worktree == path
+			registered = registered || ours
+			continue
+		}
+		if ours && (field == "locked" || strings.HasPrefix(field, "locked ")) {
+			locked = true
 		}
 	}
-	return false, nil
+	return registered, locked, nil
 }
 
 // CleanupBranch deletes a completed run's published local ref; remote refs are retained.

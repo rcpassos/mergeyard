@@ -748,6 +748,114 @@ func TestCleanupWorktreeReportsLockedRegistrationAfterRecovery(t *testing.T) {
 	}
 }
 
+func TestCleanupWorktreePreservesEditsAfterLockedRefusal(t *testing.T) {
+	for _, edit := range []struct {
+		name  string
+		apply func(*testing.T, managedgit.Run)
+		check func(*testing.T, managedgit.Run)
+	}{
+		{
+			"untracked",
+			func(t *testing.T, run managedgit.Run) { write(t, run.Path, "human.txt", "preserve me\n") },
+			func(t *testing.T, run managedgit.Run) {
+				if data, err := os.ReadFile(filepath.Join(run.Path, "human.txt")); err != nil || string(data) != "preserve me\n" {
+					t.Fatalf("locked refusal lost untracked work: %q, %v", data, err)
+				}
+			},
+		},
+		{
+			"modified",
+			func(t *testing.T, run managedgit.Run) { write(t, run.Path, "README.md", "human edit\n") },
+			func(t *testing.T, run managedgit.Run) {
+				if data, err := os.ReadFile(filepath.Join(run.Path, "README.md")); err != nil || string(data) != "human edit\n" {
+					t.Fatalf("locked refusal lost edited work: %q, %v", data, err)
+				}
+			},
+		},
+	} {
+		t.Run(edit.name, func(t *testing.T) {
+			f := newFixture(t)
+			run := prepare(t, f)
+			git(t, run.BasePath, "worktree", "lock", "--reason", "human inspection", run.Path)
+			requireCode(t, f.manager.CleanupWorktree(context.Background(), run), "git.cleanup")
+			intent := filepath.Join(filepath.Dir(run.Path), run.ID+".cleanup")
+			if _, err := os.Stat(intent); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("refused removal kept its cleanup intent: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(run.Path, ".git")); err != nil {
+				t.Fatalf("refused removal deleted the worktree: %v", err)
+			}
+			edit.apply(t, run)
+			// A retry must preserve the human edit instead of trusting the
+			// boundary from the refusal.
+			requireCode(t, f.manager.CleanupWorktree(context.Background(), run), "git.cleanup")
+			edit.check(t, run)
+			if _, err := os.Stat(filepath.Join(run.Path, ".git")); err != nil {
+				t.Fatalf("locked worktree was deleted: %v", err)
+			}
+			git(t, run.BasePath, "worktree", "unlock", run.Path)
+			if edit.name == "untracked" {
+				if err := os.Remove(filepath.Join(run.Path, "human.txt")); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				git(t, run.Path, "checkout", "--", "README.md")
+			}
+			if err := f.manager.CleanupWorktree(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(run.Path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("worktree not removed after unlock")
+			}
+		})
+	}
+}
+
+// writeCleanupIntentFixture creates the on-disk boundary cleanup writes before
+// Git starts deleting, so tests can simulate a crash between the refusal and
+// the boundary's removal.
+func writeCleanupIntentFixture(t *testing.T, run managedgit.Run) string {
+	t.Helper()
+	path := filepath.Join(filepath.Dir(run.Path), run.ID+".cleanup")
+	data := fmt.Sprintf(`{"id":%q,"path":%q,"base_path":%q,"branch":%q}`, run.ID, run.Path, run.BasePath, run.Branch)
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCleanupWorktreeRechecksRetainedIntentAfterRefusal(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	intent := writeCleanupIntentFixture(t, run)
+	git(t, run.BasePath, "worktree", "lock", "--reason", "human inspection", run.Path)
+	write(t, run.Path, "human.txt", "preserve me\n")
+	requireCode(t, f.manager.CleanupWorktree(context.Background(), run), "git.cleanup")
+	if data, err := os.ReadFile(filepath.Join(run.Path, "human.txt")); err != nil || string(data) != "preserve me\n" {
+		t.Fatalf("retained intent bypassed the lock: %q, %v", data, err)
+	}
+	if _, err := os.Stat(intent); err != nil {
+		t.Fatalf("retained intent was lost while the worktree is protected: %v", err)
+	}
+	git(t, run.BasePath, "worktree", "unlock", run.Path)
+	requireCode(t, f.manager.CleanupWorktree(context.Background(), run), "git.cleanup")
+	if data, err := os.ReadFile(filepath.Join(run.Path, "human.txt")); err != nil || string(data) != "preserve me\n" {
+		t.Fatalf("retained intent bypassed human work after unlock: %q, %v", data, err)
+	}
+	if err := os.Remove(filepath.Join(run.Path, "human.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.manager.CleanupWorktree(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(run.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("worktree not removed after human work cleared")
+	}
+	if _, err := os.Stat(intent); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("cleanup intent retained after removal")
+	}
+}
+
 func TestGitOperationsRespectCancellation(t *testing.T) {
 	f := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
