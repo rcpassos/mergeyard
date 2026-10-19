@@ -35,6 +35,19 @@ type Finding struct {
 	Message  string
 }
 
+// RepositoryScoped reports whether Scope names one of the configured
+// repositories or one of its role checks.
+func (f Finding) RepositoryScoped(repositories []config.Repository) bool {
+	scope := strings.ToLower(f.Scope)
+	for _, repo := range repositories {
+		name := strings.ToLower(repo.Repo)
+		if scope == name || strings.HasPrefix(scope, name+" ") {
+			return true
+		}
+	}
+	return false
+}
+
 type Report struct{ Findings []Finding }
 
 func (r Report) HasErrors() bool {

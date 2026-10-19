@@ -59,16 +59,22 @@ func (s *Scheduler) queueBlockers(ctx context.Context, repo config.Repository, i
 	return blockers, nil
 }
 
+// issueReadFailure is one refused issue whose GitHub read failed.
+type issueReadFailure struct {
+	number int
+	err    error
+}
+
 // withRefusedIssues adds refused issues that no longer carry a Mergeyard label,
 // so the dashboard keeps showing them and their reason until a trusted
 // maintainer relabels them. Only refusals missing from the listing are read
 // back. Refusals whose issue is closed or deleted are forgotten, so a stale row
 // cannot be re-read on every refresh forever; the read-back stays bounded by
 // the refusals that can still be shown.
-func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repository, listed []github.Issue) ([]github.Issue, error) {
+func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repository, listed []github.Issue) ([]github.Issue, []issueReadFailure, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT issue_number FROM issue_refusals WHERE repository=? ORDER BY issue_number", strings.ToLower(repo.Repo))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	seen := make(map[int]bool, len(listed))
 	for _, issue := range listed {
@@ -79,7 +85,7 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repositor
 		var number int
 		if err := rows.Scan(&number); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		if !seen[number] {
 			missing = append(missing, number)
@@ -88,9 +94,10 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repositor
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	issues := append([]github.Issue(nil), listed...)
+	var failed []issueReadFailure
 	for _, number := range missing {
 		issue, err := s.deps.GitHub.GetIssue(ctx, repo.Repo, number)
 		var coded *fault.Error
@@ -98,25 +105,39 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repositor
 			// The issue is gone: no label can be removed and nothing can be
 			// shown, so drop the row instead of re-reading it forever.
 			if err := s.forgetRefusal(ctx, repo.Repo, number); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			continue
 		}
 		if err != nil {
-			return nil, err
+			if githubFailure(err) {
+				// Only this refusal is unreadable; keep the rest of the
+				// repository's queue visible.
+				failed = append(failed, issueReadFailure{number: number, err: err})
+				continue
+			}
+			return nil, nil, err
 		}
 		if issue.State != github.Open {
 			// The dashboard cannot show closed issues. A settled row would be
 			// re-read on every refresh forever; a pending one stays for
 			// reconciliation to finish its label removal.
 			if err := s.forgetSettledRefusal(ctx, repo.Repo, number); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			continue
 		}
 		issues = append(issues, issue)
 	}
-	return issues, nil
+	return issues, failed, nil
+}
+
+// QueueSnapshot is one dashboard discovery pass. Issues contains every
+// readable repository's queue; Failures names the repositories or issues whose
+// GitHub reads failed without hiding the rest.
+type QueueSnapshot struct {
+	Issues   []QueueIssue
+	Failures []Finding
 }
 
 // Queue discovers issues without claiming them, even when paused or at capacity.
@@ -125,18 +146,48 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repositor
 // unchanged. A dependency failure is returned rather than misrepresenting an
 // issue as ready.
 func (s *Scheduler) Queue(ctx context.Context) ([]QueueIssue, error) {
-	var queue []QueueIssue
+	snapshot, err := s.QueueReport(ctx)
+	return snapshot.Issues, err
+}
+
+// QueueReport is Queue with the scoped GitHub failures that did not stop the
+// remaining repositories from being discovered. Local-state failures stop the
+// pass.
+func (s *Scheduler) QueueReport(ctx context.Context) (QueueSnapshot, error) {
+	snapshot := QueueSnapshot{Issues: []QueueIssue{}, Failures: []Finding{}}
+	var scoped []error
+	scopedFailure := func(code, repository string, issue int, err error) bool {
+		failure := scopeGitHubFailure(code, repository, issue, "", err)
+		if failure == nil {
+			return false
+		}
+		snapshot.Failures = append(snapshot.Failures, failure.finding)
+		scoped = append(scoped, failure)
+		return true
+	}
 	for _, repo := range s.cfg.Repositories {
 		if !repo.Enabled {
 			continue
 		}
 		issues, err := s.listIssues(ctx, repo)
 		if err != nil {
-			return nil, err
+			if scopedFailure("reconcile.repository_failed", repo.Repo, 0, err) {
+				continue
+			}
+			return snapshot, err
 		}
-		issues, err = s.withRefusedIssues(ctx, repo, issues)
+		var refused []issueReadFailure
+		issues, refused, err = s.withRefusedIssues(ctx, repo, issues)
 		if err != nil {
-			return nil, err
+			if scopedFailure("reconcile.repository_failed", repo.Repo, 0, err) {
+				continue
+			}
+			return snapshot, err
+		}
+		for _, failure := range refused {
+			// A refused issue is read back individually; one unreadable row
+			// must not hide the rest of the repository's queue.
+			scopedFailure("reconcile.issue_failed", repo.Repo, failure.number, failure.err)
 		}
 		issues = orderedIssues(issues)
 		for _, issue := range issues {
@@ -145,7 +196,7 @@ func (s *Scheduler) Queue(ctx context.Context) ([]QueueIssue, error) {
 			}
 			reason, err := s.refusalReason(ctx, repo.Repo, issue.Number)
 			if err != nil {
-				return nil, err
+				return snapshot, err
 			}
 			attention := hasLabel(issue, repo.Labels.NeedsAttention) || reason != ""
 			if !attention && (!hasLabel(issue, repo.Labels.Ready) || hasLabel(issue, repo.Labels.Running)) {
@@ -155,11 +206,14 @@ func (s *Scheduler) Queue(ctx context.Context) ([]QueueIssue, error) {
 			if !attention {
 				item.Blockers, err = s.queueBlockers(ctx, repo, issue)
 				if err != nil {
-					return nil, err
+					if scopedFailure("reconcile.issue_failed", repo.Repo, issue.Number, err) {
+						continue
+					}
+					return snapshot, err
 				}
 			}
-			queue = append(queue, item)
+			snapshot.Issues = append(snapshot.Issues, item)
 		}
 	}
-	return queue, nil
+	return snapshot, errors.Join(scoped...)
 }

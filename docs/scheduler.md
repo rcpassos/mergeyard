@@ -30,16 +30,18 @@ own transport. See [git.md](git.md) for the operation budgets.
 before enabling new claims and reports its findings. The CLI starts this
 scheduler and shares its controls with the dashboard.
 
-Startup treats a reconcile failure as retryable only when the GitHub boundary
-could not answer cleanly: unreachable, rate limited, cancelled, or an unclean
-response. Listing issues, reading or writing labels, comments, or pull requests
-can fail that way without stopping the dashboard; the failure is printed and the
-running loop retries the same reconcile on later ticks. A coded wrapper
-classifies by its cause, so pending handback publication wrapped around a GitHub
-failure is deferred too. Local-state failures (database, workspace, Git
-ownership) and conclusive GitHub answers (missing repository or permission,
-expired login, invalid input) still abort startup. No issue is claimed before a
-reconcile succeeds.
+Startup treats a reconcile failure as retryable whenever it belongs to the
+GitHub boundary of one repository or run: unreachable, rate limited, cancelled,
+an unclean response, or a conclusive missing repository, permission, login, or
+input answer. Listing issues, reading or writing labels, comments, or pull
+requests can fail that way without stopping the dashboard; the failure is printed
+and published as a finding, and the running loop retries it on later ticks. A
+coded wrapper classifies by its cause, so pending handback publication wrapped
+around a GitHub failure is deferred too. Only local-state failures (database,
+workspace, Git, runner, or harness) abort startup. No issue is claimed before a
+reconcile pass finishes; a scoped failure skips only its repository or run.
+Disabled repositories are still scanned for reconciliation findings, but their
+GitHub failures never block dispatch or startup.
 
 `Stop(ctx, runID)` serializes with phase advancement and first persists stop
 intent. It interrupts running attempts through the runner, preserves the
@@ -187,24 +189,32 @@ PR (including closed PRs), and observes persisted running tmux attempts. An agen
 still running stays under observation. An agent that exited while the control
 plane was offline is recovered through `exit.json` and native result output; the
 usual implement flow archives `result.json`, pushes, and reuses an existing PR.
-Reconciliation failures prevent new dispatch. Closed issues/PRs, missing worktrees,
-and missing sessions require attention. Manual and attention runs are never
-automatically resumed. First review progresses through the same reconciliation boundary. CI/merge
+Local-state reconciliation failures prevent new dispatch. A GitHub failure is
+scoped to the repository whose listing failed or the run whose issue/PR/label
+read failed: reconciliation reports `reconcile.repository_failed` or
+`reconcile.run_failed`, dashboard discovery reports `reconcile.issue_failed`
+when one refused issue cannot be read, and each appears in the needs-attention
+section. A scoped failure skips only that repository or issue while other work
+continues, and stays visible until a later pass observes the subject
+successfully. Findings persist only the fixed GitHub code and a safe human
+message; raw `gh` diagnostics stay on the error for application logs. Closed
+issues/PRs, missing worktrees, and missing sessions require attention. Manual and attention runs are never automatically
+resumed. First review progresses through the same reconciliation boundary. CI/merge
 progression remains outside this slice.
 
 `mergeyard reconcile [--config <path>]` loads the selected configuration and takes
 exclusive ownership of its workspace. It uses the same reconciliation boundary,
 without claiming new work. Stop the control plane first if it holds the lock.
 The command prints `reconcile.orphaned_claim`, `reconcile.orphaned_worktree`, and
-`reconcile.orphaned_session` findings, also published to the durable event stream.
-It scans every configured repository even when dispatch is paused, disabled, or
-at capacity. Running labels are never silently reset on orphaned issues. Worktree
-directories, registered worktree metadata, and managed tmux sessions without
-persisted ownership are reported and preserved. Terminal runs' retained artifacts
-remain owned. Startup uses the same boundary before serving the dashboard and
-running the scheduler; its retryable GitHub failures are reported and left for
-later ticks, while local-state failures and conclusive GitHub answers still
-refuse to start.
+`reconcile.orphaned_session` findings, plus scoped GitHub failures, also published
+to the durable event stream. It scans every configured repository even when
+dispatch is paused, disabled, or at capacity. Running labels are never silently
+reset on orphaned issues. Worktree directories, registered worktree metadata,
+and managed tmux sessions without persisted ownership are reported and preserved.
+Terminal runs' retained artifacts remain owned. Startup uses the same boundary
+before serving the dashboard and running the scheduler; scoped GitHub failures
+are reported and left for later ticks, while local-state failures still refuse
+to start.
 
 ## Tests
 

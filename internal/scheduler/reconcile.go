@@ -33,10 +33,164 @@ type ReconcileReport struct {
 	Findings []Finding `json:"findings"`
 }
 
-// githubRetryable names the GitHub adapter failures that a later tick retries:
-// the service could not be reached, was rate limited, was cancelled, or did not
-// answer cleanly. Conclusive answers (missing repository, permission, login, or
-// input) stay absent so they refuse startup like any local-state failure.
+// scopedFailure is a GitHub failure that belongs to one repository or run.
+// Reconcile reports it and leaves it for later ticks, but it must not gate
+// dispatch or startup for unrelated work.
+type scopedFailure struct {
+	finding Finding
+	err     error
+}
+
+// Error keeps the raw GitHub diagnostic for logs, while the finding carries the
+// safe message that events and the dashboard persist.
+func (f *scopedFailure) Error() string { return fmt.Sprintf("%s: %v", f.finding.String(), f.err) }
+func (f *scopedFailure) Unwrap() error { return f.err }
+
+// classifyGitHub reports whether err is made entirely of failures from the
+// GitHub boundary. A conclusive answer such as not_found or forbidden passes
+// only after a caller scoped it to the repository or run that produced it.
+func classifyGitHub(err error, conclusive bool) bool {
+	switch failure := err.(type) {
+	case *scopedFailure:
+		return classifyGitHub(failure.err, true)
+	case *fault.Error:
+		if strings.HasPrefix(failure.Code, "github.") {
+			return conclusive || githubRetryable[failure.Code]
+		}
+		if failure.Err == nil {
+			return false
+		}
+		return classifyGitHub(failure.Err, conclusive)
+	case interface{ Unwrap() []error }:
+		for _, joined := range failure.Unwrap() {
+			if !classifyGitHub(joined, conclusive) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		return classifyGitHub(failure.Unwrap(), conclusive)
+	default:
+		return false
+	}
+}
+
+// githubFailure reports whether err is made entirely of GitHub boundary
+// failures, including conclusive answers.
+func githubFailure(err error) bool { return classifyGitHub(err, true) }
+
+// githubFaultCode returns the first GitHub code in err. Codes are fixed
+// vocabulary; unlike the underlying message they are safe to persist.
+func githubFaultCode(err error) string {
+	switch failure := err.(type) {
+	case *scopedFailure:
+		return githubFaultCode(failure.err)
+	case *fault.Error:
+		if strings.HasPrefix(failure.Code, "github.") {
+			return failure.Code
+		}
+		if failure.Err != nil {
+			return githubFaultCode(failure.Err)
+		}
+	case interface{ Unwrap() []error }:
+		for _, joined := range failure.Unwrap() {
+			if code := githubFaultCode(joined); code != "" {
+				return code
+			}
+		}
+	case interface{ Unwrap() error }:
+		return githubFaultCode(failure.Unwrap())
+	}
+	return ""
+}
+
+// githubFailureMessage is the fixed human explanation persisted with a scoped
+// finding. Raw gh diagnostics can contain credentials, so they stay on the
+// retained error for logs and never enter events or the dashboard.
+func githubFailureMessage(code string) string {
+	switch code {
+	case "github.not_found":
+		return "GitHub could not find the configured repository or item; check its name and access"
+	case "github.forbidden":
+		return "GitHub denied access to the configured repository or item; check token permissions"
+	case "github.not_logged_in":
+		return "GitHub authentication failed; run gh auth login"
+	case "github.rate_limited":
+		return "GitHub rate limit exceeded; the request will retry"
+	case "github.unavailable":
+		return "GitHub is unreachable; the request will retry"
+	case "github.timeout":
+		return "The GitHub request timed out; it will retry"
+	case "github.canceled":
+		return "The GitHub request was canceled; it will retry"
+	case "github.invalid_response":
+		return "GitHub returned an invalid response"
+	case "github.invalid_input":
+		return "GitHub rejected the request as invalid"
+	case "github.label_not_found":
+		return "GitHub reported a missing label"
+	default:
+		return "GitHub request failed; inspect the application log"
+	}
+}
+
+// scopeGitHubFailure wraps err as a finding when it is a GitHub failure. Local
+// state stays unwrapped so it can still stop dispatch. The finding keeps only a
+// fixed code and message; the raw error remains available through Unwrap for
+// diagnostics.
+func scopeGitHubFailure(code, repository string, issue int, runID string, err error) *scopedFailure {
+	if !githubFailure(err) {
+		return nil
+	}
+	cause := githubFaultCode(err)
+	if cause == "" {
+		cause = "github.failed"
+	}
+	finding := Finding{Code: code, Repository: repository, IssueNumber: issue, RunID: runID, Message: cause + ": " + githubFailureMessage(cause)}
+	return &scopedFailure{finding: finding, err: err}
+}
+
+// reconcileResult separates failures that may be scoped to one repository or
+// run from local-state failures that make dispatch unsafe everywhere.
+type reconcileResult struct {
+	report              ReconcileReport
+	activeFailures      []Finding
+	scopedErrors        []error
+	fatalErrors         []error
+	observed            bool
+	blockedRepositories map[string]bool
+	blockedIssues       map[string]bool
+}
+
+func (r *reconcileResult) addScoped(failure *scopedFailure) {
+	r.activeFailures = append(r.activeFailures, failure.finding)
+	r.report.Findings = append(r.report.Findings, failure.finding)
+	r.scopedErrors = append(r.scopedErrors, failure)
+}
+
+func (r *reconcileResult) blockRepository(repository string) {
+	if r.blockedRepositories == nil {
+		r.blockedRepositories = map[string]bool{}
+	}
+	r.blockedRepositories[strings.ToLower(repository)] = true
+}
+
+func (r *reconcileResult) blockIssue(repository string, number int) {
+	if r.blockedIssues == nil {
+		r.blockedIssues = map[string]bool{}
+	}
+	r.blockedIssues[issueKey(repository, number)] = true
+}
+
+func (r *reconcileResult) err() error {
+	failures := append([]error{}, r.fatalErrors...)
+	return errors.Join(append(failures, r.scopedErrors...)...)
+}
+
+// githubRetryable names the unscoped GitHub adapter failures that a later tick
+// retries: the service could not be reached, was rate limited, was cancelled, or
+// did not answer cleanly. Conclusive unscoped answers stay absent because their
+// caller has not established which repository or run they belong to.
 var githubRetryable = map[string]bool{
 	"github.unavailable":      true,
 	"github.rate_limited":     true,
@@ -46,63 +200,52 @@ var githubRetryable = map[string]bool{
 	"github.invalid_response": true,
 }
 
-// GitHubFailure reports whether err can be left for later ticks: the GitHub
-// boundary did not answer cleanly and nothing else failed. A coded wrapper
-// classifies by its cause, so pending handback state wrapped around a GitHub
-// failure stays retryable. Every error joined into the tree must classify as
-// retryable; anything else (database, workspace, Git, harness, runner, or a
-// conclusive GitHub answer) makes dispatch unsafe and returns false.
-func GitHubFailure(err error) bool {
-	switch failure := err.(type) {
-	case *fault.Error:
-		if githubRetryable[failure.Code] {
-			return true
-		}
-		if failure.Err == nil {
-			return false
-		}
-		return GitHubFailure(failure.Err)
-	case interface{ Unwrap() []error }:
-		for _, joined := range failure.Unwrap() {
-			if !GitHubFailure(joined) {
-				return false
-			}
-		}
-		return true
-	case interface{ Unwrap() error }:
-		return GitHubFailure(failure.Unwrap())
-	default:
-		return false
-	}
-}
+// GitHubFailure reports whether err can be left for later ticks. A scoped
+// GitHub failure is always deferrable, including a conclusive not_found or
+// forbidden answer, because it no longer gates unrelated work. An unscoped
+// error must come from a retryable GitHub failure and nothing else. A coded
+// wrapper classifies by its cause, so pending handback state wrapped around a
+// GitHub failure stays deferrable. Every error joined into the tree must
+// classify as deferrable; anything else (database, workspace, Git, harness,
+// runner, or an unscoped conclusive GitHub answer) makes dispatch unsafe and
+// returns false.
+func GitHubFailure(err error) bool { return classifyGitHub(err, false) }
 
 // Reconcile observes and advances existing runs without claiming any new work.
-// Run's first tick and every later Tick use this same gate before dispatch.
+// Run's first tick and every later Tick use this pass before dispatch; local
+// failures still gate, while scoped GitHub failures do not.
 func (s *Scheduler) Reconcile(ctx context.Context) (ReconcileReport, error) {
 	if err := s.tick.Lock(ctx); err != nil {
 		return ReconcileReport{}, err
 	}
 	defer s.tick.Unlock()
 	s.beginPoll()
-	return s.reconcile(ctx)
+	result := s.reconcile(ctx)
+	if result.observed {
+		s.setReconcileFailures(result.activeFailures)
+	}
+	return result.report, result.err()
 }
 
-func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
+func (s *Scheduler) reconcile(ctx context.Context) reconcileResult {
+	result := reconcileResult{report: ReconcileReport{Findings: []Finding{}}}
 	if err := s.workflow.ReconcileAgentPorts(ctx, s.cfg.AgentPorts); err != nil {
-		return ReconcileReport{}, err
+		result.fatalErrors = append(result.fatalErrors, err)
+		return result
 	}
 	if err := s.reconcileHarnessChecks(ctx); err != nil {
-		return ReconcileReport{}, err
+		result.fatalErrors = append(result.fatalErrors, err)
+		return result
 	}
 	if err := s.workflow.ReconcileHarnessLimits(ctx, s.deps.Now().UTC()); err != nil {
-		return ReconcileReport{}, err
+		result.fatalErrors = append(result.fatalErrors, err)
+		return result
 	}
-	report := ReconcileReport{Findings: []Finding{}}
 	runs, err := s.tickRuns(ctx)
 	if err != nil {
-		return report, err
+		result.fatalErrors = append(result.fatalErrors, err)
+		return result
 	}
-	var failures []error
 	reconcilable := map[string]bool{}
 	for _, run := range runs {
 		if run.PendingRetry() == nil && run.State.Terminal() && !pendingBaseScratch(run) && !(run.State == workflow.Completed && run.Merge != nil && run.Merge.Pending()) {
@@ -114,14 +257,19 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 			ok = true
 		}
 		if !ok {
-			report.Findings = append(report.Findings, Finding{Code: "reconcile.repository_missing", Repository: run.Repository, IssueNumber: run.IssueNumber, RunID: run.ID, Message: "Run repository is absent from configuration"})
+			result.report.Findings = append(result.report.Findings, Finding{Code: "reconcile.repository_missing", Repository: run.Repository, IssueNumber: run.IssueNumber, RunID: run.ID, Message: "Run repository is absent from configuration"})
 			continue
 		}
 		err := s.workflow.WithRunOperation(ctx, run.ID, func(opCtx context.Context, current workflow.Run) error {
 			return s.reconcileRun(opCtx, repo, current)
 		})
 		if err != nil {
-			failures = append(failures, err)
+			if failure := scopeGitHubFailure("reconcile.run_failed", repo.Repo, run.IssueNumber, run.ID, err); failure != nil {
+				result.addScoped(failure)
+				result.blockIssue(repo.Repo, run.IssueNumber)
+			} else {
+				result.fatalErrors = append(result.fatalErrors, err)
+			}
 		}
 		// A claim interrupted before saving issue context can be reconstructed
 		// from the known run identity. Other runs need their durable context.
@@ -131,35 +279,40 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 		}
 	}
 	if err := s.publishAttention(ctx); err != nil {
-		failures = append(failures, err)
+		result.fatalErrors = append(result.fatalErrors, err)
 	}
 	if err := s.publishVerification(ctx); err != nil {
-		failures = append(failures, err)
+		result.fatalErrors = append(result.fatalErrors, err)
 	}
 	if err := s.publishReports(ctx); err != nil {
-		failures = append(failures, err)
+		result.fatalErrors = append(result.fatalErrors, err)
 	}
 	// Scan all configured repositories, even when paused, disabled, or full.
 	for _, repo := range s.cfg.Repositories {
 		issues, err := s.listIssues(ctx, repo)
 		if err != nil {
-			failures = append(failures, err)
+			if failure := scopeGitHubFailure("reconcile.repository_failed", repo.Repo, 0, "", err); failure != nil {
+				result.addScoped(failure)
+				result.blockRepository(repo.Repo)
+			} else {
+				result.fatalErrors = append(result.fatalErrors, err)
+			}
 			continue
 		}
 		for _, issue := range issues {
 			if issue.State == github.Open && hasLabel(issue, repo.Labels.Running) && !reconcilable[issueKey(repo.Repo, issue.Number)] {
-				report.Findings = append(report.Findings, Finding{Code: "reconcile.orphaned_claim", Repository: repo.Repo, IssueNumber: issue.Number, Message: "Running label has no reconcilable local run; manual action required"})
+				result.report.Findings = append(result.report.Findings, Finding{Code: "reconcile.orphaned_claim", Repository: repo.Repo, IssueNumber: issue.Number, Message: "Running label has no reconcilable local run; manual action required"})
 			}
 		}
 	}
-	if err := s.orphanedArtifacts(ctx, &report); err != nil {
-		failures = append(failures, err)
+	if err := s.orphanedArtifacts(ctx, &result.report); err != nil {
+		result.fatalErrors = append(result.fatalErrors, err)
 	}
 	observed := map[string]bool{}
-	for _, finding := range report.Findings {
+	for _, finding := range result.report.Findings {
 		data, err := json.Marshal(finding)
 		if err != nil {
-			failures = append(failures, err)
+			result.fatalErrors = append(result.fatalErrors, err)
 			continue
 		}
 		key := string(data)
@@ -168,13 +321,14 @@ func (s *Scheduler) reconcile(ctx context.Context) (ReconcileReport, error) {
 			continue
 		}
 		if _, err := s.bus.Publish(ctx, events.Draft{Type: finding.Code, Payload: finding}); err != nil {
-			failures = append(failures, err)
+			result.fatalErrors = append(result.fatalErrors, err)
 		} else {
 			observed[key] = true
 		}
 	}
 	s.reportedFindings = observed
-	return report, errors.Join(failures...)
+	result.observed = true
+	return result
 }
 
 func (s *Scheduler) reconcileRun(ctx context.Context, repo config.Repository, run workflow.Run) error {
@@ -469,10 +623,20 @@ func (s *Scheduler) orphanedArtifacts(ctx context.Context, report *ReconcileRepo
 	return errors.Join(pathErr, sessionErr)
 }
 
+// Key identifies one finding's subject so discovery and reconciliation cannot
+// show duplicate dashboard rows for it. The message is not part of the identity
+// because a later read may refine the same failure's diagnostic text.
+func (f Finding) Key() string {
+	return fmt.Sprintf("%s|%s|%d|%s|%s|%s", f.Code, strings.ToLower(f.Repository), f.IssueNumber, f.RunID, f.Path, f.Session)
+}
+
 func (f Finding) String() string {
 	identity := f.Path
 	if f.Repository != "" {
-		identity = fmt.Sprintf("%s#%d", f.Repository, f.IssueNumber)
+		identity = f.Repository
+		if f.IssueNumber > 0 {
+			identity = fmt.Sprintf("%s#%d", f.Repository, f.IssueNumber)
+		}
 	}
 	if f.Session != "" {
 		identity = f.Session

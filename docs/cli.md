@@ -35,11 +35,14 @@ attempts and picks up completed results. Reconciliation verifies GitHub labels,
 PRs, Git ownership, and sessions; orphaned claims and artifacts are reported
 without deletion or automatic redispatch. Pending stops finish before normal
 reconciliation can restore labels or advance work. A startup reconcile failure
-where GitHub could not answer cleanly is reported and retried on later ticks
-instead of stopping the control plane; local-state failures and conclusive
-GitHub answers still refuse to start. Dependency checks that cannot reach GitHub
-report unverifiable findings rather than errors (see [doctor](doctor.md)), so an
-outage at boot does not stop the dashboard.
+scoped to one repository or run at the GitHub boundary—including a missing,
+forbidden, or unreadable repository—is reported on the dashboard and retried on
+later ticks instead of stopping the control plane. Only local-state failures still refuse to
+start. Dependency checks that cannot reach GitHub report unverifiable findings
+rather than errors (see [doctor](doctor.md)), and a deleted, renamed, forbidden,
+or otherwise unreadable repository's access findings are printed without
+stopping startup, so that repository cannot keep the others offline. Local
+workspace and repository content failures still refuse to start.
 
 `mergeyard plan [--repo owner/repo] [--json]` previews the next claims without
 changing labels, posting comments, creating runs/worktrees, or writing SQLite.

@@ -151,13 +151,15 @@ immediately and at `poll_interval`, including while paused or at capacity.
 Discovery performs no claims and reads the scheduler's shared label-filtered poll
 listing, reusing a snapshot for up to two poll intervals so the dashboard and
 the scheduler do not both fetch at each boundary. Blocker reads are reused while
-an issue's listing snapshot is unchanged. It preserves the last successful
-snapshot on failure and shows a stale-data notice. Discovery errors fail closed:
-an issue with unknown dependency status is never displayed as ready. Run lifecycle data
-always comes from SQLite, so claims and phase/PR transitions immediately
-supersede stale issue snapshots. The doctor callback runs once with a bounded
-context outside HTTP requests. Cancel and join RunUpdates before closing the
-runtime.
+an issue's listing snapshot is unchanged. A GitHub failure scoped to one
+repository or run does not hide the others: readable repositories refresh, and
+the failed repository or issue is shown in the needs-attention section with its
+diagnostic code until a later pass succeeds. Other discovery errors fail closed
+and preserve the last successful snapshot with a stale-data notice. An issue with
+unknown dependency status is never displayed as ready. Run lifecycle data always
+comes from SQLite, so claims and phase/PR transitions immediately supersede stale
+issue snapshots. The doctor callback runs once with a bounded context outside
+HTTP requests. Cancel and join RunUpdates before closing the runtime.
 
 SSE notifications refresh the current page for run, phase, PR, scheduler,
 queue and diagnostic changes. Each persisted implement attempt emits

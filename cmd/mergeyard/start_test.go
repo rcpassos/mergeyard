@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/doctor"
 	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 )
 
@@ -161,6 +163,30 @@ exit 128
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("shutdown: %v, stderr: %s", err, stderr.String())
+	}
+}
+
+func TestRepositoryScopedDoctorErrorsDoNotStopStartup(t *testing.T) {
+	cfg, _, err := config.Parse([]byte("repositories: [{repo: owner/broken}, {repo: owner/disabled, enabled: false}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := doctor.Report{Findings: []doctor.Finding{
+		{Severity: doctor.Error, Code: "github.labels_check_failed", Scope: "owner/broken", Message: "repository is gone"},
+		{Severity: doctor.Error, Code: "github.invalid_response", Scope: "owner/disabled", Message: "malformed GitHub response"},
+		{Severity: doctor.Error, Code: "git.origin_inaccessible", Scope: "owner/broken implementer", Message: "repository is gone"},
+	}}
+	if blockingDoctorErrors(report, cfg) {
+		t.Fatal("a repository access error refused startup")
+	}
+	report.Findings = append(report.Findings, doctor.Finding{Severity: doctor.Error, Code: "git.fetch", Scope: "owner/broken", Message: "local clone failed"})
+	if !blockingDoctorErrors(report, cfg) {
+		t.Fatal("a local repository failure did not refuse startup")
+	}
+	report.Findings = report.Findings[:len(report.Findings)-1]
+	report.Findings = append(report.Findings, doctor.Finding{Severity: doctor.Error, Code: "internal.tool_missing", Scope: "gh", Message: "missing"})
+	if !blockingDoctorErrors(report, cfg) {
+		t.Fatal("a machine-scoped doctor error did not refuse startup")
 	}
 }
 
