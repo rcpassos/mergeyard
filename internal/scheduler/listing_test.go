@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -321,6 +322,101 @@ func TestQueueScopesUnreadableRefusedIssues(t *testing.T) {
 	}
 	if len(report.Failures) != 1 || report.Failures[0].IssueNumber != 1 {
 		t.Fatalf("queue failures = %+v", report.Failures)
+	}
+}
+
+// deadlineGitHub blocks refused-issue reads for one repository until the
+// caller's deadline, then reports the adapter's timeout.
+type deadlineGitHub struct {
+	*fakeGitHub
+	slowRepo string
+	started  chan struct{}
+}
+
+func (g *deadlineGitHub) GetIssue(ctx context.Context, repo string, number int) (github.Issue, error) {
+	if repo != g.slowRepo {
+		return g.fakeGitHub.GetIssue(ctx, repo, number)
+	}
+	if g.started != nil {
+		close(g.started)
+		g.started = nil
+	}
+	<-ctx.Done()
+	g.fakeGitHub.calls.issueReads++
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return github.Issue{}, &fault.Error{Code: "github.canceled", Message: "The GitHub request was canceled; it will retry", Err: ctx.Err()}
+	}
+	return github.Issue{}, &fault.Error{Code: "github.timeout", Message: "The GitHub request timed out; it will retry", Err: ctx.Err()}
+}
+
+// A refused-issue read that consumes the dashboard refresh deadline stays
+// scoped to its issue instead of discarding other repositories' discoveries,
+// and backs off so the next refresh does not return to the same slow read.
+func TestQueueScopesRefusedIssueDeadlineAndBacksOff(t *testing.T) {
+	ctx := context.Background()
+	api := &fakeGitHub{issues: map[string][]github.Issue{
+		"owner/healthy": {ready(1)},
+		"owner/broken":  {},
+	}}
+	gated := &deadlineGitHub{fakeGitHub: api, slowRepo: "owner/broken"}
+	s, runtime := configured(t, gated, "repositories:\n  - repo: owner/healthy\n  - repo: owner/broken\n", rejectingGit{})
+	if _, err := runtime.DB.Exec("INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES('owner/broken',7,'Untrusted label actor.','ready-for-agent',0)"); err != nil {
+		t.Fatal(err)
+	}
+	for pass := 1; pass <= 2; pass++ {
+		refreshCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+		report, err := s.QueueReport(refreshCtx)
+		cancel()
+		if err == nil || !scheduler.GitHubFailure(err) {
+			t.Fatalf("pass %d queue error = %v, want a scoped refused-issue timeout", pass, err)
+		}
+		if len(report.Issues) != 1 || !strings.EqualFold(report.Issues[0].Repository, "owner/healthy") || report.Issues[0].Issue.Number != 1 {
+			t.Fatalf("pass %d lost the healthy repository: %+v", pass, report.Issues)
+		}
+		if len(report.Failures) != 1 || report.Failures[0].Code != "reconcile.issue_failed" || report.Failures[0].IssueNumber != 7 || !strings.Contains(report.Failures[0].Message, "github.timeout") {
+			t.Fatalf("pass %d queue failures = %+v", pass, report.Failures)
+		}
+	}
+	if api.calls.issueReads != 1 {
+		t.Fatalf("refused-issue reads across deadline passes = %d, want one before backoff", api.calls.issueReads)
+	}
+}
+
+// A shutdown or disconnected caller aborts the pass without recording the
+// refused read as the issue's cached state, so the next refresh retries it.
+func TestQueueDoesNotCacheRefusedReadCancellation(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{
+		"owner/healthy": {ready(1)},
+		"owner/broken":  {},
+	}}
+	started := make(chan struct{})
+	gated := &deadlineGitHub{fakeGitHub: api, slowRepo: "owner/broken", started: started}
+	s, runtime := configured(t, gated, "repositories:\n  - repo: owner/healthy\n  - repo: owner/broken\n", rejectingGit{})
+	if _, err := runtime.DB.Exec("INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES('owner/broken',7,'Untrusted label actor.','ready-for-agent',0)"); err != nil {
+		t.Fatal(err)
+	}
+	refreshCtx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+	report, err := s.QueueReport(refreshCtx)
+	if err == nil || scheduler.GitHubFailure(err) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled queue error = %v, want the caller's cancellation", err)
+	}
+	if len(report.Issues) != 1 || report.Issues[0].Issue.Number != 1 {
+		t.Fatalf("canceled pass lost the healthy repository: %+v", report.Issues)
+	}
+
+	// The canceled read was not cached: the next pass tries it again.
+	api.calls = githubCalls{}
+	deadlineCtx, deadlineCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer deadlineCancel()
+	if _, err := s.QueueReport(deadlineCtx); !scheduler.GitHubFailure(err) {
+		t.Fatalf("retried queue error = %v, want a scoped timeout", err)
+	}
+	if api.calls.issueReads != 1 {
+		t.Fatalf("canceled refused read was cached: %d reads on retry", api.calls.issueReads)
 	}
 }
 

@@ -83,6 +83,29 @@ func issueNotFound(err error) bool {
 	return errors.As(err, &coded) && coded.Code == "github.not_found"
 }
 
+// refusedReadTimedOut distinguishes the dashboard refresh deadline from a
+// shutdown or disconnected caller. The GitHub adapter reports an expired
+// deadline as github.timeout and any other cancellation as github.canceled.
+func refusedReadTimedOut(err error) bool {
+	return githubFaultCode(err) == "github.timeout" || errors.Is(err, context.DeadlineExceeded)
+}
+
+// normalizeRefusedReadError turns a raw deadline into the GitHub adapter's
+// timeout code so the failure stays scoped to its refused issue.
+func normalizeRefusedReadError(err error) error {
+	if refusedReadTimedOut(err) && !githubFailure(err) {
+		return &fault.Error{Code: "github.timeout", Err: err}
+	}
+	return err
+}
+
+// refusedReadCanceled reports a caller that stopped the pass rather than the
+// dashboard refresh deadline. Those failures must not be cached as the issue's
+// state; the next refresh retries them.
+func refusedReadCanceled(ctx context.Context, err error) bool {
+	return ctx.Err() != nil && !refusedReadTimedOut(err)
+}
+
 // withRefusedIssues adds refused issues that no longer carry a Mergeyard label,
 // so the dashboard keeps showing them and their reason until a trusted
 // maintainer relabels them. Only refusals missing from the listing are read
@@ -131,16 +154,25 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, repo config.Repositor
 			continue
 		}
 		if err != nil {
-			if ctx.Err() != nil {
+			err = normalizeRefusedReadError(err)
+			if ctx.Err() != nil && !refusedReadTimedOut(err) {
+				// Shutdown or a disconnected caller: stop the pass instead of
+				// pretending this issue's read was a scoped failure.
 				return nil, nil, ctx.Err()
 			}
-			if githubFailure(err) {
-				// Only this refusal is unreadable; keep the rest of the
-				// repository's queue visible.
-				failed = append(failed, issueReadFailure{number: number, err: err})
-				continue
+			if !githubFailure(err) {
+				return nil, nil, err
 			}
-			return nil, nil, err
+			// Only this refusal is unreadable; keep the rest of the
+			// repository's queue visible.
+			failed = append(failed, issueReadFailure{number: number, err: err})
+			if ctx.Err() != nil {
+				// The refresh deadline is spent. The read is already cached as
+				// a failure, so the next refresh backs off instead of retrying
+				// it, and the caller can still show what it discovered.
+				break
+			}
+			continue
 		}
 		if issue.State != github.Open {
 			// The dashboard cannot show closed issues. A settled row would be
@@ -167,7 +199,7 @@ func (s *Scheduler) refusedIssue(ctx context.Context, repo config.Repository, nu
 		return entry.issue, entry.err
 	}
 	if err := s.refusalFetch.Lock(ctx); err != nil {
-		return github.Issue{}, err
+		return github.Issue{}, normalizeRefusedReadError(err)
 	}
 	defer s.refusalFetch.Unlock()
 	// Another reader may have read it while we waited for the gate.
@@ -182,12 +214,18 @@ func (s *Scheduler) refusedIssue(ctx context.Context, repo config.Repository, nu
 		if issueNotFound(err) {
 			return github.Issue{}, err
 		}
+		err = normalizeRefusedReadError(err)
 		if entry, ok := s.refusalSnapshots.get(key); ok && entry.err == nil {
-			entry.fetchedAt = now
-			s.refusalSnapshots.put(key, entry)
+			// Keep the last readable snapshot. A deadline or ordinary failure
+			// backs off; a canceled caller keeps the old read time so the next
+			// pass retries it.
+			if !refusedReadCanceled(ctx, err) {
+				entry.fetchedAt = now
+				s.refusalSnapshots.put(key, entry)
+			}
 			return entry.issue, nil
 		}
-		if ctx.Err() != nil || !githubFailure(err) {
+		if refusedReadCanceled(ctx, err) || !githubFailure(err) {
 			// A canceled pass or local failure must not be remembered as the
 			// issue's state; the next refresh retries it.
 			return github.Issue{}, err
