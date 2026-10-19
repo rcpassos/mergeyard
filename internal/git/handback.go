@@ -8,7 +8,7 @@ import (
 // InspectHandback reconciles published ancestry while allowing manual commits
 // and edits. It never adopts a remote head absent from the preserved local work.
 func (m *Manager) InspectHandback(ctx context.Context, run Run, target string) (string, error) {
-	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	ctx, release, err := m.begin(ctx, m.timeouts.Fetch)
 	if err != nil {
 		return "", err
 	}
@@ -50,12 +50,12 @@ func (m *Manager) inspectHandbackAncestry(ctx context.Context, run Run) (string,
 func (m *Manager) CommitHandback(ctx context.Context, run Run, previous string) (CommitResult, error) {
 	// Publication covers the remote ancestry read and the manual commit, each
 	// with its own class deadline.
-	ctx, release, err := m.begin(ctx, m.timeouts.publication())
+	ctx, release, err := m.begin(ctx, m.timeouts.publicationBudget())
 	if err != nil {
 		return CommitResult{}, err
 	}
 	defer release()
-	remoteCtx, remoteCancel := m.remoteDeadline(ctx)
+	remoteCtx, remoteCancel := m.fetchDeadline(ctx)
 	remote, err := m.inspectHandbackAncestry(remoteCtx, run)
 	remoteCancel()
 	if err != nil {
@@ -73,33 +73,43 @@ func (m *Manager) CommitHandback(ctx context.Context, run Run, previous string) 
 // PushHandback accepts only the inspected remote or our journaled commit,
 // including a genuinely absent branch before PR creation. Never force push.
 func (m *Manager) PushHandback(ctx context.Context, run Run, previous, target string) error {
-	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	ctx, release, err := m.begin(ctx, m.timeouts.publicationBudget())
 	if err != nil {
 		return err
 	}
 	defer release()
-	if err := m.inspectReview(ctx, run); err != nil {
+	remoteCtx, remoteCancel := m.fetchDeadline(ctx)
+	origin, publish, err := m.inspectHandbackPush(remoteCtx, run, previous, target)
+	remoteCancel()
+	if err != nil || !publish {
 		return err
+	}
+	return m.pushWithinBudget(ctx, run, origin, target)
+}
+
+func (m *Manager) inspectHandbackPush(ctx context.Context, run Run, previous, target string) (string, bool, error) {
+	if err := m.inspectReview(ctx, run); err != nil {
+		return "", false, err
 	}
 	if !shaPattern.MatchString(target) {
-		return failure("handback.head_ambiguous", run.Path, errors.New("invalid manual commit"))
+		return "", false, failure("handback.head_ambiguous", run.Path, errors.New("invalid manual commit"))
 	}
 	if err := inspectFixTarget(ctx, run, target); err != nil {
-		return err
+		return "", false, err
 	}
 	origin, err := verifyOrigin(ctx, run)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	remote, err := optionalRemoteHead(ctx, run, origin)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	if remote == target {
-		return nil
+		return origin, false, nil
 	}
 	if remote != previous {
-		return failure("handback.head_ambiguous", run.Path, errors.New("remote changed during manual publication"))
+		return "", false, failure("handback.head_ambiguous", run.Path, errors.New("remote changed during manual publication"))
 	}
-	return push(ctx, run, origin, target)
+	return origin, true, nil
 }

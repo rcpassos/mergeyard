@@ -21,7 +21,7 @@ type BaseMerge struct {
 // CheckBase fetches the current base before computing a real three-way merge.
 // Exit 1 is a merge conflict; all other errors leave mergeability unknown.
 func (m *Manager) CheckBase(ctx context.Context, run Run, branch, head string) (BaseMerge, error) {
-	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	ctx, release, err := m.begin(ctx, m.timeouts.Fetch)
 	if err != nil {
 		return BaseMerge{}, err
 	}

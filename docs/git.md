@@ -9,17 +9,20 @@ credentials, honors transport URL rewrites, and disables terminal prompts.
 
 Every managed operation carries a deadline. Quick local reads of refs, the
 index, or single paths get `Timeouts.Metadata` (`2m`). Operations that may run
-repository hooks, stage or restore the worktree, or create and remove one get
-`Timeouts.Worktree` (`10m`). Operations that contact the configured remote get
-`Timeouts.Remote` (`10m`). `New` uses those defaults; `NewWithTimeouts` selects
+repository hooks, stage, restore or remove the worktree, create one, or scan
+its full status get `Timeouts.Worktree` (`10m`). The first transfer into a
+managed base gets `Timeouts.Clone` (`1h`). Routine fetches and remote reads get
+`Timeouts.Fetch` (`10m`). Pushes, including the repository's pre-push hook, get
+`Timeouts.Push` (`30m`). `New` uses those defaults; `NewWithTimeouts` selects
 shorter or longer ones. A caller-supplied deadline always wins, including while
 waiting for another managed operation to finish, so the scheduler's
 five-second publication and cleanup budgets stay authoritative.
 
 An operation that commits and publishes keeps a budget per phase: `Worktree`
-for the commit and its hooks, `Remote` for the push and its remote reads, and
-an outer bound that covers both, so a slow hook cannot consume the push's
-deadline and a stalled push cannot run longer than `Remote`. `CommitAndPush`,
+for the commit and its hooks, `Fetch` for remote reads, and `Push` for the push
+and its pre-push hook, inside an outer bound that covers every phase. A hook
+that outlasts the routine fetch budget but fits the push budget therefore
+publishes, while a stalled push cannot run longer than `Push`. `CommitAndPush`,
 `CommitFix`, and `CommitHandback` behave this way; the checks path calls
 `CommitImplement` and `PushImplement`, which each bound one phase.
 
@@ -27,10 +30,15 @@ A command that reaches its deadline is killed with its owned process group, and
 the call returns once its output pipes are drained, so a repository hook or
 transport helper that outlives Git cannot extend the operation; a command that
 exited successfully still reports its own exit status. Deadlines are coded
-failures: `git.timeout` names the stalled operation (for example
-`push timed out`) or the serialized wait, with the deadline as its cause. An
-explicitly cancelled context still reports `git.canceled`. Both flow through
-the scheduler's ordinary retry and attention paths, and the next tick proceeds.
+failures: `git.timeout` names the stalled operation, how long it ran
+and, for a phase deadline, the class budget that bounded it (for example
+`push timed out after 30m0s; its push budget is 30m0s`). An earlier caller or
+outer operation deadline is reported as `<operation> timed out after
+<elapsed>, before its <class> budget of <budget> expired`, and a serialized
+manager wait is reported as `wait timed out`. The dashboard and the saved
+attention message show that explanation. An explicitly cancelled context still reports
+`git.canceled`. Both flow through the scheduler's ordinary retry and attention
+paths, and the next tick proceeds.
 
 Git never prompts from an unattended control plane. `GIT_TERMINAL_PROMPT=0` is
 always set, `LC_ALL=C` keeps diagnostics stable, and SSH defaults to
@@ -55,8 +63,13 @@ queries the remote's current default branch on each preparation.
 
 Preparation clones once into `repos/<owner>-<repo>/base/`, verifies origin,
 refuses a dirty base, fetches and prunes, and checks out the fetched base in
-detached HEAD. Each run gets `worktrees/<owner>-<repo>/<run-id>` on
-`mergeyard/issue-<number>`. Refreshing the base leaves other run worktrees alone.
+detached HEAD. The first clone runs under the clone budget in a staging
+directory beside the base and is renamed into place only after Git succeeds, so
+a killed or timed-out transfer never looks like a completed base. The next
+attempt therefore runs a fresh clone under the clone budget rather than
+restarting the transfer as a routine fetch. Each run gets
+`worktrees/<owner>-<repo>/<run-id>` on `mergeyard/issue-<number>`. Refreshing
+the base leaves other run worktrees alone.
 
 Persist the returned `Run`, including `BaseSHA`, with the runtime run record.
 Pass recorded runs through `PrepareRequest.KnownRuns` on reconciliation. An

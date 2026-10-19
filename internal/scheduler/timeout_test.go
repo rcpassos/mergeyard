@@ -93,19 +93,19 @@ exec ` + real + ` "$@"
 func TestHungGitPublicationTimesOutAndTheNextTickProceeds(t *testing.T) {
 	_, rt, api, _, cfg, r := localFlow(t, successfulScript)
 	installHangingGit(t, "push")
-	// Local preparation and fetch fit the remote budget; the push exhausts it.
+	// Local preparation and fetch fit their budgets; the push exhausts its own.
 	// The budget leaves headroom for slow CI runners while staying far below
 	// the test's own deadlines.
 	manager := managedgit.NewWithTimeouts(rt.Workspace, managedgit.Timeouts{
-		Metadata: 30 * time.Second, Worktree: 30 * time.Second, Remote: 6 * time.Second,
+		Metadata: 30 * time.Second, Worktree: 30 * time.Second, Clone: 30 * time.Second, Fetch: 6 * time.Second, Push: 6 * time.Second,
 	})
 	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: api, Runner: r, Git: manager})
 	if err != nil {
 		t.Fatal(err)
 	}
 	failed := finish(t, s, workflow.NeedsAttention, workflow.Implement)
-	if failed.LastErrorCode != "git.timeout" || !strings.Contains(failed.LastErrorMessage, "push timed out") {
-		t.Fatalf("hung publication did not end as a coded timeout: %+v", failed)
+	if failed.LastErrorCode != "git.timeout" || !strings.Contains(failed.LastErrorMessage, "push timed out") || !strings.Contains(failed.LastErrorMessage, "push budget") {
+		t.Fatalf("hung publication did not end as an explained, coded timeout: %+v", failed)
 	}
 	if failed.FixHistory != nil || failed.ReviewRound != 0 {
 		t.Fatalf("timeout advanced the run: %+v", failed)

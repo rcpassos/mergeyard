@@ -38,15 +38,22 @@ type Timeouts struct {
 	// Worktree bounds operations that may run repository hooks, stage or
 	// restore the worktree, or create and remove one.
 	Worktree time.Duration
-	// Remote bounds operations that contact the configured remote.
-	Remote time.Duration
+	// Clone bounds the first transfer into a managed base. It is deliberately
+	// larger than Fetch because there is no local history to build on.
+	Clone time.Duration
+	// Fetch bounds routine remote reads that build on an existing clone.
+	Fetch time.Duration
+	// Push bounds publication, including the repository's pre-push hook.
+	Push time.Duration
 }
 
 // Defaults for Timeouts fields left unset.
 const (
 	defaultMetadataTimeout = 2 * time.Minute
 	defaultWorktreeTimeout = 10 * time.Minute
-	defaultRemoteTimeout   = 10 * time.Minute
+	defaultCloneTimeout    = time.Hour
+	defaultFetchTimeout    = 10 * time.Minute
+	defaultPushTimeout     = 30 * time.Minute
 )
 
 func New(w *workspace.Workspace) *Manager { return NewWithTimeouts(w, Timeouts{}) }
@@ -59,22 +66,61 @@ func NewWithTimeouts(w *workspace.Workspace, timeouts Timeouts) *Manager {
 	if timeouts.Worktree <= 0 {
 		timeouts.Worktree = defaultWorktreeTimeout
 	}
-	if timeouts.Remote <= 0 {
-		timeouts.Remote = defaultRemoteTimeout
+	if timeouts.Clone <= 0 {
+		timeouts.Clone = defaultCloneTimeout
+	}
+	if timeouts.Fetch <= 0 {
+		timeouts.Fetch = defaultFetchTimeout
+	}
+	if timeouts.Push <= 0 {
+		timeouts.Push = defaultPushTimeout
 	}
 	return &Manager{root: w.Root, timeouts: timeouts}
 }
 
-// publication returns the budget for an operation that commits and publishes:
-// every phase keeps its own class deadline instead of sharing one.
-func (t Timeouts) publication() time.Duration { return t.Worktree + t.Remote }
+// Budget class names attached to phase contexts.
+const (
+	budgetMetadata = "metadata"
+	budgetWorktree = "worktree"
+	budgetClone    = "clone"
+	budgetFetch    = "fetch"
+	budgetPush     = "push"
+)
+
+// publicationBudget returns the outer budget for an operation that commits and
+// publishes: every phase keeps its own class deadline instead of sharing one.
+func (t Timeouts) publicationBudget() time.Duration {
+	return t.Metadata + t.Worktree + t.Fetch + t.Push
+}
+
+// prepareBudget returns the outer budget for a preparation: clone, routine
+// fetch, status, checkout, recovery and worktree creation each keep their own
+// deadline inside it. The sum is a backstop only; every command is bounded by
+// its class deadline first.
+func (t Timeouts) prepareBudget() time.Duration {
+	return t.Clone + 4*t.Worktree + 2*t.Fetch + 4*t.Metadata
+}
+
+// budget is attached to a phase context so an expired deadline can name the
+// class budget that bounded it and how long the phase actually ran.
+type budget struct {
+	name    string
+	limit   time.Duration
+	started time.Time
+}
+
+type budgetKey struct{}
+
+func withBudget(ctx context.Context, name string, limit time.Duration) context.Context {
+	return context.WithValue(ctx, budgetKey{}, budget{name: name, limit: limit, started: time.Now()})
+}
 
 // begin serializes one managed operation, bounds it with the operation class's
 // deadline, and releases a caller that has already given up. Callers must call
 // the returned release function.
 func (m *Manager) begin(ctx context.Context, timeout time.Duration) (context.Context, func(), error) {
 	if err := m.mu.Lock(ctx); err != nil {
-		return nil, nil, contextFailure("git.wait", "", err)
+		return nil, nil, contextFailure(ctx, "git.wait", "", err)
 	}
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	return bounded, func() { cancel(); m.mu.Unlock() }, nil
@@ -83,13 +129,29 @@ func (m *Manager) begin(ctx context.Context, timeout time.Duration) (context.Con
 // worktreeDeadline bounds the commit phase inside an operation whose outer
 // budget covers every phase. Callers must call the returned cancel.
 func (m *Manager) worktreeDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, m.timeouts.Worktree)
+	return m.phaseDeadline(ctx, budgetWorktree, m.timeouts.Worktree)
 }
 
-// remoteDeadline bounds the remote phase inside an operation whose outer budget
-// covers every phase. Callers must call the returned cancel.
-func (m *Manager) remoteDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, m.timeouts.Remote)
+// cloneDeadline bounds the first transfer into a managed base. Callers must
+// call the returned cancel.
+func (m *Manager) cloneDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	return m.phaseDeadline(ctx, budgetClone, m.timeouts.Clone)
+}
+
+// fetchDeadline bounds a routine remote read or fetch. Callers must call the
+// returned cancel.
+func (m *Manager) fetchDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	return m.phaseDeadline(ctx, budgetFetch, m.timeouts.Fetch)
+}
+
+// pushDeadline bounds a push and the repository's pre-push hook. Callers must
+// call the returned cancel.
+func (m *Manager) pushDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	return m.phaseDeadline(ctx, budgetPush, m.timeouts.Push)
+}
+
+func (m *Manager) phaseDeadline(ctx context.Context, name string, limit time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(withBudget(ctx, name, limit), limit)
 }
 
 // PrepareRequest describes a new or reconcilable run. RemoteURL defaults to
@@ -146,8 +208,10 @@ var shaPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // Prepare clones or refreshes the managed base and creates one isolated
 // worktree. The base is detached so concurrent runs never check out its branch.
+// The first clone, routine fetch and worktree creation each keep their own
+// deadline inside the outer preparation bound.
 func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) {
-	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	ctx, release, err := m.begin(ctx, m.timeouts.prepareBudget())
 	if err != nil {
 		return Run{}, err
 	}
@@ -157,58 +221,77 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 		return Run{}, err
 	}
 	if _, err := os.Stat(run.BasePath); errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(filepath.Dir(run.BasePath), 0700); err != nil {
-			return Run{}, failure("git.clone", run.BasePath, err)
-		}
-		if _, err := command(ctx, m.root, "git.clone", "clone", "--", run.RemoteURL, run.BasePath); err != nil {
+		if err := m.cloneBase(ctx, run); err != nil {
 			return Run{}, err
 		}
 	} else if err != nil {
 		return Run{}, failure("git.clone", run.BasePath, err)
 	}
-	if err := verifyBase(ctx, run.BasePath); err != nil {
+	metaCtx, metaCancel := m.phaseDeadline(ctx, budgetMetadata, m.timeouts.Metadata)
+	if err := verifyBase(metaCtx, run.BasePath); err != nil {
+		metaCancel()
 		return Run{}, err
 	}
-	if _, err := verifyOrigin(ctx, run); err != nil {
+	if _, err := verifyOrigin(metaCtx, run); err != nil {
+		metaCancel()
 		return Run{}, err
 	}
-	status, err := command(ctx, run.BasePath, "git.status", "status", "--porcelain", "--untracked-files=all")
+	metaCancel()
+	statusCtx, statusCancel := m.worktreeDeadline(ctx)
+	status, err := command(statusCtx, run.BasePath, "git.status", "status", "--porcelain", "--untracked-files=all")
+	statusCancel()
 	if err != nil {
 		return Run{}, err
 	}
 	if status != "" {
 		return Run{}, failure("git.dirty_base", run.BasePath, errors.New("reconcile changes in the base checkout before starting new work"))
 	}
-	if _, err := command(ctx, run.BasePath, "git.fetch", "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+	fetchCtx, fetchCancel := m.fetchDeadline(ctx)
+	_, err = command(fetchCtx, run.BasePath, "git.fetch", "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*")
+	fetchCancel()
+	if err != nil {
 		return Run{}, err
 	}
 	run.BaseBranch = req.BaseBranch
 	if run.BaseBranch == "" {
-		if _, err := command(ctx, run.BasePath, "git.base_branch", "remote", "set-head", "origin", "--auto"); err != nil {
+		setHeadCtx, setHeadCancel := m.fetchDeadline(ctx)
+		_, err = command(setHeadCtx, run.BasePath, "git.base_branch", "remote", "set-head", "origin", "--auto")
+		setHeadCancel()
+		if err != nil {
 			return Run{}, err
 		}
-		ref, err := command(ctx, run.BasePath, "git.base_branch", "symbolic-ref", "refs/remotes/origin/HEAD")
+		refCtx, refCancel := m.phaseDeadline(ctx, budgetMetadata, m.timeouts.Metadata)
+		ref, err := command(refCtx, run.BasePath, "git.base_branch", "symbolic-ref", "refs/remotes/origin/HEAD")
+		refCancel()
 		if err != nil {
 			return Run{}, err
 		}
 		run.BaseBranch = strings.TrimPrefix(ref, "refs/remotes/origin/")
 	}
-	if _, err := command(ctx, run.BasePath, "git.base_branch", "check-ref-format", "refs/heads/"+run.BaseBranch); err != nil {
-		return Run{}, err
+	branchCtx, branchCancel := m.phaseDeadline(ctx, budgetMetadata, m.timeouts.Metadata)
+	_, err = command(branchCtx, run.BasePath, "git.base_branch", "check-ref-format", "refs/heads/"+run.BaseBranch)
+	if err == nil {
+		baseRef := "refs/remotes/origin/" + run.BaseBranch
+		run.BaseSHA, err = command(branchCtx, run.BasePath, "git.base_branch", "rev-parse", "--verify", baseRef+"^{commit}")
 	}
-	baseRef := "refs/remotes/origin/" + run.BaseBranch
-	run.BaseSHA, err = command(ctx, run.BasePath, "git.base_branch", "rev-parse", "--verify", baseRef+"^{commit}")
+	branchCancel()
 	if err != nil {
 		return Run{}, err
 	}
-	if _, err := command(ctx, run.BasePath, "git.checkout", "checkout", "--detach", run.BaseSHA); err != nil {
+	checkoutCtx, checkoutCancel := m.worktreeDeadline(ctx)
+	if _, err := command(checkoutCtx, run.BasePath, "git.checkout", "checkout", "--detach", run.BaseSHA); err != nil {
+		checkoutCancel()
 		return Run{}, err
 	}
-	remoteExists, err := refExists(ctx, run.BasePath, "refs/remotes/origin/"+run.Branch)
+	checkoutCancel()
+	refCtx, refCancel := m.phaseDeadline(ctx, budgetMetadata, m.timeouts.Metadata)
+	remoteExists, err := refExists(refCtx, run.BasePath, "refs/remotes/origin/"+run.Branch)
 	if err != nil {
+		refCancel()
 		return Run{}, err
 	}
-	localExists, err := refExists(ctx, run.BasePath, "refs/heads/"+run.Branch)
+	localExists, err := refExists(refCtx, run.BasePath, "refs/heads/"+run.Branch)
+	refCancel()
 	if err != nil {
 		return Run{}, err
 	}
@@ -245,32 +328,39 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 	if (localExists || pathExists) && !owned && !intentOwned {
 		return Run{}, failure("git.branch_conflict", run.Path, errors.New("existing branch or worktree is not owned by this run"))
 	}
+	recoveryCtx, recoveryCancel := m.worktreeDeadline(ctx)
 	if pathExists {
 		if !owned {
 			// Creation stopped partway, so the tree never reached an agent.
-			if err := removeInterruptedWorktree(ctx, run, intent.BaseSHA); err != nil {
+			if err := removeInterruptedWorktree(recoveryCtx, run, intent.BaseSHA); err != nil {
+				recoveryCancel()
 				return Run{}, err
 			}
 			localExists = false
 		} else {
-			if err := verifyWorktree(ctx, run); err != nil {
+			if err := verifyWorktree(recoveryCtx, run); err != nil {
+				recoveryCancel()
 				return Run{}, err
 			}
+			recoveryCancel()
 			return run, nil
 		}
 	} else if owned {
 		// A removed directory may still have registered worktree metadata.
-		if _, err := command(ctx, run.BasePath, "git.worktree", "worktree", "prune", "--expire", "now"); err != nil {
+		if _, err := command(recoveryCtx, run.BasePath, "git.worktree", "worktree", "prune", "--expire", "now"); err != nil {
+			recoveryCancel()
 			return Run{}, err
 		}
 	}
 	if intentOwned && localExists {
 		// A killed 'worktree add -b' may create the branch before its directory.
-		if err := removeInterruptedWorktree(ctx, run, intent.BaseSHA); err != nil {
+		if err := removeInterruptedWorktree(recoveryCtx, run, intent.BaseSHA); err != nil {
+			recoveryCancel()
 			return Run{}, err
 		}
 		localExists = false
 	}
+	recoveryCancel()
 	if err := writePrepareIntent(run); err != nil {
 		return Run{}, err
 	}
@@ -287,12 +377,43 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 		}
 		args = append(args, "-b", run.Branch, run.Path, start)
 	}
-	if _, err := command(ctx, run.BasePath, "git.worktree", args...); err != nil {
+	worktreeCtx, worktreeCancel := m.worktreeDeadline(ctx)
+	if _, err := command(worktreeCtx, run.BasePath, "git.worktree", args...); err != nil {
+		worktreeCancel()
 		return Run{}, err
 	}
+	worktreeCancel()
 	// A completed creation is durable once its caller persists the run, so the
 	// intent lasts only while worktree add can still be interrupted.
 	return run, removePrepareIntent(run)
+}
+
+// cloneBase performs the first transfer beside the managed base and renames it
+// into place only after Git reports success. A killed or timed-out clone
+// therefore never looks like a usable base, and the next attempt clones again
+// under the clone budget instead of starting the full transfer as a routine
+// fetch under the shorter fetch budget.
+func (m *Manager) cloneBase(ctx context.Context, run Run) error {
+	parent := filepath.Dir(run.BasePath)
+	if err := os.MkdirAll(parent, 0700); err != nil {
+		return failure("git.clone", run.BasePath, err)
+	}
+	staging := filepath.Join(parent, ".base-clone")
+	if err := os.RemoveAll(staging); err != nil {
+		return failure("git.clone", run.BasePath, err)
+	}
+	cloneCtx, cloneCancel := m.cloneDeadline(ctx)
+	_, err := command(cloneCtx, m.root, "git.clone", "clone", "--", run.RemoteURL, staging)
+	cloneCancel()
+	if err != nil {
+		_ = os.RemoveAll(staging)
+		return err
+	}
+	if err := os.Rename(staging, run.BasePath); err != nil {
+		_ = os.RemoveAll(staging)
+		return failure("git.clone", run.BasePath, fmt.Errorf("publish completed clone: %w", err))
+	}
+	return nil
 }
 
 func (m *Manager) newRun(req PrepareRequest) (Run, error) {
@@ -484,7 +605,7 @@ func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
 	branch, err := command(ctx, run.Path, "git.worktree", "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		if ctx.Err() != nil {
-			return false, contextFailure("git.worktree", run.Path, ctx.Err())
+			return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
 		}
 		// Git writes the linked registration before HEAD, so a deadline here
 		// leaves no readable checkout. Accept it only when the link, backlink,
@@ -497,7 +618,7 @@ func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
 	common, err := command(ctx, run.Path, "git.worktree", "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		if ctx.Err() != nil {
-			return false, contextFailure("git.worktree", run.Path, ctx.Err())
+			return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
 		}
 		return false, nil
 	}

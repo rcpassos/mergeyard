@@ -12,7 +12,7 @@ import (
 func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target string) (CommitResult, error) {
 	// The fix target is re-observed on the remote before the commit; the remote
 	// read and the commit each keep their class deadline.
-	ctx, release, err := m.begin(ctx, m.timeouts.publication())
+	ctx, release, err := m.begin(ctx, m.timeouts.publicationBudget())
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -30,7 +30,7 @@ func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target st
 	if err != nil {
 		return CommitResult{}, err
 	}
-	remoteCtx, remoteCancel := m.remoteDeadline(ctx)
+	remoteCtx, remoteCancel := m.fetchDeadline(ctx)
 	remote, err := remoteHead(remoteCtx, run, origin)
 	remoteCancel()
 	if err != nil {
@@ -65,7 +65,7 @@ func (m *Manager) CommitFix(ctx context.Context, run Run, phase Phase, target st
 // PushFix accepts either the original target or the journaled new commit on the
 // remote, covering a crash after a successful push. Any other head needs attention.
 func (m *Manager) PushFix(ctx context.Context, run Run, previous, target string) error {
-	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	ctx, release, err := m.begin(ctx, m.timeouts.publicationBudget())
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,9 @@ func (m *Manager) PushFix(ctx context.Context, run Run, previous, target string)
 	if err := inspectFixTarget(ctx, run, target); err != nil {
 		return err
 	}
-	remote, err := remoteHead(ctx, run, origin)
+	remoteCtx, remoteCancel := m.fetchDeadline(ctx)
+	remote, err := remoteHead(remoteCtx, run, origin)
+	remoteCancel()
 	if err != nil {
 		return err
 	}
@@ -96,7 +98,7 @@ func (m *Manager) PushFix(ctx context.Context, run Run, previous, target string)
 	if remote == target {
 		return nil
 	}
-	return push(ctx, run, origin, target)
+	return m.pushWithinBudget(ctx, run, origin, target)
 }
 
 // InspectFixTarget prevents a re-review from testing unpublished edits after

@@ -25,7 +25,7 @@ func (m *Manager) CommitImplement(ctx context.Context, run Run, phase Phase) (Co
 // PushImplement publishes only the commit which passed checks; edits after the
 // check began require inspection instead of quietly changing checked code.
 func (m *Manager) PushImplement(ctx context.Context, run Run, target string) error {
-	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	ctx, release, err := m.begin(ctx, m.timeouts.publicationBudget())
 	if err != nil {
 		return err
 	}
@@ -46,5 +46,5 @@ func (m *Manager) PushImplement(ctx context.Context, run Run, target string) err
 	if err := inspectFixTarget(ctx, run, target); err != nil {
 		return err
 	}
-	return push(ctx, run, origin, target)
+	return m.pushWithinBudget(ctx, run, origin, target)
 }
