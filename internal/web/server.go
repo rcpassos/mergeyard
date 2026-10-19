@@ -68,8 +68,8 @@ const (
 	// session in the URL fragment, which the browser never sends to a server,
 	// and the dashboard script moves it into origin-scoped storage.
 	dashboardSessionFragment = "session"
-	// dashboardTokenTTL bounds how long a printed link stays usable.
-	dashboardTokenTTL = 15 * time.Minute
+	// DashboardTokenLifetime bounds how long a printed link stays usable.
+	DashboardTokenLifetime = 15 * time.Minute
 )
 
 // ownerCredential is the dashboard owner session value together with the exact
@@ -188,7 +188,7 @@ func (s *Server) NewDashboardToken() string {
 			delete(s.tokens, existing)
 		}
 	}
-	s.tokens[value] = now.Add(dashboardTokenTTL)
+	s.tokens[value] = now.Add(DashboardTokenLifetime)
 	return value
 }
 

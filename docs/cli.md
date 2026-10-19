@@ -4,10 +4,14 @@
 order, acquire the configured workspace lock, open/migrate SQLite, run dependency
 checks, reconcile persisted implement and review attempts, and start the scheduler and HTTP/SSE
 server. The dashboard uses `127.0.0.1:<port>` (default 7331). `open_browser: true`
-launches it independently of HTTP serving with the platform browser launcher;
-a delayed launcher does not block the dashboard or CLI controls. Launch failures
-are reported without stopping the runtime. Shutdown cancels and waits for the
-launcher. `--config <path>` works with every command.
+launches it independently of HTTP serving with the platform browser launcher,
+so the single-use token stays out of process arguments; a delayed launcher does
+not block the dashboard or CLI controls. macOS uses the default HTTP browser
+through stdin-fed AppleScript. Linux selects the default web browser explicitly
+and opens a non-hidden owner-only handoff page that confined browsers can read;
+it never falls back to the HTML file association. Launch failures are reported
+without stopping the runtime. Shutdown cancels and waits for the launcher.
+`--config <path>` works with every command.
 
 Every command that contacts a running control plane first reads the workspace's
 owner-only `runtime.secret` and proves knowledge of it on each request; the
@@ -199,9 +203,10 @@ are its loaded values; changing the CLI's file does not reload the running
 process. Settings shows the same effective configuration and durable handback
 grants, including grants without a usage-limit wait. Both Claude and Codex
 are supported in either role. `open` prints the owning runtime's single-use
-dashboard link and hands it to the platform browser launcher; the URL stays
-valid until it is used or expires, and the session it hands the browser lasts
-until the runtime restarts.
+dashboard link and hands it to the platform browser without putting the URL in a
+process command line; the browser is selected through its HTTP association, not
+the HTML file handler. The URL stays valid until it is used or expires, and the
+session it hands the browser lasts until the runtime restarts.
 
 Both production adapters enable temporary-limit detection for their captured
 signals: Claude's headless weekly rejection and Codex's Plus-plan same-day

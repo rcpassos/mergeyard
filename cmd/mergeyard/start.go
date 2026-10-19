@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
 	"strings"
 	"syscall"
 
@@ -112,7 +110,7 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 	if cfg.OpenBrowser {
 		go func() {
 			defer close(browserDone)
-			if err := openBrowser(liveCtx, dashboardURL); err != nil && liveCtx.Err() == nil {
+			if err := openBrowser(liveCtx, owner.Workspace.Root, dashboardURL); err != nil && liveCtx.Err() == nil {
 				fmt.Fprintf(stderr, "mergeyard: could not open browser: %v\n", err)
 			}
 		}()
@@ -153,12 +151,4 @@ func repositoryAccessFailure(code string) bool {
 		return true
 	}
 	return false
-}
-
-func openBrowser(ctx context.Context, address string) error {
-	executable := "xdg-open"
-	if runtime.GOOS == "darwin" {
-		executable = "open"
-	}
-	return exec.CommandContext(ctx, executable, address).Run()
 }

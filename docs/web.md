@@ -97,10 +97,20 @@ clients, which take the token from the proof-protected status snapshot. Host
 checks also protect GET requests against DNS rebinding. Restarting the server
 invalidates tokens; refresh open dashboard pages after a restart.
 
-The dashboard link is printed to the runtime's terminal and briefly visible in
-the browser launcher's process arguments while it opens. The token is
-single-use and short-lived, and the session it hands over dies with the
-process, so a stolen link only races the browser once.
+The dashboard link is printed to the runtime's terminal. On macOS, `mergeyard
+start` and `mergeyard open` ask LaunchServices for the default HTTP browser with
+an AppleScript `open location` command delivered over stdin. On Linux they write
+the link into an owner-only handoff page under
+`$HOME/mergeyard-dashboard-handoff/` (a non-hidden `0700` directory holding a
+`0600` page) and launch the resolved default web browser explicitly with
+`gio`, `gtk-launch`, or the browser command from its desktop entry, so a
+confined browser such as the Firefox snap can read the page and an HTML editor
+association is never used. If no HTTP browser can be resolved, the command
+reports that instead of falling back to `xdg-open`. Other platforms fall back to
+`<workspace>/.dashboard-links/`. In every case the launcher arguments contain a
+path or a stdin marker, never the token. The token remains single-use and
+short-lived, and the session it hands over dies with the process, so a stolen
+link only races the browser once.
 
 Failed scheduler actions return HTTP 500 with a safe diagnostic code in the
 response body and `X-Mergeyard-Error-Code` header. The dashboard displays that
