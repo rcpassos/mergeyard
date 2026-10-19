@@ -273,7 +273,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, next)
 	}
 	if a.Status == "succeeded" {
-		result, err := savedImplementResult(a.Report)
+		result, err := savedImplementResult(a.ImplementReport)
 		return result, err == nil, err
 	}
 	if a.Status == "usage_limited" {
@@ -289,7 +289,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		if code == "phase.blocked" {
 			// The report was saved before the failed-attempt commit. Recover its
 			// decision if the control plane stopped before the attention transition.
-			result, err := savedImplementResult(a.Report)
+			result, err := savedImplementResult(a.ImplementReport)
 			if err != nil {
 				return harness.PhaseResult{}, false, err
 			}

@@ -41,7 +41,18 @@ func TestSuccessfulImplementContinuationWorksWithoutResultFile(t *testing.T) {
 		return err == nil
 	})
 	input, err := os.ReadFile(inputPath)
-	if err != nil || !strings.Contains(string(input), "Added feature") {
-		t.Fatalf("review did not receive the saved implement report: %s %v", input, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(input)
+	start := strings.Index(text, "## Implementer report")
+	end := strings.Index(text, "## Latest verification evidence")
+	if start < 0 || end < start {
+		t.Fatalf("review input has no implementer report section: %s", text)
+	}
+	// "schema_version" appears only in the saved report, not in the PR body.
+	report := text[start:end]
+	if !strings.Contains(report, `"schema_version": 4`) || !strings.Contains(report, `"summary": "Added feature"`) {
+		t.Fatalf("review input did not use the saved implement report: %s", report)
 	}
 }

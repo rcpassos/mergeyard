@@ -355,7 +355,9 @@ func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run
 	}
 	var implementReport *harness.PhaseResult
 	var reportJSON string
-	if err := s.db.QueryRowContext(ctx, "SELECT report_json FROM phase_attempts WHERE run_id=? AND phase='implement' AND step='' AND status='succeeded' AND report_json IS NOT NULL ORDER BY attempt DESC LIMIT 1", run.ID).Scan(&reportJSON); err == nil {
+	// A succeeded attempt without its report is a broken boundary. Fail like
+	// continuation instead of quietly falling back to an older attempt.
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(report_json,'') FROM phase_attempts WHERE run_id=? AND phase='implement' AND step='' AND status='succeeded' ORDER BY attempt DESC LIMIT 1", run.ID).Scan(&reportJSON); err == nil {
 		result, err := savedImplementResult(json.RawMessage(reportJSON))
 		if err != nil {
 			return fail(err)

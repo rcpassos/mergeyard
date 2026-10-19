@@ -35,17 +35,20 @@ type Executor struct {
 }
 
 // Attempt is the journal entry for one phase execution: the harness (agent)
-// that ran it, its persisted session identity, owned process reference,
-// continuation state and saved structured report. It is the single attempt
-// shape shared by durable execution and the scheduler's phase workflows.
+// that ran it, its persisted session identity, owned process reference and
+// continuation state. It also carries an implement attempt's saved report; it
+// is the single attempt shape shared by durable execution and the scheduler's
+// phase workflows.
 type Attempt struct {
-	ID, Agent             string
-	Number                int
-	Status                string
-	Ref                   runner.SessionRef
-	SessionID             string
-	Resumed               bool
-	Report                json.RawMessage // structured report saved with the attempt, if any
+	ID, Agent string
+	Number    int
+	Status    string
+	Ref       runner.SessionRef
+	SessionID string
+	Resumed   bool
+	// ImplementReport is the saved structured report for an implement attempt.
+	// LoadImplement fills it; review and fix reports live in their own journals.
+	ImplementReport       json.RawMessage
 	Failure, CheckRetryOf string
 }
 
@@ -54,7 +57,18 @@ func (a Attempt) resumeFailed() bool {
 }
 
 func (e Executor) LoadImplement(ctx context.Context, id string) (Attempt, error) {
-	return e.Load(ctx, id, workflow.Implement, 0)
+	a, err := e.Load(ctx, id, workflow.Implement, 0)
+	if err != nil {
+		return a, err
+	}
+	var report sql.NullString
+	if err := e.DB.QueryRowContext(ctx, `SELECT report_json FROM phase_attempts WHERE id=?`, a.ID).Scan(&report); err != nil {
+		return Attempt{}, err
+	}
+	if report.Valid {
+		a.ImplementReport = json.RawMessage(report.String)
+	}
+	return a, nil
 }
 
 // sessionIdentity chains the columns that record one attempt's conversation:
@@ -71,13 +85,10 @@ func sessionIdentity(roleSession string) string {
 // Load recovers the durable process reference and conversation for one phase round.
 func (e Executor) Load(ctx context.Context, id string, phase workflow.Phase, round int) (Attempt, error) {
 	var a Attempt
-	var input, report string
+	var input string
 	identity := sessionIdentity("(SELECT " + phase.Role() + "_session_id FROM runs WHERE id=a.run_id)")
-	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,`+identity+`,a.check_retry_of,COALESCE(a.report_json,'') FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf, &report)
+	err := e.DB.QueryRowContext(ctx, `SELECT a.id,a.attempt,a.status,COALESCE(a.process_session,''),COALESCE(a.input_path,''),a.resumed_session,COALESCE(a.error,''),a.agent,`+identity+`,a.check_retry_of FROM phase_attempts a WHERE a.run_id=? AND a.phase=? AND a.round=? AND a.step='' ORDER BY a.attempt DESC LIMIT 1`, id, phase, round).Scan(&a.ID, &a.Number, &a.Status, &a.Ref.Name, &input, &a.Resumed, &a.Failure, &a.Agent, &a.SessionID, &a.CheckRetryOf)
 	a.Ref.PhaseDir = filepath.Dir(input)
-	if err == nil && report != "" {
-		a.Report = json.RawMessage(report)
-	}
 	return a, err
 }
 
