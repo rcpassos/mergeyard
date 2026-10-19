@@ -206,6 +206,7 @@ func TestReviewRetryKeepsVerificationFromAlreadyAdjudicatedFix(t *testing.T) {
 func TestNonSuccessImplementVerificationSurvivesManualPRHandback(t *testing.T) {
 	for _, status := range []string{"blocked", "failed"} {
 		t.Run(status, func(t *testing.T) {
+			ctx := context.Background()
 			report := blockedReport(successfulScript)
 			if status == "failed" {
 				report = strings.Replace(successfulScript, `"status":"success"`, `"status":"failed"`, 1)
@@ -216,7 +217,12 @@ func TestNonSuccessImplementVerificationSurvivesManualPRHandback(t *testing.T) {
 			if before.Implementer.Report == nil || len(before.Implementer.Report.Verification) != 1 {
 				t.Fatal("fixture missing saved non-success evidence")
 			}
-			if _, err := s.Takeover(context.Background(), before.ID); err != nil {
+			// Stopping or rejecting later rewrites the attempt's error. The
+			// evidence must follow the eligibility frozen with the report.
+			if _, err := runtime.DB.ExecContext(ctx, "UPDATE phase_attempts SET error='phase.canceled: Stopped by operator' WHERE run_id=? AND phase='implement' AND step=''", before.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Takeover(ctx, before.ID); err != nil {
 				t.Fatal(err)
 			}
 			path := filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", before.ID)
@@ -236,7 +242,7 @@ func TestNonSuccessImplementVerificationSurvivesManualPRHandback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			selected, err := s.Handback(context.Background(), before.ID)
+			selected, err := s.Handback(ctx, before.ID)
 			if err != nil || selected.Phase != workflow.Review {
 				t.Fatalf("handback selection: %+v %v", selected, err)
 			}

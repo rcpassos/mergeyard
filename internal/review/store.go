@@ -98,7 +98,7 @@ func LoadPriorContext(ctx context.Context, db queryer, runID string, round int) 
 	// Fixes must follow the selected review and address its pinned target. Earlier
 	// fixes have already been adjudicated by that review, even on the same SHA.
 	// SQLite rowid supplies insertion order without timestamp precision ties.
-	err = db.QueryRowContext(ctx, `SELECT f.report_json FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=? AND a.round=? AND a.rowid>? AND f.target_sha=? AND f.report_json IS NOT NULL ORDER BY a.attempt DESC LIMIT 1`, runID, priorRound, priorOrder, priorTarget).Scan(&raw)
+	err = db.QueryRowContext(ctx, `SELECT f.report_json FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=? AND a.round=? AND a.rowid>? AND f.target_sha=? AND f.report_json IS NOT NULL AND a.report_eligible=1 ORDER BY a.attempt DESC LIMIT 1`, runID, priorRound, priorOrder, priorTarget).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return findings, nil, nil
 	}
