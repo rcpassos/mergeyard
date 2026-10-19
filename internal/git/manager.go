@@ -515,9 +515,10 @@ func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
 }
 
 // managedInitialization reports whether a checkout without HEAD is positively
-// linked to this run's managed base. A matching worktree link, reciprocal
-// registration, and common directory prove Git reached the linked worktree
-// before HEAD was committed; missing or foreign metadata is preserved.
+// linked to this run's managed base and still in Git's initialization: the
+// worktree link, reciprocal registration, and common directory resolve to the
+// base, the initialization lock is held, and the pending HEAD names the run
+// branch. Missing, foreign, or human metadata is preserved.
 func managedInitialization(run Run) (bool, error) {
 	link := filepath.Join(run.Path, ".git")
 	info, err := os.Lstat(link)
@@ -603,6 +604,23 @@ func managedInitialization(run Run) (bool, error) {
 		return false, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, failure("git.worktree", run.Path, err)
+	}
+	// Only Git's own initialization state may stand in for a missing HEAD: the
+	// worktree is still locked for initialization and the pending HEAD names
+	// exactly the run branch. Human edits that removed HEAD lack both.
+	locked, err := os.ReadFile(filepath.Join(admin, "locked"))
+	if err != nil {
+		return false, nil
+	}
+	if strings.TrimSpace(string(locked)) != "initializing" {
+		return false, nil
+	}
+	pending, err := os.ReadFile(filepath.Join(admin, "HEAD.lock"))
+	if err != nil {
+		return false, nil
+	}
+	if strings.TrimSpace(string(pending)) != "ref: refs/heads/"+run.Branch {
+		return false, nil
 	}
 	return true, nil
 }

@@ -466,6 +466,22 @@ func TestPreparePreservesInterruptedWorktreeSwitchedToAnotherBranch(t *testing.T
 	}
 }
 
+func TestPreparePreservesInterruptedWorktreeWithRemovedHead(t *testing.T) {
+	f := newFixture(t)
+	path := interruptWorktreeCreation(t, f)
+	git(t, path, "checkout", "-b", "human-work")
+	write(t, path, "human.txt", "uncommitted human work\n")
+	base := filepath.Join(f.root, "repos", "owner-repo", "base")
+	if err := os.Remove(filepath.Join(base, ".git", "worktrees", f.request.RunID, "HEAD")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireCode(t, err, "git.branch_conflict")
+	if data, err := os.ReadFile(filepath.Join(path, "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("worktree with removed HEAD was changed: %q, %v", data, err)
+	}
+}
+
 func TestPreparePreservesInterruptedWorktreeWithMissingMetadata(t *testing.T) {
 	f := newFixture(t)
 	path := interruptWorktreeCreation(t, f)

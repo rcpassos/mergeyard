@@ -76,7 +76,8 @@ recorded start, and an existing checkout must still be on the run branch and
 attached to the managed base. Git writes the worktree link, reciprocal
 registration, and common directory before HEAD, so a deadline in that window
 leaves no readable checkout; that state is recognizable only when those links
-point back to this run's managed base. Anything else, including a non-empty
+point back to this run's managed base, Git still holds the initialization lock,
+and the pending HEAD names the run branch. Anything else, including a non-empty
 path whose Git metadata is missing or unreadable, is preserved because
 ownership cannot be established, and is refused with `git.branch_conflict`.
 Cleanup removes an interrupted initialization lock so Git no longer treats the
