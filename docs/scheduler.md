@@ -15,14 +15,17 @@ or stop waits for an in-flight operation before changing state. Running tmux age
 for them to finish. Tick errors are logged by `Run` and tried again at the next
 interval. Cancelling the scheduler leaves agent sessions running.
 
-Every `gh` and `git` call on the scheduler path has a deadline. A publication
-push, fetch, or repository hook gets the longest budget; local reads get the
-shortest, and a commit keeps its own budget while the push keeps the remote one.
-`gh` shares one two-minute budget across a request's retries. A deadline ends
-the owned process group and surfaces as `git.timeout` or `github.timeout`, which
-the existing retry and attention paths handle. Git never prompts: SSH uses batch
-mode with connect timeout and keepalive options unless the machine selects its
-own transport. See [git.md](git.md) for the operation budgets.
+Every `gh` and `git` call on the scheduler path has a deadline. A first clone
+gets its own longer budget (`1h`), routine fetches and remote reads get `10m`,
+worktree operations get `10m`, and a publication push including its pre-push
+hook gets `30m`; local reads get the shortest budget. A commit keeps its own
+budget while the remote read and the push keep theirs. `gh` shares one
+two-minute budget across a request's retries. A deadline ends the owned process
+group and surfaces as `git.timeout` or `github.timeout`, naming the operation
+and, for a phase deadline, the budget so the dashboard explains it; the
+existing retry and attention paths handle the failure. Git never prompts: SSH uses batch mode with connect timeout
+and keepalive options unless the machine selects its own transport. See
+[git.md](git.md) for the operation budgets.
 
 `Pause(ctx, true)` prevents new claims; existing implementations continue.
 `Pause(ctx, false)` resumes dispatch. These operations publish scheduler events.
@@ -69,11 +72,15 @@ Reconcile and dispatch share the poll's snapshot and the dashboard queue reuses
 it, so a repository is listed once per poll instead of once per reader; an
 explicit `Plan` read starts its own poll. Concurrent readers share one fetch per
 repository instead of racing duplicates, and a fetch that began before a new
-poll cannot replace that poll's listing. A snapshot stays reusable for two poll
-intervals: one covers the scheduler's own refresh and the second absorbs timer
-skew between the scheduler and the dashboard. A reader outside a scheduler poll
-(the dashboard without a running scheduler) refreshes its own listing once the
-window expires. Readers never mutate the shared snapshot.
+poll cannot replace that poll's listing. Waiting for a shared fetch honors the
+caller's context: a reader that gives up is released instead of fetching again
+with an expired context. A snapshot stays reusable for two poll intervals: one
+covers the scheduler's own refresh and the second absorbs timer skew between the
+scheduler and the dashboard. A reader outside a scheduler poll (the dashboard
+without a running scheduler) refreshes its own listing once the window expires.
+A dashboard pass that spends its refresh budget waiting for a listing returns
+the last usable queue marked stale, so it does not replace discovery with an
+error. Readers never mutate the shared snapshot.
 
 `Plan(ctx, repository)` uses the same read-only candidate inspection and pure
 capacity/label eligibility policy as `Tick`. It reserves prospective slots in
@@ -193,10 +200,10 @@ Local-state reconciliation failures prevent new dispatch. A GitHub failure is
 scoped to the repository whose listing failed or the run whose issue/PR/label
 read failed: reconciliation reports `reconcile.repository_failed` or
 `reconcile.run_failed`, dashboard discovery reports `reconcile.issue_failed`
-when one refused issue cannot be read, and each appears in the needs-attention
-section. A scoped failure skips only that repository or issue while other work
-continues, and stays visible until a later pass observes the subject
-successfully. Findings persist only the fixed GitHub code and a safe human
+when one refused issue has no snapshot to show after a failed read, and each
+appears in the needs-attention section. A scoped failure skips only that
+repository or issue while other work continues, and stays visible until a later
+pass observes the subject successfully. Findings persist only the fixed GitHub code and a safe human
 message; raw `gh` diagnostics stay on the error for application logs. Closed
 issues/PRs, missing worktrees, and missing sessions require attention. Manual and attention runs are never automatically
 resumed. First review progresses through the same reconciliation boundary. CI/merge
@@ -256,14 +263,20 @@ manual removal of these test artifacts.
 configuration and issue creation order, from the scheduler's shared poll listing.
 An issue refused earlier no longer carries a Mergeyard label, so it is read back
 individually and stays visible with its reason until a trusted maintainer
-relabels it; refusals whose issue is closed or deleted are forgotten, so a stale
-row is never re-read. Open blockers are reused while the issue's snapshot and
-open-blocker count are unchanged, and a listing summary that reports no open
-blockers needs no dependency read at all; a missing summary falls back to
-reading, so an unknown status is never shown as ready. `Queue(ctx)` does not
-mutate labels or claim runs,
-and works independently of pause and concurrency. Dependency lookup failures
-return an error rather than reporting an issue as unblocked.
+relabels it. The readable snapshot is reused across refreshes: only a changed
+refusal or the 15-minute window spends another read, while a relabelled issue
+returns to the listing. Refusals whose issue is closed or deleted are forgotten
+when that snapshot refreshes. A failed refresh keeps the last snapshot, or
+records the issue's scoped failure until a snapshot exists, and backs off for
+the same window instead of retrying on every pass. Each refused read gets a
+bounded child context, so a slow request cannot consume the budget reserved for
+the rest of discovery. Open
+blockers are reused while the issue's snapshot and open-blocker count are
+unchanged, and a listing summary that reports no open blockers needs no
+dependency read at all; a missing summary falls back to reading, so an unknown
+status is never shown as ready. `Queue(ctx)` does not mutate labels or claim
+runs, and works independently of pause and concurrency. Dependency lookup
+failures return an error rather than reporting an issue as unblocked.
 
 `Stop(ctx, runID)` shares the workflow operation lock with dispatch. It preserves
 Git artifacts, terminates running attempts, removes ready and running labels,

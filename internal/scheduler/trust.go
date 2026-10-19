@@ -41,12 +41,17 @@ func (s *Scheduler) applyTrustDecision(ctx context.Context, repo config.Reposito
 		decision = github.TrustDecision{Reason: fmt.Sprintf("Cannot verify label actors or issue title and body edit history (%s).", code)}
 	}
 	if decision.Allowed {
+		s.refusalSnapshots.delete(issueKey(repo.Repo, issue.Number))
 		_, err = s.db.ExecContext(ctx, "DELETE FROM issue_refusals WHERE repository=? AND issue_number=?", strings.ToLower(repo.Repo), issue.Number)
 		return err == nil, err
 	}
 	if decision.Reason == "" {
 		decision.Reason = "Cannot verify authorization for this issue."
 	}
+	// The issue's last snapshot predates this decision, and a settled refusal
+	// may now have a new reason or ready label. The next dashboard refresh
+	// reads the issue once instead of reusing the old snapshot.
+	s.refusalSnapshots.delete(issueKey(repo.Repo, issue.Number))
 	_, err = s.db.ExecContext(ctx, `INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES(?,?,?,?,1)
  ON CONFLICT(repository,issue_number) DO UPDATE SET reason=excluded.reason,ready_label=excluded.ready_label,pending=1`, strings.ToLower(repo.Repo), issue.Number, decision.Reason, repo.Labels.Ready)
 	if err != nil {
@@ -132,13 +137,25 @@ func (s *Scheduler) refusalReason(ctx context.Context, repo string, number int) 
 // forgetRefusal removes a refusal whose issue is gone: pending or not, no label
 // can be removed and nothing can be shown, so the row would only be re-read.
 func (s *Scheduler) forgetRefusal(ctx context.Context, repo string, number int) error {
+	s.refusalSnapshots.delete(issueKey(repo, number))
 	_, err := s.db.ExecContext(ctx, "DELETE FROM issue_refusals WHERE repository=? AND issue_number=?", strings.ToLower(repo), number)
 	return err
 }
 
 // forgetSettledRefusal removes a settled refusal whose issue is closed. Pending
-// rows stay for reconciliation to finish their label removal.
+// rows stay for reconciliation to finish their label removal, and their cached
+// snapshot stays with them so the next refresh does not read the issue again.
 func (s *Scheduler) forgetSettledRefusal(ctx context.Context, repo string, number int) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM issue_refusals WHERE repository=? AND issue_number=? AND pending=0", strings.ToLower(repo), number)
-	return err
+	result, err := s.db.ExecContext(ctx, "DELETE FROM issue_refusals WHERE repository=? AND issue_number=? AND pending=0", strings.ToLower(repo), number)
+	if err != nil {
+		return err
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if removed > 0 {
+		s.refusalSnapshots.delete(issueKey(repo, number))
+	}
+	return nil
 }

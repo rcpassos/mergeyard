@@ -407,7 +407,7 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 			return err
 		}
 		fmt.Fprintf(stdout, "Dashboard: %s\n", terminalText(session.URL))
-		if err := openBrowser(ctx, session.URL); err != nil {
+		if err := openBrowser(ctx, client.root, session.URL); err != nil {
 			return &fault.Error{Code: "internal.browser_failed", Message: "Could not open a browser; open the printed dashboard link", Err: err}
 		}
 		return nil

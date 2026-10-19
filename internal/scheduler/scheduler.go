@@ -89,12 +89,16 @@ type Scheduler struct {
 	tick              gate.Gate
 	control           *Control
 	running           atomic.Bool
-	listingFetch      sync.Mutex               // serializes listing fetches so concurrent readers share one
-	listings          listingCache             // this poll's label-filtered issue snapshot per repository
-	blockers          keyedCache[blockerEntry] // dashboard blocker reads keyed by unchanged issue snapshots
-	reportedFindings  map[string]bool          // protected by tick; unchanged findings emit once per scheduler lifetime
-	failuresMu        sync.RWMutex             // guards the latest scoped GitHub failures shared with the dashboard
-	reconcileFailures []Finding                // scoped GitHub failures from the latest reconcile pass
+	listingFetch      gate.Gate                        // serializes listing fetches so concurrent readers share one, honoring cancellation
+	listings          listingCache                     // this poll's label-filtered issue snapshot per repository
+	refusalFetch      gate.Gate                        // serializes refused-issue reads so one runs at a time
+	refusalSnapshots  keyedCache[refusedIssueSnapshot] // last readable snapshot of each refused issue
+	blockers          keyedCache[blockerEntry]         // dashboard blocker reads keyed by unchanged issue snapshots
+	reportedFindings  map[string]bool                  // protected by tick; unchanged findings emit once per scheduler lifetime
+	failuresMu        sync.RWMutex                     // guards the latest scoped GitHub failures shared with the dashboard
+	reconcileFailures []Finding                        // scoped GitHub failures from the latest reconcile pass
+	queueMu           sync.RWMutex                     // guards the last usable dashboard discovery snapshot
+	lastQueue         *QueueSnapshot                   // returned when a dashboard refresh spends its budget waiting for a listing
 }
 
 // New requires an exclusively owned runtime workspace.

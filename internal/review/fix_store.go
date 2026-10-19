@@ -25,16 +25,19 @@ type FixSnapshot struct {
 	Findings       []Finding    `json:"findings"`
 	CI             *ci.Snapshot `json:"ci,omitempty"`
 	Report         *FixReport   `json:"report,omitempty"`
-	Error          string       `json:"error,omitempty"`
+	ReportEligible bool         `json:"report_eligible"`
+	// Sequence orders evidence exactly like publication; it is not display data.
+	Sequence int64  `json:"-"`
+	Error    string `json:"error,omitempty"`
 }
 
-const fixSnapshotQuery = `SELECT a.agent,f.session_id,COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.skills_json,'[]'),f.permission_mode,f.allowed_tools_json,a.round,a.attempt,f.target_sha,COALESCE(f.commit_sha,''),f.pushed,a.status,f.findings_json,f.report_json,COALESCE(a.error,''),f.ci_json FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=?`
+const fixSnapshotQuery = `SELECT a.agent,f.session_id,COALESCE(a.model,''),COALESCE(a.effort,''),COALESCE(a.skills_json,'[]'),f.permission_mode,f.allowed_tools_json,a.round,a.attempt,f.target_sha,COALESCE(f.commit_sha,''),f.pushed,a.status,f.findings_json,f.report_json,a.report_eligible,a.rowid,COALESCE(a.error,''),f.ci_json FROM fix_attempts f JOIN phase_attempts a ON a.id=f.attempt_id WHERE a.run_id=?`
 
 func scanFix(row interface{ Scan(...any) error }) (*FixSnapshot, error) {
 	var v FixSnapshot
 	var skills, tools, findings string
 	var report, diagnostics sql.NullString
-	err := row.Scan(&v.Agent, &v.SessionID, &v.Model, &v.Effort, &skills, &v.PermissionMode, &tools, &v.Round, &v.Attempt, &v.TargetSHA, &v.CommitSHA, &v.Pushed, &v.Status, &findings, &report, &v.Error, &diagnostics)
+	err := row.Scan(&v.Agent, &v.SessionID, &v.Model, &v.Effort, &skills, &v.PermissionMode, &tools, &v.Round, &v.Attempt, &v.TargetSHA, &v.CommitSHA, &v.Pushed, &v.Status, &findings, &report, &v.ReportEligible, &v.Sequence, &v.Error, &diagnostics)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

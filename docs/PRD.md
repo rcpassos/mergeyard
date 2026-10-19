@@ -362,7 +362,7 @@ Default polling interval: `30s`. Only one scheduler reconciliation tick may run 
 
 ### Bounded external calls
 
-Every `gh` and `git` invocation on the scheduler path carries a deadline suited to the operation; push, fetch and repository hooks get the longest budget. A run that reaches a deadline fails with a stable code (`git.timeout`, `github.timeout`) and follows the ordinary retry and attention paths, and the next tick proceeds. Git never prompts: HTTPS credentials and SSH both fail instead of waiting for terminal input, and SSH detects dead connections, unless the machine already selects its own transport through `GIT_SSH`, `GIT_SSH_COMMAND`, or `core.sshCommand`. ADR 0003 records why each invocation is bounded separately and why a timeout is a failure rather than cancellation. See section 16.
+Every `gh` and `git` invocation on the scheduler path carries a deadline suited to the operation; a first clone gets a longer budget, and routine fetch, worktree operations, push and repository hooks keep their own. A run that reaches a deadline fails with a stable code (`git.timeout`, `github.timeout`), names the operation and budget for the dashboard, and follows the ordinary retry and attention paths, and the next tick proceeds. Git never prompts: HTTPS credentials and SSH both fail instead of waiting for terminal input, and SSH detects dead connections, unless the machine already selects its own transport through `GIT_SSH`, `GIT_SSH_COMMAND`, or `core.sshCommand`. ADR 0003 records why each invocation is bounded separately and why a timeout is a failure rather than cancellation. See section 16.
 
 ### Concurrency limits
 
@@ -410,6 +410,7 @@ Mergeyard uses managed checkouts instead of an arbitrary developer working direc
 ```text
 ~/.mergeyard/
   state.db
+  .dashboard-links/
   repos/
     <owner>-<repo>/
       base/
@@ -982,7 +983,7 @@ Default commit message: `mergeyard: #<issue> <issue title>`. The commit uses the
 
 Mergeyard never force-pushes. If the remote branch diverges unexpectedly, the run moves to `NEEDS_ATTENTION`.
 
-Every managed Git operation has a deadline: `2m` for quick local reads of refs, the index, or single paths, and `10m` for operations that may run repository hooks or touch the whole worktree, and for operations that contact the remote. A caller-supplied deadline always wins, including while waiting for another managed operation, and a command that reaches its deadline ends the whole owned process group, so a repository hook or transport helper that keeps output pipes open cannot extend the call. Deadline and cancellation failures use `git.timeout` and `git.canceled`, and the run continues through the normal retry and attention paths.
+Every managed Git operation has a deadline: `2m` for quick local reads of refs, the index, or single paths, `10m` for operations that may run repository hooks or touch the whole worktree, `1h` for the first transfer into a managed base, `10m` for routine fetches and remote reads, and `30m` for a push including the repository's pre-push hook. The first clone runs in a staging directory and is renamed into place only after success, so a killed attempt is retried as a clone under the clone budget rather than as a routine fetch. A caller-supplied deadline always wins, including while waiting for another managed operation, and a command that reaches its deadline ends the whole owned process group, so a repository hook or transport helper that keeps output pipes open cannot extend the call. Deadline failures use `git.timeout` with the operation and elapsed time, and a phase deadline also names its class budget, which the dashboard and attention message show; cancellation uses `git.canceled`. The run continues through the normal retry and attention paths.
 
 Git runs unattended. Terminal prompts are disabled; SSH uses `BatchMode=yes` with connect timeout and keepalive options so a missing credential or dead connection fails instead of hanging, for both managed operations and `doctor` probes. A `GIT_SSH`, `GIT_SSH_COMMAND`, or a `core.sshCommand` the configuration resolves for the command's repository (including repository-scoped conditional includes) is the machine's own transport choice and is preserved.
 
@@ -1709,9 +1710,11 @@ settings rather than accepted from the runtime, so a process that impersonates
 the port cannot choose what runs.
 
 The dashboard is locked to the workspace owner. `mergeyard start` prints a
-single-use link; exchanging it hands the browser an owner-only session in
-origin-scoped storage, which the dashboard attaches as a header only for the
-runtime's exact scheme, host and port. Without that session the dashboard
+single-use link and hands it to the default HTTP browser without putting the URL
+in a process argument. Linux uses a non-hidden owner-only handoff page so
+confined browsers can read it; macOS passes an AppleScript command over stdin. Exchanging it hands the browser an owner-only
+session in origin-scoped storage, which the dashboard attaches as a header only
+for the runtime's exact scheme, host and port. Without that session the dashboard
 renders a lock page with no CSRF token and refuses every action, so another
 local user cannot stop, retry, pause or take over runs.
 

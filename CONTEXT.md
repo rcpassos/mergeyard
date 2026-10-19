@@ -25,6 +25,8 @@ _Avoid_: API key, token (the browser CSRF token is separate)
 
 **Dashboard session**: The owner-only browser credential set by the single-use link printed by `mergeyard start` (or `mergeyard open`). It lives in origin-scoped browser storage, travels only to the runtime's exact scheme, host and port as the `X-Mergeyard-Session` header, and rotates with the runtime process.
 
+**Dashboard handoff page**: The owner-only local HTML page that redirects the browser to a single-use dashboard link, so the token never enters a process command line. Linux keeps it in a non-hidden home directory so confined browsers can read it; macOS passes the URL to the default HTTP browser over stdin instead.
+
 **Queue group**: One of six buckets the dashboard sorts open runs and eligible issues into: **Running**, **Waiting for harness**, **Ready**, **Blocked**, **Needs attention**, **Waiting for your merge**. Every open run and queued issue belongs to exactly one group; ended runs leave the queue.
 - **Running**: Mergeyard or the user is actively moving the run forward, including a manual takeover and waiting for CI.
 - **Waiting for harness**: the run is paused by a usage limit or an exhausted-credit block.

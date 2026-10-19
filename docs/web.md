@@ -97,10 +97,20 @@ clients, which take the token from the proof-protected status snapshot. Host
 checks also protect GET requests against DNS rebinding. Restarting the server
 invalidates tokens; refresh open dashboard pages after a restart.
 
-The dashboard link is printed to the runtime's terminal and briefly visible in
-the browser launcher's process arguments while it opens. The token is
-single-use and short-lived, and the session it hands over dies with the
-process, so a stolen link only races the browser once.
+The dashboard link is printed to the runtime's terminal. On macOS, `mergeyard
+start` and `mergeyard open` ask LaunchServices for the default HTTP browser with
+an AppleScript `open location` command delivered over stdin. On Linux they write
+the link into an owner-only handoff page under
+`$HOME/mergeyard-dashboard-handoff/` (a non-hidden `0700` directory holding a
+`0600` page) and launch the resolved default web browser explicitly with
+`gio`, `gtk-launch`, or the browser command from its desktop entry, so a
+confined browser such as the Firefox snap can read the page and an HTML editor
+association is never used. If no HTTP browser can be resolved, the command
+reports that instead of falling back to `xdg-open`. Other platforms fall back to
+`<workspace>/.dashboard-links/`. In every case the launcher arguments contain a
+path or a stdin marker, never the token. The token remains single-use and
+short-lived, and the session it hands over dies with the process, so a stolen
+link only races the browser once.
 
 Failed scheduler actions return HTTP 500 with a safe diagnostic code in the
 response body and `X-Mergeyard-Error-Code` header. The dashboard displays that
@@ -151,12 +161,21 @@ immediately and at `poll_interval`, including while paused or at capacity.
 Discovery performs no claims and reads the scheduler's shared label-filtered poll
 listing, reusing a snapshot for up to two poll intervals so the dashboard and
 the scheduler do not both fetch at each boundary. Blocker reads are reused while
-an issue's listing snapshot is unchanged. A GitHub failure scoped to one
+an issue's listing snapshot is unchanged. A refused issue that no longer carries
+a Mergeyard label uses the same snapshot until its refusal changes, the listing
+sees it again, or a 15-minute window expires. A failed reread keeps the last
+snapshot, or records the issue's scoped failure when no snapshot exists, and
+backs off instead of retrying on every pass. Each refused read is bounded so a
+slow request cannot consume the refresh budget reserved for the rest of
+discovery. A GitHub failure scoped to one
 repository or run does not hide the others: readable repositories refresh, and
 the failed repository or issue is shown in the needs-attention section with its
 diagnostic code until a later pass succeeds. Other discovery errors fail closed
-and preserve the last successful snapshot with a stale-data notice. An issue with
-unknown dependency status is never displayed as ready. Run lifecycle data always
+and preserve the last successful snapshot with a stale-data notice. If the
+refresh budget expires while the shared listing is still being fetched,
+discovery keeps the last successful snapshot and its sync time without
+reporting an error. An issue with unknown dependency status is never displayed
+as ready. Run lifecycle data always
 comes from SQLite, so claims and phase/PR transitions immediately supersede stale
 issue snapshots. The doctor callback runs once with a bounded context outside
 HTTP requests. Cancel and join RunUpdates before closing the runtime.

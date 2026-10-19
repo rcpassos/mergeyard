@@ -8,7 +8,7 @@ import (
 // InspectRetry observes ownership, edits, and the published branch without
 // resetting, cleaning, committing, or switching the user's worktree.
 func (m *Manager) InspectRetry(ctx context.Context, run Run, target string, allowEdits bool) (string, error) {
-	ctx, release, err := m.begin(ctx, m.timeouts.Remote)
+	ctx, release, err := m.begin(ctx, m.timeouts.Fetch)
 	if err != nil {
 		return "", err
 	}

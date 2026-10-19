@@ -654,16 +654,27 @@ func TestCLIOpenFollowsTheOneTimeDashboardLink(t *testing.T) {
 	})
 	server := runtimeServer(t, root, mux)
 	defer server.Close()
-	// A fake browser launcher records the link the CLI asked it to open.
+	// Force the Linux branch so the test covers the Snap-accessible handoff and
+	// the HTTP-browser selection even when the host is macOS.
+	useBrowserPlatform(t, "linux")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	tools := t.TempDir()
-	launched := filepath.Join(tools, "launched")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + launched + "'\n"
-	for _, name := range []string{"open", "xdg-open"} {
-		if err := os.WriteFile(filepath.Join(tools, name), []byte(script), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
+	launched, htmlHandler := filepath.Join(tools, "launched"), filepath.Join(tools, "html-handler")
+	writeTool(t, tools, "xdg-settings", "#!/bin/sh\necho browser.desktop\n")
+	writeTool(t, tools, "gio", "#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+launched+"'\n")
+	writeTool(t, tools, "xdg-open", "#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+htmlHandler+"'\n")
 	t.Setenv("PATH", tools)
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_DATA_DIRS", "")
+	desktop := filepath.Join(dataHome, "applications", "browser.desktop")
+	if err := os.MkdirAll(filepath.Dir(desktop), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(desktop, []byte("[Desktop Entry]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(root, "config.yaml")
 	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))), 0600); err != nil {
 		t.Fatal(err)
@@ -673,8 +684,25 @@ func TestCLIOpenFollowsTheOneTimeDashboardLink(t *testing.T) {
 		t.Fatalf("open: %d %t %q %s", code, opened, out, errOut)
 	}
 	data, err := os.ReadFile(launched)
-	if err != nil || string(data) != "http://127.0.0.1:7331/?token=one-time\n" {
-		t.Fatalf("launcher did not receive the link: %q %v", data, err)
+	args := strings.TrimSpace(string(data))
+	if err != nil || strings.Contains(args, "one-time") || strings.Contains(args, "token=") {
+		t.Fatalf("launcher received the link or its token: %q %v", data, err)
+	}
+	fields := strings.Split(args, "\n")
+	if len(fields) != 3 || fields[0] != "launch" || fields[1] != desktop {
+		t.Fatalf("launcher did not select the default web browser: %q", args)
+	}
+	links, err := filepath.Glob(filepath.Join(home, linuxDashboardLinksDirName, dashboardHandoffPrefix+"*", dashboardHandoffFile))
+	if err != nil || len(links) != 1 || links[0] != fields[2] {
+		t.Fatalf("launcher did not receive the private handoff page: %q %v", links, err)
+	}
+	assertHandoffPage(t, links[0])
+	page, err := os.ReadFile(links[0])
+	if err != nil || !strings.Contains(string(page), "http://127.0.0.1:7331/?token=one-time") {
+		t.Fatalf("handoff page does not redirect to the link: %q %v", page, err)
+	}
+	if _, err := os.Stat(htmlHandler); !os.IsNotExist(err) {
+		t.Fatalf("html file association was used instead of the web browser: %v", err)
 	}
 }
 
