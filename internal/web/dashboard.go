@@ -40,13 +40,14 @@ type DashboardOptions struct {
 
 type dashboard struct {
 	DashboardOptions
-	mu          sync.RWMutex
-	queue       []scheduler.QueueIssue
-	queueReady  bool
-	queueError  string
-	queueTime   string
-	diagnostics string
-	cliDir      string
+	mu           sync.RWMutex
+	queue        []scheduler.QueueIssue
+	queueFailure []scheduler.Finding
+	queueReady   bool
+	queueError   string
+	queueTime    string
+	diagnostics  string
+	cliDir       string
 }
 
 // NewDashboard adds runtime-backed pages to the local HTTP foundation.
@@ -114,11 +115,14 @@ func (s *Server) RunUpdates(ctx context.Context) {
 	defer timer.Stop()
 	for {
 		refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		queue, err := d.Scheduler.Queue(refreshCtx)
+		report, err := d.Scheduler.QueueReport(refreshCtx)
 		cancel()
 		d.mu.Lock()
-		if err == nil {
-			d.queue, d.queueError = queue, ""
+		if err == nil || scheduler.GitHubFailure(err) {
+			// A scoped GitHub failure only hides the affected repository. The
+			// readable repositories still refresh, and the failure is shown
+			// beside them until a later poll succeeds.
+			d.queue, d.queueFailure, d.queueError = report.Issues, report.Failures, ""
 			d.queueTime = time.Now().UTC().Format(time.RFC3339)
 		} else {
 			d.queueError = errorCode(err, "internal.dashboard") + ": GitHub discovery failed. Check the application log; discovery will retry."
@@ -131,7 +135,7 @@ func (s *Server) RunUpdates(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err != nil {
+		if err != nil && !scheduler.GitHubFailure(err) {
 			logDashboardError(ctx, "queue discovery", err)
 		}
 		s.bus.Notify(ctx, events.Draft{Type: "queue.updated", Payload: struct{}{}})
@@ -161,9 +165,10 @@ type issueView struct {
 }
 
 type queueSection struct {
-	Name   string
-	Runs   []runView
-	Issues []issueView
+	Name     string
+	Runs     []runView
+	Issues   []issueView
+	Failures []scheduler.Finding
 }
 
 const (
@@ -234,9 +239,11 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 	data.Limit = d.Config.Concurrency
 	d.mu.RLock()
 	queue := append([]scheduler.QueueIssue(nil), d.queue...)
+	queueFailures := append([]scheduler.Finding(nil), d.queueFailure...)
 	data.QueueReady, data.QueueError, data.QueueTime = d.queueReady, d.queueError, d.queueTime
 	data.Doctor = d.diagnostics
 	d.mu.RUnlock()
+	failures := append(d.Scheduler.ReconcileFailures(), queueFailures...)
 	if data.Page == "settings" {
 		data.ConfigPath, data.Workspace = d.ConfigPath, d.Workspace.Root
 		cfg, err := yaml.Marshal(d.Config)
@@ -264,6 +271,7 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 		return nil
 	}
 	data.Sections = emptySections()
+	data.Sections[attentionSection].Failures = uniqueFailures(failures)
 	existing := map[string]bool{}
 	for _, run := range runs {
 		key := fmt.Sprintf("%s/%d", strings.ToLower(run.Repository), run.IssueNumber)
@@ -306,6 +314,22 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 
 func emptySections() []queueSection {
 	return []queueSection{{Name: "Running"}, {Name: "Ready"}, {Name: "Blocked"}, {Name: "Needs attention"}, {Name: "Draft PRs · review pending"}}
+}
+
+// uniqueFailures keeps the most recent discovery and reconcile views of the
+// same scoped failure from producing duplicate dashboard rows.
+func uniqueFailures(failures []scheduler.Finding) []scheduler.Finding {
+	seen := map[string]bool{}
+	var unique []scheduler.Finding
+	for _, failure := range failures {
+		key := failure.Key()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		unique = append(unique, failure)
+	}
+	return unique
 }
 
 func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {

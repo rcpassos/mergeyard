@@ -52,7 +52,7 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
-	if report.HasErrors() {
+	if blockingDoctorErrors(report, cfg) {
 		return errors.New("dependency checks failed; run mergeyard doctor")
 	}
 	env := make(map[string]string)
@@ -71,9 +71,10 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 		}
 	}
 	if reconcileErr != nil {
-		// A GitHub failure at boot is the same error ticks log and retry, so it
-		// must not stop the dashboard. Local state that is unsafe to dispatch on
-		// still refuses to start.
+		// A GitHub failure at boot is the same scoped error ticks log and retry,
+		// so it must not stop the dashboard even when the repository is missing
+		// or forbidden. Local state that is unsafe to dispatch on still refuses
+		// to start.
 		if !scheduler.GitHubFailure(reconcileErr) {
 			return fmt.Errorf("reconcile existing runs: %w", reconcileErr)
 		}
@@ -127,6 +128,31 @@ func serve(ctx context.Context, path string, stdout, stderr io.Writer) error {
 		schedulerErr = nil
 	}
 	return errors.Join(serveErr, schedulerErr, owner.Close())
+}
+
+// blockingDoctorErrors ignores access failures for one configured repository.
+// Startup can serve and let reconciliation report a deleted, renamed, or
+// forbidden repository while dispatch continues elsewhere. Machine, local
+// workspace, and repository-content errors still refuse to start.
+func blockingDoctorErrors(report doctor.Report, cfg config.Config) bool {
+	for _, finding := range report.Findings {
+		if finding.Severity != doctor.Error {
+			continue
+		}
+		if finding.RepositoryScoped(cfg.Repositories) && repositoryAccessFailure(finding.Code) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func repositoryAccessFailure(code string) bool {
+	switch code {
+	case "github.labels_check_failed", "github.push_forbidden", "git.origin_inaccessible":
+		return true
+	}
+	return false
 }
 
 func openBrowser(ctx context.Context, address string) error {

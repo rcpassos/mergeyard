@@ -85,7 +85,9 @@ unreachable data follow. The GitHub login check is included: it probes the API
 once, because gh reports a connection failure as an invalid token. Start serves
 and reconciles while the service recovers. Failures GitHub answered stay errors:
 an invalid token, missing labels, denied push permission, and unresolvable base
-branches are setup problems.
+branches are setup problems. A deleted, renamed, or forbidden repository is
+reported but does not stop `mergeyard start`: its access findings are printed
+and reconciliation scopes the failure to it, so other repositories keep working.
 
 Doctor never changes labels, creates remote branches, logs in, invokes a model,
 or alters a managed checkout. Temporary probes are removed. Git hooks are

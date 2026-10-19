@@ -24,3 +24,5 @@ _Avoid_: Agent label, harness label
 _Avoid_: API key, token (the browser CSRF token is separate)
 
 **Dashboard session**: The owner-only browser credential set by the single-use link printed by `mergeyard start` (or `mergeyard open`). It gates dashboard pages and actions and rotates with the runtime process.
+
+**Scoped GitHub failure**: A GitHub read or write failure attributed to one repository or run. It is reported on the dashboard and skips only its subject; local-state failures still stop dispatch everywhere.

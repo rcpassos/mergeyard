@@ -165,6 +165,20 @@ func fakeRegularRepositoryFiles(paths string) map[string]string {
 	return files
 }
 
+func TestRepositoryScopedFinding(t *testing.T) {
+	repositories := []config.Repository{{Repo: "octo/repo"}, {Repo: "octo/other"}}
+	for _, scope := range []string{"octo/repo", "OCTO/REPO implementer", "octo/repo reviewer"} {
+		if !(doctor.Finding{Scope: scope}).RepositoryScoped(repositories) {
+			t.Fatalf("%q was not repository-scoped", scope)
+		}
+	}
+	for _, scope := range []string{"octo", "octo/repository", "gh", "configuration"} {
+		if (doctor.Finding{Scope: scope}).RepositoryScoped(repositories) {
+			t.Fatalf("%q was treated as repository-scoped", scope)
+		}
+	}
+}
+
 func TestMisconfiguredRepositoryReportsMissingLabelsAndInstructions(t *testing.T) {
 	path, fake, opts := repositorySetup(t, "")
 	fake.responses["gh api --hostname github.com --method GET --paginate repos/octo/repo/labels?per_page=100"] = runner.ExecResult{Stdout: []byte(`[{"name":"ready-for-agent"}]`)}

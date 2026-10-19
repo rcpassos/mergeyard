@@ -32,12 +32,14 @@
 <form method="post" action="/scheduler/{{if .Paused}}resume{{else}}pause{{end}}" hx-post="/scheduler/{{if .Paused}}resume{{else}}pause{{end}}" hx-target="#scheduler" hx-swap="outerHTML">
 <input type="hidden" name="csrf_token" value="{{.Token}}"><button class="btn btn-primary" type="submit"><img class="icon" src="/static/icons/{{if .Paused}}play{{else}}pause{{end}}.svg" alt="">{{if .Paused}}Resume scheduler{{else}}Pause scheduler{{end}}</button></form></div>{{end}}
 
-{{define "section"}}<section class="queue-section"><h2>{{.Name}} <span class="count">{{len .Runs}} runs / {{len .Issues}} issues</span></h2>
+{{define "section"}}<section class="queue-section"><h2>{{.Name}} <span class="count">{{len .Runs}} runs / {{len .Issues}} issues{{if .Failures}} / {{len .Failures}} GitHub failures{{end}}</span></h2>
 {{range .Runs}}{{template "run-row" .}}{{end}}
 {{range .Issues}}<article class="issue-row"><div><a class="issue-title" href="https://github.com/{{.Repository}}/issues/{{.Issue.Number}}" target="_blank" rel="noreferrer">{{.Repository}} #{{.Issue.Number}} · {{.Issue.Title}}</a>
 {{if .RefusalReason}}<p class="notice">Refused: {{.RefusalReason}}</p>{{end}}
 {{if .Blockers}}<p class="blockers">Blocked by {{range .Blockers}}<a href="{{.URL}}" target="_blank" rel="noreferrer">#{{.Number}} {{.Title}}</a> {{end}}</p>{{end}}</div><span class="row-note">GitHub issue</span></article>{{end}}
-{{if and (not .Runs) (not .Issues)}}<p class="empty">No items in this section.</p>{{end}}</section>{{end}}
+{{range .Failures}}<article class="issue-row"><div>{{if .RunID}}<a class="issue-title" href="/runs/{{.RunID}}">{{.Repository}} #{{.IssueNumber}} · {{.Code}}</a>{{else}}<span class="issue-title">{{.Repository}}{{if .IssueNumber}} #{{.IssueNumber}}{{end}} · {{.Code}}</span>{{end}}
+<p class="notice">{{.Message}}</p></div><span class="row-note">GitHub</span></article>{{end}}
+{{if and (not .Runs) (not .Issues) (not .Failures)}}<p class="empty">No items in this section.</p>{{end}}</section>{{end}}
 
 {{define "run-row"}}<article class="issue-row"><div>
 <a class="issue-title" href="/runs/{{.ID}}">{{.Repository}} #{{.IssueNumber}} · {{if .Title}}{{.Title}}{{else}}View run{{end}}</a>

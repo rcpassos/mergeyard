@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
+	"github.com/rcpassos/mergeyard/internal/web"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
@@ -490,5 +494,176 @@ func TestDeferredGitHubFailureStillGatesClaimsUntilReconcileSucceeds(t *testing.
 	runs, err := s.Runs(ctx)
 	if err != nil || len(runs) != 1 || runs[0].State != workflow.NeedsAttention {
 		t.Fatalf("recovered reconcile did not resume dispatch: %+v, %v", runs, err)
+	}
+}
+
+// repositoryFailureGitHub fails listings for selected repositories and leaves
+// every other boundary call to the normal fake.
+type repositoryFailureGitHub struct {
+	*fakeGitHub
+	failures map[string]error
+}
+
+func (g *repositoryFailureGitHub) ListLabeledIssues(ctx context.Context, repo string, labels []string) ([]github.Issue, error) {
+	if err := g.failures[repo]; err != nil {
+		return nil, err
+	}
+	return g.fakeGitHub.ListLabeledIssues(ctx, repo, labels)
+}
+
+func TestEnabledRepositoryGitHubFailureDoesNotBlockOtherRepositories(t *testing.T) {
+	ctx := context.Background()
+	api := &fakeGitHub{issues: map[string][]github.Issue{
+		"owner/broken": {ready(1)},
+		"owner/ok":     {ready(2)},
+	}}
+	failing := &repositoryFailureGitHub{fakeGitHub: api, failures: map[string]error{
+		"owner/broken": &fault.Error{Code: "github.not_found", Message: "repository owner/broken was renamed or deleted"},
+	}}
+	runtime, err := app.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { runtime.Close() })
+	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/broken\n  - repo: owner/ok\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: failing, Git: rejectingGit{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.Tick(ctx)
+	if !scheduler.GitHubFailure(err) || !strings.Contains(err.Error(), "github.not_found") {
+		t.Fatalf("tick error = %v, want the broken repository's scoped failure", err)
+	}
+	runs, err := s.Runs(ctx)
+	if err != nil || len(runs) != 1 || !strings.EqualFold(runs[0].Repository, "owner/ok") {
+		t.Fatalf("claims blocked by another repository's GitHub failure: %+v, %v", runs, err)
+	}
+	failures := s.ReconcileFailures()
+	if len(failures) != 1 || failures[0].Code != "reconcile.repository_failed" || !strings.EqualFold(failures[0].Repository, "owner/broken") {
+		t.Fatalf("scoped failures = %+v", failures)
+	}
+	report, err := s.Reconcile(ctx)
+	if !scheduler.GitHubFailure(err) {
+		t.Fatalf("reconcile error = %v, want a deferred GitHub failure", err)
+	}
+	found := false
+	for _, finding := range report.Findings {
+		if finding.Code == "reconcile.repository_failed" && strings.EqualFold(finding.Repository, "owner/broken") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reconcile report hid the failing repository: %+v", report.Findings)
+	}
+
+	server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "owner/broken") || !strings.Contains(recorder.Body.String(), "reconcile.repository_failed") {
+		t.Fatalf("dashboard hid the failing repository: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestQueueReportKeepsReadableRepositoriesWhenOneFails(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{
+		"owner/broken": {ready(1)},
+		"owner/ok":     {ready(2)},
+	}}
+	failing := &repositoryFailureGitHub{fakeGitHub: api, failures: map[string]error{
+		"owner/broken": &fault.Error{Code: "github.forbidden", Message: "Resource not accessible by integration"},
+	}}
+	s, _ := configured(t, failing, "repositories:\n  - repo: owner/broken\n  - repo: owner/ok\n", rejectingGit{})
+
+	report, err := s.QueueReport(context.Background())
+	if !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want the broken repository's scoped failure", err)
+	}
+	if len(report.Issues) != 1 || !strings.EqualFold(report.Issues[0].Repository, "owner/ok") {
+		t.Fatalf("readable repository disappeared from the queue: %+v", report.Issues)
+	}
+	if len(report.Failures) != 1 || !strings.EqualFold(report.Failures[0].Repository, "owner/broken") || report.Failures[0].Code != "reconcile.repository_failed" {
+		t.Fatalf("queue failures = %+v", report.Failures)
+	}
+}
+
+func TestDisabledRepositoryGitHubFailureDoesNotBlockDispatch(t *testing.T) {
+	ctx := context.Background()
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/ok": {ready(2)}}}
+	failing := &repositoryFailureGitHub{fakeGitHub: api, failures: map[string]error{
+		"owner/broken": &fault.Error{Code: "github.not_found", Message: "repository owner/broken was renamed or deleted"},
+	}}
+	s, _ := configured(t, failing, "repositories:\n  - repo: owner/broken\n    enabled: false\n  - repo: owner/ok\n", rejectingGit{})
+
+	if err := s.Tick(ctx); !scheduler.GitHubFailure(err) {
+		t.Fatalf("tick error = %v, want a deferred GitHub failure", err)
+	}
+	runs, err := s.Runs(ctx)
+	if err != nil || len(runs) != 1 || !strings.EqualFold(runs[0].Repository, "owner/ok") {
+		t.Fatalf("disabled repository blocked dispatch: %+v, %v", runs, err)
+	}
+}
+
+// failingPullRequests keeps the persisted run alive while its PR always
+// returns the same conclusive GitHub error.
+type failingPullRequests struct {
+	*fakeGitHub
+	err error
+}
+
+func (g *failingPullRequests) GetPullRequest(context.Context, string, int) (*github.PullRequest, error) {
+	return nil, g.err
+}
+
+func TestRunGitHubFailureDoesNotBlockOtherRepositories(t *testing.T) {
+	ctx := context.Background()
+	api := &fakeGitHub{issues: map[string][]github.Issue{
+		"owner/stuck": {},
+		"owner/ok":    {ready(2)},
+	}}
+	failing := &failingPullRequests{fakeGitHub: api, err: &fault.Error{Code: "github.forbidden", Message: "Resource not accessible by integration"}}
+	s, runtime := configured(t, failing, "concurrency: 2\nrepositories:\n  - repo: owner/stuck\n  - repo: owner/ok\n", rejectingGit{})
+
+	run, err := runtime.Workflow.Transition(ctx, "stuck-run", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/stuck", IssueNumber: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, trigger := range []workflow.Trigger{workflow.ClaimSucceeded, workflow.WorktreeReady} {
+		if run, err = runtime.Workflow.Transition(ctx, run.ID, workflow.Request{Trigger: trigger}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	number, round := 9, 1
+	if _, err := runtime.Workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.ImplementSucceeded, Metadata: workflow.MetadataPatch{PRNumber: &number, ReviewRound: &round}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		if err := s.Tick(ctx); !scheduler.GitHubFailure(err) {
+			t.Fatalf("tick error = %v, want the stuck run's scoped failure", err)
+		}
+	}
+	runs, err := s.Runs(ctx)
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("runs = %+v, %v", runs, err)
+	}
+	claimed := false
+	for _, run := range runs {
+		if run.ID != "stuck-run" && strings.EqualFold(run.Repository, "owner/ok") {
+			claimed = true
+		}
+	}
+	if !claimed {
+		t.Fatalf("stuck run blocked another repository's claim: %+v", runs)
+	}
+	failures := s.ReconcileFailures()
+	if len(failures) != 1 || failures[0].Code != "reconcile.run_failed" || failures[0].RunID != "stuck-run" || !strings.EqualFold(failures[0].Repository, "owner/stuck") {
+		t.Fatalf("scoped failures = %+v", failures)
 	}
 }

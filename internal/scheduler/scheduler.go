@@ -86,13 +86,15 @@ type Scheduler struct {
 	// tick serializes ticks, lifecycle controls, and dashboard actions. It
 	// honors cancellation, so a stalled tick never blocks a caller that gives
 	// up, disconnects, or shuts down.
-	tick             gate.Gate
-	control          *Control
-	running          atomic.Bool
-	listingFetch     sync.Mutex               // serializes listing fetches so concurrent readers share one
-	listings         listingCache             // this poll's label-filtered issue snapshot per repository
-	blockers         keyedCache[blockerEntry] // dashboard blocker reads keyed by unchanged issue snapshots
-	reportedFindings map[string]bool          // protected by tick; unchanged findings emit once per scheduler lifetime
+	tick              gate.Gate
+	control           *Control
+	running           atomic.Bool
+	listingFetch      sync.Mutex               // serializes listing fetches so concurrent readers share one
+	listings          listingCache             // this poll's label-filtered issue snapshot per repository
+	blockers          keyedCache[blockerEntry] // dashboard blocker reads keyed by unchanged issue snapshots
+	reportedFindings  map[string]bool          // protected by tick; unchanged findings emit once per scheduler lifetime
+	failuresMu        sync.RWMutex             // guards the latest scoped GitHub failures shared with the dashboard
+	reconcileFailures []Finding                // scoped GitHub failures from the latest reconcile pass
 }
 
 // New requires an exclusively owned runtime workspace.
@@ -230,11 +232,14 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return err
 	}
 	s.beginPoll()
-	_, err := s.reconcile(ctx)
-	if err != nil {
-		return err
+	reconciled := s.reconcile(ctx)
+	if reconciled.observed {
+		s.setReconcileFailures(reconciled.activeFailures)
 	}
-	var failures []error
+	if len(reconciled.fatalErrors) > 0 {
+		return reconciled.err()
+	}
+	failures := append([]error{}, reconciled.scopedErrors...)
 	if err := s.reconcileHarnessOverrideRefusals(ctx); err != nil {
 		failures = append(failures, err)
 	}
@@ -253,7 +258,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	}
 	capacity := capacityFor(runs, false)
 	for _, repo := range s.cfg.Repositories {
-		if !repo.Enabled || capacity.slots >= s.cfg.Concurrency || s.control.Paused() {
+		if !repo.Enabled || reconciled.blockedRepositories[strings.ToLower(repo.Repo)] || capacity.slots >= s.cfg.Concurrency || s.control.Paused() {
 			continue
 		}
 		issues, err := s.listIssues(ctx, repo)
@@ -262,6 +267,9 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			continue
 		}
 		for _, issue := range orderedIssues(issues) {
+			if reconciled.blockedIssues[issueKey(repo.Repo, issue.Number)] {
+				continue
+			}
 			capacity.paused = s.control.Paused()
 			candidate, err := s.inspectCandidate(ctx, repo, issue, capacity)
 			if err != nil {
@@ -310,6 +318,21 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// ReconcileFailures returns the GitHub failures scoped to a repository or run
+// by the latest reconcile pass. They are reported but do not stop unrelated
+// dispatch.
+func (s *Scheduler) ReconcileFailures() []Finding {
+	s.failuresMu.RLock()
+	defer s.failuresMu.RUnlock()
+	return append([]Finding{}, s.reconcileFailures...)
+}
+
+func (s *Scheduler) setReconcileFailures(findings []Finding) {
+	s.failuresMu.Lock()
+	defer s.failuresMu.Unlock()
+	s.reconcileFailures = append([]Finding{}, findings...)
 }
 
 func issueKey(repo string, n int) string { return strings.ToLower(repo) + "/" + strconv.Itoa(n) }
