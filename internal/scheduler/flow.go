@@ -247,6 +247,20 @@ func (s *Scheduler) lastAttempt(ctx context.Context, id string) (durable.Attempt
 	return s.execution().LoadImplement(ctx, id)
 }
 
+// savedImplementResult decodes the report saved with an attempt. Continuation
+// uses the attempt record like every other implement-report reader; the phase
+// directory is an archive and may already be gone.
+func savedImplementResult(report json.RawMessage) (harness.PhaseResult, error) {
+	var result harness.PhaseResult
+	if len(report) == 0 {
+		return result, &fault.Error{Code: "phase.result_missing", Message: "Implement attempt has no saved report"}
+	}
+	if err := json.Unmarshal(report, &result); err != nil {
+		return result, &fault.Error{Code: "phase.result_invalid", Message: "Implement attempt report is invalid", Err: err}
+	}
+	return result, nil
+}
+
 func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run workflow.Run, issue github.Issue, gitRun managedgit.Run) (harness.PhaseResult, bool, error) {
 	a, err := s.lastAttempt(ctx, run.ID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -259,12 +273,7 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		return harness.PhaseResult{}, false, s.startAttempt(ctx, repo, run, issue, gitRun, next)
 	}
 	if a.Status == "succeeded" {
-		data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.Ref.PhaseDir, "result.json"))
-		if err != nil {
-			return harness.PhaseResult{}, false, err
-		}
-		var result harness.PhaseResult
-		err = json.Unmarshal(data, &result)
+		result, err := savedImplementResult(a.ImplementReport)
 		return result, err == nil, err
 	}
 	if a.Status == "usage_limited" {
@@ -278,15 +287,11 @@ func (s *Scheduler) implement(ctx context.Context, repo config.Repository, run w
 		code, message, _ := strings.Cut(a.Failure, ": ")
 		cause := &fault.Error{Code: code, Message: message}
 		if code == "phase.blocked" {
-			// The result was saved before the failed-attempt commit. Recover its
+			// The report was saved before the failed-attempt commit. Recover its
 			// decision if the control plane stopped before the attention transition.
-			data, err := s.deps.Runner.ReadFile(ctx, filepath.Join(a.Ref.PhaseDir, "result.json"))
+			result, err := savedImplementResult(a.ImplementReport)
 			if err != nil {
 				return harness.PhaseResult{}, false, err
-			}
-			var result harness.PhaseResult
-			if err := json.Unmarshal(data, &result); err != nil {
-				return result, false, err
 			}
 			cause.HumanAction = result.HumanAction
 		}

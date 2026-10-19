@@ -133,6 +133,9 @@ Codex emits its identity through `thread.started`. Local observation every 250 m
 persists each role's UUID during implementation, review or fixes and publishes
 `harness.session_discovered` without waiting for the GitHub polling interval. Reconciliation also recovers identity from captured
 output after a restart. Attempt and tmux identities are persisted before launch.
+Continuation and review read the structured report saved on the attempt, so a
+missing or cleaned phase directory does not change the decision; `result.json`
+remains only an archive.
 
 Codex uses native `exec --json --output-schema … -o …`, with cwd and sandbox flags
 before an exact-ID `resume`. Every invocation supplies model, effort, skills,

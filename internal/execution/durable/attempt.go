@@ -36,15 +36,19 @@ type Executor struct {
 
 // Attempt is the journal entry for one phase execution: the harness (agent)
 // that ran it, its persisted session identity, owned process reference and
-// continuation state. It is the single attempt shape shared by durable
-// execution and the scheduler's phase workflows.
+// continuation state. It also carries an implement attempt's saved report; it
+// is the single attempt shape shared by durable execution and the scheduler's
+// phase workflows.
 type Attempt struct {
-	ID, Agent             string
-	Number                int
-	Status                string
-	Ref                   runner.SessionRef
-	SessionID             string
-	Resumed               bool
+	ID, Agent string
+	Number    int
+	Status    string
+	Ref       runner.SessionRef
+	SessionID string
+	Resumed   bool
+	// ImplementReport is the saved structured report for an implement attempt.
+	// LoadImplement fills it; review and fix reports live in their own journals.
+	ImplementReport       json.RawMessage
 	Failure, CheckRetryOf string
 }
 
@@ -53,7 +57,18 @@ func (a Attempt) resumeFailed() bool {
 }
 
 func (e Executor) LoadImplement(ctx context.Context, id string) (Attempt, error) {
-	return e.Load(ctx, id, workflow.Implement, 0)
+	a, err := e.Load(ctx, id, workflow.Implement, 0)
+	if err != nil {
+		return a, err
+	}
+	var report sql.NullString
+	if err := e.DB.QueryRowContext(ctx, `SELECT report_json FROM phase_attempts WHERE id=?`, a.ID).Scan(&report); err != nil {
+		return Attempt{}, err
+	}
+	if report.Valid {
+		a.ImplementReport = json.RawMessage(report.String)
+	}
+	return a, nil
 }
 
 // sessionIdentity chains the columns that record one attempt's conversation:
