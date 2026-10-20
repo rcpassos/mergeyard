@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 )
 
@@ -14,8 +15,10 @@ const StopLeftoversMarker = "<!-- mergeyard:stop:leftovers -->"
 type StoppedLeftovers struct {
 	// Branch is the local branch the preparation created.
 	Branch string
-	// Path is the managed worktree directory the preparation created.
-	Path string
+	// Worktree is the managed worktree directory the preparation created,
+	// relative to the Mergeyard workspace. The issue may be public, so it never
+	// carries the operator's absolute path.
+	Worktree string
 	// Reason explains why the leftovers were preserved.
 	Reason string
 }
@@ -32,8 +35,11 @@ func (c *Client) EnsureStopLeftoversComment(ctx context.Context, repo string, nu
 	if _, err := issuePath(repo, number); err != nil {
 		return err
 	}
-	if strings.TrimSpace(runID) == "" || strings.TrimSpace(leftovers.Branch) == "" || strings.TrimSpace(leftovers.Path) == "" {
-		return codedError("github.invalid_input", "expected a run, a branch, and a worktree path", nil)
+	if strings.TrimSpace(runID) == "" || strings.TrimSpace(leftovers.Branch) == "" || strings.TrimSpace(leftovers.Worktree) == "" {
+		return codedError("github.invalid_input", "expected a run, a branch, and a worktree", nil)
+	}
+	if filepath.IsAbs(leftovers.Worktree) || strings.HasPrefix(leftovers.Worktree, "/") || strings.HasPrefix(leftovers.Worktree, "~") {
+		return codedError("github.invalid_input", "expected a worktree relative to the Mergeyard workspace", nil)
 	}
 	login, err := c.authenticatedLogin(ctx)
 	if err != nil {
@@ -41,8 +47,8 @@ func (c *Client) EnsureStopLeftoversComment(ctx context.Context, repo string, nu
 	}
 	marker := StopLeftoversMarker + ":" + runID
 	prefix := marker + "\nMergeyard stopped run " + runID + " while it was preparing and kept the leftovers it could not remove:\n\n"
-	body := prefix + "- Local branch `" + leftovers.Branch + "`\n- Worktree `" + leftovers.Path + "`\n\n" + leftovers.Reason +
-		"\n\nMergeyard did not delete them. Remove the worktree and the branch before another run prepares this issue."
+	body := prefix + "- Local branch `" + leftovers.Branch + "`\n- Worktree `" + leftovers.Worktree + "` in the Mergeyard workspace on the machine that ran it\n\n" + leftovers.Reason +
+		"\n\nMergeyard did not delete them. Run detail shows the full worktree path. Remove the worktree and the branch before another run prepares this issue."
 	_, err = c.ensureComment(ctx, repo, number, body, func(comment Comment) bool {
 		return comment.User != nil && strings.EqualFold(comment.User.Login, login) && strings.HasPrefix(comment.Body, prefix)
 	})

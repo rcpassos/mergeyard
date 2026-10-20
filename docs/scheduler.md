@@ -63,9 +63,12 @@ work, so the next run prepares instead of refusing them. Leftovers with commits
 or changes are kept, never deleted, and so is a checkout Git never finished
 initializing while its directory holds anything beyond the recorded start: the
 run records them, the issue is flagged for attention, and a comment names the
-branch and the worktree the user has to remove. The preparation of a run that
-already saved its ownership is never released, because that work belongs to the
-run. The leftovers are recorded in the `run.stop_leftovers` event.
+branch and the worktree the user has to remove. The comment may land on a
+public issue, so it names the worktree relative to the Mergeyard workspace and
+never posts an absolute local path; run detail and the `run.stop_leftovers`
+event keep the full path. The preparation of a run that already saved its
+ownership is never released, because that work belongs to the run. The
+leftovers are recorded in the `run.stop_leftovers` event.
 
 Repositories are visited in configuration order. Issues are ordered by creation
 time and then issue number. Only open ready issues without running/attention

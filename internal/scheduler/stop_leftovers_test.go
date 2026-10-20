@@ -217,7 +217,9 @@ done
 		t.Fatalf("the preserved work did not flag the issue: %+v", issue.Labels)
 	}
 	comment, ok := api.leftoverComments[7]
-	if !ok || comment.Path != path {
+	// The comment names the worktree relative to the workspace, never the
+	// absolute path, which would expose the operator's filesystem layout.
+	if want := filepath.ToSlash(filepath.Join("worktrees", "owner-repo", run.ID)); !ok || comment.Worktree != want {
 		t.Fatalf("the preserved work was not named on the issue: %+v", api.leftoverComments)
 	}
 }
@@ -289,7 +291,7 @@ func TestStopPreparingRunKeepsLeftoversThatHoldWork(t *testing.T) {
 	if !ok {
 		t.Fatalf("the preserved leftovers were not named on the issue: %+v", api.leftoverComments)
 	}
-	if comment.Branch != "mergeyard/issue-7" || comment.Path != prepared.Path {
+	if want := filepath.ToSlash(filepath.Join("worktrees", "owner-repo", run.ID)); comment.Branch != "mergeyard/issue-7" || comment.Worktree != want || filepath.IsAbs(comment.Worktree) {
 		t.Fatalf("the explanation does not name the leftovers: %+v", comment)
 	}
 	// The next run for the same issue is told what blocks it.
