@@ -407,7 +407,7 @@ func TestStopKeepsLeftoversThatHoldWorkOfAnUnownedRunInAnyState(t *testing.T) {
 			if !ok {
 				t.Fatalf("the preserved leftovers were not named on the issue: %+v", api.leftoverComments)
 			}
-			if comment.Branch != "mergeyard/issue-7" || comment.Path != prepared.Path {
+			if want := filepath.ToSlash(filepath.Join("worktrees", "owner-repo", run.ID)); comment.Branch != "mergeyard/issue-7" || comment.Worktree != want {
 				t.Fatalf("the explanation does not name the leftovers: %+v", comment)
 			}
 		})
@@ -521,7 +521,8 @@ func TestStopKeepsIgnoredFilesOfAnUnownedRunInAnyState(t *testing.T) {
 			if !has(api.issues["owner/repo"][0], "agent-needs-attention") {
 				t.Fatalf("the preserved leftovers did not flag the issue: %+v", api.issues["owner/repo"][0].Labels)
 			}
-			if comment, ok := api.leftoverComments[7]; !ok || comment.Path != prepared.Path {
+			comment, ok := api.leftoverComments[7]
+			if want := filepath.ToSlash(filepath.Join("worktrees", "owner-repo", run.ID)); !ok || comment.Worktree != want {
 				t.Fatalf("the preserved leftovers were not named on the issue: %+v", api.leftoverComments)
 			}
 		})
