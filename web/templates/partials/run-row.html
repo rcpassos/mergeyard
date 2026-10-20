@@ -1,0 +1,8 @@
+{{define "run-row"}}<article class="issue-row"><div>
+<a class="issue-title" href="/runs/{{.ID}}">{{.Repository}} #{{.IssueNumber}} · {{if .Title}}{{.Title}}{{else}}View run{{end}}</a>
+<p class="row-meta">{{if and (eq .State "WAITING_FOR_HARNESS") .HarnessWait}}{{if eq .HarnessWait.Reason "credits_exhausted"}}Waiting for credit recovery · {{.HarnessWait.Harness}} · explicit Retry required{{else}}Usage limit · {{.HarnessWait.Harness}} · reset {{.HarnessWait.ResetAt}} · {{.HarnessWait.ResetTimeSource}}{{end}} · {{.HarnessWait.Source}} · {{end}}{{if .Merge}}{{if .Merge.Pending}}Merged — cleanup pending{{else}}Merged — cleanup complete{{end}}{{else if eq .State "READY_TO_MERGE"}}Waiting for your merge{{else if .ReviewPending}}Draft PR created. Review pending.{{else}}{{.State}}{{if .Phase}} / {{.Phase}}{{end}}{{end}} · round {{.Round}}, attempt {{.Attempt}}</p>
+{{with .Merge}}{{if .Early}}<p class="row-meta">Early merge before readiness</p>{{end}}{{if .Error}}<p class="error-code">{{.Error}}</p>{{end}}{{if .Pending}}<ul class="row-meta">{{range .Remaining}}<li>{{.}}</li>{{end}}</ul>{{end}}{{end}}
+{{with .CI}}{{if .Warning}}<p class="notice">{{.Warning}}</p>{{end}}{{if .BaseWarning}}<p class="notice">{{.BaseWarning}}</p>{{end}}{{end}}
+{{if eq .State "READY_TO_MERGE"}}{{template "escalation" .Escalation}}{{end}}
+{{template "human-action" .HumanAction}}{{if .LastErrorCode}}<p class="error-code">{{.LastErrorCode}}: {{.LastErrorMessage}}</p>{{end}}</div>
+{{if .PRURL}}<a class="row-note" href="{{.PRURL}}" target="_blank" rel="noreferrer">Open PR</a>{{else}}<time class="row-note">{{.UpdatedAt}}</time>{{end}}</article>{{end}}

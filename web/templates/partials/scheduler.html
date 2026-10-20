@@ -1,0 +1,5 @@
+{{define "scheduler"}}<div id="scheduler" class="scheduler"><div>
+<span class="badge {{if .Paused}}badge-warning{{else}}badge-info{{end}}">{{if .Paused}}Paused{{else}}Running{{end}}</span>
+<p>{{if .Paused}}New issue claims are paused.{{else}}New issue claims are enabled.{{end}}</p><small>Pausing leaves existing runs alone.</small></div>
+<form method="post" action="/scheduler/{{if .Paused}}resume{{else}}pause{{end}}" hx-post="/scheduler/{{if .Paused}}resume{{else}}pause{{end}}" hx-target="#scheduler" hx-swap="outerHTML">
+<input type="hidden" name="csrf_token" value="{{.Token}}"><button class="btn btn-primary" type="submit"><img class="icon" src="/static/icons/{{if .Paused}}play{{else}}pause{{end}}.svg" alt="">{{if .Paused}}Resume scheduler{{else}}Pause scheduler{{end}}</button></form></div>{{end}}
