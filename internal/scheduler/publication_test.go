@@ -355,7 +355,7 @@ func TestPublicationWarningDoesNotBlockCIReadiness(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/static/app.js", nil))
-	for _, event := range []string{"publication.pending", "publication.warning", "publication.published", "ci.updated", "pr.readiness_started"} {
+	for _, event := range []string{"publication.pending", "publication.warning", "publication.published", "publication.stopped", "ci.updated", "pr.readiness_started"} {
 		if !strings.Contains(response.Body.String(), event) {
 			t.Fatalf("missing live update %q", event)
 		}
@@ -571,8 +571,11 @@ func TestRunFinishingAfterTransientFailureStopsReportPublication(t *testing.T) {
 	if err := rt.DB.QueryRow(`SELECT stopped,warning FROM report_publications WHERE run_id='report-finishes-later'`).Scan(&stopped, &warning); err != nil || !stopped || !strings.Contains(warning, "will not retry") || !strings.Contains(warning, "No further retries") {
 		t.Fatalf("finished report state = %v %q, %v", stopped, warning, err)
 	}
-	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.warning' AND json_extract(payload_json,'$.report_id')=(SELECT attempt_id FROM report_publications WHERE run_id='report-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&warning); err != nil || !strings.Contains(warning, "will not retry") || !strings.Contains(warning, "No further retries") {
-		t.Fatalf("finished report event = %q, %v", warning, err)
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.warning' AND json_extract(payload_json,'$.report_id')=(SELECT attempt_id FROM report_publications WHERE run_id='report-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&warning); err != nil || !strings.Contains(warning, "deferred") {
+		t.Fatalf("report warning was rewritten: %q, %v", warning, err)
+	}
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.stopped' AND json_extract(payload_json,'$.report_id')=(SELECT attempt_id FROM report_publications WHERE run_id='report-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&warning); err != nil || !strings.Contains(warning, "will not retry") || !strings.Contains(warning, "No further retries") {
+		t.Fatalf("finished report stop event = %q, %v", warning, err)
 	}
 }
 
@@ -600,7 +603,10 @@ func TestRunFinishingAfterTransientFailureStopsAttentionPublication(t *testing.T
 		t.Fatalf("finished attention was not stopped: %v, %v", stopped, err)
 	}
 	var message string
-	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.warning' AND json_extract(payload_json,'$.attention_event_id')=(SELECT event_id FROM attention_publications WHERE run_id='attention-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&message); err != nil || !strings.Contains(message, "will not retry") || !strings.Contains(message, "No further retries") {
-		t.Fatalf("attention warning = %q, %v", message, err)
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.warning' AND json_extract(payload_json,'$.attention_event_id')=(SELECT event_id FROM attention_publications WHERE run_id='attention-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&message); err != nil || !strings.Contains(message, "deferred") {
+		t.Fatalf("attention warning was rewritten: %q, %v", message, err)
+	}
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.stopped' AND json_extract(payload_json,'$.attention_event_id')=(SELECT event_id FROM attention_publications WHERE run_id='attention-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&message); err != nil || !strings.Contains(message, "will not retry") || !strings.Contains(message, "No further retries") {
+		t.Fatalf("attention stop event = %q, %v", message, err)
 	}
 }

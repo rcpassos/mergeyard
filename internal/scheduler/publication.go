@@ -154,26 +154,24 @@ func (s *Scheduler) publishReports(ctx context.Context) error {
 	}
 	var pending []pendingReport
 	for _, p := range loaded {
-		// A finished run that already returned a failure has no later reader;
-		// record the stop without another read or write.
-		if p.finished && p.failed {
-			warning := stoppedPublicationWarning("Report is saved locally. This run is finished, so PR comment publication will not retry.")
-			if _, err := s.db.ExecContext(ctx, `UPDATE report_publications SET stopped=1,warning=? WHERE attempt_id=?`, warning, p.id); err != nil {
-				return err
-			}
-			if err := s.updateReportWarning(ctx, p.id, warning); err != nil {
-				return err
-			}
-			continue
-		}
-		due, err := publicationDue(p.lastAttempt, p.attempts, s.deps.Now())
+		state := publicationState{Attempts: p.attempts, LastAttemptAt: p.lastAttempt, Finished: p.finished, Failed: p.failed}
+		disposition, err := state.disposition(s.deps.Now())
 		if err != nil {
 			return err
 		}
-		if !due {
-			continue
+		switch disposition {
+		case publicationStop:
+			warning := stoppedPublicationWarning("Report is saved locally. This run is finished, so PR comment publication will not retry.")
+			payload := map[string]any{"report_id": p.id, "code": p.warning, "message": warning}
+			if err := s.stopPublication(ctx, p.runID, payload, func(tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, `UPDATE report_publications SET stopped=1,warning=? WHERE attempt_id=?`, warning, p.id)
+				return err
+			}); err != nil {
+				return err
+			}
+		case publicationReady:
+			pending = append(pending, p)
 		}
-		pending = append(pending, p)
 	}
 	deliveries := make([]commentDelivery, 0, len(pending))
 	for _, p := range pending {
@@ -184,27 +182,34 @@ func (s *Scheduler) publishReports(ctx context.Context) error {
 
 func (p pendingReport) delivery(s *Scheduler) commentDelivery {
 	return commentDelivery{
-		repository: p.repository, number: p.pr, body: p.body, warningCode: p.warning, finished: p.finished,
-		deferredWarning: "Report is saved locally. PR comment publication is deferred.",
-		terminalWarning: stoppedPublicationWarning("Report is saved locally. PR comment publication cannot deliver this comment."),
-		finishedWarning: stoppedPublicationWarning("Report is saved locally. This run is finished, so PR comment publication will not retry."),
+		runID: p.runID, repository: p.repository, number: p.pr, body: p.body, warningCode: p.warning, finished: p.finished,
+		warnings: publicationWarnings{
+			Deferred: "Report is saved locally. PR comment publication is deferred.",
+			Terminal: stoppedPublicationWarning("Report is saved locally. PR comment publication cannot deliver this comment."),
+			Finished: stoppedPublicationWarning("Report is saved locally. This run is finished, so PR comment publication will not retry."),
+		},
 		startAttempt: func(ctx context.Context) error {
 			_, err := s.db.ExecContext(ctx, `UPDATE report_publications SET attempts=attempts+1,last_attempt_at=?,failed=0 WHERE attempt_id=?`, publicationTimestamp(s.deps.Now()), p.id)
 			return err
 		},
-		saveWarning: func(ctx context.Context, tx *sql.Tx, code, message string, failed, terminal bool) (events.Draft, error) {
-			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET warning_code=?,warning=?,failed=?,stopped=? WHERE attempt_id=?`, code, message, failed, terminal, p.id)
-			return events.Draft{RunID: p.runID, Type: "publication.warning", Payload: map[string]any{"report_id": p.id, "code": code, "message": message}}, err
+		saveWarning: func(ctx context.Context, tx *sql.Tx, outcome publicationOutcome) (events.Draft, error) {
+			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET warning_code=?,warning=?,failed=?,stopped=? WHERE attempt_id=?`, outcome.Code, outcome.Message, outcome.Failed, outcome.Stopped, p.id)
+			return events.Draft{RunID: p.runID, Type: "publication.warning", Payload: map[string]any{"report_id": p.id, "code": outcome.Code, "message": outcome.Message}}, err
 		},
-		saveAttemptResult: func(ctx context.Context, _ string, message string, failed, terminal bool) error {
-			if !terminal {
-				_, err := s.db.ExecContext(ctx, `UPDATE report_publications SET failed=?,stopped=0 WHERE attempt_id=?`, failed, p.id)
+		saveAttemptResult: func(ctx context.Context, tx *sql.Tx, outcome publicationOutcome) error {
+			exec := s.db.ExecContext
+			if tx != nil {
+				exec = tx.ExecContext
+			}
+			if !outcome.Stopped {
+				_, err := exec(ctx, `UPDATE report_publications SET failed=?,stopped=0 WHERE attempt_id=?`, outcome.Failed, p.id)
 				return err
 			}
-			if _, err := s.db.ExecContext(ctx, `UPDATE report_publications SET failed=?,stopped=1,warning=? WHERE attempt_id=?`, failed, message, p.id); err != nil {
-				return err
-			}
-			return s.updateReportWarning(ctx, p.id, message)
+			_, err := exec(ctx, `UPDATE report_publications SET failed=?,stopped=1,warning=? WHERE attempt_id=?`, outcome.Failed, outcome.Message, p.id)
+			return err
+		},
+		stopPayload: func(outcome publicationOutcome) map[string]any {
+			return map[string]any{"report_id": p.id, "code": outcome.Code, "message": outcome.Message}
 		},
 		saveReceipt: func(ctx context.Context, tx *sql.Tx, comment *github.Comment) (events.Draft, error) {
 			_, err := tx.ExecContext(ctx, `UPDATE report_publications SET state='published',comment_id=?,comment_url=?,warning_code='',warning='',failed=0,stopped=0 WHERE attempt_id=?`, comment.ID, comment.URL, p.id)

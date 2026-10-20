@@ -61,21 +61,34 @@ func (s *Scheduler) evaluateEscalation(ctx context.Context, repo config.Reposito
 }
 
 func (s *Scheduler) publishEscalation(ctx context.Context, run *workflow.Run) error {
-	if run.Escalation == nil || run.Escalation.EvaluationWarning != "" || run.Escalation.Published || run.Escalation.Stopped {
+	if run.Escalation == nil || run.Escalation.EvaluationWarning != "" || run.Escalation.Published {
 		return nil
 	}
-	due, err := publicationDue(run.Escalation.LastAttemptAt, run.Escalation.Attempts, s.deps.Now())
+	state := publicationState{
+		Attempts:      run.Escalation.Attempts,
+		LastAttemptAt: run.Escalation.LastAttemptAt,
+		Finished:      run.State.Terminal(),
+		Failed:        run.Escalation.Failed,
+		Stopped:       run.Escalation.Stopped,
+	}
+	disposition, err := state.disposition(s.deps.Now())
 	if err != nil {
 		return err
 	}
-	if !due {
+	switch disposition {
+	case publicationWait:
 		return nil
+	case publicationStop:
+		next := *run.Escalation
+		next.Stopped = true
+		next.PublicationWarning = stoppedPublicationWarning("Escalation reasons are saved locally. This run is finished, so PR body publication will not retry.")
+		return s.saveEscalation(ctx, run, next)
 	}
 	next := *run.Escalation
 	next.Attempts++
 	next.LastAttemptAt = publicationTimestamp(s.deps.Now())
 	next.Failed = false
-	if err := s.saveEscalation(ctx, run, next); err != nil {
+	if err := s.saveEscalationAttempt(ctx, run, next); err != nil {
 		return err
 	}
 	api, ok := s.deps.GitHub.(EscalationGitHub)
@@ -91,25 +104,41 @@ func (s *Scheduler) publishEscalation(ctx context.Context, run *workflow.Run) er
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	before := *run.Escalation
 	next = *run.Escalation
 	if cause != nil {
-		returned := publicationContext.Err() == nil
-		permanent := persistentPublicationFailure(cause, publicationContext)
-		terminal := terminalPublicationFailure(cause, publicationContext, run.State.Terminal())
-		next.PublicationWarning = "Escalation reasons are saved locally. PR body publication is deferred."
-		if terminal {
-			next.PublicationWarning = stoppedPublicationWarning("Escalation reasons are saved locally. PR body publication cannot update this PR.")
-			if !permanent {
-				next.PublicationWarning = stoppedPublicationWarning("Escalation reasons are saved locally. This run is finished, so PR body publication will not retry.")
-			}
-		}
-		next.Failed = returned
-		next.Stopped = terminal
+		outcome := outcomeFor(cause, publicationContext, run.State.Terminal(), publicationWarnings{
+			Deferred: "Escalation reasons are saved locally. PR body publication is deferred.",
+			Terminal: stoppedPublicationWarning("Escalation reasons are saved locally. PR body publication cannot update this PR."),
+			Finished: stoppedPublicationWarning("Escalation reasons are saved locally. This run is finished, so PR body publication will not retry."),
+		})
+		next.PublicationWarning = outcome.Message
+		next.Failed = outcome.Failed
+		next.Stopped = outcome.Stopped
 	} else {
 		next.Published = true
 		next.PublicationWarning = ""
 		next.Failed = false
 		next.Stopped = false
 	}
+	if escalationVisibleEqual(before, next) {
+		return s.saveEscalationAttempt(ctx, run, next)
+	}
 	return s.saveEscalation(ctx, run, next)
+}
+
+// saveEscalationAttempt persists bounded retry bookkeeping without entering the
+// run timeline; only visible warning/publication changes emit escalation.updated.
+func (s *Scheduler) saveEscalationAttempt(ctx context.Context, run *workflow.Run, next escalation.Snapshot) error {
+	if err := escalation.SaveContext(ctx, s.db, run.ID, next); err != nil {
+		return err
+	}
+	run.Escalation = &next
+	return nil
+}
+
+func escalationVisibleEqual(before, after escalation.Snapshot) bool {
+	before.Attempts, before.LastAttemptAt, before.Failed = 0, "", false
+	after.Attempts, after.LastAttemptAt, after.Failed = 0, "", false
+	return reflect.DeepEqual(before, after)
 }

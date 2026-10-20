@@ -15,15 +15,15 @@ import (
 // validation, cancellation, terminal state and warning suppression for both
 // publication kinds.
 type commentDelivery struct {
-	repository, body, warningCode    string
-	deferredWarning, terminalWarning string
-	finishedWarning                  string
-	number                           int
-	finished                         bool
-	startAttempt                     func(context.Context) error
-	saveWarning                      func(context.Context, *sql.Tx, string, string, bool, bool) (events.Draft, error)
-	saveAttemptResult                func(context.Context, string, string, bool, bool) error
-	saveReceipt                      func(context.Context, *sql.Tx, *github.Comment) (events.Draft, error)
+	runID, repository, body, warningCode string
+	number                               int
+	finished                             bool
+	warnings                             publicationWarnings
+	startAttempt                         func(context.Context) error
+	saveWarning                          func(context.Context, *sql.Tx, publicationOutcome) (events.Draft, error)
+	saveAttemptResult                    func(context.Context, *sql.Tx, publicationOutcome) error
+	stopPayload                          func(publicationOutcome) map[string]any
+	saveReceipt                          func(context.Context, *sql.Tx, *github.Comment) (events.Draft, error)
 }
 
 func (s *Scheduler) publishComments(ctx context.Context, pending []commentDelivery) error {
@@ -52,37 +52,35 @@ func (s *Scheduler) publishComments(ctx context.Context, pending []commentDelive
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		var err error
-		if cause != nil {
-			code := publicationCode(cause)
-			// A shared-budget expiry returns no delivery result; keep the
-			// attempt retryable and do not mark the last result as failed.
-			returned := publicationCtx.Err() == nil
-			permanent := persistentPublicationFailure(cause, publicationCtx)
-			terminal := terminalPublicationFailure(cause, publicationCtx, p.finished)
-			message := p.deferredWarning
-			if terminal {
-				message = p.terminalWarning
-				if !permanent {
-					message = p.finishedWarning
-				}
-			}
-			if code == p.warningCode {
-				// The warning is already visible; correct its text if retries stop.
-				if err := p.saveAttemptResult(ctx, code, message, returned, terminal); err != nil {
-					return err
-				}
-				continue
-			}
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				return p.saveWarning(ctx, tx, code, message, returned, terminal)
-			})
-		} else {
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+		if cause == nil {
+			if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
 				return p.saveReceipt(ctx, tx, comment)
-			})
+			}); err != nil {
+				return err
+			}
+			continue
 		}
-		if err != nil {
+		outcome := outcomeFor(cause, publicationCtx, p.finished, p.warnings)
+		if outcome.Code != p.warningCode {
+			if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+				return p.saveWarning(ctx, tx, outcome)
+			}); err != nil {
+				return err
+			}
+			continue
+		}
+		if !outcome.Stopped {
+			if err := p.saveAttemptResult(ctx, nil, outcome); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+			if err := p.saveAttemptResult(ctx, tx, outcome); err != nil {
+				return events.Draft{}, err
+			}
+			return events.Draft{RunID: p.runID, Type: publicationStoppedEvent, Payload: p.stopPayload(outcome)}, nil
+		}); err != nil {
 			return err
 		}
 	}

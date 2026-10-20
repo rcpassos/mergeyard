@@ -79,43 +79,36 @@ ORDER BY COALESCE(a.last_attempt_at,''),e.seq`)
 	}
 	var pending []publication
 	for _, p := range loaded {
-		// A stopped marker ends retries; its warning stays visible. A finished
-		// run that already returned a failure has no later reader, so record
-		// the stop without another read or write. Transient failures on live
-		// runs wait for their backoff.
-		if p.stopped {
-			continue
-		}
-		if p.finished && p.failed {
-			if _, err := s.db.ExecContext(ctx, `UPDATE verification_attempts SET stopped=1 WHERE run_id=? AND source_attempt=?`, p.runID, p.source); err != nil {
-				return err
-			}
-			message := stoppedPublicationWarning("Verification evidence is saved locally. This run is finished, so PR body publication will not retry.")
-			if err := s.updateVerificationWarning(ctx, p.runID, p.source, "", message); err != nil {
-				return err
-			}
-			continue
-		}
-		due, err := publicationDue(p.lastAttempt, p.attempts, s.deps.Now())
+		state := publicationState{Attempts: p.attempts, LastAttemptAt: p.lastAttempt, Finished: p.finished, Failed: p.failed, Stopped: p.stopped}
+		disposition, err := state.disposition(s.deps.Now())
 		if err != nil {
 			return err
 		}
-		if !due {
-			continue
+		switch disposition {
+		case publicationStop:
+			message := stoppedPublicationWarning("Verification evidence is saved locally. This run is finished, so PR body publication will not retry.")
+			payload := map[string]any{"source_attempt": p.source, "message": message}
+			if err := s.stopPublication(ctx, p.runID, payload, func(tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET stopped=1 WHERE run_id=? AND source_attempt=?`, p.runID, p.source)
+				return err
+			}); err != nil {
+				return err
+			}
+		case publicationReady:
+			var issue github.Issue
+			var report harness.PhaseResult
+			if err := json.Unmarshal([]byte(p.issueJSON), &issue); err != nil {
+				return err
+			}
+			if err := json.Unmarshal([]byte(p.reportJSON), &report); err != nil {
+				return err
+			}
+			p.content = github.PullRequestContent{IssueNumber: issue.Number, IssueTitle: issue.Title, Summary: report.Summary, RunID: p.runID, Verification: report.Verification}
+			if err := json.Unmarshal([]byte(p.settingsJSON), &p.content.RoleSettings); err != nil {
+				return err
+			}
+			pending = append(pending, p.publication)
 		}
-		var issue github.Issue
-		var report harness.PhaseResult
-		if err := json.Unmarshal([]byte(p.issueJSON), &issue); err != nil {
-			return err
-		}
-		if err := json.Unmarshal([]byte(p.reportJSON), &report); err != nil {
-			return err
-		}
-		p.content = github.PullRequestContent{IssueNumber: issue.Number, IssueTitle: issue.Title, Summary: report.Summary, RunID: p.runID, Verification: report.Verification}
-		if err := json.Unmarshal([]byte(p.settingsJSON), &p.content.RoleSettings); err != nil {
-			return err
-		}
-		pending = append(pending, p.publication)
 	}
 	// Share a short budget across the batch so optional GitHub writes cannot
 	// starve reconciliation. Persist warnings and receipts with the caller context.
@@ -147,43 +140,39 @@ ORDER BY COALESCE(a.last_attempt_at,''),e.seq`)
 			return ctx.Err()
 		}
 		if cause != nil {
-			code := publicationCode(cause)
-			// A shared-budget expiry returns no delivery result; keep the
-			// attempt retryable and do not mark the last result as failed.
-			returned := publicationCtx.Err() == nil
-			permanent := persistentPublicationFailure(cause, publicationCtx)
-			stop := terminalPublicationFailure(cause, publicationCtx, p.finished)
-			message := "Verification evidence is saved locally. PR body publication is deferred."
-			if permanent {
-				message = stoppedPublicationWarning("Verification evidence is saved locally. PR body publication cannot update this PR.")
-			} else if stop {
-				message = stoppedPublicationWarning("Verification evidence is saved locally. This run is finished, so PR body publication will not retry.")
-			}
+			outcome := outcomeFor(cause, publicationCtx, p.finished, publicationWarnings{
+				Deferred: "Verification evidence is saved locally. PR body publication is deferred.",
+				Terminal: stoppedPublicationWarning("Verification evidence is saved locally. PR body publication cannot update this PR."),
+				Finished: stoppedPublicationWarning("Verification evidence is saved locally. This run is finished, so PR body publication will not retry."),
+			})
 			// Keep publication failures visible without repeating the same warning on every tick.
 			var exists bool
-			if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE run_id=? AND type='verification.warning' AND json_extract(payload_json,'$.source_attempt')=? AND json_extract(payload_json,'$.code')=?)`, p.runID, p.source, code).Scan(&exists); err != nil {
+			if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE run_id=? AND type='verification.warning' AND json_extract(payload_json,'$.source_attempt')=? AND json_extract(payload_json,'$.code')=?)`, p.runID, p.source, outcome.Code).Scan(&exists); err != nil {
 				return err
 			}
-			// A new warning and its stop marker commit together. When the same
-			// warning already exists, only the stop marker is updated.
+			// A new warning and its result commit together. An existing warning
+			// stays append-only; a stop appends a visible stop event instead.
 			if !exists {
-				warning := events.Draft{RunID: p.runID, Type: "verification.warning", Payload: map[string]any{"source_attempt": p.source, "code": code, "message": message}}
+				warning := events.Draft{RunID: p.runID, Type: "verification.warning", Payload: map[string]any{"source_attempt": p.source, "code": outcome.Code, "message": outcome.Message}}
 				if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-					if _, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET failed=?,stopped=? WHERE run_id=? AND source_attempt=?`, returned, stop, p.runID, p.source); err != nil {
+					if _, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET failed=?,stopped=? WHERE run_id=? AND source_attempt=?`, outcome.Failed, outcome.Stopped, p.runID, p.source); err != nil {
 						return events.Draft{}, err
 					}
 					return warning, nil
 				}); err != nil {
 					return err
 				}
-			} else {
-				if _, err := s.db.ExecContext(ctx, `UPDATE verification_attempts SET failed=?,stopped=? WHERE run_id=? AND source_attempt=?`, returned, stop, p.runID, p.source); err != nil {
+			} else if outcome.Stopped {
+				payload := map[string]any{"source_attempt": p.source, "code": outcome.Code, "message": outcome.Message}
+				if err := s.stopPublication(ctx, p.runID, payload, func(tx *sql.Tx) error {
+					_, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET failed=?,stopped=1 WHERE run_id=? AND source_attempt=?`, outcome.Failed, p.runID, p.source)
+					return err
+				}); err != nil {
 					return err
 				}
-				if stop {
-					if err := s.updateVerificationWarning(ctx, p.runID, p.source, code, message); err != nil {
-						return err
-					}
+			} else {
+				if _, err := s.db.ExecContext(ctx, `UPDATE verification_attempts SET failed=?,stopped=? WHERE run_id=? AND source_attempt=?`, outcome.Failed, outcome.Stopped, p.runID, p.source); err != nil {
+					return err
 				}
 			}
 			continue

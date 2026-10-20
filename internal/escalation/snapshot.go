@@ -24,6 +24,10 @@ type Queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+type Execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 func Load(ctx context.Context, db Queryer, id string) (*Snapshot, error) {
 	var data string
 	if err := db.QueryRowContext(ctx, "SELECT COALESCE(escalation_json,'null') FROM runs WHERE id=?", id).Scan(&data); err != nil {
@@ -35,10 +39,16 @@ func Load(ctx context.Context, db Queryer, id string) (*Snapshot, error) {
 }
 
 func Save(ctx context.Context, tx *sql.Tx, id string, snapshot Snapshot) error {
+	return SaveContext(ctx, tx, id, snapshot)
+}
+
+// SaveContext persists the snapshot without emitting an event, for bounded
+// attempt bookkeeping that should not enter the run timeline.
+func SaveContext(ctx context.Context, db Execer, id string, snapshot Snapshot) error {
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE runs SET escalation_json=? WHERE id=?", string(data), id)
+	_, err = db.ExecContext(ctx, "UPDATE runs SET escalation_json=? WHERE id=?", string(data), id)
 	return err
 }

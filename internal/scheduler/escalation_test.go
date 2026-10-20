@@ -362,3 +362,31 @@ func TestEscalationPermanentPublicationFailureStops(t *testing.T) {
 		t.Fatalf("stopped escalation retried: %d calls", api.bodyCalls)
 	}
 }
+
+func TestRepeatedEscalationFailuresAddNoEventRows(t *testing.T) {
+	script := "mkdir -p .github/workflows; printf 'workflow\\n' > .github/workflows/ci.yml; " + successfulScript
+	_, rt, base, _, cfg, r := localFlow(t, script)
+	api := &escalationGitHub{ciGitHub: &ciGitHub{fakeGitHub: base, applyReady: true, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}, failBody: true}
+	g := &escalationGit{Manager: managedgit.New(rt.Workspace)}
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: api, Git: g, Runner: r, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := finish(t, s, workflow.ReadyToMerge, workflow.Review)
+	var events int
+	if err := rt.DB.QueryRow(`SELECT count(*) FROM events WHERE run_id=? AND type='escalation.updated'`, run.ID).Scan(&events); err != nil || events == 0 {
+		t.Fatalf("first failure event = %d, %v", events, err)
+	}
+	now = now.Add(time.Minute + time.Second)
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var after int
+	if err := rt.DB.QueryRow(`SELECT count(*) FROM events WHERE run_id=? AND type='escalation.updated'`, run.ID).Scan(&after); err != nil || after != events {
+		t.Fatalf("repeated failure added events: %d -> %d, %v", events, after, err)
+	}
+	if api.bodyCalls != 2 {
+		t.Fatalf("escalation attempts = %d, want 2", api.bodyCalls)
+	}
+}

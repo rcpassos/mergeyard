@@ -2,8 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
+
+	"github.com/rcpassos/mergeyard/internal/events"
 )
 
 const (
@@ -11,9 +14,76 @@ const (
 	publicationRetryMaximum = time.Hour
 	// publicationTimeFormat matches SQLite's strftime('%f') so text ordering
 	// stays chronological for old and new rows.
-	publicationTimeFormat = "2006-01-02T15:04:05.000Z"
-	publicationStopped    = " No further retries will be made."
+	publicationTimeFormat   = "2006-01-02T15:04:05.000Z"
+	publicationStopped      = " No further retries will be made."
+	publicationStoppedEvent = "publication.stopped"
 )
+
+type publicationWarnings struct {
+	Deferred string
+	Terminal string
+	Finished string
+}
+
+// publicationOutcome is one delivery result. Failed means GitHub returned a
+// result for the attempt; Stopped means this queue will not retry it again.
+type publicationOutcome struct {
+	Code    string
+	Message string
+	Failed  bool
+	Stopped bool
+}
+
+func outcomeFor(cause error, publicationCtx context.Context, finished bool, warnings publicationWarnings) publicationOutcome {
+	returned := publicationCtx.Err() == nil
+	permanent := persistentPublicationFailure(cause, publicationCtx)
+	stopped := permanent || (returned && finished)
+	message := warnings.Deferred
+	if stopped {
+		message = warnings.Terminal
+		if !permanent {
+			message = warnings.Finished
+		}
+	}
+	return publicationOutcome{Code: publicationCode(cause), Message: message, Failed: returned, Stopped: stopped}
+}
+
+type publicationState struct {
+	Attempts      int
+	LastAttemptAt string
+	Finished      bool
+	Failed        bool
+	Stopped       bool
+}
+
+type publicationDisposition int
+
+const (
+	publicationReady publicationDisposition = iota
+	publicationWait
+	publicationStop
+)
+
+// disposition decides whether a queue may try now, must wait, or must record a
+// stop. Stopped rows are left alone; a finished run stops after a returned
+// failure, while an interrupted or never-attempted publication still gets a
+// chance after its backoff.
+func (p publicationState) disposition(now time.Time) (publicationDisposition, error) {
+	if p.Stopped {
+		return publicationWait, nil
+	}
+	if p.Finished && p.Failed {
+		return publicationStop, nil
+	}
+	due, err := publicationDue(p.LastAttemptAt, p.Attempts, now)
+	if err != nil {
+		return publicationWait, err
+	}
+	if !due {
+		return publicationWait, nil
+	}
+	return publicationReady, nil
+}
 
 func stoppedPublicationWarning(message string) string {
 	return strings.TrimSpace(message) + publicationStopped
@@ -53,46 +123,15 @@ func publicationDue(lastAttempt string, attempts int, now time.Time) (bool, erro
 	return !now.Before(attempted.Add(publicationBackoff(attempts))), nil
 }
 
-// terminalPublicationFailure reports whether a returned failure ends retries
-// for this publication. Permanent answers cannot resolve on their own, and a
-// finished run has no later reader for the result. A shared-budget expiry or an
-// interrupted call returns no delivery result and stays retryable.
-func terminalPublicationFailure(cause error, publicationCtx context.Context, finished bool) bool {
-	if cause == nil || publicationCtx.Err() != nil {
-		return false
-	}
-	if persistentPublicationFailure(cause, publicationCtx) {
-		return true
-	}
-	return finished
-}
-
-// The warning events are advisory display text. When a publication stops, only
-// that text is corrected; identity, code and ordering stay unchanged.
-func (s *Scheduler) updateVerificationWarning(ctx context.Context, runID, source, code, message string) error {
-	query := `UPDATE events SET payload_json=json_set(payload_json,'$.message',?)
-		WHERE id=(SELECT id FROM events WHERE run_id=? AND type='verification.warning'
-			AND json_extract(payload_json,'$.source_attempt')=?`
-	args := []any{message, runID, source}
-	if code != "" {
-		query += ` AND json_extract(payload_json,'$.code')=?`
-		args = append(args, code)
-	}
-	query += ` ORDER BY id DESC LIMIT 1)`
-	_, err := s.db.ExecContext(ctx, query, args...)
-	return err
-}
-
-func (s *Scheduler) updateReportWarning(ctx context.Context, reportID, message string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE events SET payload_json=json_set(payload_json,'$.message',?)
-		WHERE id=(SELECT id FROM events WHERE type='publication.warning'
-			AND json_extract(payload_json,'$.report_id')=? ORDER BY id DESC LIMIT 1)`, message, reportID)
-	return err
-}
-
-func (s *Scheduler) updateAttentionWarning(ctx context.Context, eventID int64, message string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE events SET payload_json=json_set(payload_json,'$.message',?)
-		WHERE id=(SELECT id FROM events WHERE type='publication.warning'
-			AND json_extract(payload_json,'$.attention_event_id')=? ORDER BY id DESC LIMIT 1)`, message, eventID)
+// stopPublication atomically records a stop state and appends the visible stop
+// event. Event history stays append-only; an already-open dashboard refreshes
+// from this event instead of waiting for a rewrite of an older warning.
+func (s *Scheduler) stopPublication(ctx context.Context, runID string, payload map[string]any, change func(*sql.Tx) error) error {
+	_, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+		if err := change(tx); err != nil {
+			return events.Draft{}, err
+		}
+		return events.Draft{RunID: runID, Type: publicationStoppedEvent, Payload: payload}, nil
+	})
 	return err
 }
