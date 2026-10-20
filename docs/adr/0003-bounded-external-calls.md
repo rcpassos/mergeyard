@@ -88,3 +88,10 @@ no longer needs.
 - Timeouts are per operation, not per process: a caller with a shorter deadline
   keeps it, and one stalled call does not consume the budget of the calls that
   follow.
+- A dashboard refresh is the one caller whose local work outlives its deadline.
+  The calls that reach GitHub keep the refresh budget, and the refused-issue
+  reads share a part of it, so a window full of refusals cannot spend the whole
+  refresh. The database lookups that assemble the queue are local, not an
+  external call, and they run on a context of their own: a spent budget costs
+  the refresh its fresh refusals rather than its whole queue. They are bounded
+  by their own budget and still stop when the caller is canceled.
