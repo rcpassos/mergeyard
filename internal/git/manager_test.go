@@ -603,6 +603,119 @@ done
 	}
 }
 
+// prepareIntentPath returns the file where preparation records that this run
+// created its branch and worktree.
+func prepareIntentPath(t *testing.T, f fixture) string {
+	t.Helper()
+	path, err := managedgit.PrepareIntentPath(f.root, f.request.Repository, f.request.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestPrepareKeepsIntentUntilOwnershipIsConfirmed(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	intent := prepareIntentPath(t, f)
+	if _, err := os.Stat(intent); err != nil {
+		t.Fatalf("preparation intent did not survive creation: %v", err)
+	}
+	if err := f.manager.ConfirmOwnership(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(intent); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("intent survived the saved ownership: %v", err)
+	}
+}
+
+func TestPrepareKeepsIntentWhenOwnershipConfirmationIsCancelled(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	intent := prepareIntentPath(t, f)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := f.manager.ConfirmOwnership(ctx, run); err == nil {
+		t.Fatal("a cancelled confirmation released the intent")
+	}
+	if _, err := os.Stat(intent); err != nil {
+		t.Fatalf("the intent did not survive the cancelled confirmation: %v", err)
+	}
+	// The next attempt recovers the run's own worktree.
+	resumed := prepare(t, f)
+	if resumed.Path != run.Path || resumed.BaseSHA != run.BaseSHA {
+		t.Fatalf("recovery changed the prepared run: %+v", resumed)
+	}
+}
+
+func TestPrepareAdoptsCompletedWorktreeAfterInterruptedOwnershipSave(t *testing.T) {
+	f := newFixture(t)
+	first := prepare(t, f)
+	before, err := os.Stat(first.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The base advances while the ownership save is still missing.
+	write(t, f.seed, "README.md", "new base\n")
+	git(t, f.seed, "commit", "-am", "new base")
+	git(t, f.seed, "push", "origin", "main")
+	// The next attempt has no saved ownership, only the recorded intent.
+	second := prepare(t, f)
+	if second.BaseSHA != first.BaseSHA {
+		t.Fatalf("adoption moved the comparison point: %+v", second)
+	}
+	if got := git(t, second.Path, "rev-parse", "HEAD"); got != first.BaseSHA {
+		t.Fatalf("adopted worktree is at %s, want %s", got, first.BaseSHA)
+	}
+	after, err := os.Stat(second.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("the completed worktree was discarded instead of adopted")
+	}
+}
+
+func TestPreparePreservesCompletedWorktreeThatChangedAfterCreation(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	// Work arrives in the worktree before the ownership is saved.
+	write(t, run.Path, "human.txt", "uncommitted human work\n")
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireCode(t, err, "git.branch_conflict")
+	if data, err := os.ReadFile(filepath.Join(run.Path, "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("the completed worktree was changed: %q, %v", data, err)
+	}
+}
+
+func TestPrepareDropsStaleIntentWhenOwnershipIsKnown(t *testing.T) {
+	f := newFixture(t)
+	first := prepare(t, f)
+	intent := prepareIntentPath(t, f)
+	f.request.KnownRuns = []managedgit.Run{first}
+	prepare(t, f)
+	if _, err := os.Stat(intent); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale intent survived a known run: %v", err)
+	}
+}
+
+func TestPrepareRefusesForeignWorktreeWithoutIntent(t *testing.T) {
+	f := newFixture(t)
+	path, err := managedgit.WorktreePath(f.root, f.request.Repository, f.request.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, "human.txt", "someone else's work\n")
+	_, err = f.manager.Prepare(context.Background(), f.request)
+	requireCode(t, err, "git.branch_conflict")
+	if data, err := os.ReadFile(filepath.Join(path, "human.txt")); err != nil || string(data) != "someone else's work\n" {
+		t.Fatalf("foreign worktree was changed: %q, %v", data, err)
+	}
+}
+
 func TestPhaseStagesTrackedEditsAndDeletionsWithoutPushingOtherRefs(t *testing.T) {
 	f := newFixture(t)
 	run := prepare(t, f)

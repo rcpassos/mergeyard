@@ -121,8 +121,12 @@ Claims first persist `CLAIMING` with both resolved roles and their harness
 sources (`label` or `config`), then add running, remove ready, persist
 `PREPARING`, and prepare the managed base/worktree. Label failure aborts the
 flow. Git ownership and issue context are retained in `scheduler_runs`; the
-branch/worktree and implementer session UUID are also retained on the run. Each
-attempt gets an input file, a durable tmux identity, logs and exit metadata.
+branch/worktree and implementer session UUID are also retained on the run. The
+preparation intent outlives the worktree creation and is released once the
+run's Git ownership is saved, so an interrupted ownership save still recovers
+the run's own branch and worktree on the next attempt instead of refusing
+them. Each attempt gets an input file, a durable tmux identity, logs
+and exit metadata.
 Completed native structured output is validated and saved as `result.json` by
 the control plane. This file is an archival report, not an agent-written
 fallback result contract. Agent failures and invalid results can retry within

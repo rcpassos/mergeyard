@@ -47,6 +47,7 @@ type GitHub interface {
 // Git is the managed Git boundary; implementations must preserve run ownership.
 type Git interface {
 	Prepare(context.Context, managedgit.PrepareRequest) (managedgit.Run, error)
+	ConfirmOwnership(context.Context, managedgit.Run) error
 	CommitAndPush(context.Context, managedgit.Run, managedgit.Phase) (managedgit.CommitResult, error)
 	Inspect(context.Context, managedgit.Run) error
 	ListWorktrees(context.Context) ([]string, error)

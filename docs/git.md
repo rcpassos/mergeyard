@@ -84,21 +84,36 @@ commits and partial changes, restores a missing worktree from an owned local or
 remote branch, and retains the original base SHA for comparison.
 
 Before creating the branch and worktree, preparation writes
-`worktrees/<owner>-<repo>/<run-id>.intent` and removes it once creation
-succeeds. If `worktree add` is interrupted, the next attempt for that run
-recognizes the deterministic branch and path from the matching intent, removes
-the partial worktree and local branch, and creates them again from the fetched
-base. The leftover branch is discarded only while it still points at the
-recorded start, and an existing checkout must still be on the run branch and
-attached to the managed base. Git writes the worktree link, reciprocal
-registration, and common directory before HEAD, so a deadline in that window
-leaves no readable checkout; that state is recognizable only when those links
-point back to this run's managed base, Git still holds the initialization lock,
-and the pending HEAD names the run branch. Anything else, including a non-empty
-path whose Git metadata is missing or unreadable, is preserved because
-ownership cannot be established, and is refused with `git.branch_conflict`.
-Cleanup removes an interrupted initialization lock so Git no longer treats the
-branch as checked out. A matching intent never adopts
+`worktrees/<owner>-<repo>/<run-id>.intent` and records there that the
+creation finished. The intent outlives creation: the caller still has to
+persist the run's ownership, and an interruption in that gap must leave the
+evidence that this run owns the branch and worktree. Call `ConfirmOwnership`
+once the run record holds the ownership; it releases the intent. A cancelled
+caller keeps the intent, because the ownership it was about to save may not
+have reached the database. Preparation drops an intent it finds for a run it
+already knows.
+
+The next attempt for that run recognizes the deterministic branch and path
+from the matching intent. A creation that finished is recovered without
+discarding anything: the intent adopts the worktree when the checkout is on
+the run branch, attached to the managed base, clean, and still at the recorded
+start, and that commit stays the run's comparison point. A worktree that
+differs in any other way holds work that arrived after the creation, so it is
+preserved and refused with `git.branch_conflict`.
+
+If `worktree add` was interrupted, the creation never finished, so the next
+attempt removes the partial worktree and local branch and creates them again
+from the fetched base. The leftover branch is discarded only while it still
+points at the recorded start, and an existing checkout must still be on the run
+branch and attached to the managed base. Git writes the worktree link,
+reciprocal registration, and common directory before HEAD, so a deadline in
+that window leaves no readable checkout; that state is recognizable only when
+those links point back to this run's managed base, Git still holds the
+initialization lock, and the pending HEAD names the run branch. Anything else,
+including a non-empty path whose Git metadata is missing or unreadable, is
+preserved because ownership cannot be established, and is refused with
+`git.branch_conflict`. Cleanup removes an interrupted initialization lock so
+Git no longer treats the branch as checked out. A matching intent never adopts
 a remote branch, and any branch, worktree, or remote branch without a recorded
 run or intent is still refused with `git.branch_conflict`.
 
