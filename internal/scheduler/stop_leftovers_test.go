@@ -162,6 +162,66 @@ exit 0
 	}
 }
 
+// TestStopPreparingRunKeepsHumanWorkInAnUnfinishedInitialization proves that a
+// directory Git never finished initializing is not removed while it holds
+// files a person added: the stop keeps them, names them, and flags the issue.
+func TestStopPreparingRunKeepsHumanWorkInAnUnfinishedInitialization(t *testing.T) {
+	s, rt, api, _, _, _ := localFlow(t, successfulScript)
+	ctx := context.Background()
+	run := preparingRun(t, rt, "interrupted")
+	git := managedgit.New(rt.Workspace)
+	// The managed base exists before the creation is interrupted.
+	if _, err := git.Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: "setup", IssueNumber: 6}); err != nil {
+		t.Fatal(err)
+	}
+	// The reference transaction of HEAD stalls, so Git never finishes the
+	// checkout it started.
+	hook := filepath.Join(rt.Workspace.Root, "repos", "owner-repo", "base", ".git", "hooks", "reference-transaction")
+	script := `#!/bin/sh
+[ "$1" = prepared ] || exit 0
+while read old new ref; do
+  if [ "$ref" = HEAD ] && [ "$new" = ref:refs/heads/mergeyard/issue-7 ]; then
+    /bin/sleep 30
+  fi
+done
+`
+	if err := os.MkdirAll(filepath.Dir(hook), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	interrupted, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := git.Prepare(interrupted, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7}); err == nil {
+		t.Fatal("the interrupted creation was not interrupted")
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	path, err := managedgit.WorktreePath(rt.Workspace.Root, "owner/repo", run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "human.txt"), []byte("uncommitted human work\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(path, "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("the human work was deleted: %q, %v", data, err)
+	}
+	issue := api.issues["owner/repo"][0]
+	if !has(issue, "agent-needs-attention") {
+		t.Fatalf("the preserved work did not flag the issue: %+v", issue.Labels)
+	}
+	comment, ok := api.leftoverComments[7]
+	if !ok || comment.Path != path {
+		t.Fatalf("the preserved work was not named on the issue: %+v", api.leftoverComments)
+	}
+}
+
 // TestStopPreparingRunKeepsTheWorktreeOfASavedOwnership proves that a
 // preparation whose ownership was saved keeps its worktree: that work belongs
 // to the run, and Stop preserves it.

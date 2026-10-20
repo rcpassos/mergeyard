@@ -179,7 +179,13 @@ func githubRepository(remote string) string {
 }
 
 func hasDiff(ctx context.Context, dir string, args ...string) (bool, error) {
-	_, err := command(ctx, dir, "git.diff", args...)
+	return hasDiffWithEnv(ctx, dir, nil, args...)
+}
+
+// hasDiffWithEnv reports whether a command that exits with 1 found
+// differences, as Git's diff-shaped commands do.
+func hasDiffWithEnv(ctx context.Context, dir string, env []string, args ...string) (bool, error) {
+	_, err := commandWithEnv(ctx, dir, "git.diff", env, args...)
 	if err == nil {
 		return false, nil
 	}

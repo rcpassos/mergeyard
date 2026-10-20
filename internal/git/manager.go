@@ -342,8 +342,11 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 	}
 	if (localExists || pathExists) && !owned && !intentOwned {
 		// Name the blocker, so a run that cannot prepare says what it would
-		// have to remove first.
-		blocked, err := blockedBy(ctx, run, pathExists)
+		// have to remove first. The lookup reads the managed worktrees, so it
+		// keeps the metadata deadline instead of the outer preparation bound.
+		blockedCtx, blockedCancel := m.phaseDeadline(ctx, budgetMetadata, m.timeouts.Metadata)
+		blocked, err := blockedBy(blockedCtx, run, pathExists)
+		blockedCancel()
 		if err != nil {
 			return Run{}, err
 		}

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Leftovers names what an interrupted preparation left behind. A discarded
@@ -60,7 +62,7 @@ func (m *Manager) DiscardPreparation(ctx context.Context, req PrepareRequest) (L
 	run.BaseSHA = intent.BaseSHA
 	worktreeCtx, worktreeCancel := m.worktreeDeadline(ctx)
 	defer worktreeCancel()
-	preserved, err := discardPreparedWorktree(worktreeCtx, run, intent)
+	preserved, err := m.discardPreparedWorktree(worktreeCtx, run, intent)
 	if err != nil {
 		return Leftovers{}, err
 	}
@@ -78,7 +80,7 @@ func (m *Manager) DiscardPreparation(ctx context.Context, req PrepareRequest) (L
 // were preserved, or an empty reason when they were removed. The branch must
 // still sit at the recorded start, and the checkout must belong to this run
 // and be clean.
-func discardPreparedWorktree(ctx context.Context, run Run, intent prepareIntent) (string, error) {
+func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent prepareIntent) (string, error) {
 	if err := verifyBase(ctx, run.BasePath); err != nil {
 		return "", err
 	}
@@ -89,7 +91,7 @@ func discardPreparedWorktree(ctx context.Context, run Run, intent prepareIntent)
 	if !atStart {
 		return "the prepared branch holds commits; preserved for inspection", nil
 	}
-	discardable, err := preparedWorktreeDiscardable(ctx, run)
+	discardable, err := m.preparedWorktreeDiscardable(ctx, run, intent)
 	if err != nil {
 		return "", err
 	}
@@ -105,29 +107,91 @@ func discardPreparedWorktree(ctx context.Context, run Run, intent prepareIntent)
 // directory, Git's own unfinished initialization, or a checkout on the run
 // branch attached to the managed base. Such a checkout must also be clean,
 // because a change or a commit is work that is never deleted.
-func preparedWorktreeDiscardable(ctx context.Context, run Run) (bool, error) {
-	owned, checkout, err := interruptedWorktreeOwnership(ctx, run)
+func (m *Manager) preparedWorktreeDiscardable(ctx context.Context, run Run, intent prepareIntent) (bool, error) {
+	owned, state, err := interruptedWorktreeOwnership(ctx, run)
 	if err != nil {
 		return false, err
 	}
 	if !owned {
 		return false, nil
 	}
-	if !checkout {
-		// An absent path, an empty directory, and Git's own unfinished
-		// initialization hold no work.
+	switch state {
+	case leftoverEmpty:
+		// An absent path and an empty directory hold no work.
 		return true, nil
-	}
-	status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all")
-	if err != nil {
-		if ctx.Err() != nil {
-			return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
+	case leftoverInitializing:
+		// Git writes the working tree before HEAD, so this directory can hold
+		// a complete checkout, a partial one, or files a person added. Only
+		// the recorded start, unchanged and without additions, is safe.
+		return m.preparedDirectoryHoldsOnlyStart(ctx, run, intent.BaseSHA)
+	default:
+		status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all")
+		if err != nil {
+			if ctx.Err() != nil {
+				return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
+			}
+			// A checkout whose state cannot be read is not proven to hold no
+			// work, so the release fails and is retried instead of guessing.
+			return false, err
 		}
-		// A checkout whose state cannot be read is not proven to hold no
-		// work, so the release fails and is retried instead of guessing.
+		return status == "", nil
+	}
+}
+
+// preparedDirectoryHoldsOnlyStart reports whether a directory that Git never
+// finished initializing holds no work beyond the recorded start. Every file it
+// holds must match the recorded tree, and it must hold no file the tree does
+// not. The working tree is compared through a temporary index, so the base's
+// own index and HEAD never affect the answer. A file the recorded tree holds
+// and the directory does not is a partial checkout: nothing is lost by
+// removing the directory.
+func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, start string) (bool, error) {
+	if !shaPattern.MatchString(start) {
+		return false, nil
+	}
+	index, err := os.CreateTemp(m.root, ".prepare-index-*")
+	if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	path := index.Name()
+	if err := index.Close(); err != nil {
+		os.Remove(path)
+		return false, failure("git.worktree", run.Path, err)
+	}
+	defer os.Remove(path)
+	env := []string{"GIT_INDEX_FILE=" + path}
+	if _, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "read-tree", start); err != nil {
 		return false, err
 	}
-	return status == "", nil
+	// The refresh compares the recorded tree with the directory and updates
+	// the entries that match. It exits with 1 when a file differs, which is a
+	// difference to report rather than a failure.
+	if _, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "--work-tree="+run.Path, "update-index", "--refresh"); err != nil {
+		var exit *exec.ExitError
+		if ctx.Err() != nil || !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			return false, err
+		}
+	}
+	diff, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "--work-tree="+run.Path, "diff-files", "--name-status")
+	if err != nil {
+		return false, err
+	}
+	for _, record := range strings.Split(diff, "\n") {
+		if record == "" {
+			continue
+		}
+		status, _, ok := strings.Cut(record, "\t")
+		if !ok || status != "D" {
+			// A file the directory holds differs from the recorded tree, so it
+			// holds work that the release must not discard.
+			return false, nil
+		}
+	}
+	untracked, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "--work-tree="+run.Path, "ls-files", "-o", "--exclude-standard")
+	if err != nil {
+		return false, err
+	}
+	return untracked == "", nil
 }
 
 // removePreparedWorktree deletes a discarded preparation's worktree and its
@@ -156,58 +220,75 @@ func removePreparedWorktree(ctx context.Context, run Run) error {
 	return err
 }
 
+// leftoverState classifies what a leftover path holds.
+type leftoverState int
+
+const (
+	// leftoverEmpty means the path is absent or an empty directory.
+	leftoverEmpty leftoverState = iota
+	// leftoverCheckout means the path holds a readable checkout.
+	leftoverCheckout
+	// leftoverInitializing means Git never finished initializing the checkout.
+	leftoverInitializing
+	// leftoverForeign means the path holds something this run cannot claim.
+	leftoverForeign
+)
+
 // interruptedWorktreeOwnership reports whether a leftover path belongs to this
-// run and whether it holds a readable checkout. A path that is absent or empty
-// holds no checkout. A checkout on the run branch attached to the managed base
-// belongs to this run, and so does Git's own unfinished initialization, which
-// holds no readable checkout. Anything whose ownership cannot be established
-// is preserved.
-func interruptedWorktreeOwnership(ctx context.Context, run Run) (owned bool, checkout bool, err error) {
+// run and what it holds. A path that is absent or empty holds nothing. A
+// checkout on the run branch attached to the managed base belongs to this run.
+// Git's own unfinished initialization belongs to this run too, and holds no
+// readable checkout yet. Anything whose ownership cannot be established is
+// preserved.
+func interruptedWorktreeOwnership(ctx context.Context, run Run) (owned bool, state leftoverState, err error) {
 	if _, err := os.Lstat(run.Path); errors.Is(err, os.ErrNotExist) {
-		return true, false, nil
+		return true, leftoverEmpty, nil
 	} else if err != nil {
-		return false, false, failure("git.worktree", run.Path, err)
+		return false, leftoverForeign, failure("git.worktree", run.Path, err)
 	}
 	if _, err := os.Lstat(filepath.Join(run.Path, ".git")); errors.Is(err, os.ErrNotExist) {
 		// Only an empty directory is provably unused before a checkout exists.
 		entries, err := os.ReadDir(run.Path)
 		if err != nil {
-			return false, false, failure("git.worktree", run.Path, err)
+			return false, leftoverForeign, failure("git.worktree", run.Path, err)
 		}
-		return len(entries) == 0, false, nil
+		if len(entries) == 0 {
+			return true, leftoverEmpty, nil
+		}
+		return false, leftoverForeign, nil
 	} else if err != nil {
-		return false, false, failure("git.worktree", run.Path, err)
+		return false, leftoverForeign, failure("git.worktree", run.Path, err)
 	}
 	branch, err := command(ctx, run.Path, "git.worktree", "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		if ctx.Err() != nil {
-			return false, false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
+			return false, leftoverForeign, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
 		}
 		// Git writes the linked registration before HEAD, so a deadline here
 		// leaves no readable checkout. Accept it only when the link, backlink,
 		// and common directory point at this run's managed base.
 		initializing, err := managedInitialization(run)
-		return initializing, false, err
+		return initializing, leftoverInitializing, err
 	}
 	if branch != run.Branch {
-		return false, true, nil
+		return false, leftoverCheckout, nil
 	}
 	common, err := command(ctx, run.Path, "git.worktree", "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		if ctx.Err() != nil {
-			return false, false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
+			return false, leftoverForeign, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
 		}
-		return false, true, nil
+		return false, leftoverCheckout, nil
 	}
 	got, err := os.Stat(common)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, true, nil
+		return false, leftoverCheckout, nil
 	} else if err != nil {
-		return false, false, failure("git.worktree", run.Path, err)
+		return false, leftoverForeign, failure("git.worktree", run.Path, err)
 	}
 	want, err := os.Stat(filepath.Join(run.BasePath, ".git"))
 	if err != nil {
-		return false, false, failure("git.worktree", run.BasePath, err)
+		return false, leftoverForeign, failure("git.worktree", run.BasePath, err)
 	}
-	return os.SameFile(got, want), true, nil
+	return os.SameFile(got, want), leftoverCheckout, nil
 }

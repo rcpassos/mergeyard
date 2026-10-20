@@ -3,10 +3,117 @@ package git_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	managedgit "github.com/rcpassos/mergeyard/internal/git"
 )
+
+// interruptBeforeHead reproduces a creation that Git never finished: the
+// working tree is written, but HEAD is still pending and the checkout stays
+// locked for initialization.
+func interruptBeforeHead(t *testing.T, f fixture) string {
+	t.Helper()
+	setup := f.request
+	setup.RunID, setup.IssueNumber = "setup", 6
+	if _, err := f.manager.Prepare(context.Background(), setup); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(f.root, "repos", "owner-repo", "base", ".git", "hooks", "reference-transaction")
+	marker := filepath.Join(t.TempDir(), "head-prepared")
+	script := fmt.Sprintf(`#!/bin/sh
+[ "$1" = prepared ] || exit 0
+while read old new ref; do
+  if [ "$ref" = HEAD ] && [ "$new" = ref:refs/heads/mergeyard/issue-7 ]; then
+    : > '%s'
+    /bin/sleep 30
+  fi
+done
+`, marker)
+	if err := os.MkdirAll(filepath.Dir(hook), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := f.manager.Prepare(ctx, f.request)
+	requireCode(t, err, "git.timeout")
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	path, err := managedgit.WorktreePath(f.root, f.request.Repository, f.request.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the interrupted creation left no worktree: %v", err)
+	}
+	return path
+}
+
+// TestDiscardPreparationPreservesHumanWorkInAnUnfinishedInitialization proves
+// that a directory Git never finished initializing is not removed while it
+// holds files a person added.
+func TestDiscardPreparationPreservesHumanWorkInAnUnfinishedInitialization(t *testing.T) {
+	f := newFixture(t)
+	path := interruptBeforeHead(t, f)
+	write(t, path, "human.txt", "uncommitted human work\n")
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leftovers.Preserved || leftovers.Reason == "" {
+		t.Fatalf("the human work was not reported: %+v", leftovers)
+	}
+	if data, err := os.ReadFile(filepath.Join(path, "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("the human work was deleted: %q, %v", data, err)
+	}
+	base := filepath.Join(f.root, "repos", "owner-repo", "base")
+	if branch := git(t, base, "branch", "--list", "mergeyard/issue-7"); branch == "" {
+		t.Fatal("the branch of the preserved work was deleted")
+	}
+}
+
+// TestDiscardPreparationReleasesAnUnfinishedInitialization proves that a
+// directory Git never finished initializing is released when it holds exactly
+// the recorded start and nothing else.
+func TestDiscardPreparationReleasesAnUnfinishedInitialization(t *testing.T) {
+	f := newFixture(t)
+	path := interruptBeforeHead(t, f)
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftovers.Preserved {
+		t.Fatalf("the untouched initialization was preserved: %+v", leftovers)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the initialization survived the discard: %v", err)
+	}
+	base := filepath.Join(f.root, "repos", "owner-repo", "base")
+	if branch := git(t, base, "branch", "--list", "mergeyard/issue-7"); branch != "" {
+		t.Fatalf("the branch survived the discard: %s", branch)
+	}
+}
+
+// TestPrepareBranchConflictKeepsTheMetadataDeadline proves that the lookup of
+// the checkout that holds a conflicting branch keeps the metadata deadline, so
+// a stalled lookup cannot hold the preparation open for its whole budget.
+func TestPrepareBranchConflictKeepsTheMetadataDeadline(t *testing.T) {
+	f := newFixture(t)
+	prepare(t, f)
+	// The lookup of the worktrees that hold the branch stalls.
+	installGitWrapper(t, "worktree list", "/bin/sleep 30")
+	f.request.RunID = "run-2"
+	manager := managerWithTimeouts(t, f, managedgit.Timeouts{Metadata: time.Second, Worktree: 5 * time.Second, Clone: 5 * time.Second, Fetch: 5 * time.Second, Push: 5 * time.Second})
+	_, err := manager.Prepare(context.Background(), f.request)
+	requireCode(t, err, "git.timeout")
+}
 
 // TestDiscardPreparationReleasesTheLeftoversOfACompletedCreation proves that
 // a preparation whose ownership was never saved releases the branch and the

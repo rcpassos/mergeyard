@@ -113,6 +113,13 @@ the leftovers are gone, and a run without an intent never removes what another
 run created. A failure to attempt the release is returned as an error, so the
 caller retries it instead of reporting untouched leftovers as work.
 
+A checkout that Git never finished initializing has no readable HEAD, so its
+contents are proved against the recorded start instead: every file the
+directory holds must match the recorded tree, and it must hold no file the
+tree does not. A file the tree holds and the directory does not is a partial
+checkout, and nothing is lost by removing the directory. Anything else is
+work, and it is preserved and reported.
+
 If `worktree add` was interrupted, the creation never finished, so the next
 attempt removes the partial worktree and local branch and creates them again
 from the fetched base. The leftover branch is discarded only while it still
@@ -204,7 +211,8 @@ Operation failures retain codes such as `git.clone`, `git.fetch`, `git.worktree`
 `git.stage`, `git.commit`, and `git.cleanup`.
 A branch conflict names the blocker, so a run that cannot prepare says which
 branch or worktree it would have to remove first, including the checkout that
-holds the branch.
+holds the branch. The lookup of that checkout is a local read, so it keeps the
+metadata deadline instead of the outer preparation bound.
 
 `go test ./internal/git` runs integration tests against temporary local bare
 repositories. Tests isolate user Git configuration and use a test identity;
