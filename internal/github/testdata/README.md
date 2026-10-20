@@ -90,8 +90,11 @@ matches across states return `pr.multiple_matches` for preservation rather than
 silent selection. See the [REST list parameters](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests).
 `CreateDraftPullRequest` sends the title
 `#<issue> <issue title>`, head/base, and generated body as JSON stdin. An explicit
-HTTP 422 "Draft pull requests are not supported in this repository" response
-triggers one normal-PR creation attempt. The returned `PullRequest.Draft` records
+HTTP 422 "Draft pull requests are not supported in this repository" refusal
+triggers one normal-PR creation attempt. gh prints only the top-level message
+(`Validation Failed (HTTP 422)`) on stderr; the nested reason is in the response
+body on stdout, so the reason is read from both streams, like other 400/422
+refusals. The returned `PullRequest.Draft` records
 the actual state, including this fallback, alongside the number and URL. Other
 creation failures are returned without retry: a server/transport error may have
 occurred after creation, so callers should rediscover before trying again.

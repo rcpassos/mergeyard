@@ -143,33 +143,60 @@ func TestCreateDraftPullRequestUsesJSONStdin(t *testing.T) {
 	}
 }
 
+// draftRefusalBody is the response body gh writes to stdout for a 422 refusal
+// of a draft PR; stderr carries only the top-level message.
+const draftRefusalBody = `{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"Draft pull requests are not supported in this repository."}]}`
+
 func TestCreatePullRequestFallsBackOnlyWhenDraftsUnsupported(t *testing.T) {
 	content := github.PullRequestContent{IssueNumber: 12, IssueTitle: "Pull requests", Summary: "Implemented", RunID: "run-123"}
-	runner := &recordedGH{responses: []response{
-		{stderr: []byte("gh: Draft pull requests are not supported in this repository. (HTTP 422)"), err: errors.New("exit status 1")},
-		{stdout: pullRequestJSON(24, false, "Created body")},
-	}}
-	pr, err := github.New(runner).CreateDraftPullRequest(context.Background(), "rcpassos/mergeyard", "mergeyard/issue-12", "main", content)
-	if err != nil || pr == nil || pr.Draft {
-		t.Fatalf("PR = %+v, error = %v", pr, err)
-	}
-	if len(runner.calls) != 2 {
-		t.Fatalf("calls = %d, want 2", len(runner.calls))
-	}
-	var first, second map[string]any
-	if err := json.Unmarshal(runner.calls[0].input, &first); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(runner.calls[1].input, &second); err != nil {
-		t.Fatal(err)
-	}
-	if first["draft"] != true || second["draft"] != false {
-		t.Fatalf("draft flags = %v, %v", first["draft"], second["draft"])
-	}
-	delete(first, "draft")
-	delete(second, "draft")
-	if !reflect.DeepEqual(first, second) {
-		t.Fatalf("fallback changed content: %v / %v", first, second)
+	// gh prints only the top-level message on stderr for a 422; the nested
+	// reason is in the response body on stdout.
+	otherBody := `{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for rcpassos:branch."}]}`
+	for _, tc := range []struct {
+		name           string
+		stdout, stderr string
+		retries        bool
+	}{
+		{"reason only in response body", draftRefusalBody, "gh: Validation Failed (HTTP 422)", true},
+		{"reason on stderr", "", "gh: Draft pull requests are not supported in this repository. (HTTP 422)", true},
+		{"other 422 refusal", otherBody, "gh: Validation Failed (HTTP 422)", false},
+		{"bare 422 refusal", "", "gh: Validation Failed (HTTP 422)", false},
+		{"reason under another status", draftRefusalBody, "gh: Bad Gateway (HTTP 502)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &recordedGH{responses: []response{{stdout: []byte(tc.stdout), stderr: []byte(tc.stderr), err: errors.New("exit status 1")}}}
+			if tc.retries {
+				runner.responses = append(runner.responses, response{stdout: pullRequestJSON(24, false, "Created body")})
+			}
+			pr, err := github.New(runner).CreateDraftPullRequest(context.Background(), "rcpassos/mergeyard", "mergeyard/issue-12", "main", content)
+			if !tc.retries {
+				if err == nil || len(runner.calls) != 1 {
+					t.Fatalf("PR = %+v, error = %v, calls = %d, want one refused call", pr, err, len(runner.calls))
+				}
+				return
+			}
+			if err != nil || pr == nil || pr.Draft {
+				t.Fatalf("PR = %+v, error = %v", pr, err)
+			}
+			if len(runner.calls) != 2 {
+				t.Fatalf("calls = %d, want 2", len(runner.calls))
+			}
+			var first, second map[string]any
+			if err := json.Unmarshal(runner.calls[0].input, &first); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(runner.calls[1].input, &second); err != nil {
+				t.Fatal(err)
+			}
+			if first["draft"] != true || second["draft"] != false {
+				t.Fatalf("draft flags = %v, %v", first["draft"], second["draft"])
+			}
+			delete(first, "draft")
+			delete(second, "draft")
+			if !reflect.DeepEqual(first, second) {
+				t.Fatalf("fallback changed content: %v / %v", first, second)
+			}
+		})
 	}
 }
 
@@ -337,7 +364,7 @@ func TestPullRequestCreationDoesNotRetryOtherFailures(t *testing.T) {
 
 func TestPullRequestCreationFallbackFailureIsReturned(t *testing.T) {
 	runner := &recordedGH{responses: []response{
-		{stderr: []byte("gh: Draft pull requests are not supported in this repository. (HTTP 422)"), err: errors.New("exit status 1")},
+		{stdout: []byte(draftRefusalBody), stderr: []byte("gh: Validation Failed (HTTP 422)"), err: errors.New("exit status 1")},
 		{stderr: []byte("gh: Forbidden (HTTP 403)"), err: errors.New("exit status 1")},
 	}}
 	_, err := github.New(runner).CreateDraftPullRequest(context.Background(), "rcpassos/mergeyard", "branch", "main", github.PullRequestContent{IssueNumber: 12, IssueTitle: "Pull requests", Summary: "Summary", RunID: "run-123"})

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
@@ -143,15 +144,26 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 	// that stay behind.
 	if leftovers.Preserved {
 		if err := s.deps.GitHub.EnsureStopLeftoversComment(ctx, repo.Repo, run.IssueNumber, run.ID, github.StoppedLeftovers{
-			Branch: leftovers.Branch,
-			Path:   leftovers.Path,
-			Reason: leftovers.Reason,
+			Branch:   leftovers.Branch,
+			Worktree: s.workspaceRelative(leftovers.Path),
+			Reason:   leftovers.Reason,
 		}); err != nil {
 			return err
 		}
 	}
 	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Stop})
 	return err
+}
+
+// workspaceRelative names a managed path relative to the workspace, so an issue
+// comment never exposes the operator's home directory or username. A path
+// outside the workspace is reduced to its last element.
+func (s *Scheduler) workspaceRelative(path string) string {
+	rel, err := filepath.Rel(s.workspace.Root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.Base(path)
+	}
+	return filepath.ToSlash(rel)
 }
 
 // releasePreparation releases the leftovers of an interrupted preparation, so

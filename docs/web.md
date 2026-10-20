@@ -172,8 +172,10 @@ sees it again, or a 15-minute window expires. A failed reread keeps the last
 snapshot, or records the issue's scoped failure when no snapshot exists, and
 backs off instead of retrying on every pass. Each refused read is bounded so a
 slow request cannot consume the refresh budget reserved for the rest of
-discovery. A read that the refresh budget cut short is merely slow and is read
-again on the next refresh, instead of hiding the issue for a whole window.
+discovery. A read that the refresh budget ended before the full read window is
+merely slow and is read again on the next refresh, instead of hiding the issue
+for a whole window. A timeout that GitHub reports before the budget ends the
+read backs off for the full window, whatever the number of repositories.
 
 The refused reads share the refresh budget with the rest of the pass: they may
 spend at most half of it, and each repository may spend a share of what is

@@ -183,17 +183,17 @@ func TestQueueKeepsDiscoveringWhenTheBudgetRunsOutBeforeAListing(t *testing.T) {
 	}
 }
 
-// A read that used its whole window is a genuine failure rather than a slow
-// one: it backs off for the full window, so an outage does not spend one call
-// per refused issue on every refresh.
+// A timeout GitHub reports before the refresh budget ends the read is a genuine
+// failure rather than a slow one: it backs off for the full window, so an
+// outage does not spend one call per refused issue on every refresh.
 func TestQueueBacksOffTheWholeWindowAfterAGenuineTimeout(t *testing.T) {
 	api := &fakeGitHub{issues: map[string][]github.Issue{}}
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	s, runtime := configuredAt(t, api, "repositories: [{repo: owner/first}]", rejectingGit{}, func() time.Time { return now })
 	refuseIssues(t, runtime, api, []string{"owner/first"}, 1)
 
-	// The refresh budget leaves the read its whole window, so the timeout
-	// belongs to GitHub and not to the budget.
+	// GitHub reports the timeout before the budget ends the read, so the
+	// timeout belongs to GitHub and not to the budget.
 	api.getIssue = func(string, int) (github.Issue, error) {
 		return github.Issue{}, &fault.Error{Code: "github.timeout", Message: "The GitHub request timed out; it will retry"}
 	}
@@ -220,6 +220,47 @@ func TestQueueBacksOffTheWholeWindowAfterAGenuineTimeout(t *testing.T) {
 	}
 	if len(report.Failures) != 1 || report.Failures[0].IssueNumber != 1 {
 		t.Fatalf("queue failures = %+v, want the remembered timeout", report.Failures)
+	}
+}
+
+// A repository's share of the refresh budget falls below the read window once
+// three or more repositories split it. A timeout that GitHub reports before the
+// budget ends the read is still GitHub's own, so it backs off for the whole
+// window whatever the number of repositories.
+func TestQueueBacksOffTheWholeWindowAfterAGenuineTimeoutAcrossRepositories(t *testing.T) {
+	repositories := []string{"owner/first", "owner/second", "owner/third"}
+	api := &fakeGitHub{issues: map[string][]github.Issue{}}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	s, runtime := configuredAt(t, api, "repositories:\n  - repo: owner/first\n  - repo: owner/second\n  - repo: owner/third\n", rejectingGit{}, func() time.Time { return now })
+	refuseIssues(t, runtime, api, repositories, 1)
+
+	reads := 0
+	api.getIssue = func(string, int) (github.Issue, error) {
+		reads++
+		return github.Issue{}, &fault.Error{Code: "github.timeout", Message: "The GitHub request timed out; it will retry"}
+	}
+	refresh, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	report, err := s.QueueReport(refresh)
+	cancel()
+	if err == nil || !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want scoped refused-issue timeouts", err)
+	}
+	if reads != len(repositories) || len(report.Failures) != len(repositories) {
+		t.Fatalf("reads = %d, failures = %+v, want one timeout per repository", reads, report.Failures)
+	}
+
+	// The next refresh falls inside the window, so no repository reads again.
+	now = now.Add(31 * time.Second)
+	reads = 0
+	report, err = s.QueueReport(context.Background())
+	if err == nil || !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want the remembered timeouts", err)
+	}
+	if reads != 0 {
+		t.Fatalf("refused-issue reads = %d, want the timeouts to back off for the window", reads)
+	}
+	if len(report.Failures) != len(repositories) {
+		t.Fatalf("queue failures = %+v, want the remembered timeouts", report.Failures)
 	}
 }
 
@@ -278,6 +319,34 @@ func TestQueueReadsTheRefusalsBehindASlowOne(t *testing.T) {
 	}
 	if unfair.reads == 0 {
 		t.Fatal("the refusal behind the slow one was never read")
+	}
+}
+
+// A read the refresh budget ends is still merely slow when three or more
+// repositories split the budget: the next refresh reads the issue back.
+func TestQueueRetriesASlowRefusedReadAcrossRepositories(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{}}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	gated := &deadlineGitHub{fakeGitHub: api, slowRepo: "owner/first"}
+	s, runtime := configuredAt(t, gated, "repositories:\n  - repo: owner/first\n  - repo: owner/second\n  - repo: owner/third\n", rejectingGit{}, func() time.Time { return now })
+	refuseIssues(t, runtime, api, []string{"owner/first", "owner/second", "owner/third"}, 1)
+
+	first, cancelFirst := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	_, err := s.QueueReport(first)
+	cancelFirst()
+	if err == nil || !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want a scoped refused-issue timeout", err)
+	}
+
+	now = now.Add(31 * time.Second)
+	gated.slowRepo = ""
+	api.calls = githubCalls{}
+	report, err := s.QueueReport(context.Background())
+	if err != nil {
+		t.Fatalf("queue report = %v, want the retried read to succeed", err)
+	}
+	if api.calls.issueReads == 0 || len(report.Failures) != 0 {
+		t.Fatalf("refused-issue reads = %d, failures = %+v, want the slow read to be retried", api.calls.issueReads, report.Failures)
 	}
 }
 

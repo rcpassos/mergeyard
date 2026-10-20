@@ -65,9 +65,12 @@ work, so the next run prepares instead of refusing them. Leftovers with commits,
 changes, or ignored files are kept, never deleted, and so is a checkout Git never finished
 initializing while its directory holds anything beyond the recorded start: the
 run records them, the issue is flagged for attention, and a comment names the
-branch and the worktree the user has to remove. The preparation of a run that
-already saved its ownership is never released, because that work belongs to the
-run. The leftovers are recorded in the `run.stop_leftovers` event.
+branch and the worktree the user has to remove. The comment may land on a
+public issue, so it names the worktree relative to the Mergeyard workspace and
+never posts an absolute local path; run detail and the `run.stop_leftovers`
+event keep the full path. The preparation of a run that already saved its
+ownership is never released, because that work belongs to the run. The
+leftovers are recorded in the `run.stop_leftovers` event.
 
 Repositories are visited in configuration order. Issues are ordered by creation
 time and then issue number. Only open ready issues without running/attention
@@ -293,9 +296,11 @@ when that snapshot refreshes. A failed refresh keeps the last snapshot, or
 records the issue's scoped failure until a snapshot exists, and backs off for
 the same window instead of retrying on every pass. Each refused read gets a
 bounded child context, so a slow request cannot consume the budget reserved for
-the rest of discovery. A read that the refresh budget cut short is merely slow
-and is read again on the next refresh, while a read that used its whole window
-is GitHub's own failure and backs off for the full window.
+the rest of discovery. A read that the refresh budget ended before the full
+read window is merely slow and is read again on the next refresh. A timeout
+that GitHub reports before the budget ends the read is GitHub's own failure and
+backs off for the full window, however small the repository's share of the
+budget is, so the number of enabled repositories does not change it.
 
 The refused reads share the caller's refresh budget with the rest of the pass:
 they may spend at most half of it, and each repository may spend a share of
