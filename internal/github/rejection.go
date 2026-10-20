@@ -1,6 +1,7 @@
 package github
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 )
@@ -53,3 +54,23 @@ func throttledRejection(text string) bool {
 func permanentRejection(text string) bool {
 	return containsAny(text, sizeMarkers) || fieldPattern.MatchString(text)
 }
+
+// errDraftsUnsupported marks a refusal because the repository does not allow
+// draft pull requests. Callers detect it with errors.Is.
+var errDraftsUnsupported = errors.New("repository does not support draft pull requests")
+
+// draftsUnsupportedMarker is the reason GitHub gives for that refusal.
+const draftsUnsupportedMarker = "draft pull requests are not supported in this repository"
+
+// draftsUnsupportedRejection reports whether GitHub refused the request
+// because the repository does not allow draft pull requests.
+func draftsUnsupportedRejection(text string) bool {
+	return strings.Contains(text, draftsUnsupportedMarker)
+}
+
+// marked tags a cause with a marker for errors.Is without changing the
+// message the cause prints.
+type marked struct{ cause, marker error }
+
+func (m marked) Error() string   { return m.cause.Error() }
+func (m marked) Unwrap() []error { return []error{m.cause, m.marker} }

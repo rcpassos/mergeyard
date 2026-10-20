@@ -392,6 +392,10 @@ func commandError(stdout, stderr []byte, cause error) (*Error, bool) {
 			answer += "\n" + body
 		}
 		switch {
+		case status == 422 && draftsUnsupportedRejection(answer):
+			// The repository does not allow draft PRs. The command stays an
+			// ordinary failure; the mark lets PR creation retry as a ready PR.
+			cause = marked{cause, errDraftsUnsupported}
 		case throttledRejection(answer):
 			// The issue-comments API answers its secondary rate limit with 422
 			// when content is created too quickly. The limit clears on its own,
