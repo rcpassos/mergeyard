@@ -230,6 +230,24 @@ exit 0
 	}
 }
 
+// browserPIDs returns the processes the fake browser launchers recorded.
+func browserPIDs(t *testing.T, path string) []int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the browser launcher recorded no process: %v", err)
+	}
+	var pids []int
+	for _, field := range strings.Fields(string(data)) {
+		pid, err := strconv.Atoi(field)
+		if err != nil {
+			t.Fatalf("the browser launcher recorded no process id: %q", field)
+		}
+		pids = append(pids, pid)
+	}
+	return pids
+}
+
 func TestStartProcessesLockAndShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -249,7 +267,7 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 		}
 	}
 	// Keep the browser launcher blocked throughout startup and control requests.
-	// SIGINT/SIGTERM must also terminate and reap it during runtime shutdown.
+	// The launcher is detached, so the runtime shutdown must leave it running.
 	// The platform launcher records its arguments; the macOS AppleScript path
 	// also records stdin because the tokenized URL travels there.
 	browserStarted := filepath.Join(home, "browser-started")
@@ -440,6 +458,13 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	}
 	if err := first.Wait(); err != nil {
 		t.Fatalf("SIGTERM shutdown: %v", err)
+	}
+	if runtime.GOOS == "linux" {
+		// The browser the runtime launched is detached: shutting the runtime
+		// down must not terminate it.
+		for _, pid := range browserPIDs(t, browserStarted) {
+			assertProcessAlive(t, pid)
+		}
 	}
 	// No arguments also dispatches start; the persistent lock file is reusable
 	// and the restarted runtime rotates the secret it shares with the CLI.

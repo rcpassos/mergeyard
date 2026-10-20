@@ -21,7 +21,8 @@ selecting the HTTP browser rather than the HTML file association:
   `gtk-launch`, or the browser command from the selected desktop entry and only
   the page path. The page is never handed to `xdg-open`, which would use the
   HTML association. If no HTTP browser can be resolved, the command reports the
-  missing launcher and leaves the printed link.
+  missing launcher and leaves the printed link. Every launcher runs detached
+  from Mergeyard (ADR-0007).
 
 The browser follows the page's redirect to the single-use link. The token
 therefore never appears in a process command line; a local user who reads the

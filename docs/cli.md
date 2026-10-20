@@ -9,8 +9,10 @@ so the single-use token stays out of process arguments; a delayed launcher does
 not block the dashboard or CLI controls. macOS uses the default HTTP browser
 through stdin-fed AppleScript. Linux selects the default web browser explicitly
 and opens a non-hidden owner-only handoff page that confined browsers can read;
-it never falls back to the HTML file association. Launch failures are reported
-without stopping the runtime. Shutdown cancels and waits for the launcher.
+it never falls back to the HTML file association. The launcher runs detached, in
+its own session and process group, and is never waited for: `mergeyard open`
+returns at once and the browser outlives the command that opened it. Launch
+failures are reported without stopping the runtime.
 `--config <path>` works with every command.
 
 Every command that contacts a running control plane first reads the workspace's
