@@ -461,26 +461,43 @@ comments are never replayed, even if subsequently edited or removed by a human.
 
 Posting failures emit a safe `publication.warning` code and persist a separate
 warning in run detail/status. They do not set workflow errors or stop phases,
-CI, readiness or completion. Optional network publication has a five-second
-budget per reconciliation and retries on later scheduler ticks. Reconciliation
-includes pending reports for completed/failed/stopped runs and does not need an
-agent or worktree to render or retry them. Disabling `pr_comments` suspends all
-external comment calls while retaining pending bodies and warnings; enabling it
-on a later restart publishes the backlog. Existing saved reports without queue
-entries are also recovered, including reports saved while the control plane was
-offline. Publication emits `publication.pending` and `publication.published`
-events alongside warnings.
+CI, readiness or completion. Optional network publication shares a five-second
+budget across each batch of writes. A transient failure waits instead of
+retrying on the next tick: the backoff grows from one minute up to one hour.
+Reconciliation reaches the pending reports of completed, failed and stopped
+runs and needs no agent or worktree to render or retry them, but a finished run
+stops after a returned failure, so a never-attempted publication or an
+interrupted attempt still gets its chance and an ambiguous write can be
+reconciled. Disabling `pr_comments` suspends all external comment calls while
+retaining pending bodies and warnings; enabling it on a later restart
+publishes the backlog. Existing saved reports without queue entries are also
+recovered, including reports saved while the control plane was offline.
+Publication emits `publication.pending` when a report is queued,
+`publication.warning` once per source and code, `publication.published` on
+delivery, and `publication.stopped` when a stop is recorded after an earlier
+warning or when a finished run stops a publication that already failed. The
+pull request body keeps its own names, `verification.warning` and
+`verification.published`, and records a stop the same way. The escalation
+section records `escalation.updated`.
 
 A permanent answer stops the publication for good and keeps its reason. The
-stopped report comments, attention comments and pull request bodies stay
-visible in run detail with that reason until a human asks for another attempt:
+permanent answers are a missing or forbidden target, invalid input such as a
+size or field-validation rejection, an unsupported write and an ambiguous
+match; a refusal GitHub did not explain with a permanent cause stays transient
+and backs off like any other failure, including the secondary rate limit
+GitHub applies to a comment created too quickly. The same policy governs pull
+request bodies, attention comments and the escalation section, but a requeue
+does not return a stopped escalation section to the queue. Stopped report
+comments, attention comments and pull request bodies stay visible in run
+detail with that reason until a human asks for another attempt:
 `mergeyard requeue <run-id>`, the dashboard's requeue action, or a Retry
 request. The requeue clears the stop and the reason, restarts the backoff, and
 lets the next reconciliation deliver the frozen content again. The identity
 marker still finds a comment that already reached the pull request, so a
 requeue never duplicates it. A Retry request and the requeue it asks for
 commit in one transaction, so an interruption leaves neither a recorded
-request nor a stopped publication behind.
+request nor a stopped publication behind. A requeue that returns stopped
+publications emits a `publication.requeued` event.
 
 ## Missing conversation recovery
 
@@ -533,7 +550,7 @@ not killed at the GitHub budget.
 
 Run detail, the queue, and status show “Merged — cleanup pending”, early-merge
 information, the concrete remaining actions, and the latest maintenance error.
-Transient failures retry on later ticks and after restart. Dirty work
+Transient cleanup failures retry on later ticks and after restart. Dirty work
 is preserved for human attention and an intact worktree is never force-removed. A clean worktree and local branch are also
 preserved when their history contains unpublished commits. Merge observation
 records the published PR head; cleanup checks publication before both deletions
@@ -552,8 +569,9 @@ preserves the tree for human attention. A registration that survives pruning,
 such as a deliberately locked one, is reported and retried instead of recording
 a false removal.
 Already absent labels, closed issues, removed trees, and deleted local branches
-are tolerated at their recorded boundaries. Independent report publication keeps
-retrying for completed runs after Git cleanup finishes.
+are tolerated at their recorded boundaries. Independent report publication still
+reaches a completed run's pending reports after Git cleanup finishes, where the
+finished-run rule above decides whether one is attempted again.
 
 Failed PR observations do not bypass a saved stop request or the CI wait deadline.
 A successful merge observation remains authoritative; otherwise a pending stop
