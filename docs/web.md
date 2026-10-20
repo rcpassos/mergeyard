@@ -167,7 +167,15 @@ sees it again, or a 15-minute window expires. A failed reread keeps the last
 snapshot, or records the issue's scoped failure when no snapshot exists, and
 backs off instead of retrying on every pass. Each refused read is bounded so a
 slow request cannot consume the refresh budget reserved for the rest of
-discovery. A GitHub failure scoped to one
+discovery, and a read that was merely slow is read again on the next refresh
+instead of hiding the issue for a whole window. The refused reads share the
+refresh budget with the rest of the pass, and each repository may spend a share
+of what is left, so a window full of refusals cannot spend the whole refresh.
+Once that share is spent the refresh keeps the last readable snapshot of the
+refusals it did not reach and still returns every repository's queue. The local
+lookups that assemble the queue do not share the budget reserved for GitHub, so
+a spent budget costs the refresh its fresh refusals rather than its whole
+queue. A GitHub failure scoped to one
 repository or run does not hide the others: readable repositories refresh, and
 the failed repository or issue is shown in the needs-attention section with its
 diagnostic code until a later pass succeeds. Other discovery errors fail closed
