@@ -110,7 +110,8 @@ the recorded start, and a checkout that belongs to the run and is clean. A
 leftover with commits or changes is preserved and reported with the reason, so
 the caller can name it for human attention. The intent is released only after
 the leftovers are gone, and a run without an intent never removes what another
-run created.
+run created. A failure to attempt the release is returned as an error, so the
+caller retries it instead of reporting untouched leftovers as work.
 
 If `worktree add` was interrupted, the creation never finished, so the next
 attempt removes the partial worktree and local branch and creates them again
@@ -202,7 +203,8 @@ and `git.canceled`.
 Operation failures retain codes such as `git.clone`, `git.fetch`, `git.worktree`,
 `git.stage`, `git.commit`, and `git.cleanup`.
 A branch conflict names the blocker, so a run that cannot prepare says which
-branch or worktree it would have to remove first.
+branch or worktree it would have to remove first, including the checkout that
+holds the branch.
 
 `go test ./internal/git` runs integration tests against temporary local bare
 repositories. Tests isolate user Git configuration and use a test identity;

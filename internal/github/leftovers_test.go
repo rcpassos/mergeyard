@@ -16,7 +16,8 @@ import (
 func TestStopLeftoversCommentNamesTheLeftoversAndReplaysOnce(t *testing.T) {
 	r := &recordedGH{responses: []response{{stdout: []byte(`{"login":"mergeyard-user"}`)}, {stdout: []byte(`[]`)}, {stderr: []byte("connection reset"), err: errors.New("ambiguous write")}}}
 	reason := "the prepared worktree holds work that this run cannot claim; preserved for inspection"
-	err := github.New(r).EnsureStopLeftoversComment(context.Background(), "owner/repo", 7, "run-1", "mergeyard/issue-7", "/workspace/worktrees/owner-repo/run-1", reason)
+	leftovers := github.StoppedLeftovers{Branch: "mergeyard/issue-7", Path: "/workspace/worktrees/owner-repo/run-1", Reason: reason}
+	err := github.New(r).EnsureStopLeftoversComment(context.Background(), "owner/repo", 7, "run-1", leftovers)
 	if err == nil || len(r.calls) != 3 {
 		t.Fatalf("unexpected retry after ambiguous POST: %v", err)
 	}
@@ -34,7 +35,7 @@ func TestStopLeftoversCommentNamesTheLeftoversAndReplaysOnce(t *testing.T) {
 	// The replay finds the comment instead of posting a second one.
 	existing, _ := json.Marshal([]github.Comment{{ID: 1, URL: "https://github.com/owner/repo/issues/7#issuecomment-1", Body: posted.Body, User: &github.Actor{Login: "mergeyard-user"}}})
 	restarted := &recordedGH{responses: []response{{stdout: []byte(`{"login":"mergeyard-user"}`)}, {stdout: existing}}}
-	if err := github.New(restarted).EnsureStopLeftoversComment(context.Background(), "owner/repo", 7, "run-1", "mergeyard/issue-7", "/workspace/worktrees/owner-repo/run-1", reason); err != nil {
+	if err := github.New(restarted).EnsureStopLeftoversComment(context.Background(), "owner/repo", 7, "run-1", leftovers); err != nil {
 		t.Fatal(err)
 	}
 	if len(restarted.calls) != 2 {
@@ -47,15 +48,17 @@ func TestStopLeftoversCommentNamesTheLeftoversAndReplaysOnce(t *testing.T) {
 func TestStopLeftoversCommentRejectsIncompleteInput(t *testing.T) {
 	r := &recordedGH{responses: []response{{stdout: []byte(`{"login":"mergeyard-user"}`)}}}
 	for _, tc := range []struct {
-		number            int
-		run, branch, path string
+		number       int
+		run          string
+		branch, path string
 	}{
 		{0, "run-1", "mergeyard/issue-7", "/workspace"},
 		{7, "", "mergeyard/issue-7", "/workspace"},
 		{7, "run-1", "", "/workspace"},
 		{7, "run-1", "mergeyard/issue-7", ""},
 	} {
-		if err := github.New(r).EnsureStopLeftoversComment(context.Background(), "owner/repo", tc.number, tc.run, tc.branch, tc.path, "reason"); err == nil {
+		leftovers := github.StoppedLeftovers{Branch: tc.branch, Path: tc.path, Reason: "reason"}
+		if err := github.New(r).EnsureStopLeftoversComment(context.Background(), "owner/repo", tc.number, tc.run, leftovers); err == nil {
 			t.Fatalf("incomplete leftovers were accepted: %+v", tc)
 		}
 	}

@@ -91,12 +91,12 @@ func (f *fakeGitHub) EnsureTrustRefusalComment(_ context.Context, _ string, n in
 
 // EnsureStopLeftoversComment records the explanation of the leftovers a
 // stopped preparation left behind.
-func (f *fakeGitHub) EnsureStopLeftoversComment(_ context.Context, _ string, n int, runID, branch, path, reason string) error {
+func (f *fakeGitHub) EnsureStopLeftoversComment(_ context.Context, _ string, n int, runID string, leftovers github.StoppedLeftovers) error {
 	if f.leftoverComments == nil {
 		f.leftoverComments = make(map[int]leftoverComment)
 	}
 	if _, exists := f.leftoverComments[n]; !exists {
-		f.leftoverComments[n] = leftoverComment{RunID: runID, Branch: branch, Path: path, Reason: reason}
+		f.leftoverComments[n] = leftoverComment{RunID: runID, Branch: leftovers.Branch, Path: leftovers.Path, Reason: leftovers.Reason}
 	}
 	return nil
 }

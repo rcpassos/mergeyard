@@ -31,7 +31,7 @@ type GitHub interface {
 	RecheckIssueTrust(context.Context, string, github.Issue, string, []string) (github.TrustDecision, error)
 	EnsureTrustRefusalComment(context.Context, string, int, string) error
 	EnsureHarnessOverrideComment(context.Context, string, int, string) error
-	EnsureStopLeftoversComment(context.Context, string, int, string, string, string, string) error
+	EnsureStopLeftoversComment(context.Context, string, int, string, github.StoppedLeftovers) error
 	ListLabeledIssues(context.Context, string, []string) ([]github.Issue, error)
 	GetIssue(context.Context, string, int) (github.Issue, error)
 	ListIssueComments(context.Context, string, int, []string) (github.IssueComments, error)

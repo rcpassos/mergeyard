@@ -5,8 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-
-	"github.com/rcpassos/mergeyard/internal/fault"
 )
 
 // Leftovers names what an interrupted preparation left behind. A discarded
@@ -27,14 +25,14 @@ type Leftovers struct {
 // the next run for the same issue can prepare. The preparation intent proves
 // that the branch and the worktree belong to this run. They are removed only
 // while they hold no work: the branch still at the recorded start, and a
-// checkout that belongs to this run and is clean. Leftovers with commits or
+// checkout that belongs to the run and is clean. Leftovers with commits or
 // changes are preserved and reported, so the caller can name them for human
 // attention.
 //
-// The returned error reports a failure to attempt the release at all, such as
-// a cancelled caller. A leftover that cannot be removed is reported through
-// the returned leftovers instead, because stopping the run must not depend on
-// removing them.
+// The returned error reports a failure to attempt the release, such as a
+// cancelled caller or a Git failure. A leftover that cannot be removed is
+// reported through the returned leftovers instead, because stopping the run
+// must not depend on removing them.
 func (m *Manager) DiscardPreparation(ctx context.Context, req PrepareRequest) (Leftovers, error) {
 	ctx, release, err := m.begin(ctx, m.timeouts.Metadata+m.timeouts.Worktree)
 	if err != nil {
@@ -54,28 +52,20 @@ func (m *Manager) DiscardPreparation(ctx context.Context, req PrepareRequest) (L
 		// could own. Another run's leftovers are not this run's to remove.
 		return Leftovers{}, nil
 	}
-	leftovers := Leftovers{Branch: intent.Branch, Path: intent.Path}
 	if !intent.identifies(run) {
-		// The claim does not identify this run, so its leftovers cannot be
-		// proven to belong to this run.
-		leftovers.Preserved = true
-		leftovers.Reason = "The preparation claim does not identify this run."
-		return leftovers, nil
+		// The claim does not identify this run, so the leftovers it names
+		// cannot be proven to belong to this run.
+		return Leftovers{Branch: intent.Branch, Path: intent.Path, Preserved: true, Reason: "The preparation claim does not identify this run."}, nil
 	}
 	run.BaseSHA = intent.BaseSHA
 	worktreeCtx, worktreeCancel := m.worktreeDeadline(ctx)
 	defer worktreeCancel()
-	if err := m.discardPreparedWorktree(worktreeCtx, run, intent); err != nil {
-		if ctx.Err() != nil {
-			return Leftovers{}, err
-		}
-		var coded *fault.Error
-		if !errors.As(err, &coded) {
-			return Leftovers{}, err
-		}
-		leftovers.Preserved = true
-		leftovers.Reason = leftoverReason(coded)
-		return leftovers, nil
+	preserved, err := discardPreparedWorktree(worktreeCtx, run, intent)
+	if err != nil {
+		return Leftovers{}, err
+	}
+	if preserved != "" {
+		return Leftovers{Branch: intent.Branch, Path: intent.Path, Preserved: true, Reason: preserved}, nil
 	}
 	if err := removePrepareIntent(run); err != nil {
 		return Leftovers{}, err
@@ -83,46 +73,30 @@ func (m *Manager) DiscardPreparation(ctx context.Context, req PrepareRequest) (L
 	return Leftovers{}, nil
 }
 
-// leftoverReason names why a leftover was preserved, without the coded
-// diagnostic that only the application log needs.
-func leftoverReason(coded *fault.Error) string {
-	if coded.Message != "" {
-		return coded.Message
-	}
-	if coded.Err != nil {
-		return coded.Err.Error()
-	}
-	return coded.Error()
-}
-
 // discardPreparedWorktree removes the leftovers of an interrupted preparation
-// once they are proven to hold no work. The branch must still sit at the
-// recorded start, and the checkout must belong to this run and be clean.
-func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent prepareIntent) error {
+// once they are proven to hold no work. It returns the reason the leftovers
+// were preserved, or an empty reason when they were removed. The branch must
+// still sit at the recorded start, and the checkout must belong to this run
+// and be clean.
+func discardPreparedWorktree(ctx context.Context, run Run, intent prepareIntent) (string, error) {
 	if err := verifyBase(ctx, run.BasePath); err != nil {
-		return err
+		return "", err
 	}
-	exists, err := refExists(ctx, run.BasePath, "refs/heads/"+run.Branch)
+	atStart, err := branchAtStart(ctx, run, intent.BaseSHA)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if exists {
-		head, err := command(ctx, run.BasePath, "git.worktree", "rev-parse", "--verify", "refs/heads/"+run.Branch)
-		if err != nil {
-			return err
-		}
-		if head != intent.BaseSHA {
-			return &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: "the prepared branch holds commits; preserved for inspection"}
-		}
+	if !atStart {
+		return "the prepared branch holds commits; preserved for inspection", nil
 	}
 	discardable, err := preparedWorktreeDiscardable(ctx, run)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !discardable {
-		return &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: "the prepared worktree holds work that this run cannot claim; preserved for inspection"}
+		return "the prepared worktree holds work that this run cannot claim; preserved for inspection", nil
 	}
-	return removePreparedWorktree(ctx, run)
+	return "", removePreparedWorktree(ctx, run)
 }
 
 // preparedWorktreeDiscardable reports whether the leftover worktree belongs to
@@ -146,7 +120,12 @@ func preparedWorktreeDiscardable(ctx context.Context, run Run) (bool, error) {
 	}
 	status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
-		return false, deadlineFailure(ctx, run.Path)
+		if ctx.Err() != nil {
+			return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
+		}
+		// A checkout whose state cannot be read is not proven to hold no
+		// work, so the release fails and is retried instead of guessing.
+		return false, err
 	}
 	return status == "", nil
 }

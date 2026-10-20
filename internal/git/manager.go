@@ -331,11 +331,11 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 	var intent prepareIntent
 	intentOwned := false
 	if !owned {
-		var err error
-		intent, intentOwned, err = loadPrepareIntent(run)
+		claim, found, err := readPrepareIntent(run)
 		if err != nil {
 			return Run{}, err
 		}
+		intent, intentOwned = claim, found && claim.identifies(run)
 	}
 	if remoteExists && !owned {
 		return Run{}, &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: "the remote branch " + run.Branch + " exists and is not owned by this run"}
@@ -343,9 +343,9 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 	if (localExists || pathExists) && !owned && !intentOwned {
 		// Name the blocker, so a run that cannot prepare says what it would
 		// have to remove first.
-		blocked := "the local branch " + run.Branch
-		if pathExists {
-			blocked = "the worktree " + run.Path
+		blocked, err := blockedBy(ctx, run, pathExists)
+		if err != nil {
+			return Run{}, err
 		}
 		return Run{}, &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: blocked + " exists and is not owned by this run"}
 	}
@@ -601,15 +601,9 @@ func writeAtomicJSON(path string, value any) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-func loadPrepareIntent(run Run) (prepareIntent, bool, error) {
-	intent, found, err := readPrepareIntent(run)
-	if err != nil || !found {
-		return prepareIntent{}, false, err
-	}
-	return intent, intent.identifies(run), nil
-}
-
-// readPrepareIntent reads the claim of one run's preparation.
+// readPrepareIntent reads the claim of one run's preparation. The second
+// result reports that a claim exists; the claim identifies this run only when
+// identifies accepts it.
 func readPrepareIntent(run Run) (prepareIntent, bool, error) {
 	data, err := os.ReadFile(prepareIntentPath(run))
 	if errors.Is(err, os.ErrNotExist) {
@@ -684,35 +678,76 @@ func deadlineFailure(ctx context.Context, path string) error {
 // run, the branch must still sit at the interrupted start, and an existing
 // checkout must still be the run branch attached to the managed base.
 func removeInterruptedWorktree(ctx context.Context, run Run, start string) error {
-	exists, err := refExists(ctx, run.BasePath, "refs/heads/"+run.Branch)
+	atStart, err := branchAtStart(ctx, run, start)
 	if err != nil {
 		return err
 	}
-	if exists {
-		head, err := command(ctx, run.BasePath, "git.worktree", "rev-parse", "--verify", "refs/heads/"+run.Branch)
-		if err != nil {
-			return err
-		}
-		if head != start {
-			return &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: "interrupted worktree creation left commits; preserved for inspection"}
-		}
+	if !atStart {
+		return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree creation left commits; preserved for inspection"))
 	}
-	ours, err := interruptedWorktreeOurs(ctx, run)
+	ours, _, err := interruptedWorktreeOwnership(ctx, run)
 	if err != nil {
 		return err
 	}
 	if !ours {
-		return &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: "interrupted worktree was changed; preserved for inspection"}
+		return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree was changed; preserved for inspection"))
 	}
 	return removePreparedWorktree(ctx, run)
 }
 
-// interruptedWorktreeOurs reports whether a leftover path is safe to discard:
-// it is empty, or it is still the run branch attached to the managed base.
-// Anything whose ownership cannot be established is preserved.
-func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
-	owned, _, err := interruptedWorktreeOwnership(ctx, run)
-	return owned, err
+// branchAtStart reports whether the run's branch still sits at the recorded
+// start. A branch that moved carries commits, so it is never discarded.
+func branchAtStart(ctx context.Context, run Run, start string) (bool, error) {
+	exists, err := refExists(ctx, run.BasePath, "refs/heads/"+run.Branch)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return true, nil
+	}
+	head, err := command(ctx, run.BasePath, "git.worktree", "rev-parse", "--verify", "refs/heads/"+run.Branch)
+	if err != nil {
+		return false, err
+	}
+	return head == start, nil
+}
+
+// blockedBy names what stands in the way of a preparation: the worktree that
+// is already there, or the local branch and the checkout that holds it. The
+// user needs both to remove the branch.
+func blockedBy(ctx context.Context, run Run, pathExists bool) (string, error) {
+	if pathExists {
+		return "the worktree " + run.Path, nil
+	}
+	holder, err := branchWorktree(ctx, run)
+	if err != nil {
+		return "", err
+	}
+	if holder != "" {
+		return "the local branch " + run.Branch + ", checked out at " + holder, nil
+	}
+	return "the local branch " + run.Branch, nil
+}
+
+// branchWorktree returns the worktree that has the run's branch checked out,
+// or an empty path when no checkout holds it.
+func branchWorktree(ctx context.Context, run Run) (string, error) {
+	out, err := command(ctx, run.BasePath, "git.worktree", "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", err
+	}
+	want := "branch refs/heads/" + run.Branch
+	path := ""
+	for _, field := range strings.Split(out, "\x00") {
+		if worktree, ok := strings.CutPrefix(field, "worktree "); ok {
+			path = worktree
+			continue
+		}
+		if field == want {
+			return path, nil
+		}
+	}
+	return "", nil
 }
 
 // managedInitialization reports whether a checkout without HEAD is positively

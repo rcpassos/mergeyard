@@ -12,6 +12,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
+	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -116,7 +117,8 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 	// A preparing run whose ownership was never saved can still own a branch
 	// and a worktree from an interrupted creation. Release them now, so the
 	// next run for the same issue can prepare instead of refusing them.
-	if err := s.releasePreparation(ctx, repo, run); err != nil {
+	leftovers, err := s.releasePreparation(ctx, repo, run)
+	if err != nil {
 		return err
 	}
 	// Clear ready even if stop arrived before claim processing removed it.
@@ -136,7 +138,18 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 			return err
 		}
 	}
-	_, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Stop})
+	// The issue is flagged for attention; the explanation names the leftovers
+	// that stay behind.
+	if leftovers.Preserved {
+		if err := s.deps.GitHub.EnsureStopLeftoversComment(ctx, repo.Repo, run.IssueNumber, run.ID, github.StoppedLeftovers{
+			Branch: leftovers.Branch,
+			Path:   leftovers.Path,
+			Reason: leftovers.Reason,
+		}); err != nil {
+			return err
+		}
+	}
+	_, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Stop})
 	return err
 }
 
@@ -145,29 +158,30 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 // a preparing run without saved ownership can own them: a run that saved its
 // ownership keeps its branch and worktree, because Stop preserves the work of
 // a run.
-func (s *Scheduler) releasePreparation(ctx context.Context, repo config.Repository, run workflow.Run) error {
+func (s *Scheduler) releasePreparation(ctx context.Context, repo config.Repository, run workflow.Run) (managedgit.Leftovers, error) {
 	if run.State != workflow.Preparing {
-		return nil
+		return managedgit.Leftovers{}, nil
 	}
 	owned, err := s.savedOwnership(ctx, run.ID)
 	if err != nil {
-		return err
+		return managedgit.Leftovers{}, err
 	}
 	if owned {
-		return nil
+		return managedgit.Leftovers{}, nil
 	}
 	leftovers, err := s.deps.Git.DiscardPreparation(ctx, managedgit.PrepareRequest{Repository: repo.Repo, BaseBranch: repo.BaseBranch, RunID: run.ID, IssueNumber: run.IssueNumber})
 	if err != nil {
-		return err
+		return managedgit.Leftovers{}, err
 	}
 	if !leftovers.Preserved {
-		return nil
+		return managedgit.Leftovers{}, nil
 	}
-	return s.preserveLeftovers(ctx, repo, run, leftovers)
+	return leftovers, s.recordLeftovers(ctx, run, leftovers)
 }
 
 // savedOwnership reports whether a run saved its Git ownership. A run without
-// it owns no branch or worktree.
+// it owns no branch or worktree. The ownership is read on its own, because
+// stopping a run must not depend on a readable issue snapshot.
 func (s *Scheduler) savedOwnership(ctx context.Context, id string) (bool, error) {
 	var gitJSON sql.NullString
 	if err := s.db.QueryRowContext(ctx, "SELECT git_json FROM scheduler_runs WHERE run_id=?", id).Scan(&gitJSON); err != nil {
@@ -186,12 +200,12 @@ func (s *Scheduler) savedOwnership(ctx context.Context, id string) (bool, error)
 	return gitRun.ID != "", nil
 }
 
-// preserveLeftovers records the leftovers an interrupted preparation left
-// behind and names them on the issue that needs attention. The run keeps
-// naming them, so the dashboard and the reconciliation know that the
-// artifacts belong to it.
-func (s *Scheduler) preserveLeftovers(ctx context.Context, repo config.Repository, run workflow.Run, leftovers managedgit.Leftovers) error {
-	if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+// recordLeftovers records the leftovers an interrupted preparation left
+// behind on the run that created them. The run keeps naming them, so the
+// dashboard shows what stays and the reconciliation knows that the artifacts
+// belong to it.
+func (s *Scheduler) recordLeftovers(ctx context.Context, run workflow.Run, leftovers managedgit.Leftovers) error {
+	_, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
 		if _, err := tx.ExecContext(ctx, "UPDATE runs SET branch=?, worktree_path=? WHERE id=?", leftovers.Branch, leftovers.Path, run.ID); err != nil {
 			return events.Draft{}, err
 		}
@@ -200,10 +214,8 @@ func (s *Scheduler) preserveLeftovers(ctx context.Context, repo config.Repositor
 			"path":   leftovers.Path,
 			"reason": leftovers.Reason,
 		}}, nil
-	}); err != nil {
-		return err
-	}
-	return s.deps.GitHub.EnsureStopLeftoversComment(ctx, repo.Repo, run.IssueNumber, run.ID, leftovers.Branch, leftovers.Path, leftovers.Reason)
+	})
+	return err
 }
 
 // Watch returns only the live attempt of the current phase. The CLI attaches

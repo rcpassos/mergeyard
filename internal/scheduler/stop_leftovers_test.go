@@ -100,6 +100,68 @@ func TestStopPreparingRunReleasesInterruptedSetupForTheNextRun(t *testing.T) {
 	}
 }
 
+// TestStopPreparingRunReleasesAnInterruptedCreation proves that stopping a run
+// whose worktree creation was interrupted removes the partial worktree and the
+// branch it left, so the next run for the same issue prepares.
+func TestStopPreparingRunReleasesAnInterruptedCreation(t *testing.T) {
+	s, rt, api, _, _, _ := localFlow(t, successfulScript)
+	ctx := context.Background()
+	run := preparingRun(t, rt, "interrupted")
+	git := managedgit.New(rt.Workspace)
+	// The managed base exists before the creation is interrupted.
+	if _, err := git.Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: "setup", IssueNumber: 6}); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(rt.Workspace.Root, "repos", "owner-repo", "base", ".git", "hooks", "post-checkout")
+	script := `#!/bin/sh
+case "$PWD" in
+  */worktrees/*) /bin/sleep 30 ;;
+esac
+exit 0
+`
+	if err := os.MkdirAll(filepath.Dir(hook), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	interrupted, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := git.Prepare(interrupted, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
+	if err == nil {
+		t.Fatal("the interrupted creation was not interrupted")
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	path, err := managedgit.WorktreePath(rt.Workspace.Root, "owner/repo", run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the interrupted creation left no worktree: %v", err)
+	}
+	if err := s.Stop(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the interrupted worktree survived the stop: %v", err)
+	}
+	base := filepath.Join(rt.Workspace.Root, "repos", "owner-repo", "base")
+	if branch := gitCommand(t, base, "branch", "--list", "mergeyard/issue-7"); branch != "" {
+		t.Fatalf("the interrupted branch survived the stop: %s", branch)
+	}
+	// The issue is queued again, and the next run prepares it.
+	api.issues["owner/repo"][0].Labels = []github.Label{{Name: "ready-for-agent"}}
+	next := waitForRun(t, s, workflow.Active, workflow.Review)
+	if next.ID == run.ID {
+		t.Fatalf("the stopped run was resumed: %+v", next)
+	}
+	if next.LastErrorCode == "git.branch_conflict" {
+		t.Fatalf("the next run refused the released branch: %+v", next)
+	}
+}
+
 // TestStopPreparingRunKeepsTheWorktreeOfASavedOwnership proves that a
 // preparation whose ownership was saved keeps its worktree: that work belongs
 // to the run, and Stop preserves it.
@@ -176,7 +238,9 @@ func TestStopPreparingRunKeepsLeftoversThatHoldWork(t *testing.T) {
 	if blocked.ID == run.ID {
 		t.Fatalf("the stopped run was resumed: %+v", blocked)
 	}
-	if blocked.LastErrorCode != "git.branch_conflict" || !strings.Contains(blocked.LastErrorMessage, "mergeyard/issue-7") {
+	if blocked.LastErrorCode != "git.branch_conflict" ||
+		!strings.Contains(blocked.LastErrorMessage, "mergeyard/issue-7") ||
+		!strings.Contains(blocked.LastErrorMessage, prepared.Path) {
 		t.Fatalf("the next run did not name the blocker: %+v", blocked)
 	}
 }
