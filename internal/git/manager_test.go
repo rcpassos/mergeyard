@@ -514,6 +514,58 @@ func TestPreparePreservesInterruptedWorktreeWithMissingMetadata(t *testing.T) {
 	}
 }
 
+// requireConflictNaming fails unless err is a branch conflict that names the
+// preserved leftover, so a person can find the work Prepare refused to delete.
+func requireConflictNaming(t *testing.T, err error, path string) {
+	t.Helper()
+	requireCode(t, err, "git.branch_conflict")
+	if !strings.Contains(err.Error(), path) {
+		t.Fatalf("the conflict does not name the worktree %s: %v", path, err)
+	}
+}
+
+func TestPreparePreservesInterruptedWorktreeWithAnUntrackedFile(t *testing.T) {
+	f := newFixture(t)
+	path := interruptWorktreeCreation(t, f)
+	write(t, path, "human.txt", "uncommitted human work\n")
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireConflictNaming(t, err, path)
+	if data, err := os.ReadFile(filepath.Join(path, "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("the untracked file was deleted: %q, %v", data, err)
+	}
+}
+
+func TestPreparePreservesInterruptedWorktreeWithAnEditedTrackedFile(t *testing.T) {
+	f := newFixture(t)
+	path := interruptWorktreeCreation(t, f)
+	write(t, path, "README.md", "edited by a person\n")
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireConflictNaming(t, err, path)
+	if data, err := os.ReadFile(filepath.Join(path, "README.md")); err != nil || string(data) != "edited by a person\n" {
+		t.Fatalf("the edit was deleted: %q, %v", data, err)
+	}
+}
+
+func TestPreparePreservesAnUnfinishedInitializationHoldingAnExtraFile(t *testing.T) {
+	f := newFixture(t)
+	path := interruptBeforeHead(t, f)
+	write(t, path, "human.txt", "uncommitted human work\n")
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireConflictNaming(t, err, path)
+	if data, err := os.ReadFile(filepath.Join(path, "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("the extra file was deleted: %q, %v", data, err)
+	}
+}
+
+func TestPrepareRecoversAnUnfinishedInitializationHoldingOnlyTheStart(t *testing.T) {
+	f := newFixture(t)
+	interruptBeforeHead(t, f)
+	run := prepare(t, f)
+	if got := git(t, run.Path, "branch", "--show-current"); got != run.Branch {
+		t.Fatalf("recovered worktree branch = %q", got)
+	}
+}
+
 func TestPrepareRecoversWorktreeInterruptedDuringCheckout(t *testing.T) {
 	f := newFixture(t)
 	setup := f.request

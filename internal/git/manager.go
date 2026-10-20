@@ -375,7 +375,7 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 				return Run{}, &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: "the prepared worktree holds work that this run cannot claim; preserved for inspection"}
 			}
 			// Creation stopped partway, so the tree never reached an agent.
-			if err := removeInterruptedWorktree(recoveryCtx, run, intent.BaseSHA); err != nil {
+			if err := m.removeInterruptedWorktree(recoveryCtx, run, intent); err != nil {
 				recoveryCancel()
 				return Run{}, err
 			}
@@ -397,7 +397,7 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 	}
 	if intentOwned && localExists {
 		// A killed 'worktree add -b' may create the branch before its directory.
-		if err := removeInterruptedWorktree(recoveryCtx, run, intent.BaseSHA); err != nil {
+		if err := m.removeInterruptedWorktree(recoveryCtx, run, intent); err != nil {
 			recoveryCancel()
 			return Run{}, err
 		}
@@ -677,25 +677,20 @@ func deadlineFailure(ctx context.Context, path string) error {
 }
 
 // removeInterruptedWorktree discards a partial creation that never reached an
-// agent. The intent proves the deterministic path and branch belong to this
-// run, the branch must still sit at the interrupted start, and an existing
-// checkout must still be the run branch attached to the managed base.
-func removeInterruptedWorktree(ctx context.Context, run Run, start string) error {
-	atStart, err := branchAtStart(ctx, run, start)
+// agent. It applies the same "holds no work" check as the Stop path's
+// DiscardPreparation, so the two cannot drift apart: the branch must still sit
+// at the interrupted start, and the checkout must belong to this run and hold
+// nothing beyond the recorded start. Anything else is preserved and reported as
+// a branch conflict that names the leftover.
+func (m *Manager) removeInterruptedWorktree(ctx context.Context, run Run, intent prepareIntent) error {
+	preserved, err := m.discardPreparedWorktree(ctx, run, intent)
 	if err != nil {
 		return err
 	}
-	if !atStart {
-		return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree creation left commits; preserved for inspection"))
+	if preserved != "" {
+		return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree not discarded: "+preserved))
 	}
-	ours, _, err := interruptedWorktreeOwnership(ctx, run)
-	if err != nil {
-		return err
-	}
-	if !ours {
-		return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree was changed; preserved for inspection"))
-	}
-	return removePreparedWorktree(ctx, run)
+	return nil
 }
 
 // branchAtStart reports whether the run's branch still sits at the recorded

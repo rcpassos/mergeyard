@@ -125,6 +125,16 @@ func (m *Manager) preparedWorktreeDiscardable(ctx context.Context, run Run, inte
 		// the recorded start, unchanged and without additions, is safe.
 		return m.preparedDirectoryHoldsOnlyStart(ctx, run, intent.BaseSHA)
 	default:
+		initializing, err := checkoutLockedForInitialization(run)
+		if err != nil {
+			return false, err
+		}
+		if initializing {
+			// Git writes HEAD before the working tree, so a checkout stopped
+			// midway reads as a checkout whose files are missing or untracked.
+			// Compare it with the recorded start like an unfinished one.
+			return m.preparedDirectoryHoldsOnlyStart(ctx, run, intent.BaseSHA)
+		}
 		status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all")
 		if err != nil {
 			if ctx.Err() != nil {
@@ -261,6 +271,28 @@ func removePreparedWorktree(ctx context.Context, run Run) error {
 	}
 	_, err = command(ctx, run.BasePath, "git.worktree", "branch", "-D", "--", run.Branch)
 	return err
+}
+
+// checkoutLockedForInitialization reports whether Git still holds the
+// checkout's registration locked for initialization, which is how a killed
+// 'worktree add' leaves a checkout that stopped before its files were written.
+// The checkout is already proven to be attached to the managed base.
+func checkoutLockedForInitialization(run Run) (bool, error) {
+	link, err := os.ReadFile(filepath.Join(run.Path, ".git"))
+	if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	admin, ok := gitDirTarget(string(link), run.Path)
+	if !ok {
+		return false, nil
+	}
+	locked, err := os.ReadFile(filepath.Join(admin, "locked"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, failure("git.worktree", run.Path, err)
+	}
+	return strings.TrimSpace(string(locked)) == "initializing", nil
 }
 
 // leftoverState classifies what a leftover path holds.
