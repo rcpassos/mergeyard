@@ -220,8 +220,9 @@ func (p pendingReport) delivery(s *Scheduler) commentDelivery {
 
 // persistentPublicationFailure reports whether retrying cannot resolve a
 // returned publication failure: the PR or comment target is inaccessible, the
-// request is invalid (including GitHub's 400/422), or this runtime cannot
-// publish at all. Transport errors, rate limits, authentication failures,
+// request is invalid in a way GitHub names as permanent, or this runtime
+// cannot publish at all. Transport errors, rate limits, authentication
+// failures, refusals GitHub did not explain with a permanent cause,
 // unrecognized command failures, invalid responses and a shared-budget expiry
 // stay retryable.
 func persistentPublicationFailure(cause error, publicationCtx context.Context) bool {

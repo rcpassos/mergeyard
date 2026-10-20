@@ -188,9 +188,10 @@ func (r *reconcileResult) err() error {
 }
 
 // githubRetryable names the unscoped GitHub adapter failures that a later tick
-// retries: the service could not be reached, was rate limited, was cancelled, or
-// did not answer cleanly. Conclusive unscoped answers stay absent because their
-// caller has not established which repository or run they belong to.
+// retries: the service could not be reached, was rate limited, was cancelled,
+// did not answer cleanly, or refused a request without naming a permanent
+// cause. Conclusive unscoped answers stay absent because their caller has not
+// established which repository or run they belong to.
 var githubRetryable = map[string]bool{
 	"github.unavailable":      true,
 	"github.rate_limited":     true,

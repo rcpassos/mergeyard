@@ -65,10 +65,5 @@ func Unavailable(output []byte) bool {
 	if status := statusOf(text); status != 0 {
 		return status == 408 || (status >= 500 && status < 600) || rateLimited(text)
 	}
-	for _, marker := range unavailableMarkers {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
+	return containsAny(text, unavailableMarkers)
 }
