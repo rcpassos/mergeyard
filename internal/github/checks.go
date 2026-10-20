@@ -176,12 +176,12 @@ func (c *Client) MarkReady(ctx context.Context, repo string, number int) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	_, stderr, err := c.runner.Run(ctx, nil, "pr", "ready", fmt.Sprint(number), "--repo", repo)
+	stdout, stderr, err := c.runner.Run(ctx, nil, "pr", "ready", fmt.Sprint(number), "--repo", repo)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return contextError(ctxErr)
 		}
-		failure, _ := commandError(stderr, err)
+		failure, _ := commandError(stdout, stderr, err)
 		return failure
 	}
 	return nil

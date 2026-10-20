@@ -201,27 +201,34 @@ func requireCode(t *testing.T, err error, code string) {
 }
 func TestGitHubErrorCodesAndRetryBound(t *testing.T) {
 	cases := []struct {
-		name, stderr, code string
-		transient          bool
+		name, stderr, body, code string
+		transient                bool
 	}{
-		{"unauthenticated", "gh: Bad credentials (HTTP 401)", "github.not_logged_in", false},
-		{"forbidden", "gh: Resource not accessible by integration (HTTP 403)", "github.forbidden", false},
-		{"not found", "gh: Not Found (HTTP 404)", "github.not_found", false},
-		{"invalid mutation", "gh: Validation Failed (HTTP 422)", "github.invalid_input", false},
-		{"bad request", "gh: Bad Request (HTTP 400)", "github.invalid_input", false},
-		{"server error", "gh: Internal Server Error (HTTP 500)", "github.unavailable", true},
-		{"bad gateway", "gh: Bad Gateway (HTTP 502)", "github.unavailable", true},
-		{"rate limited", "gh: API rate limit exceeded (HTTP 403)", "github.rate_limited", false},
-		{"secondary limit", "gh: Too Many Requests (HTTP 429)", "github.rate_limited", false},
-		{"secondary forbidden", "gh: You have exceeded a secondary rate limit (HTTP 403)", "github.rate_limited", false},
-		{"abuse limit", "gh: You have triggered an abuse detection mechanism (HTTP 403)", "github.rate_limited", false},
-		{"network", "error connecting to api.github.com", "github.unavailable", true},
-		{"unknown", "unexpected gh failure", "github.command_failed", false},
+		{"unauthenticated", "gh: Bad credentials (HTTP 401)", "", "github.not_logged_in", false},
+		{"forbidden", "gh: Resource not accessible by integration (HTTP 403)", "", "github.forbidden", false},
+		{"not found", "gh: Not Found (HTTP 404)", "", "github.not_found", false},
+		{"invalid mutation", "gh: Validation Failed (HTTP 422)", `{"message": "Validation Failed"}`, "github.command_failed", false},
+		{"bad request", "gh: Bad Request (HTTP 400)", "", "github.command_failed", false},
+		{"throttled comment", "gh: Validation failed, or the endpoint has been spammed (HTTP 422)", `{"message": "Validation failed, or the endpoint has been spammed"}`, "github.rate_limited", false},
+		{"throttled body", "gh: Validation Failed (HTTP 422)", `{"message": "Validation Failed", "errors": [{"message": "the endpoint has been spammed"}]}`, "github.rate_limited", false},
+		{"submitted too quickly", "gh: The comment was submitted too quickly (HTTP 422)", `{"message": "The comment was submitted too quickly"}`, "github.rate_limited", false},
+		{"body too large", "gh: Body is too long (maximum is 65536 characters) (HTTP 422)", `{"message": "Body is too long (maximum is 65536 characters)"}`, "github.invalid_input", false},
+		{"invalid field", "gh: Validation Failed (HTTP 422)", `{"message": "Validation Failed", "errors": [{"resource": "IssueComment", "field": "body", "code": "missing"}]}`, "github.invalid_input", false},
+		{"nested size error", "gh: Validation Failed (HTTP 422)", `{"message": "Validation Failed", "errors": [{"resource": "IssueComment", "field": "body", "code": "custom", "message": "body is too long (maximum is 65536 characters)"}]}`, "github.invalid_input", false},
+		{"oversized request", "gh: Bad Request (HTTP 400)", `{"message": "Body is too large"}`, "github.invalid_input", false},
+		{"server error", "gh: Internal Server Error (HTTP 500)", "", "github.unavailable", true},
+		{"bad gateway", "gh: Bad Gateway (HTTP 502)", "", "github.unavailable", true},
+		{"rate limited", "gh: API rate limit exceeded (HTTP 403)", "", "github.rate_limited", false},
+		{"secondary limit", "gh: Too Many Requests (HTTP 429)", "", "github.rate_limited", false},
+		{"secondary forbidden", "gh: You have exceeded a secondary rate limit (HTTP 403)", "", "github.rate_limited", false},
+		{"abuse limit", "gh: You have triggered an abuse detection mechanism (HTTP 403)", "", "github.rate_limited", false},
+		{"network", "error connecting to api.github.com", "", "github.unavailable", true},
+		{"unknown", "unexpected gh failure", "", "github.command_failed", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cause := errors.New("exit status 1")
-			failure := response{stderr: []byte(tc.stderr), err: cause}
+			failure := response{stdout: []byte(tc.body), stderr: []byte(tc.stderr), err: cause}
 			count := 1
 			if tc.transient {
 				count = 3
@@ -253,6 +260,37 @@ func TestTransientFailureRecovers(t *testing.T) {
 	state, err := github.New(runner).IssueState(context.Background(), "rcpassos/mergeyard", 2)
 	if err != nil || state != github.Closed {
 		t.Fatalf("state = %q, err = %v", state, err)
+	}
+}
+func TestRefusalWithoutAPermanentCauseStaysRetryableForEveryCaller(t *testing.T) {
+	cause := errors.New("exit status 1")
+	for _, tc := range []struct {
+		name string
+		call func(*github.Client) error
+	}{
+		{"label", func(c *github.Client) error {
+			return c.AddLabel(context.Background(), "rcpassos/mergeyard", 6, "ready")
+		}},
+		{"label removal", func(c *github.Client) error {
+			return c.RemoveLabel(context.Background(), "rcpassos/mergeyard", 6, "ready")
+		}},
+		{"trust read", func(c *github.Client) error {
+			_, err := c.IsTrustedActor(context.Background(), "rcpassos/mergeyard", "someone", nil)
+			return err
+		}},
+		{"pull request creation", func(c *github.Client) error {
+			_, err := c.CreateDraftPullRequest(context.Background(), "rcpassos/mergeyard", "branch", "main", github.PullRequestContent{IssueNumber: 12, IssueTitle: "Pull requests", Summary: "Summary", RunID: "run-123"})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &recordedGH{responses: []response{{stderr: []byte("gh: Validation Failed (HTTP 422)"), err: cause}}}
+			err := tc.call(github.New(runner))
+			requireCode(t, err, "github.command_failed")
+			if !errors.Is(err, cause) {
+				t.Fatalf("lost cause: %v", err)
+			}
+		})
 	}
 }
 func TestCancellationStopsBackoff(t *testing.T) {

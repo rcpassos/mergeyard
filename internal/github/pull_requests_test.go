@@ -317,7 +317,7 @@ func TestPullRequestInvalidInputsDoNotInvokeGH(t *testing.T) {
 func TestPullRequestCreationDoesNotRetryOtherFailures(t *testing.T) {
 	content := github.PullRequestContent{IssueNumber: 12, IssueTitle: "Pull requests", Summary: "Summary", RunID: "run-123"}
 	for _, tc := range []struct{ stderr, code string }{
-		{"gh: Validation Failed (HTTP 422)", "github.invalid_input"},
+		{"gh: Validation Failed (HTTP 422)", "github.command_failed"},
 		{"gh: Forbidden (HTTP 403)", "github.forbidden"},
 		{"gh: Bad Gateway (HTTP 502)", "github.unavailable"},
 		{"connection reset by peer", "github.unavailable"},

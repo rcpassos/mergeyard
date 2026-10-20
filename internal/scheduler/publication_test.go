@@ -2,12 +2,15 @@ package scheduler_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -608,5 +611,186 @@ func TestRunFinishingAfterTransientFailureStopsAttentionPublication(t *testing.T
 	}
 	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.stopped' AND json_extract(payload_json,'$.attention_event_id')=(SELECT event_id FROM attention_publications WHERE run_id='attention-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&message); err != nil || !strings.Contains(message, "will not retry") || !strings.Contains(message, "No further retries") {
 		t.Fatalf("attention stop event = %q, %v", message, err)
+	}
+}
+
+// ghRefusal is what gh reports for a refused request: the status line and a
+// summary on stderr, and the response body on stdout.
+type ghRefusal struct {
+	stderr string
+	stdout string
+}
+
+// ghComments answers the gh calls that publish a report comment: it lists the
+// comments of an issue and creates one. A create can be refused with GitHub's
+// own answer, so the scheduler classifies what GitHub actually said.
+type ghComments struct {
+	mu       sync.Mutex
+	posts    int
+	bodies   []string
+	refusals []ghRefusal
+}
+
+func (g *ghComments) Run(_ context.Context, input []byte, args ...string) ([]byte, []byte, error) {
+	method, endpoint := ghCall(args)
+	switch {
+	case method == "GET" && strings.HasSuffix(endpoint, "/comments"):
+		return []byte("[]"), nil, nil
+	case method == "POST" && strings.HasSuffix(endpoint, "/comments"):
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		g.posts++
+		if len(g.refusals) > 0 {
+			refusal := g.refusals[0]
+			g.refusals = g.refusals[1:]
+			return []byte(refusal.stdout), []byte(refusal.stderr), errors.New("exit status 1")
+		}
+		var payload struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(input, &payload); err != nil {
+			return nil, nil, err
+		}
+		g.bodies = append(g.bodies, payload.Body)
+		comment, err := json.Marshal(map[string]any{
+			"id":       len(g.bodies),
+			"html_url": fmt.Sprintf("https://github.com/owner/repo/pull/101#issuecomment-%d", len(g.bodies)),
+			"body":     payload.Body,
+		})
+		return comment, nil, err
+	}
+	return nil, nil, fmt.Errorf("unexpected gh call: %v", args)
+}
+
+// published reports how many comments were created and their bodies.
+func (g *ghComments) published() (int, []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.posts, append([]string(nil), g.bodies...)
+}
+
+// ghCall reads the method and the endpoint of one gh invocation.
+func ghCall(args []string) (string, string) {
+	method, endpoint := "", ""
+	for i, arg := range args {
+		switch {
+		case arg == "--method" && i+1 < len(args):
+			method = args[i+1]
+		case strings.HasPrefix(arg, "repos/"):
+			endpoint = strings.SplitN(arg, "?", 2)[0]
+		}
+	}
+	return method, endpoint
+}
+
+// ghPublisher publishes report comments through the gh adapter, so the
+// scheduler sees GitHub's own answers instead of a prepared code.
+type ghPublisher struct {
+	branchGitHub
+	client *github.Client
+}
+
+func (p *ghPublisher) EnsureReportComment(ctx context.Context, repository string, number int, body string) (*github.Comment, error) {
+	return p.client.EnsureReportComment(ctx, repository, number, body)
+}
+
+// ghCommentFlow runs a scheduler whose report comments travel through the gh
+// adapter and the given runner.
+func ghCommentFlow(t *testing.T, runner *ghComments, now func() time.Time) (*scheduler.Scheduler, *app.Runtime) {
+	t.Helper()
+	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {{Number: 7, State: github.Open}}}, prs: map[string]*github.PullRequest{
+		"feature": {Number: 101, State: github.Open},
+	}, head: func(string) string { return "" }}
+	_, rt := fixture(t, api)
+	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.PRComments = true
+	publisher := &ghPublisher{branchGitHub: branchGitHub{api}, client: github.New(runner)}
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: publisher, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, rt
+}
+
+func TestThrottledReportCommentBacksOffAndIsDelivered(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	runner := &ghComments{refusals: []ghRefusal{{
+		stderr: "gh: Validation failed, or the endpoint has been spammed (HTTP 422)",
+		stdout: `{"message": "Validation failed, or the endpoint has been spammed"}`,
+	}}}
+	s, rt := ghCommentFlow(t, runner, func() time.Time { return now })
+	seedReportPublication(t, rt, "report-throttled", "MANUAL", 101)
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var state, code string
+	var stopped bool
+	if err := rt.DB.QueryRow(`SELECT state,warning_code,stopped FROM report_publications WHERE run_id='report-throttled'`).Scan(&state, &code, &stopped); err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" || code != "github.rate_limited" || stopped {
+		t.Fatalf("throttled publication = %q %q %v", state, code, stopped)
+	}
+	if posts, _ := runner.published(); posts != 1 {
+		t.Fatalf("throttled publication attempts = %d, want 1", posts)
+	}
+	now = now.Add(time.Minute + time.Second)
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.DB.QueryRow(`SELECT state,warning_code,stopped FROM report_publications WHERE run_id='report-throttled'`).Scan(&state, &code, &stopped); err != nil {
+		t.Fatal(err)
+	}
+	if state != "published" || stopped || code != "" {
+		t.Fatalf("delivered publication = %q %q %v", state, code, stopped)
+	}
+	posts, bodies := runner.published()
+	if posts != 2 || len(bodies) != 1 {
+		t.Fatalf("published comments = %d attempts, %d bodies", posts, len(bodies))
+	}
+}
+
+func TestPermanentRefusalStopsPublicationWithWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refusal ghRefusal
+	}{
+		{"oversized body", ghRefusal{
+			stderr: "gh: Body is too long (maximum is 65536 characters) (HTTP 422)",
+			stdout: `{"message": "Body is too long (maximum is 65536 characters)"}`,
+		}},
+		{"invalid field", ghRefusal{
+			stderr: "gh: Validation Failed (HTTP 422)",
+			stdout: `{"message": "Validation Failed", "errors": [{"resource": "IssueComment", "field": "body", "code": "missing"}]}`,
+		}},
+		{"nested size error", ghRefusal{
+			stderr: "gh: Validation Failed (HTTP 422)",
+			stdout: `{"message": "Validation Failed", "errors": [{"resource": "IssueComment", "field": "body", "code": "custom", "message": "body is too long (maximum is 65536 characters)"}]}`,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &ghComments{refusals: []ghRefusal{tc.refusal}}
+			s, rt := ghCommentFlow(t, runner, time.Now)
+			seedReportPublication(t, rt, "report-permanent", "MANUAL", 101)
+			for range 3 {
+				if _, err := s.Reconcile(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stopped bool
+			var code, warning string
+			if err := rt.DB.QueryRow(`SELECT stopped,warning_code,warning FROM report_publications WHERE run_id='report-permanent'`).Scan(&stopped, &code, &warning); err != nil {
+				t.Fatal(err)
+			}
+			if !stopped || code != "github.invalid_input" || !strings.Contains(warning, "cannot deliver") {
+				t.Fatalf("permanent publication = %v %q %q", stopped, code, warning)
+			}
+			if posts, _ := runner.published(); posts != 1 {
+				t.Fatalf("permanent publication retried: %d", posts)
+			}
+		})
 	}
 }

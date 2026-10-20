@@ -334,7 +334,7 @@ func (c *Client) requestWithAttempts(ctx context.Context, input []byte, method, 
 		if err == nil {
 			return stdout, nil
 		}
-		failure, transient := commandError(stderr, err)
+		failure, transient := commandError(stdout, stderr, err)
 		if !transient || attempt == attempts-1 {
 			return nil, failure
 		}
@@ -358,9 +358,13 @@ func contextError(err error) *Error {
 	return &Error{Code: "github.canceled", Err: err}
 }
 
-// gh reports API statuses on stderr as "(HTTP NNN)". Other command failures
-// stay permanent unless they match a known transport failure.
-func commandError(stderr []byte, cause error) (*Error, bool) {
+// gh reports the status and a summary of the answer on stderr as "(HTTP NNN)",
+// and writes the response body to stdout. A refusal names the reason it
+// cannot change in that body, so a refusal is read from both streams: a
+// permanent cause only in the body still stops the request, and a refusal
+// without one stays a retryable command failure, like an unrecognized gh
+// error. Other statuses keep their summary, which already names their cause.
+func commandError(stdout, stderr []byte, cause error) (*Error, bool) {
 	message := strings.TrimSpace(string(stderr))
 	if message == "" {
 		message = cause.Error()
@@ -383,9 +387,25 @@ func commandError(stderr []byte, cause error) (*Error, bool) {
 	case status == 404 || status == 410:
 		code = "github.not_found"
 	case status == 400 || status == 422:
-		// GitHub answered that the request is invalid, for example a body over
-		// its size limit or a rejected mutation. Retrying cannot change that.
-		code = "github.invalid_input"
+		answer := lower
+		if body := strings.ToLower(strings.TrimSpace(string(stdout))); body != "" {
+			answer += "\n" + body
+		}
+		switch {
+		case throttledRejection(answer):
+			// The issue-comments API answers its secondary rate limit with 422
+			// when content is created too quickly. The limit clears on its own,
+			// so this waits like any other rate limit.
+			code = "github.rate_limited"
+		case permanentRejection(answer):
+			// The request itself is invalid: a body over the size limit or a
+			// validation error naming a field. Retrying cannot change that.
+			code = "github.invalid_input"
+		default:
+			// GitHub refused the request without naming a permanent cause.
+			// Treat it like any other command failure and retry it later.
+			code = "github.command_failed"
+		}
 	case Unavailable([]byte(lower)):
 		code, transient = "github.unavailable", true
 	}
