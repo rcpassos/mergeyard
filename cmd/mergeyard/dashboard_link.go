@@ -23,6 +23,8 @@ const (
 	linuxDashboardLinksDirName = "mergeyard-dashboard-handoff"
 	dashboardHandoffPrefix     = "handoff-"
 	dashboardHandoffFile       = "dashboard.html"
+	// missingBrowserLauncher is reported when no launcher could start.
+	missingBrowserLauncher = "could not find an HTTP browser launcher; install gio or open the printed dashboard link"
 )
 
 // browserPlatform is runtime.GOOS. Tests set it to exercise each launcher
@@ -34,8 +36,8 @@ var browserPlatform = runtime.GOOS
 // asks LaunchServices for the default HTTP browser and receives the URL over
 // stdin. Elsewhere, the URL goes into an owner-only handoff page and only that
 // path reaches the explicitly selected browser. The launchers that could not
-// start are reported to warn.
-func openBrowser(ctx context.Context, root, address string, warn io.Writer) error {
+// start are reported to stderr.
+func openBrowser(ctx context.Context, root, address string, stderr io.Writer) error {
 	if browserPlatform == "darwin" {
 		return openMacBrowser(ctx, address)
 	}
@@ -44,7 +46,7 @@ func openBrowser(ctx context.Context, root, address string, warn io.Writer) erro
 	if err != nil {
 		return err
 	}
-	return launchHandoffPage(ctx, page, warn)
+	return launchHandoffPage(ctx, page, stderr)
 }
 
 // openMacBrowser uses the HTTP handler rather than the HTML file association.
@@ -73,25 +75,24 @@ func appleScriptString(value string) string {
 // The browser is never waited for. A launcher that cannot start is reported
 // and the next fallback is tried; when no launcher starts, every failure is
 // part of the returned error.
-func launchHandoffPage(ctx context.Context, page string, warn io.Writer) error {
-	launched, failures := tryHandoffLaunchers(ctx, page)
+func launchHandoffPage(ctx context.Context, page string, stderr io.Writer) error {
+	failures, launched := tryHandoffLaunchers(ctx, page)
 	if launched {
 		for _, failure := range failures {
-			fmt.Fprintf(warn, "mergeyard: browser launcher could not start: %v\n", failure)
+			fmt.Fprintf(stderr, "mergeyard: browser launcher not used: %v\n", failure)
 		}
 		return nil
 	}
 	if len(failures) == 0 {
-		return errors.New("could not find an HTTP browser launcher; install gio or open the printed dashboard link")
+		return errors.New(missingBrowserLauncher)
 	}
-	return fmt.Errorf("could not find an HTTP browser launcher; install gio or open the printed dashboard link: %w", errors.Join(failures...))
+	return fmt.Errorf("%s: %w", missingBrowserLauncher, errors.Join(failures...))
 }
 
 // tryHandoffLaunchers starts the launchers in order and reports the first one
-// that started. It also returns the launchers that could not start, so the
+// that started. The failures are the launchers that could not start, so the
 // caller can report them.
-func tryHandoffLaunchers(ctx context.Context, page string) (bool, []error) {
-	var failures []error
+func tryHandoffLaunchers(ctx context.Context, page string) (failures []error, launched bool) {
 	launch := func(name string, args ...string) bool {
 		if err := startDetachedLauncher(name, args...); err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", name, err))
@@ -102,27 +103,27 @@ func tryHandoffLaunchers(ctx context.Context, page string) (bool, []error) {
 	if id := defaultBrowserID(ctx); id != "" {
 		if desktop, ok := desktopFilePath(id); ok {
 			if launch("gio", "launch", desktop, page) {
-				return true, failures
+				return failures, true
 			}
 			if launch("gtk-launch", id, page) {
-				return true, failures
+				return failures, true
 			}
 			args, err := desktopBrowserArgs(desktop, page)
 			if err != nil {
 				failures = append(failures, fmt.Errorf("%s: %w", desktop, err))
 			} else if launch(args[0], args[1:]...) {
-				return true, failures
+				return failures, true
 			}
 		} else if launch("gtk-launch", id, page) {
-			return true, failures
+			return failures, true
 		}
 	}
 	for _, name := range []string{"sensible-browser", "x-www-browser"} {
 		if launch(name, page) {
-			return true, failures
+			return failures, true
 		}
 	}
-	return false, failures
+	return failures, false
 }
 
 func defaultBrowserID(ctx context.Context) string {

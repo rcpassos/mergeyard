@@ -1,4 +1,4 @@
-# The browser opens detached from Mergeyard
+# The Linux browser opens detached from Mergeyard
 
 The handoff page (ADR-0006) opens the dashboard by launching the browser
 explicitly, so the token never reaches a process command line. When the
@@ -8,11 +8,15 @@ Mergeyard: `mergeyard open` blocked until the user closed it, Ctrl-C killed it,
 and `mergeyard start` killed it when the runtime shut down. The browser belongs
 to the user, not to the command that opened it.
 
-Every browser launcher now runs detached: it starts in its own session and
-process group, without Mergeyard's context, and Mergeyard never waits for it.
-The command returns as soon as a launcher starts. A launcher that cannot start
-is reported and the next fallback is tried; when no launcher starts, every
-failure is part of the reported error.
+On Linux, every browser launcher now runs detached: it starts in its own
+session and process group, without Mergeyard's context, and Mergeyard never
+waits for it. The command returns as soon as a launcher starts. A launcher that
+cannot start is reported and the next fallback is tried; when no launcher
+starts, every failure is part of the reported error.
+
+macOS keeps its AppleScript path: LaunchServices starts the browser, so it is
+never a child of Mergeyard, and the script returns as soon as the request is
+handed over.
 
 ## Considered Options
 
@@ -29,14 +33,17 @@ failure is part of the reported error.
   process group of its own already detach the browser from Mergeyard's
   signals and lifetime, and the extra helper process buys nothing a user or
   the runtime can observe.
+- **Run the browser through the shared process policy.** Rejected: that policy
+  owns the process group and stops it when the command ends, which is the
+  opposite of what a browser needs.
 
 ## Consequences
 
-- `mergeyard open` returns immediately with every launcher, and the browser
-  stays open after the CLI exits.
+- `mergeyard open` returns immediately with every Linux launcher, and the
+  browser stays open after the CLI exits.
 - Stopping `mergeyard start` never terminates a browser it launched.
 - A launcher that starts and then fails is no longer observed, because
   Mergeyard does not wait for it. Only a launcher that cannot start is
   reported; the previous fallback is tried instead.
-- The launchers run outside Mergeyard's terminal session, so a Ctrl-C in the
-  terminal does not reach the browser.
+- The Linux launchers run outside Mergeyard's terminal session, so a Ctrl-C in
+  the terminal does not reach the browser.

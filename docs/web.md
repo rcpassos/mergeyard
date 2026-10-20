@@ -105,10 +105,10 @@ the link into an owner-only handoff page under
 `0600` page) and launch the resolved default web browser explicitly with
 `gio`, `gtk-launch`, or the browser command from its desktop entry, so a
 confined browser such as the Firefox snap can read the page and an HTML editor
-association is never used. The launcher runs detached, in its own session and
-process group, and Mergeyard never waits for it: `mergeyard open` returns as
-soon as the launcher starts, and stopping the runtime never closes a browser it
-opened. If no HTTP browser can be resolved, the command
+association is never used. On Linux the launcher runs detached, in its own
+session and process group, and Mergeyard never waits for it: `mergeyard open`
+returns as soon as the launcher starts, and stopping the runtime never closes
+a browser it opened. If no HTTP browser can be resolved, the command
 reports that instead of falling back to `xdg-open`. Other platforms fall back to
 `<workspace>/.dashboard-links/`. In every case the launcher arguments contain a
 path or a stdin marker, never the token. The token remains single-use and

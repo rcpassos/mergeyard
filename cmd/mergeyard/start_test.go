@@ -230,24 +230,6 @@ exit 0
 	}
 }
 
-// browserPIDs returns the processes the fake browser launchers recorded.
-func browserPIDs(t *testing.T, path string) []int {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("the browser launcher recorded no process: %v", err)
-	}
-	var pids []int
-	for _, field := range strings.Fields(string(data)) {
-		pid, err := strconv.Atoi(field)
-		if err != nil {
-			t.Fatalf("the browser launcher recorded no process id: %q", field)
-		}
-		pids = append(pids, pid)
-	}
-	return pids
-}
-
 func TestStartProcessesLockAndShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -462,8 +444,9 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		// The browser the runtime launched is detached: shutting the runtime
 		// down must not terminate it.
-		for _, pid := range browserPIDs(t, browserStarted) {
+		for _, pid := range browserProcesses(t, browserStarted) {
 			assertProcessAlive(t, pid)
+			assertDetachedProcess(t, pid)
 		}
 	}
 	// No arguments also dispatches start; the persistent lock file is reusable
