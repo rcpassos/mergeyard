@@ -78,9 +78,25 @@ func (s *Scheduler) Retry(ctx context.Context, id string, notes ...string) (work
 			if err != nil {
 				return err
 			}
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				_, err := tx.ExecContext(ctx, "INSERT INTO run_retries(run_id,pending,snapshot_json) VALUES(?,1,?)", run.ID, string(data))
-				return events.Draft{RunID: run.ID, Type: "run.retry_requested", Payload: v}, err
+			// The intent and the requeue of the run's stopped publications
+			// commit together. A human asked for another attempt, so the
+			// publications that stopped for good get the same chance with a
+			// fresh backoff; a cause that is still broken stops them again
+			// with their reason. An interruption cannot leave the request
+			// recorded without the attempt it asked for.
+			_, err = s.bus.CommitBatch(ctx, func(tx *sql.Tx) ([]events.Draft, error) {
+				if _, err := tx.ExecContext(ctx, "INSERT INTO run_retries(run_id,pending,snapshot_json) VALUES(?,1,?)", run.ID, string(data)); err != nil {
+					return nil, err
+				}
+				count, err := requeueStoppedPublications(ctx, tx, run.ID)
+				if err != nil {
+					return nil, err
+				}
+				drafts := []events.Draft{{RunID: run.ID, Type: "run.retry_requested", Payload: v}}
+				if count > 0 {
+					drafts = append(drafts, events.Draft{RunID: run.ID, Type: publicationRequeuedEvent, Payload: map[string]any{"count": count}})
+				}
+				return drafts, nil
 			})
 			if err != nil {
 				return err

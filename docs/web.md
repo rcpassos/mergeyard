@@ -28,6 +28,8 @@ workflow, and workspace with the dashboard:
 - `GET /api/runs/<run-id>/watch`: the current live tmux session reference;
 - `POST /api/runs/<run-id>/stop`: interrupt the phase, update labels, and stop
   the run while preserving its code;
+- `POST /api/runs/<run-id>/requeue`: return the run's stopped publications to
+  the queue;
 - `POST /api/scheduler/pause` and `POST /api/scheduler/resume`: the same
   scheduler control the dashboard uses, answering JSON;
 - `POST /api/harnesses/<harness>/check`: the same availability check the
@@ -306,6 +308,16 @@ The run snapshot and dashboard retain selected phase, pinned manual commit,
 pending publication/recovery errors and the additional round grant. Handback
 history and lifecycle events refresh over SSE. A pending handback cannot launch
 an interactive resume or automated phase; restart reconciles publication first.
+
+`POST /runs/{id}/requeue` and `POST /api/runs/{id}/requeue` return the run's
+stopped publications to the queue through the shared scheduler operation. Run
+detail lists every stopped report comment, attention comment and pull request
+body with the reason it stopped, and offers **Requeue publications** while that
+list is not empty. The list disappears once the publications are requeued, and
+the reason returns if the cause is still broken. The API answers with the
+requeued publications and their reasons. `publication.requeued` refreshes pages
+over SSE. The endpoint uses the existing Host, Origin, CSRF, and CLI workspace
+identity protections, and an unknown run answers `internal.run_not_found`.
 
 `POST /harnesses/{harness}/check` calls the shared `Scheduler.CheckHarness`
 operation. JSON clients receive the durable check snapshot; browser forms refresh

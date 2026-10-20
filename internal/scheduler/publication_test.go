@@ -571,13 +571,13 @@ func TestRunFinishingAfterTransientFailureStopsReportPublication(t *testing.T) {
 	}
 	var stopped bool
 	var warning string
-	if err := rt.DB.QueryRow(`SELECT stopped,warning FROM report_publications WHERE run_id='report-finishes-later'`).Scan(&stopped, &warning); err != nil || !stopped || !strings.Contains(warning, "will not retry") || !strings.Contains(warning, "No further retries") {
+	if err := rt.DB.QueryRow(`SELECT stopped,warning FROM report_publications WHERE run_id='report-finishes-later'`).Scan(&stopped, &warning); err != nil || !stopped || !strings.Contains(warning, "will not retry") || !strings.Contains(warning, "No further automatic retries") {
 		t.Fatalf("finished report state = %v %q, %v", stopped, warning, err)
 	}
 	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.warning' AND json_extract(payload_json,'$.report_id')=(SELECT attempt_id FROM report_publications WHERE run_id='report-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&warning); err != nil || !strings.Contains(warning, "deferred") {
 		t.Fatalf("report warning was rewritten: %q, %v", warning, err)
 	}
-	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.stopped' AND json_extract(payload_json,'$.report_id')=(SELECT attempt_id FROM report_publications WHERE run_id='report-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&warning); err != nil || !strings.Contains(warning, "will not retry") || !strings.Contains(warning, "No further retries") {
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.stopped' AND json_extract(payload_json,'$.report_id')=(SELECT attempt_id FROM report_publications WHERE run_id='report-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&warning); err != nil || !strings.Contains(warning, "will not retry") || !strings.Contains(warning, "No further automatic retries") {
 		t.Fatalf("finished report stop event = %q, %v", warning, err)
 	}
 }
@@ -609,7 +609,7 @@ func TestRunFinishingAfterTransientFailureStopsAttentionPublication(t *testing.T
 	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.warning' AND json_extract(payload_json,'$.attention_event_id')=(SELECT event_id FROM attention_publications WHERE run_id='attention-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&message); err != nil || !strings.Contains(message, "deferred") {
 		t.Fatalf("attention warning was rewritten: %q, %v", message, err)
 	}
-	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.stopped' AND json_extract(payload_json,'$.attention_event_id')=(SELECT event_id FROM attention_publications WHERE run_id='attention-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&message); err != nil || !strings.Contains(message, "will not retry") || !strings.Contains(message, "No further retries") {
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE type='publication.stopped' AND json_extract(payload_json,'$.attention_event_id')=(SELECT event_id FROM attention_publications WHERE run_id='attention-finishes-later') ORDER BY id DESC LIMIT 1`).Scan(&message); err != nil || !strings.Contains(message, "will not retry") || !strings.Contains(message, "No further automatic retries") {
 		t.Fatalf("attention stop event = %q, %v", message, err)
 	}
 }
@@ -696,7 +696,7 @@ func (p *ghPublisher) EnsureReportComment(ctx context.Context, repository string
 
 // ghCommentFlow runs a scheduler whose report comments travel through the gh
 // adapter and the given runner.
-func ghCommentFlow(t *testing.T, runner *ghComments, now func() time.Time) (*scheduler.Scheduler, *app.Runtime) {
+func ghCommentFlow(t *testing.T, runner github.CommandRunner, now func() time.Time) (*scheduler.Scheduler, *app.Runtime) {
 	t.Helper()
 	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {{Number: 7, State: github.Open}}}, prs: map[string]*github.PullRequest{
 		"feature": {Number: 101, State: github.Open},

@@ -143,8 +143,12 @@
 <p>Required checks: {{range .Evidence.Required}}{{.Name}}{{if .AppID}} (app {{.AppID}}){{end}}; {{else}}None in the latest observation.{{end}}</p></section>{{end}}
 
 {{range .Publications}}<section class="notice"><h3>{{.Phase}} report publication · round {{.Round}}, attempt {{.Attempt}}</h3>
-{{if .WarningCode}}<p role="status">Publication warning: <code>{{.WarningCode}}</code> · {{.Warning}}</p>{{else}}<p>{{.State}}</p>{{end}}
+{{if .Stopped}}<p role="status">Stopped. Its reason is listed with the stopped publications below.</p>{{else if .WarningCode}}<p role="status">Publication warning: <code>{{.WarningCode}}</code> · {{.Warning}}</p>{{else}}<p>{{.State}}</p>{{end}}
 {{if .CommentURL}}<p><a href="{{.CommentURL}}" target="_blank" rel="noopener noreferrer">Published comment</a></p>{{end}}</section>{{end}}
+{{if .StoppedPublications}}<section class="notice failure"><h2>Stopped publications</h2>
+<p>These publications stopped for good and will not be retried on their own. Fix the cause, then requeue them.</p>
+<ul>{{range .StoppedPublications}}<li>{{.Label}}{{if .Code}} · <code>{{.Code}}</code>{{end}}{{if .Warning}} · {{.Warning}}{{end}}</li>{{end}}</ul>
+<form method="post" action="/runs/{{.ID}}/requeue" hx-post="/runs/{{.ID}}/requeue" hx-target="#content" hx-swap="outerHTML"><input type="hidden" name="csrf_token" value="{{$.Token}}"><button class="btn btn-primary" type="submit">Requeue publications</button></form></section>{{end}}
 {{if .ApprovedSHA}}<p>Approved commit: <code>{{.ApprovedSHA}}</code></p>{{end}}
 {{template "human-action" .HumanAction}}{{if .LastErrorCode}}<section class="notice failure"><h2>Last error</h2><p><code>{{.LastErrorCode}}</code>: {{.LastErrorMessage}}</p></section>{{end}}
 {{end}}<div class="run-history">

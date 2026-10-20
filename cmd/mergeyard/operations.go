@@ -368,6 +368,24 @@ func operate(ctx context.Context, path, action string, args []string, stdout, st
 		if run.LastErrorCode != "" {
 			fmt.Fprintf(stdout, "  %s: %s\n", terminalText(run.LastErrorCode), terminalText(run.LastErrorMessage))
 		}
+	case "requeue":
+		fmt.Fprintln(stdout, "Requeue returns the run's stopped publications to the queue. Fix the cause first; a cause that is still broken stops them again.")
+		var result web.RequeueResult
+		if err := client.request(ctx, http.MethodPost, "/api/runs/"+url.PathEscape(args[0])+"/requeue", &result, nil); err != nil {
+			return err
+		}
+		if result.Requeued == 0 {
+			fmt.Fprintf(stdout, "Run %s: no stopped publications to requeue.\n", terminalText(result.RunID))
+			return nil
+		}
+		fmt.Fprintf(stdout, "Run %s: requeued %d stopped publications.\n", terminalText(result.RunID), result.Requeued)
+		for _, p := range result.Publications {
+			line := p.Label
+			if reason := strings.TrimSpace(p.Code + " " + p.Warning); reason != "" {
+				line += ": " + reason
+			}
+			fmt.Fprintf(stdout, "  %s\n", terminalText(line))
+		}
 	case "handback":
 		fmt.Fprintln(stdout, "Handback commits and pushes manual work. Exit the interactive harness first. If independent review exceeds the allowance, exactly one additional review round will be granted. Manual conversation success does not clear the harness block.")
 		var run workflow.Run

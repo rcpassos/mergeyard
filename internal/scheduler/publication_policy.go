@@ -14,8 +14,10 @@ const (
 	publicationRetryMaximum = time.Hour
 	// publicationTimeFormat matches SQLite's strftime('%f') so text ordering
 	// stays chronological for old and new rows.
-	publicationTimeFormat   = "2006-01-02T15:04:05.000Z"
-	publicationStopped      = " No further retries will be made."
+	publicationTimeFormat = "2006-01-02T15:04:05.000Z"
+	// publicationStopped marks a publication the queue will not try again on
+	// its own. A human can still ask for another attempt.
+	publicationStopped      = " No further automatic retries will be made."
 	publicationStoppedEvent = "publication.stopped"
 )
 

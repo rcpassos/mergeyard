@@ -1009,7 +1009,7 @@ Default body:
 - a collapsed `<details>` block with the latest implement/fix command verification evidence;
 - a Mergeyard-generated footer with the run ID.
 
-Mergeyard updates its generated section without overwriting user-written content. Each valid implement/fix report replaces the evidence in that section, including blocked/failed reports when a PR exists. An empty verification array displays "no verification reported". Evidence is rendered as literal JSON, escaping HTML, backticks, ownership markers, and mentions, so reported commands and excerpts cannot break the section or trigger mentions. The report saved on the phase attempt is the publication intent, and its eligibility is fixed when it is saved: a later lifecycle rejection of the same attempt never withdraws it. A receipt records delivery. Failed writes retry from the latest report after restart, reading the current PR body every time and preserving human edits. Body publication serves never-attempted and least-recently-attempted evidence first, recording each attempt in one bounded bookkeeping row per run before the network call so one slow PR cannot monopolize retries across ticks or restarts. Failed attempts add no event rows: the stream keeps only the completion event, the once-per-source-and-code warning, and the receipt. Permanent answers (not found, forbidden, invalid input such as a size or field-validation rejection, unsupported writes, or an ambiguous match) stop retrying and keep the warning. Transient failures (transport errors, rate limits, refusals GitHub did not explain with a permanent cause, invalid responses, and shared-budget expiry) back off from one minute up to one hour instead of retrying every tick. A finished run stops after a returned failure; a never-attempted publication or an interrupted attempt still gets its chance, so an ambiguous write can be reconciled. Saved evidence and the warning stay visible either way. Verification evidence is truncated to keep the generated body within GitHub's 65536-byte limit. Truncated excerpts and omitted entries are marked, and a non-empty evidence list is never rendered as "no verification reported". Generated bodies reserve headroom for the escalation section; escalation details are truncated with a visible note when they cannot all fit. The same terminal and backoff rules govern PR comments, attention comments, and the escalation section. It shares a five-second network budget across each batch; warnings and receipts are saved with the caller context so a timed-out write remains retryable. Body publication is independent of `pr_comments`, and failures leave saved evidence available without stopping phase progression. If more than one open PR exists for the branch, the run moves to `NEEDS_ATTENTION`.
+Mergeyard updates its generated section without overwriting user-written content. Each valid implement/fix report replaces the evidence in that section, including blocked/failed reports when a PR exists. An empty verification array displays "no verification reported". Evidence is rendered as literal JSON, escaping HTML, backticks, ownership markers, and mentions, so reported commands and excerpts cannot break the section or trigger mentions. The report saved on the phase attempt is the publication intent, and its eligibility is fixed when it is saved: a later lifecycle rejection of the same attempt never withdraws it. A receipt records delivery. Failed writes retry from the latest report after restart, reading the current PR body every time and preserving human edits. Body publication serves never-attempted and least-recently-attempted evidence first, recording each attempt in one bounded bookkeeping row per run before the network call so one slow PR cannot monopolize retries across ticks or restarts. Failed attempts add no event rows: the stream keeps only the completion event, the once-per-source-and-code warning, and the receipt. Permanent answers (not found, forbidden, invalid input such as a size or field-validation rejection, unsupported writes, or an ambiguous match) stop retrying and keep the warning. A stopped publication keeps its reason and waits for a human requeue (§22); the requeue clears the stop, restarts the backoff, and delivers the frozen comment or body again without duplicating a comment that already reached the pull request. Transient failures (transport errors, rate limits, refusals GitHub did not explain with a permanent cause, invalid responses, and shared-budget expiry) back off from one minute up to one hour instead of retrying every tick. A finished run stops after a returned failure; a never-attempted publication or an interrupted attempt still gets its chance, so an ambiguous write can be reconciled. Saved evidence and the warning stay visible either way. Verification evidence is truncated to keep the generated body within GitHub's 65536-byte limit. Truncated excerpts and omitted entries are marked, and a non-empty evidence list is never rendered as "no verification reported". Generated bodies reserve headroom for the escalation section; escalation details are truncated with a visible note when they cannot all fit. The same terminal and backoff rules govern PR comments, attention comments, and the escalation section. It shares a five-second network budget across each batch; warnings and receipts are saved with the caller context so a timed-out write remains retryable. Body publication is independent of `pr_comments`, and failures leave saved evidence available without stopping phase progression. If more than one open PR exists for the branch, the run moves to `NEEDS_ATTENTION`.
 
 ---
 
@@ -1220,6 +1220,27 @@ the request. Posting guidance to the PR conversation is not implemented.
 Retry after `workspace.setup_failed` reruns setup before starting the agent. Retry after `checks.failed` reruns checks before any agent attempt or publication and grants exactly one additional check/fix attempt, with the grant and prior retry history persisted.
 
 Retry after exhausted credits follows the single-run recovery probe in section 12. Retry after usage-limit wait exhaustion grants one additional wait as specified there. Handback can also grant a review round under the conditions in section 20.
+
+### Requeue
+
+A publication that stopped for good — a permanent answer such as a forbidden
+target or invalid input — is never retried on its own. Only a human knows the
+cause is fixed, so the human asks for another attempt:
+
+- `mergeyard requeue <run-id>` returns the run's stopped report comments,
+  attention comments and pull request body to the queue;
+- the dashboard offers the same action on the run detail while stopped
+  publications are listed;
+- Retry requeues them together with the retry request.
+
+A requeue clears the stop and its reason, restarts the backoff, and lets the
+next reconciliation deliver the frozen comment or body again. A comment that
+was already delivered is still matched by its report marker, so a requeue never
+duplicates it. A cause that is still broken stops the publication again with its
+reason. Stopped publications and their reasons stay visible in the run detail
+until they are requeued. The Retry intent and the requeue it asks for commit
+together, so an interruption cannot leave a request recorded without the attempt
+it asked for.
 
 ### Infrastructure retries
 
@@ -1618,6 +1639,7 @@ mergeyard takeover <run-id>
 mergeyard handback <run-id>
 mergeyard stop <run-id>
 mergeyard retry <run-id> [--note "…" | --note-file <path>]
+mergeyard requeue <run-id>
 mergeyard harness check <claude|codex>
 mergeyard reconcile
 ```

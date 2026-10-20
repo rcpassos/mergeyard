@@ -196,6 +196,20 @@ closed PRs, and still-running processes receive an actionable diagnosis; Retry
 never resets or cleans work. Retry does not replenish a role's missing-session
 recovery allowance for its phase and round.
 
+Retry also returns the run's stopped publications to the queue: a publication
+that stopped for good gets another attempt with a fresh backoff, and a cause
+that is still broken stops it again with its reason.
+
+- `mergeyard requeue <run-id>`: return the run's stopped report comments,
+  attention comments and pull request body to the queue. A publication that
+  stopped for good — a forbidden target, invalid input, an unsupported write —
+  is never retried on its own, because only a human knows the cause is fixed.
+  The requeue clears the stop and its reason, restarts the backoff, and lets the
+  next reconciliation deliver the frozen comment or body again. A comment that
+  already reached the pull request is matched by its report marker, so a requeue
+  never duplicates it. The command prints what it requeued and why each
+  publication had stopped.
+
 Status includes failed runs, retry instructions and history, granted rounds,
 renewed CI deadlines, role settings/session identities, verdicts, findings,
 fix responses, CI evidence, and pending merge maintenance. Status also prints the

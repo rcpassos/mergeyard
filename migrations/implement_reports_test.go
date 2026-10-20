@@ -111,8 +111,8 @@ func migratedBefore(t *testing.T, first string) *sql.DB {
 func checkRecoveredImplementReports(t *testing.T, db *sql.DB, bookkeeping bool) {
 	t.Helper()
 	var version int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 30 {
-		t.Fatalf("schema version = %d, err %v; want 30", version, err)
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 31 {
+		t.Fatalf("schema version = %d, err %v; want 31", version, err)
 	}
 	reports := []struct {
 		id           string

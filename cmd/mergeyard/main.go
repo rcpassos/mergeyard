@@ -50,6 +50,7 @@ var commands = []command{
 	{name: "handback", args: "<run-id>", summary: "return a taken-over run to Mergeyard"},
 	{name: "stop", args: "<run-id>", summary: "stop a run"},
 	{name: "retry", args: "<run-id>", summary: "retry a failed or needs-attention run"},
+	{name: "requeue", args: "<run-id>", summary: "requeue a run's stopped publications"},
 	{name: "reconcile", summary: "report orphaned claims, worktrees, and sessions"},
 }
 
@@ -176,7 +177,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if cmd.name == "harness check" || cmd.name == "status" || cmd.name == "pause" || cmd.name == "resume" || cmd.name == "open" || cmd.name == "watch" || cmd.name == "stop" || cmd.name == "retry" || cmd.name == "takeover" || cmd.name == "handback" {
+	if cmd.name == "harness check" || cmd.name == "status" || cmd.name == "pause" || cmd.name == "resume" || cmd.name == "open" || cmd.name == "watch" || cmd.name == "stop" || cmd.name == "retry" || cmd.name == "requeue" || cmd.name == "takeover" || cmd.name == "handback" {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := operate(ctx, opts.configPath, cmd.name, rest, stdout, stderr); err != nil {
