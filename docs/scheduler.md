@@ -273,18 +273,22 @@ when that snapshot refreshes. A failed refresh keeps the last snapshot, or
 records the issue's scoped failure until a snapshot exists, and backs off for
 the same window instead of retrying on every pass. Each refused read gets a
 bounded child context, so a slow request cannot consume the budget reserved for
-the rest of discovery. A read that was merely slow is not remembered as the
-issue's failure for a whole window: it is read again on the next refresh.
+the rest of discovery. A read that the refresh budget cut short is merely slow
+and is read again on the next refresh, while a read that used its whole window
+is GitHub's own failure and backs off for the full window.
 
 The refused reads share the caller's refresh budget with the rest of the pass:
-each repository may spend a share of what is left, split among the repositories
-that are not discovered yet. Once that share is spent the pass stops reading and
-keeps the last readable snapshot of the refusals it did not reach, so a window
-full of refusals cannot spend the whole refresh and leave the other
-repositories without a queue. The local lookups that assemble the queue do not
-share the budget reserved for GitHub, so a spent budget costs the refresh its
-fresh refusals rather than its whole queue. Open
-blockers are reused while the issue's snapshot and open-blocker count are
+they may spend at most half of it, and each repository may spend a share of
+what is left, split among the repositories this pass has not discovered yet.
+Once that share is spent the pass stops reading and keeps the last readable
+snapshot of the refusals it did not reach, so a window full of refusals cannot
+spend the whole refresh and leave the other repositories without a queue. The
+local lookups that assemble the queue do not share the budget reserved for
+GitHub, so a spent budget costs the refresh its fresh refusals rather than its
+whole queue, and a repository the refresh could not list is reported on its own
+instead of failing the queue.
+
+Open blockers are reused while the issue's snapshot and open-blocker count are
 unchanged, and a listing summary that reports no open blockers needs no
 dependency read at all; a missing summary falls back to reading, so an unknown
 status is never shown as ready. `Queue(ctx)` does not mutate labels or claim

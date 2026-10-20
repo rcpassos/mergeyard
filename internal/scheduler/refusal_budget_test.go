@@ -9,6 +9,7 @@ import (
 	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/scheduler"
 )
 
 // slowGitHub delays every refused-issue read, so a test can reproduce a
@@ -158,20 +159,85 @@ func TestQueueKeepsRefusalReasonsAfterTheGitHubBudgetIsSpent(t *testing.T) {
 	}
 }
 
-// A read that was merely slow is not remembered as the issue's failure for a
-// whole window: the next refresh reads the issue back and shows it again.
-func TestQueueRetriesASlowRefusedReadOnTheNextRefresh(t *testing.T) {
+// A refresh that spends its budget on the first repository's refused reads
+// still reports the repository it could not list, instead of failing the
+// whole queue with a plain deadline error.
+func TestQueueKeepsDiscoveringWhenTheBudgetRunsOutBeforeAListing(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{}}
+	overrunning := &overrunningGitHub{fakeGitHub: api, delay: 700 * time.Millisecond}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	s, runtime := configuredAt(t, overrunning, "repositories:\n  - repo: owner/first\n  - repo: owner/second\n", rejectingGit{}, func() time.Time { return now })
+	refuseIssues(t, runtime, api, []string{"owner/first", "owner/second"}, 3)
+
+	refresh, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	report, err := s.QueueReport(refresh)
+	cancel()
+	if !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want a scoped repository failure instead of a failed queue", err)
+	}
+	if len(report.Failures) != 1 || report.Failures[0].Repository != "owner/second" {
+		t.Fatalf("queue failures = %+v, want the repository that could not be listed", report.Failures)
+	}
+	if len(report.Issues) != 2 || !strings.EqualFold(report.Issues[0].Repository, "owner/first") {
+		t.Fatalf("the discovered repository lost its queue: %+v", report.Issues)
+	}
+}
+
+// A read that used its whole window is a genuine failure rather than a slow
+// one: it backs off for the full window, so an outage does not spend one call
+// per refused issue on every refresh.
+func TestQueueBacksOffTheWholeWindowAfterAGenuineTimeout(t *testing.T) {
 	api := &fakeGitHub{issues: map[string][]github.Issue{}}
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	s, runtime := configuredAt(t, api, "repositories: [{repo: owner/first}]", rejectingGit{}, func() time.Time { return now })
 	refuseIssues(t, runtime, api, []string{"owner/first"}, 1)
 
+	// The refresh budget leaves the read its whole window, so the timeout
+	// belongs to GitHub and not to the budget.
 	api.getIssue = func(string, int) (github.Issue, error) {
 		return github.Issue{}, &fault.Error{Code: "github.timeout", Message: "The GitHub request timed out; it will retry"}
 	}
-	report, err := s.QueueReport(context.Background())
-	if err == nil {
-		t.Fatal("the slow read did not report a failure")
+	refresh, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	report, err := s.QueueReport(refresh)
+	cancel()
+	if err == nil || !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want a scoped refused-issue timeout", err)
+	}
+	if len(report.Failures) != 1 || report.Failures[0].IssueNumber != 1 {
+		t.Fatalf("queue failures = %+v", report.Failures)
+	}
+
+	// The failure backs off for the whole window instead of every refresh.
+	now = now.Add(31 * time.Second)
+	api.getIssue = nil
+	api.calls = githubCalls{}
+	report, err = s.QueueReport(context.Background())
+	if err == nil || !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want the remembered timeout", err)
+	}
+	if api.calls.issueReads != 0 {
+		t.Fatalf("refused-issue reads = %d, want the timeout to back off for the window", api.calls.issueReads)
+	}
+	if len(report.Failures) != 1 || report.Failures[0].IssueNumber != 1 {
+		t.Fatalf("queue failures = %+v, want the remembered timeout", report.Failures)
+	}
+}
+
+// A read that was merely slow is not remembered as the issue's failure for a
+// whole window: the next refresh reads the issue back and shows it again.
+func TestQueueRetriesASlowRefusedReadOnTheNextRefresh(t *testing.T) {
+	api := &fakeGitHub{issues: map[string][]github.Issue{}}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	gated := &deadlineGitHub{fakeGitHub: api, slowRepo: "owner/first"}
+	s, runtime := configuredAt(t, gated, "repositories: [{repo: owner/first}]", rejectingGit{}, func() time.Time { return now })
+	refuseIssues(t, runtime, api, []string{"owner/first"}, 1)
+
+	// The refresh budget cuts the read short, so the read is merely slow.
+	first, cancelFirst := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	report, err := s.QueueReport(first)
+	cancelFirst()
+	if err == nil || !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want a scoped refused-issue timeout", err)
 	}
 	if len(report.Failures) != 1 || report.Failures[0].IssueNumber != 1 {
 		t.Fatalf("queue failures = %+v", report.Failures)
@@ -180,7 +246,7 @@ func TestQueueRetriesASlowRefusedReadOnTheNextRefresh(t *testing.T) {
 	// The slow read is retried on the next refresh instead of being cached
 	// as the issue's state for a whole window.
 	now = now.Add(31 * time.Second)
-	api.getIssue = nil
+	gated.slowRepo = ""
 	api.calls = githubCalls{}
 	report, err = s.QueueReport(context.Background())
 	if err != nil {

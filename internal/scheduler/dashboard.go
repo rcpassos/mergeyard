@@ -77,6 +77,16 @@ type refusedIssueSnapshot struct {
 	err       error
 }
 
+// discovery is the budget of one repository's dashboard discovery: the context
+// for the calls that reach GitHub, the context for the local lookups that
+// must not share the GitHub budget, and the instant after which the
+// repository's refused issues are no longer read back.
+type discovery struct {
+	github    context.Context
+	local     context.Context
+	allowance time.Time
+}
+
 // issueNotFound reports GitHub's conclusive answer that an issue no longer
 // exists.
 func issueNotFound(err error) bool {
@@ -98,18 +108,11 @@ const refusalReadShare = 0.5
 // localBudget is the extra time the pass's local database work may use once
 // the caller's GitHub budget is spent. The lookups are local and fast, and
 // they must not fail because the budget reserved for GitHub is gone.
-const localBudget = 10 * time.Second
+const localBudget = 5 * time.Second
 
-// refusalReadContext bounds one refused-issue read to at most half of the
-// caller's remaining discovery budget, leaving room for the rest of the pass.
-func refusalReadContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	window := refusalReadWindow
-	if deadline, ok := ctx.Deadline(); ok {
-		if half := time.Until(deadline) / 2; half < window {
-			window = half
-		}
-	}
-	return context.WithTimeout(ctx, window)
+// shareOf returns the given share of a duration.
+func shareOf(duration time.Duration, share float64) time.Duration {
+	return time.Duration(float64(duration) * share)
 }
 
 // budgetSpent reports that the caller's refresh deadline expired. The pass
@@ -146,11 +149,34 @@ func refusedReadCanceled(ctx context.Context) bool {
 	return ctx.Err() != nil && !budgetSpent(ctx)
 }
 
-// refusalAllowance returns the instant after which this pass stops re-reading
-// refused issues for one repository. The re-reads get a share of what is left
-// of the refresh budget, split among the repositories that are not discovered
-// yet, so one repository's refusals cannot spend the whole refresh.
-func (s *Scheduler) refusalAllowance(ctx context.Context, reposLeft int) time.Time {
+// refusalReadWindowFor returns the time one refused-issue read may take, and
+// whether the caller's own budget cut it short. A read the budget cut short
+// is merely slow: it is read again on the next refresh instead of being
+// remembered as the issue's failure for a whole window. The allowance bounds
+// the read, so a refresh cannot spend more on refused issues than it reserved
+// for them.
+func refusalReadWindowFor(ctx context.Context, allowance time.Time) (time.Duration, bool) {
+	window, cutShort := refusalReadWindow, false
+	if deadline, ok := ctx.Deadline(); ok {
+		if half := time.Until(deadline) / 2; half < window {
+			window, cutShort = half, true
+		}
+	}
+	if !allowance.IsZero() {
+		if left := time.Until(allowance); left < window {
+			window, cutShort = left, true
+		}
+	}
+	return window, cutShort
+}
+
+// refusalAllowance returns the instant after which a repository stops
+// re-reading refused issues. The repository may spend a share of what is left
+// of the refresh budget, split among the repositories this pass has not
+// discovered yet, and never more than the pass's own deadline for refused
+// reads. The budget is the caller's own deadline, so it is measured against
+// the wall clock rather than the scheduler's injected clock.
+func refusalAllowance(ctx context.Context, refusalDeadline time.Time, reposLeft int) time.Time {
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		return time.Time{}
@@ -162,8 +188,11 @@ func (s *Scheduler) refusalAllowance(ctx context.Context, reposLeft int) time.Ti
 	if remaining <= 0 {
 		return time.Now()
 	}
-	share := time.Duration(float64(remaining) * refusalReadShare / float64(reposLeft))
-	return time.Now().Add(share)
+	allowance := time.Now().Add(shareOf(remaining, refusalReadShare) / time.Duration(reposLeft))
+	if !refusalDeadline.IsZero() && allowance.After(refusalDeadline) {
+		return refusalDeadline
+	}
+	return allowance
 }
 
 // refusalReadAllowed reports whether a refused-issue re-read may start. The
@@ -186,10 +215,10 @@ func refusalReadAllowed(ctx context.Context, allowance time.Time) bool {
 // refusalBackoff is how long a failed refused-issue read is remembered before
 // the issue is read again. A GitHub failure backs off for the full window, so
 // an outage does not spend one call per refused issue on every refresh. A
-// read that was merely slow backs off for one refresh, so a healthy issue is
-// not hidden as a timeout for a whole window.
-func (s *Scheduler) refusalBackoff(err error) time.Duration {
-	if refusedReadTimedOut(err) {
+// read the caller's own budget cut short backs off for one refresh, so a
+// healthy issue is not hidden as a timeout for a whole window.
+func (s *Scheduler) refusalBackoff(err error, cutShort bool) time.Duration {
+	if cutShort && refusedReadTimedOut(err) {
 		return s.pollInterval()
 	}
 	return s.refusalWindow()
@@ -237,8 +266,8 @@ func localContext(ctx context.Context) (context.Context, context.CancelFunc) {
 // share is spent the pass stops reading and keeps the last readable snapshot
 // of the refusals it did not reach, so a window full of refusals cannot hide
 // the queue.
-func (s *Scheduler) withRefusedIssues(ctx context.Context, local context.Context, repo config.Repository, listed []github.Issue, allowance time.Time) ([]github.Issue, []issueReadFailure, error) {
-	rows, err := s.db.QueryContext(local, "SELECT issue_number FROM issue_refusals WHERE repository=? ORDER BY issue_number", strings.ToLower(repo.Repo))
+func (s *Scheduler) withRefusedIssues(budget discovery, repo config.Repository, listed []github.Issue) ([]github.Issue, []issueReadFailure, error) {
+	rows, err := s.db.QueryContext(budget.local, "SELECT issue_number FROM issue_refusals WHERE repository=? ORDER BY issue_number", strings.ToLower(repo.Repo))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -269,46 +298,41 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, local context.Context
 	var failed []issueReadFailure
 	for _, number := range missing {
 		key := issueKey(repo.Repo, number)
-		entry, cached := s.refusalSnapshots.get(key)
-		if cached && s.deps.Now().Before(entry.expiresAt) {
-			if entry.err != nil {
-				// The last read failed and is still remembered. Report it
-				// without spending another call.
-				failed = append(failed, issueReadFailure{number: number, err: entry.err})
-				continue
-			}
-			issues = append(issues, entry.issue)
+		entry, usable := s.cachedRefusal(key)
+		if usable {
+			// The snapshot is still usable: no read is needed.
+			issues, failed = addRefusal(issues, failed, number, entry)
 			continue
 		}
-		if !refusalReadAllowed(ctx, allowance) {
+		if refusedReadCanceled(budget.github) {
+			// Shutdown or a disconnected caller: stop the pass instead of
+			// pretending this issue's read was a scoped failure.
+			return nil, nil, budget.github.Err()
+		}
+		if !refusalReadAllowed(budget.github, budget.allowance) {
 			// The pass cannot afford another read. The last readable snapshot
-			// still describes the issue, so the queue keeps it; an issue whose
-			// last read failed keeps that failure until it is read back.
-			if !cached {
-				continue
-			}
-			if entry.err != nil {
-				failed = append(failed, issueReadFailure{number: number, err: entry.err})
-				continue
-			}
-			issues = append(issues, entry.issue)
+			// still describes the issue, so the queue keeps it, and an issue
+			// whose last read failed keeps that failure. An issue that was
+			// never read stays out of the queue until a later refresh reads
+			// it.
+			issues, failed = addRefusal(issues, failed, number, entry)
 			continue
 		}
-		issue, err := s.readRefusedIssue(ctx, repo, number)
+		issue, err := s.readRefusedIssue(budget, repo, number)
 		if issueNotFound(err) {
 			// The issue is gone: no label can be removed and nothing can be
 			// shown, so drop the row instead of re-reading it forever.
-			if err := s.forgetRefusal(local, repo.Repo, number); err != nil {
+			if err := s.forgetRefusal(budget.local, repo.Repo, number); err != nil {
 				return nil, nil, err
 			}
 			continue
 		}
 		if err != nil {
-			err = normalizeRefusedReadError(ctx, err)
-			if refusedReadCanceled(ctx) {
+			err = normalizeRefusedReadError(budget.github, err)
+			if refusedReadCanceled(budget.github) {
 				// Shutdown or a disconnected caller: stop the pass instead of
 				// pretending this issue's read was a scoped failure.
-				return nil, nil, ctx.Err()
+				return nil, nil, budget.github.Err()
 			}
 			if !githubFailure(err) {
 				return nil, nil, err
@@ -322,7 +346,7 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, local context.Context
 			// The dashboard cannot show closed issues. A settled row would be
 			// re-read on every refresh forever; a pending one stays for
 			// reconciliation to finish its label removal.
-			if err := s.forgetSettledRefusal(local, repo.Repo, number); err != nil {
+			if err := s.forgetSettledRefusal(budget.local, repo.Repo, number); err != nil {
 				return nil, nil, err
 			}
 			continue
@@ -332,23 +356,46 @@ func (s *Scheduler) withRefusedIssues(ctx context.Context, local context.Context
 	return issues, failed, nil
 }
 
+// cachedRefusal returns one refused issue's cached snapshot, and whether it
+// is still usable. A nil snapshot means the issue was never read.
+func (s *Scheduler) cachedRefusal(key string) (*refusedIssueSnapshot, bool) {
+	entry, ok := s.refusalSnapshots.get(key)
+	if !ok {
+		return nil, false
+	}
+	return &entry, s.deps.Now().Before(entry.expiresAt)
+}
+
+// addRefusal adds one refused issue to the pass: its readable snapshot, or the
+// failure remembered for it. A snapshot that was never read adds nothing.
+func addRefusal(issues []github.Issue, failed []issueReadFailure, number int, entry *refusedIssueSnapshot) ([]github.Issue, []issueReadFailure) {
+	if entry == nil {
+		return issues, failed
+	}
+	if entry.err != nil {
+		return issues, append(failed, issueReadFailure{number: number, err: entry.err})
+	}
+	return append(issues, entry.issue), failed
+}
+
 // readRefusedIssue reads one refused issue from GitHub and caches what it
 // learned. It reads GitHub only when no usable snapshot is cached. A failed
 // read keeps the last snapshot, or records the failure when there is none,
 // and backs off so a rate limit or outage does not turn every dashboard
 // refresh into another failing call.
-func (s *Scheduler) readRefusedIssue(ctx context.Context, repo config.Repository, number int) (github.Issue, error) {
+func (s *Scheduler) readRefusedIssue(budget discovery, repo config.Repository, number int) (github.Issue, error) {
 	key := issueKey(repo.Repo, number)
-	if err := s.refusalFetch.Lock(ctx); err != nil {
-		return github.Issue{}, normalizeRefusedReadError(ctx, err)
+	if err := s.refusalFetch.Lock(budget.github); err != nil {
+		return github.Issue{}, normalizeRefusedReadError(budget.github, err)
 	}
 	defer s.refusalFetch.Unlock()
 	// Another reader may have read it while we waited for the gate.
-	if entry, ok := s.refusalSnapshots.get(key); ok && s.deps.Now().Before(entry.expiresAt) {
+	if entry, usable := s.cachedRefusal(key); usable {
 		return entry.issue, entry.err
 	}
 	now := s.deps.Now()
-	readCtx, cancel := refusalReadContext(ctx)
+	window, cutShort := refusalReadWindowFor(budget.github, budget.allowance)
+	readCtx, cancel := context.WithTimeout(budget.github, window)
 	issue, err := s.deps.GitHub.GetIssue(readCtx, repo.Repo, number)
 	cancel()
 	if err != nil {
@@ -357,25 +404,25 @@ func (s *Scheduler) readRefusedIssue(ctx context.Context, repo config.Repository
 		if issueNotFound(err) {
 			return github.Issue{}, err
 		}
-		err = normalizeRefusedReadError(ctx, err)
+		err = normalizeRefusedReadError(budget.github, err)
 		if entry, ok := s.refusalSnapshots.get(key); ok && entry.err == nil {
 			// Keep the last readable snapshot. A deadline or ordinary failure
 			// backs off; a canceled caller keeps the old expiry so the next
 			// pass retries it.
-			if !refusedReadCanceled(ctx) {
-				entry.expiresAt = now.Add(s.refusalBackoff(err))
+			if !refusedReadCanceled(budget.github) {
+				entry.expiresAt = now.Add(s.refusalBackoff(err, cutShort))
 				s.refusalSnapshots.put(key, entry)
 			}
 			return entry.issue, nil
 		}
-		if refusedReadCanceled(ctx) || !githubFailure(err) {
+		if refusedReadCanceled(budget.github) || !githubFailure(err) {
 			// A canceled pass or local failure must not be remembered as the
 			// issue's state; the next refresh retries it.
 			return github.Issue{}, err
 		}
 		// No snapshot to show: remember the failure so the next refreshes back
 		// off, but keep returning it so the issue stays in needs-attention.
-		s.refusalSnapshots.put(key, refusedIssueSnapshot{expiresAt: now.Add(s.refusalBackoff(err)), err: err})
+		s.refusalSnapshots.put(key, refusedIssueSnapshot{expiresAt: now.Add(s.refusalBackoff(err, cutShort)), err: err})
 		return github.Issue{}, err
 	}
 	s.refusalSnapshots.put(key, refusedIssueSnapshot{issue: issue, expiresAt: now.Add(s.refusalWindow())})
@@ -466,6 +513,13 @@ func (s *Scheduler) QueueReport(ctx context.Context) (QueueSnapshot, error) {
 	// budget is spent, so they run on a context of their own.
 	local, stopLocal := localContext(ctx)
 	defer stopLocal()
+	// The refused reads may spend at most half of the refresh budget. The
+	// rest is reserved for the remaining listings, the blocker reads, and the
+	// assembly of the queue.
+	var refusalDeadline time.Time
+	if deadline, ok := ctx.Deadline(); ok {
+		refusalDeadline = time.Now().Add(shareOf(time.Until(deadline), refusalReadShare))
+	}
 	for index, repo := range repositories {
 		issues, err := s.listIssues(ctx, repo)
 		if err != nil {
@@ -473,9 +527,14 @@ func (s *Scheduler) QueueReport(ctx context.Context) (QueueSnapshot, error) {
 			// caller's budget is spent waiting, keep the last usable queue
 			// visible instead of turning the wait into a discovery failure.
 			var waited *listingWaitError
-			if errors.As(err, &waited) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if errors.As(err, &waited) && budgetSpent(ctx) {
 				if previous, ok := s.staleQueueSnapshot(); ok {
 					return previous, nil
+				}
+				// No earlier queue to keep: report the repository's failure
+				// and let the rest of the pass carry on.
+				if scopedFailure("reconcile.repository_failed", repo.Repo, 0, &fault.Error{Code: "github.timeout", Err: err}) {
+					continue
 				}
 			}
 			if scopedFailure("reconcile.repository_failed", repo.Repo, 0, err) {
@@ -486,8 +545,12 @@ func (s *Scheduler) QueueReport(ctx context.Context) (QueueSnapshot, error) {
 		var refused []issueReadFailure
 		// The refused re-reads get a share of what is left of the refresh
 		// budget, so the repositories that follow still fit in it.
-		allowance := s.refusalAllowance(ctx, len(repositories)-index)
-		issues, refused, err = s.withRefusedIssues(ctx, local, repo, issues, allowance)
+		budget := discovery{
+			github:    ctx,
+			local:     local,
+			allowance: refusalAllowance(ctx, refusalDeadline, len(repositories)-index),
+		}
+		issues, refused, err = s.withRefusedIssues(budget, repo, issues)
 		if err != nil {
 			if scopedFailure("reconcile.repository_failed", repo.Repo, 0, err) {
 				continue
