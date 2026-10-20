@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
@@ -302,5 +303,176 @@ func TestStopPreparingRunKeepsLeftoversThatHoldWork(t *testing.T) {
 		!strings.Contains(blocked.LastErrorMessage, "mergeyard/issue-7") ||
 		!strings.Contains(blocked.LastErrorMessage, prepared.Path) {
 		t.Fatalf("the next run did not name the blocker: %+v", blocked)
+	}
+}
+
+// unownedRunIn moves a run that claimed an issue and prepared it without
+// saving its Git ownership into the state the stop arrives in: the Prepare
+// that failed leaves NEEDS_ATTENTION, and a Retry of it leaves CLAIMING.
+func unownedRunIn(t *testing.T, rt *app.Runtime, id string, state workflow.State) workflow.Run {
+	t.Helper()
+	ctx := context.Background()
+	run := preparingRun(t, rt, id)
+	if state == workflow.Preparing {
+		return run
+	}
+	run, err := rt.Workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.OperationFailed, Failure: &fault.Error{Code: "git.prepare_failed", Message: "Could not prepare the worktree"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state == workflow.Claiming {
+		run, err = rt.Workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Retry, NextState: workflow.Claiming})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if run.State != state {
+		t.Fatalf("the run is %s, not %s", run.State, state)
+	}
+	return run
+}
+
+// TestStopReleasesLeftoversOfAnUnownedRunInAnyState proves that the release
+// does not depend on the run still preparing: a Prepare that failed leaves the
+// run in NEEDS_ATTENTION, and a Retry of it leaves the run in CLAIMING, both
+// with the earlier attempt's branch and worktree still named by its intent.
+func TestStopReleasesLeftoversOfAnUnownedRunInAnyState(t *testing.T) {
+	for _, state := range []workflow.State{workflow.NeedsAttention, workflow.Claiming} {
+		t.Run(string(state), func(t *testing.T) {
+			s, rt, api, _, _, _ := localFlow(t, successfulScript)
+			ctx := context.Background()
+			run := unownedRunIn(t, rt, "interrupted", state)
+			prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Stop(ctx, run.ID); err != nil {
+				t.Fatal(err)
+			}
+			stopped, err := rt.Workflow.Get(ctx, run.ID)
+			if err != nil || stopped.State != workflow.Stopped {
+				t.Fatalf("stop: %+v %v", stopped, err)
+			}
+			if _, err := os.Stat(prepared.Path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the leftover worktree survived the stop: %v", err)
+			}
+			base := filepath.Join(rt.Workspace.Root, "repos", "owner-repo", "base")
+			if branch := gitCommand(t, base, "branch", "--list", "mergeyard/issue-7"); branch != "" {
+				t.Fatalf("the leftover branch survived the stop: %s", branch)
+			}
+			if has(api.issues["owner/repo"][0], "agent-needs-attention") {
+				t.Fatalf("the released leftovers flagged the issue: %+v", api.issues["owner/repo"][0].Labels)
+			}
+			if _, ok := api.leftoverComments[7]; ok {
+				t.Fatalf("released leftovers were explained on the issue: %+v", api.leftoverComments)
+			}
+			// The issue is queued again, and the next run prepares it.
+			api.issues["owner/repo"][0].Labels = []github.Label{{Name: "ready-for-agent"}}
+			next := waitForRun(t, s, workflow.Active, workflow.Review)
+			if next.ID == run.ID {
+				t.Fatalf("the stopped run was resumed: %+v", next)
+			}
+			if next.LastErrorCode == "git.branch_conflict" {
+				t.Fatalf("the next run refused the released branch: %+v", next)
+			}
+		})
+	}
+}
+
+// TestStopKeepsLeftoversThatHoldWorkOfAnUnownedRunInAnyState proves that work
+// in the leftovers is preserved and named on the issue whatever the state of
+// the run that stops.
+func TestStopKeepsLeftoversThatHoldWorkOfAnUnownedRunInAnyState(t *testing.T) {
+	for _, state := range []workflow.State{workflow.NeedsAttention, workflow.Claiming} {
+		t.Run(string(state), func(t *testing.T) {
+			s, rt, api, _, _, _ := localFlow(t, successfulScript)
+			ctx := context.Background()
+			run := unownedRunIn(t, rt, "interrupted", state)
+			prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(prepared.Path, "human.txt"), []byte("work\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Stop(ctx, run.ID); err != nil {
+				t.Fatal(err)
+			}
+			if data, err := os.ReadFile(filepath.Join(prepared.Path, "human.txt")); err != nil || string(data) != "work\n" {
+				t.Fatalf("the changed worktree was discarded: %q, %v", data, err)
+			}
+			if !has(api.issues["owner/repo"][0], "agent-needs-attention") {
+				t.Fatalf("the preserved leftovers did not flag the issue: %+v", api.issues["owner/repo"][0].Labels)
+			}
+			comment, ok := api.leftoverComments[7]
+			if !ok {
+				t.Fatalf("the preserved leftovers were not named on the issue: %+v", api.leftoverComments)
+			}
+			if comment.Branch != "mergeyard/issue-7" || comment.Path != prepared.Path {
+				t.Fatalf("the explanation does not name the leftovers: %+v", comment)
+			}
+		})
+	}
+}
+
+// TestStopKeepsTheWorktreeOfASavedOwnershipInAnyState proves that a run that
+// saved its ownership keeps its branch and worktree on Stop, even after a
+// failure moved it to NEEDS_ATTENTION.
+func TestStopKeepsTheWorktreeOfASavedOwnershipInAnyState(t *testing.T) {
+	s, rt, api, _, _, _ := localFlow(t, successfulScript)
+	ctx := context.Background()
+	run := unownedRunIn(t, rt, "owned", workflow.NeedsAttention)
+	prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitJSON, err := json.Marshal(prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.DB.Exec(`INSERT INTO scheduler_runs(run_id,issue_json,git_json) VALUES(?,?,?)`, run.ID, "{}", string(gitJSON)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.DB.Exec(`UPDATE runs SET branch=?, worktree_path=? WHERE id=?`, prepared.Branch, prepared.Path, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(prepared.Path); err != nil {
+		t.Fatalf("the owned worktree was discarded: %v", err)
+	}
+	base := filepath.Join(rt.Workspace.Root, "repos", "owner-repo", "base")
+	if branch := gitCommand(t, base, "branch", "--list", "mergeyard/issue-7"); branch == "" {
+		t.Fatal("the owned branch was deleted")
+	}
+	if !has(api.issues["owner/repo"][0], "agent-needs-attention") {
+		t.Fatalf("the owned work did not flag the issue: %+v", api.issues["owner/repo"][0].Labels)
+	}
+}
+
+// TestStopWithoutAnIntentChangesNothingInAnyState proves that a run that never
+// started preparing has nothing to release: it stops without a flag or an
+// explanation.
+func TestStopWithoutAnIntentChangesNothingInAnyState(t *testing.T) {
+	for _, state := range []workflow.State{workflow.NeedsAttention, workflow.Claiming} {
+		t.Run(string(state), func(t *testing.T) {
+			s, rt, api, _, _, _ := localFlow(t, successfulScript)
+			ctx := context.Background()
+			run := unownedRunIn(t, rt, "untouched", state)
+			if err := s.Stop(ctx, run.ID); err != nil {
+				t.Fatal(err)
+			}
+			stopped, err := rt.Workflow.Get(ctx, run.ID)
+			if err != nil || stopped.State != workflow.Stopped {
+				t.Fatalf("stop: %+v %v", stopped, err)
+			}
+			if has(api.issues["owner/repo"][0], "agent-needs-attention") {
+				t.Fatalf("a run without leftovers flagged the issue: %+v", api.issues["owner/repo"][0].Labels)
+			}
+			if _, ok := api.leftoverComments[7]; ok {
+				t.Fatalf("a run without leftovers was explained: %+v", api.leftoverComments)
+			}
+		})
 	}
 }

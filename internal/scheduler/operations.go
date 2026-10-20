@@ -114,9 +114,10 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 	if _, err := s.db.ExecContext(ctx, `UPDATE phase_attempts SET status='stopped',ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE run_id=? AND status='running'`, run.ID); err != nil {
 		return err
 	}
-	// A preparing run whose ownership was never saved can still own a branch
-	// and a worktree from an interrupted creation. Release them now, so the
-	// next run for the same issue can prepare instead of refusing them.
+	// A run whose ownership was never saved can still own a branch and a
+	// worktree from an interrupted creation, whatever state it stopped in.
+	// Release them now, so the next run for the same issue can prepare instead
+	// of refusing them.
 	leftovers, err := s.releasePreparation(ctx, repo, run)
 	if err != nil {
 		return err
@@ -154,14 +155,12 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 }
 
 // releasePreparation releases the leftovers of an interrupted preparation, so
-// the next run for the same issue can prepare instead of refusing them. Only
-// a preparing run without saved ownership can own them: a run that saved its
+// the next run for the same issue can prepare instead of refusing them. Any
+// run without saved ownership can own them, because a failed Prepare or a Retry
+// moves the run on while its preparation intent stays. A run that saved its
 // ownership keeps its branch and worktree, because Stop preserves the work of
-// a run.
+// a run, and a run without an intent has nothing to release.
 func (s *Scheduler) releasePreparation(ctx context.Context, repo config.Repository, run workflow.Run) (managedgit.Leftovers, error) {
-	if run.State != workflow.Preparing {
-		return managedgit.Leftovers{}, nil
-	}
 	owned, err := s.savedOwnership(ctx, run.ID)
 	if err != nil {
 		return managedgit.Leftovers{}, err
