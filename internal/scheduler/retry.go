@@ -192,6 +192,14 @@ func (s *Scheduler) resumeRetry(ctx context.Context, repo config.Repository, run
 	if contextErr != nil {
 		return s.rejectRetry(ctx, run, v, &fault.Error{Code: "reconcile.context_missing", Message: "Run context cannot be reconciled; inspect saved artifacts", Err: contextErr})
 	}
+	// The run's Git ownership is persisted, so a preparation intent left by an
+	// interrupted confirmation has no recovery work left. Release it before
+	// the run resumes, so the stale claim does not outlive the recovery.
+	if gitRun.ID != "" {
+		if err := s.deps.Git.ConfirmOwnership(ctx, gitRun); err != nil {
+			return s.rejectRetry(ctx, run, v, err)
+		}
+	}
 	// Check every recorded process, including failed launch acknowledgements.
 	rows, err := s.db.QueryContext(ctx, "SELECT process_session,COALESCE(input_path,'') FROM phase_attempts WHERE run_id=? AND COALESCE(process_session,'')!=''", run.ID)
 	if err != nil {
@@ -518,6 +526,7 @@ func safeRetryError(cause error) string {
 		"retry.head_ambiguous":          "PR and Git observations disagree; inspect before retrying",
 		"retry.head_diverged":           "Local head differs from the published head; align preserved work before retrying",
 		"retry.worktree_dirty":          "Preserved edits must be committed and published or moved aside before review or CI waiting",
+		"git.worktree":                  "The managed worktree could not be prepared or released; fix the workspace before retrying",
 		"retry.review_unrestored":       "Review restoration is unfinished; inspect preserved work before retrying",
 		"retry.phase_ambiguous":         "Cannot identify a safe next phase; inspect preserved artifacts",
 		"github.issue_closed":           "Issue is closed; reopen it before retrying",

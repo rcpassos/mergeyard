@@ -90,8 +90,10 @@ persist the run's ownership, and an interruption in that gap must leave the
 evidence that this run owns the branch and worktree. Call `ConfirmOwnership`
 once the run record holds the ownership; it releases the intent. A cancelled
 caller keeps the intent, because the ownership it was about to save may not
-have reached the database. Preparation drops an intent it finds for a run it
-already knows.
+have reached the database. A caller that resumes a run with persisted
+ownership repeats the confirmation before the run continues, so a release that
+failed once does not leave a stale claim behind. Preparation drops an intent
+it finds for a run it already knows.
 
 The next attempt for that run recognizes the deterministic branch and path
 from the matching intent. A creation that finished is recovered without

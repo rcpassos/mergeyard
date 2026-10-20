@@ -125,7 +125,9 @@ branch/worktree and implementer session UUID are also retained on the run. The
 preparation intent outlives the worktree creation and is released once the
 run's Git ownership is saved, so an interrupted ownership save still recovers
 the run's own branch and worktree on the next attempt instead of refusing
-them. Each attempt gets an input file, a durable tmux identity, logs
+them. A resumed run repeats that release before it continues, so a release
+that failed once does not leave a stale claim behind. Each attempt gets an
+input file, a durable tmux identity, logs
 and exit metadata.
 Completed native structured output is validated and saved as `result.json` by
 the control plane. This file is an archival report, not an agent-written
