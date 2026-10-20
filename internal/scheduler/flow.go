@@ -105,6 +105,12 @@ func (s *Scheduler) advanceRun(ctx context.Context, repo config.Repository, run 
 		if err := s.saveGit(ctx, run.ID, gitRun, repo.Implementer.Agent); err != nil {
 			return s.attention(ctx, repo, run, err)
 		}
+		// The preparation intent outlives creation so an interrupted ownership
+		// save can still recover the branch and worktree. The ownership is
+		// saved now, so the intent has no recovery work left.
+		if err := s.deps.Git.ConfirmOwnership(ctx, gitRun); err != nil {
+			return s.attention(ctx, repo, run, err)
+		}
 		run, err = s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.WorktreeReady})
 		if err != nil {
 			return err

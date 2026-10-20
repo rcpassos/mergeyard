@@ -165,6 +165,12 @@ func (s *Scheduler) prepareTakeover(ctx context.Context, run workflow.Run) error
 	if err := s.deps.Git.Inspect(ctx, gitRun); err != nil {
 		return fail(err)
 	}
+	// The run's Git ownership is persisted, so a preparation intent left by an
+	// interrupted confirmation has no recovery work left. Release it before
+	// the manual control resumes the run.
+	if err := s.deps.Git.ConfirmOwnership(ctx, gitRun); err != nil {
+		return fail(err)
+	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE phase_attempts SET status='stopped',ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE run_id=? AND status='running'`, run.ID); err != nil {
 		return err
 	}

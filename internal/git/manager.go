@@ -215,7 +215,9 @@ var shaPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 // Prepare clones or refreshes the managed base and creates one isolated
 // worktree. The base is detached so concurrent runs never check out its branch.
 // The first clone, routine fetch and worktree creation each keep their own
-// deadline inside the outer preparation bound.
+// deadline inside the outer preparation bound. The preparation intent outlives
+// the call, so the caller releases it with ConfirmOwnership once the run's
+// ownership is persisted.
 func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) {
 	ctx, release, err := m.begin(ctx, m.timeouts.prepareBudget())
 	if err != nil {
@@ -311,6 +313,13 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 			break
 		}
 	}
+	if owned {
+		// Persisted ownership supersedes the preparation intent, so a leftover
+		// one is dropped instead of standing beside the run's worktree. A
+		// failed removal cannot change the outcome, because an owned run
+		// never reads the intent.
+		_ = removePrepareIntent(run)
+	}
 	_, pathErr := os.Lstat(run.Path)
 	pathExists := pathErr == nil
 	if pathErr != nil && !errors.Is(pathErr, os.ErrNotExist) {
@@ -337,6 +346,25 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 	recoveryCtx, recoveryCancel := m.worktreeDeadline(ctx)
 	if pathExists {
 		if !owned {
+			if intent.Created {
+				// The creation finished, so this run owns the worktree. It is
+				// adopted while it still holds the recorded start and nothing
+				// else; any other difference arrived after the creation and is
+				// preserved for human attention.
+				adoptable, err := preparedWorktreeAdoptable(recoveryCtx, run, intent)
+				if err != nil {
+					recoveryCancel()
+					return Run{}, err
+				}
+				recoveryCancel()
+				if adoptable {
+					// The adopted worktree still sits at the commit the intent
+					// recorded, so that commit remains the comparison point.
+					run.BaseSHA = intent.BaseSHA
+					return run, nil
+				}
+				return Run{}, failure("git.branch_conflict", run.Path, errors.New("prepared worktree holds work that this run cannot claim; preserved for inspection"))
+			}
 			// Creation stopped partway, so the tree never reached an agent.
 			if err := removeInterruptedWorktree(recoveryCtx, run, intent.BaseSHA); err != nil {
 				recoveryCancel()
@@ -367,7 +395,7 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 		localExists = false
 	}
 	recoveryCancel()
-	if err := writePrepareIntent(run); err != nil {
+	if err := writePrepareIntent(run, false); err != nil {
 		return Run{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(run.Path), 0700); err != nil {
@@ -389,9 +417,34 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 		return Run{}, err
 	}
 	worktreeCancel()
-	// A completed creation is durable once its caller persists the run, so the
-	// intent lasts only while worktree add can still be interrupted.
-	return run, removePrepareIntent(run)
+	// The creation finished, so the intent records that this run owns the
+	// branch and the worktree. The intent outlives creation: the caller still
+	// has to persist this run's ownership, and an interruption in that gap
+	// must leave the evidence that this run owns them. ConfirmOwnership
+	// releases it.
+	if err := writePrepareIntent(run, true); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+// ConfirmOwnership releases the preparation intent once the caller has
+// persisted the run's Git ownership. The intent then has no recovery work
+// left. A cancelled caller keeps it, because the ownership it was about to
+// save may not have reached the database.
+func (m *Manager) ConfirmOwnership(ctx context.Context, run Run) error {
+	ctx, release, err := m.begin(ctx, m.timeouts.Metadata)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := m.validateRun(run); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return contextFailure(ctx, "git.worktree", run.Path, err)
+	}
+	return removePrepareIntent(run)
 }
 
 // cloneBase performs the first transfer beside the managed base and renames it
@@ -458,10 +511,13 @@ func WorktreePath(root, repo, runID string) (string, error) {
 }
 
 // prepareIntent is a claim written before branch and worktree creation and
-// removed once creation succeeds. If the deadline interrupts 'worktree add',
-// the next attempt recognizes the deterministic branch and path as its own
-// leftovers. BaseSHA is the interrupted branch's start, so a branch that moved
-// past it carries work and is preserved instead of deleted.
+// released once the caller has saved the run's ownership. If the deadline
+// interrupts 'worktree add', the next attempt recognizes the deterministic
+// branch and path as its own leftovers. BaseSHA is the interrupted branch's
+// start, so a branch that moved past it carries work and is preserved instead
+// of deleted. Created records that the creation finished, which separates a
+// completed worktree, whose contents must be preserved, from an interrupted
+// one, which may be discarded and created again.
 type prepareIntent struct {
 	ID          string `json:"id"`
 	Repository  string `json:"repository"`
@@ -471,24 +527,40 @@ type prepareIntent struct {
 	Path        string `json:"path"`
 	BasePath    string `json:"base_path"`
 	BaseSHA     string `json:"base_sha"`
+	Created     bool   `json:"created"`
 }
 
 func prepareIntentPath(run Run) string {
-	return filepath.Join(filepath.Dir(run.Path), run.ID+".intent")
+	return intentPath(run.Path, run.ID)
 }
 
-func newPrepareIntent(run Run) prepareIntent {
+// PrepareIntentPath returns the file where preparation records that a run
+// created its branch and worktree. Diagnostics and tests use it to observe the
+// recovery evidence.
+func PrepareIntentPath(root, repo, runID string) (string, error) {
+	path, err := WorktreePath(root, repo, runID)
+	if err != nil {
+		return "", err
+	}
+	return intentPath(path, runID), nil
+}
+
+func intentPath(worktreePath, runID string) string {
+	return filepath.Join(filepath.Dir(worktreePath), runID+".intent")
+}
+
+func newPrepareIntent(run Run, created bool) prepareIntent {
 	return prepareIntent{
 		ID: run.ID, Repository: run.Repository, RemoteURL: run.RemoteURL,
 		IssueNumber: run.IssueNumber, Branch: run.Branch, Path: run.Path,
-		BasePath: run.BasePath, BaseSHA: run.BaseSHA,
+		BasePath: run.BasePath, BaseSHA: run.BaseSHA, Created: created,
 	}
 }
 
 // writePrepareIntent atomically replaces the intent so a crash mid-write
 // never leaves a partial claim behind.
-func writePrepareIntent(run Run) error {
-	if err := writeAtomicJSON(prepareIntentPath(run), newPrepareIntent(run)); err != nil {
+func writePrepareIntent(run Run, created bool) error {
+	if err := writeAtomicJSON(prepareIntentPath(run), newPrepareIntent(run, created)); err != nil {
 		return failure("git.worktree", run.Path, err)
 	}
 	return nil
@@ -535,11 +607,13 @@ func loadPrepareIntent(run Run) (prepareIntent, bool, error) {
 	if err := json.Unmarshal(data, &intent); err != nil {
 		return prepareIntent{}, false, failure("git.worktree", run.Path, fmt.Errorf("invalid prepare intent: %w", err))
 	}
-	want := newPrepareIntent(run)
-	// The fetched base may have advanced since the interrupted attempt, so the
-	// identity match ignores BaseSHA; the recorded start still guards cleanup.
+	want := newPrepareIntent(run, false)
+	// The fetched base may have advanced since the interrupted attempt, and
+	// the recorded creation state does not identify the run, so the identity
+	// match ignores both.
 	identity := intent
 	identity.BaseSHA, want.BaseSHA = "", ""
+	identity.Created, want.Created = false, false
 	return intent, identity == want, nil
 }
 
@@ -548,6 +622,42 @@ func removePrepareIntent(run Run) error {
 		return failure("git.worktree", run.Path, err)
 	}
 	return nil
+}
+
+// preparedWorktreeAdoptable reports whether a completed creation can be kept:
+// the checkout is on the run branch, attached to the managed base, clean, and
+// still at the commit the intent recorded. Any other state means work arrived
+// after the creation, so the worktree is preserved instead of claimed.
+func preparedWorktreeAdoptable(ctx context.Context, run Run, intent prepareIntent) (bool, error) {
+	if !shaPattern.MatchString(intent.BaseSHA) {
+		return false, nil
+	}
+	if err := verifyWorktree(ctx, run); err != nil {
+		// A checkout that is not provably this run's is never adopted.
+		return false, deadlineFailure(ctx, run.Path)
+	}
+	head, err := command(ctx, run.Path, "git.worktree", "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return false, deadlineFailure(ctx, run.Path)
+	}
+	if head != intent.BaseSHA {
+		return false, nil
+	}
+	status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return false, deadlineFailure(ctx, run.Path)
+	}
+	return status == "", nil
+}
+
+// deadlineFailure reports the deadline or cancellation that stopped a check.
+// A check that failed for any other reason means the worktree cannot be
+// adopted, not that the operation failed.
+func deadlineFailure(ctx context.Context, path string) error {
+	if ctx.Err() == nil {
+		return nil
+	}
+	return contextFailure(ctx, "git.worktree", path, ctx.Err())
 }
 
 // removeInterruptedWorktree discards a partial creation that never reached an

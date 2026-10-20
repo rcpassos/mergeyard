@@ -483,6 +483,9 @@ type rejectingGit struct {
 
 func (rejectingGit) Inspect(context.Context, managedgit.Run) error   { return nil }
 func (rejectingGit) ListWorktrees(context.Context) ([]string, error) { return nil, nil }
+func (rejectingGit) ConfirmOwnership(context.Context, managedgit.Run) error {
+	return nil
+}
 
 func (g rejectingGit) Prepare(_ context.Context, req managedgit.PrepareRequest) (managedgit.Run, error) {
 	if g.prepare != nil {
