@@ -55,6 +55,18 @@ advancing work. Successful stops are idempotent. `Watch(ctx, runID)` returns the
 live attempt of the current automated phase, rejecting missing or finished
 sessions.
 
+A preparing run whose Git ownership was never saved can still own a branch and
+a worktree from an interrupted creation, and the next run for the same issue
+has a different ID, so it cannot recover them. Stop considers that preparation
+before it stops: the leftovers are released when they are proven to hold no
+work, so the next run prepares instead of refusing them. Leftovers with commits
+or changes are kept, never deleted, and so is a checkout Git never finished
+initializing while its directory holds anything beyond the recorded start: the
+run records them, the issue is flagged for attention, and a comment names the
+branch and the worktree the user has to remove. The preparation of a run that
+already saved its ownership is never released, because that work belongs to the
+run. The leftovers are recorded in the `run.stop_leftovers` event.
+
 Repositories are visited in configuration order. Issues are ordered by creation
 time and then issue number. Only open ready issues without running/attention
 labels, unresolved native GitHub blockers, or an existing nonterminal run are

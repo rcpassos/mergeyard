@@ -28,6 +28,7 @@ type fakeGitHub struct {
 	trust            func(github.Issue) (github.TrustDecision, error)
 	trustComments    map[int]string
 	overrideComments map[int]string
+	leftoverComments map[int]leftoverComment
 	issues           map[string][]github.Issue
 	blockers         map[int][]github.Issue
 	prs              map[string]*github.PullRequest
@@ -37,6 +38,12 @@ type fakeGitHub struct {
 	listHook         func() // runs inside each label-filtered listing request
 	calls            githubCalls
 	listings         []listingRequest
+}
+
+// leftoverComment records the explanation a stopped preparation left on an
+// issue.
+type leftoverComment struct {
+	RunID, Branch, Path, Reason string
 }
 
 // listingRequest records one label-filtered listing request.
@@ -78,6 +85,18 @@ func (f *fakeGitHub) EnsureTrustRefusalComment(_ context.Context, _ string, n in
 	}
 	if _, exists := f.trustComments[n]; !exists {
 		f.trustComments[n] = reason
+	}
+	return nil
+}
+
+// EnsureStopLeftoversComment records the explanation of the leftovers a
+// stopped preparation left behind.
+func (f *fakeGitHub) EnsureStopLeftoversComment(_ context.Context, _ string, n int, runID string, leftovers github.StoppedLeftovers) error {
+	if f.leftoverComments == nil {
+		f.leftoverComments = make(map[int]leftoverComment)
+	}
+	if _, exists := f.leftoverComments[n]; !exists {
+		f.leftoverComments[n] = leftoverComment{RunID: runID, Branch: leftovers.Branch, Path: leftovers.Path, Reason: leftovers.Reason}
 	}
 	return nil
 }
@@ -485,6 +504,10 @@ func (rejectingGit) Inspect(context.Context, managedgit.Run) error   { return ni
 func (rejectingGit) ListWorktrees(context.Context) ([]string, error) { return nil, nil }
 func (rejectingGit) ConfirmOwnership(context.Context, managedgit.Run) error {
 	return nil
+}
+
+func (rejectingGit) DiscardPreparation(context.Context, managedgit.PrepareRequest) (managedgit.Leftovers, error) {
+	return managedgit.Leftovers{}, nil
 }
 
 func (g rejectingGit) Prepare(_ context.Context, req managedgit.PrepareRequest) (managedgit.Run, error) {

@@ -474,7 +474,7 @@ After the pull request is merged:
 - delete the local branch;
 - never delete the remote branch unless configured.
 
-Stopped, manual, and needs-attention runs preserve their worktrees.
+Stopped, manual, and needs-attention runs preserve their worktrees. A stopped run whose worktree setup was interrupted releases only the leftovers that hold no work: the branch still at its recorded start and a clean checkout.
 
 ---
 
@@ -1184,7 +1184,11 @@ Every transition to `NEEDS_ATTENTION` persists a nonempty `human_action` with th
 5. adds `needs-attention` unless no work was ever created;
 6. marks the run `STOPPED`.
 
-Stop never deletes code.
+Stop never deletes code. A run whose worktree setup was interrupted before an
+agent could work releases only the untouched leftovers it created: the branch
+still at its recorded start and a clean checkout. Leftovers with commits or
+changes are kept, the issue is flagged for attention, and the explanation names
+the branch and the worktree the user has to remove.
 
 ### Retry
 
@@ -2231,7 +2235,7 @@ These decisions are locked for the MVP and must not be reinterpreted without cha
 18. A harness usage limit pauses that harness until reset and requeues the interrupted phase without consuming attempts or rounds; waiting is bounded.
 19. Takeover resumes the implementer's agent session interactively in the worktree; hand back resumes automation.
 20. Unexpected Git/PR/session state moves to `NEEDS_ATTENTION` instead of being guessed or overwritten.
-21. Stopped, manual, and needs-attention worktrees are preserved.
+21. Stopped, manual, and needs-attention worktrees are preserved, except the untouched leftovers of an interrupted preparation.
 22. Mergeyard never bypasses branch protection or required checks.
 23. One Mergeyard instance per repository.
 24. The ready label is the authorization boundary for executing issue instructions with the user's permissions.
