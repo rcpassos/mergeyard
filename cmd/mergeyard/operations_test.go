@@ -371,6 +371,43 @@ func TestCLIRetrySendsProtectedRequestAndDisplaysSelection(t *testing.T) {
 	}
 }
 
+func TestCLIRequeueReturnsStoppedPublicationsToTheQueue(t *testing.T) {
+	root := t.TempDir()
+	token := "requeue-token"
+	requested := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(web.Status{Workspace: root, Token: token})
+	})
+	mux.HandleFunc("POST /api/runs/run-1/requeue", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "http://"+r.Host || r.Header.Get("X-CSRF-Token") != token {
+			http.Error(w, "unauthorized", 403)
+			return
+		}
+		requested++
+		json.NewEncoder(w).Encode(web.RequeueResult{RunID: "run-1", Requeued: 1, Publications: []scheduler.StoppedPublication{{
+			Kind: "report", Label: "review report · round 1, attempt 1", Code: "github.forbidden",
+			Warning: "Report is saved locally. PR comment publication cannot deliver this comment.",
+		}}})
+	})
+	server := runtimeServer(t, root, mux)
+	defer server.Close()
+	path := filepath.Join(root, "config.yaml")
+	port := strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("workspace: %q\nport: %s\n", root, port)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI("requeue", "run-1", "--config", path)
+	if code != 0 || requested != 1 {
+		t.Fatalf("requeue: %d %d %s", code, requested, errOut)
+	}
+	for _, want := range []string{"Run run-1: requeued 1 stopped publications.", "review report · round 1, attempt 1", "github.forbidden"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q: %s", want, out)
+		}
+	}
+}
+
 // manualSnapshot is the runtime's prepared-run answer for takeover. The CLI
 // must rebuild the resume invocation locally from it.
 func manualSnapshot(id, session string) workflow.Run {

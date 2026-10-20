@@ -455,6 +455,17 @@ entries are also recovered, including reports saved while the control plane was
 offline. Publication emits `publication.pending` and `publication.published`
 events alongside warnings.
 
+A permanent answer stops the publication for good and keeps its reason. The
+stopped report comments, attention comments and pull request bodies stay
+visible in run detail with that reason until a human asks for another attempt:
+`mergeyard requeue <run-id>`, the dashboard's requeue action, or a Retry
+request. The requeue clears the stop and the reason, restarts the backoff, and
+lets the next reconciliation deliver the frozen content again. The identity
+marker still finds a comment that already reached the pull request, so a
+requeue never duplicates it. A Retry request and the requeue it asks for
+commit in one transaction, so an interruption leaves neither a recorded
+request nor a stopped publication behind.
+
 ## Missing conversation recovery
 
 A verified missing Claude conversation or Codex rollout allows one fresh session

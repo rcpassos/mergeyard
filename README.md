@@ -108,6 +108,7 @@ permission settings.
 | `mergeyard watch <run-id>` | Attach read-only to the live tmux phase |
 | `mergeyard stop <run-id>` | Stop a run and keep its worktree, branch, and PR |
 | `mergeyard retry <run-id>` | Reconcile preserved work and explicitly continue an eligible run |
+| `mergeyard requeue <run-id>` | Retry the run's publications that stopped for good after the cause is fixed |
 | `mergeyard takeover <run-id>` | Stop automation and resume the exact implementer conversation interactively |
 | `mergeyard handback <run-id>` | Publish manual work and resume implementation or independent review |
 | `mergeyard doctor` | Check dependencies, authentication, and configuration |

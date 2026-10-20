@@ -89,7 +89,7 @@ ORDER BY COALESCE(a.last_attempt_at,''),e.seq`)
 			message := stoppedPublicationWarning("Verification evidence is saved locally. This run is finished, so PR body publication will not retry.")
 			payload := map[string]any{"source_attempt": p.source, "message": message}
 			if err := s.stopPublication(ctx, p.runID, payload, func(tx *sql.Tx) error {
-				_, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET stopped=1 WHERE run_id=? AND source_attempt=?`, p.runID, p.source)
+				_, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET stopped=1,warning=? WHERE run_id=? AND source_attempt=?`, message, p.runID, p.source)
 				return err
 			}); err != nil {
 				return err
@@ -155,7 +155,7 @@ ORDER BY COALESCE(a.last_attempt_at,''),e.seq`)
 			if !exists {
 				warning := events.Draft{RunID: p.runID, Type: "verification.warning", Payload: map[string]any{"source_attempt": p.source, "code": outcome.Code, "message": outcome.Message}}
 				if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-					if _, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET failed=?,stopped=? WHERE run_id=? AND source_attempt=?`, outcome.Failed, outcome.Stopped, p.runID, p.source); err != nil {
+					if _, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET failed=?,stopped=?,warning_code=?,warning=? WHERE run_id=? AND source_attempt=?`, outcome.Failed, outcome.Stopped, outcome.Code, outcome.Message, p.runID, p.source); err != nil {
 						return events.Draft{}, err
 					}
 					return warning, nil
@@ -165,7 +165,7 @@ ORDER BY COALESCE(a.last_attempt_at,''),e.seq`)
 			} else if outcome.Stopped {
 				payload := map[string]any{"source_attempt": p.source, "code": outcome.Code, "message": outcome.Message}
 				if err := s.stopPublication(ctx, p.runID, payload, func(tx *sql.Tx) error {
-					_, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET failed=?,stopped=1 WHERE run_id=? AND source_attempt=?`, outcome.Failed, p.runID, p.source)
+					_, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET failed=?,stopped=1,warning_code=?,warning=? WHERE run_id=? AND source_attempt=?`, outcome.Failed, outcome.Code, outcome.Message, p.runID, p.source)
 					return err
 				}); err != nil {
 					return err
@@ -177,7 +177,13 @@ ORDER BY COALESCE(a.last_attempt_at,''),e.seq`)
 			}
 			continue
 		}
-		if _, err := s.bus.Publish(ctx, events.Draft{RunID: p.runID, Type: "verification.published", Payload: map[string]any{"source_attempt": p.source, "pr_number": p.pr}}); err != nil {
+		if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+			// The delivered body keeps no reason: it has nothing left to fail.
+			if _, err := tx.ExecContext(ctx, `UPDATE verification_attempts SET failed=0,stopped=0,warning_code='',warning='' WHERE run_id=? AND source_attempt=?`, p.runID, p.source); err != nil {
+				return events.Draft{}, err
+			}
+			return events.Draft{RunID: p.runID, Type: "verification.published", Payload: map[string]any{"source_attempt": p.source, "pr_number": p.pr}}, nil
+		}); err != nil {
 			return err
 		}
 	}

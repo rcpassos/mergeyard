@@ -171,6 +171,7 @@ type runView struct {
 	ReviewPending, CanStop, CanRetry, Stopping                   bool
 	CanHandback, CanTakeover                                     bool
 	ResumeCommand, TakeoverPrerequisite                          string
+	StoppedPublications                                          []scheduler.StoppedPublication
 }
 
 type issueView struct {
@@ -288,6 +289,11 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 			return &fault.Error{Code: "internal.run_not_found", Message: "Run not found"}
 		}
 		data.Run = &runs[0]
+		// A stopped publication keeps its reason until a human requeues it.
+		data.Run.StoppedPublications, err = d.Scheduler.StoppedPublications(ctx, id)
+		if err != nil {
+			return err
+		}
 		data.Timeline, err = d.timeline(ctx, id)
 		if err != nil {
 			return err
@@ -542,6 +548,24 @@ func (s *Server) takeoverRunPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.operations.Takeover(r.Context(), r.PathValue("id")); err != nil {
+		s.operationError(w, r, err)
+		return
+	}
+	if r.Header.Get("HX-Request") == "true" {
+		r.URL.Path = "/runs/" + r.PathValue("id")
+		s.page(w, r)
+		return
+	}
+	http.Redirect(w, r, "/runs/"+r.PathValue("id"), http.StatusSeeOther)
+}
+
+// requeueRunPage returns the run's stopped publications to the queue.
+func (s *Server) requeueRunPage(w http.ResponseWriter, r *http.Request) {
+	if s.dashboard == nil {
+		s.respondError(w, r, &fault.Error{Code: "internal.run_not_found"}, "internal.run_not_found", http.StatusNotFound, "Run not found")
+		return
+	}
+	if _, err := s.operations.RequeuePublications(r.Context(), r.PathValue("id")); err != nil {
 		s.operationError(w, r, err)
 		return
 	}

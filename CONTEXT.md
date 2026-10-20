@@ -40,3 +40,7 @@ _Avoid_: Child browser, owned browser
 _Avoid_: Section, column, lane
 
 **Scoped GitHub failure**: A GitHub read or write failure attributed to one repository or run. It is reported on the dashboard and skips only its subject; local-state failures still stop dispatch everywhere.
+
+**Publication**: The delivery of a run's saved evidence to GitHub: a report comment, an attention comment, or the verification body of the pull request. A publication that fails permanently stops and keeps its reason until a human requeues it.
+
+**Requeue**: A human request to return a run's stopped publications to the delivery queue because the cause is fixed. It restarts their backoff, delivers the frozen content again, and never duplicates a comment that already reached the pull request.

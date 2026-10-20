@@ -50,6 +50,7 @@ var prdCommands = []string{
 	"handback <run-id>",
 	"stop <run-id>",
 	"retry <run-id>",
+	"requeue <run-id>",
 	"reconcile",
 	"start",
 }

@@ -729,7 +729,7 @@ func TestRunFinishingAfterTransientFailureStopsVerificationPublication(t *testin
 	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id='probe-finishes-later' AND type='verification.warning'`).Scan(&message); err != nil || !strings.Contains(message, "deferred") {
 		t.Fatalf("verification warning was rewritten: %q, %v", message, err)
 	}
-	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id='probe-finishes-later' AND type='publication.stopped'`).Scan(&message); err != nil || !strings.Contains(message, "will not retry") || !strings.Contains(message, "No further retries") {
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id='probe-finishes-later' AND type='publication.stopped'`).Scan(&message); err != nil || !strings.Contains(message, "will not retry") || !strings.Contains(message, "No further automatic retries") {
 		t.Fatalf("verification stop event = %q, %v", message, err)
 	}
 }

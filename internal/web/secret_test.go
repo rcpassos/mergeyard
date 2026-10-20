@@ -42,6 +42,9 @@ func (stubOperations) Handback(context.Context, string) (workflow.Run, error) {
 func (stubOperations) Retry(context.Context, string, ...string) (workflow.Run, error) {
 	return workflow.Run{}, nil
 }
+func (stubOperations) RequeuePublications(context.Context, string) ([]scheduler.StoppedPublication, error) {
+	return nil, nil
+}
 
 func newAPIServer(t *testing.T) (*web.Server, *httptest.Server, []byte, func() bool) {
 	t.Helper()

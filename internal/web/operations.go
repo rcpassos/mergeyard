@@ -24,6 +24,15 @@ type Operations interface {
 	Watch(context.Context, string) (runner.SessionRef, error)
 	Handback(context.Context, string) (workflow.Run, error)
 	Takeover(context.Context, string) (workflow.Run, error)
+	RequeuePublications(context.Context, string) ([]scheduler.StoppedPublication, error)
+}
+
+// RequeueResult answers a requeue request with the publications it returned
+// to the queue.
+type RequeueResult struct {
+	RunID        string                         `json:"run_id"`
+	Requeued     int                            `json:"requeued"`
+	Publications []scheduler.StoppedPublication `json:"publications,omitempty"`
 }
 
 // Status is a snapshot from the process owning the configured workspace.
@@ -106,6 +115,18 @@ func (s *Server) takeoverRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.json(w, run)
+}
+
+// requeueRun returns the run's stopped publications to the queue, so a fixed
+// cause is delivered again.
+func (s *Server) requeueRun(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	publications, err := s.operations.RequeuePublications(r.Context(), id)
+	if err != nil {
+		s.operationError(w, r, err)
+		return
+	}
+	s.json(w, RequeueResult{RunID: id, Requeued: len(publications), Publications: publications})
 }
 
 // dashboardSession mints a fresh one-time dashboard link for the CLI's open
