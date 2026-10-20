@@ -93,6 +93,7 @@ type Scheduler struct {
 	listings          listingCache                     // this poll's label-filtered issue snapshot per repository
 	refusalFetch      gate.Gate                        // serializes refused-issue reads so one runs at a time
 	refusalSnapshots  keyedCache[refusedIssueSnapshot] // last readable snapshot of each refused issue
+	refusalCursors    keyedCache[int]                  // the refusal each repository's next read starts after
 	blockers          keyedCache[blockerEntry]         // dashboard blocker reads keyed by unchanged issue snapshots
 	reportedFindings  map[string]bool                  // protected by tick; unchanged findings emit once per scheduler lifetime
 	failuresMu        sync.RWMutex                     // guards the latest scoped GitHub failures shared with the dashboard

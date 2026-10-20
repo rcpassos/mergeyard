@@ -223,6 +223,64 @@ func TestQueueBacksOffTheWholeWindowAfterAGenuineTimeout(t *testing.T) {
 	}
 }
 
+// unfairGitHub makes one refused issue of one repository block until the
+// read's deadline, so it spends that repository's whole allowance. The other
+// refused issues are read at once.
+type unfairGitHub struct {
+	*fakeGitHub
+	slowRepo  string
+	slowIssue int
+	reads     int
+}
+
+func (g *unfairGitHub) GetIssue(ctx context.Context, repo string, number int) (github.Issue, error) {
+	if repo == g.slowRepo && number == g.slowIssue {
+		<-ctx.Done()
+		g.fakeGitHub.calls.issueReads++
+		return github.Issue{}, &fault.Error{Code: "github.timeout", Message: "The GitHub request timed out; it will retry", Err: ctx.Err()}
+	}
+	g.reads++
+	return g.fakeGitHub.GetIssue(ctx, repo, number)
+}
+
+// A slow refusal must not always be read first. The refusals behind it still
+// have to be read, or they never reach the queue and a closed one is never
+// forgotten.
+func TestQueueReadsTheRefusalsBehindASlowOne(t *testing.T) {
+	repositories := []string{"owner/one", "owner/two", "owner/three", "owner/four"}
+	api := &fakeGitHub{issues: map[string][]github.Issue{}}
+	for _, repo := range repositories {
+		api.issues[repo] = []github.Issue{ready(100)}
+	}
+	unfair := &unfairGitHub{fakeGitHub: api, slowRepo: "owner/one", slowIssue: 1}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	s, runtime := configuredAt(t, unfair, "repositories:\n  - repo: owner/one\n  - repo: owner/two\n  - repo: owner/three\n  - repo: owner/four\n", rejectingGit{}, func() time.Time { return now })
+	// The first repository refuses two issues, and the lower-numbered one is
+	// the slow one.
+	for _, number := range []int{1, 2} {
+		refused := ready(number)
+		refused.Labels = nil
+		api.issues["owner/one"] = append(api.issues["owner/one"], refused)
+		if _, err := runtime.DB.Exec("INSERT INTO issue_refusals(repository,issue_number,reason,ready_label,pending) VALUES('owner/one',?,'Untrusted label actor.','ready-for-agent',0)", number); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The first repository's share of a 200ms refresh is 25ms, which the slow
+	// refusal spends on every pass.
+	for pass := 1; pass <= 4; pass++ {
+		now = now.Add(31 * time.Second)
+		refresh, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_, err := s.QueueReport(refresh)
+		cancel()
+		if err == nil || !scheduler.GitHubFailure(err) {
+			t.Fatalf("pass %d queue error = %v, want the slow refusal to stay scoped", pass, err)
+		}
+	}
+	if unfair.reads == 0 {
+		t.Fatal("the refusal behind the slow one was never read")
+	}
+}
+
 // A read that was merely slow is not remembered as the issue's failure for a
 // whole window: the next refresh reads the issue back and shows it again.
 func TestQueueRetriesASlowRefusedReadOnTheNextRefresh(t *testing.T) {

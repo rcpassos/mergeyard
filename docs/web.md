@@ -174,10 +174,12 @@ The refused reads share the refresh budget with the rest of the pass: they may
 spend at most half of it, and each repository may spend a share of what is
 left. Once that share is spent the refresh keeps the last readable snapshot of
 the refusals it did not reach and still returns every repository's queue. The
-local lookups that assemble the queue do not share the budget reserved for
-GitHub, so a spent budget costs the refresh its fresh refusals rather than its
-whole queue, and a repository the refresh could not list is reported on its own
-instead of failing the queue.
+refusals of a repository are read in turn, so a refusal that always spends the
+repository's share cannot keep the refusals behind it out of the queue for
+good. The local lookups that assemble the queue do not share the budget
+reserved for GitHub, so a spent budget costs the refresh its fresh refusals
+rather than its whole queue, and a repository the refresh could not list is
+reported on its own instead of failing the queue.
 
 A GitHub failure scoped to one
 repository or run does not hide the others: readable repositories refresh, and

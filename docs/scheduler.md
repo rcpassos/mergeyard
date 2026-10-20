@@ -283,10 +283,12 @@ what is left, split among the repositories this pass has not discovered yet.
 Once that share is spent the pass stops reading and keeps the last readable
 snapshot of the refusals it did not reach, so a window full of refusals cannot
 spend the whole refresh and leave the other repositories without a queue. The
-local lookups that assemble the queue do not share the budget reserved for
-GitHub, so a spent budget costs the refresh its fresh refusals rather than its
-whole queue, and a repository the refresh could not list is reported on its own
-instead of failing the queue.
+refusals of a repository are read in turn, so a refusal that always spends the
+repository's share cannot keep the refusals behind it out of the queue for
+good. The local lookups that assemble the queue do not share the budget
+reserved for GitHub, so a spent budget costs the refresh its fresh refusals
+rather than its whole queue, and a repository the refresh could not list is
+reported on its own instead of failing the queue.
 
 Open blockers are reused while the issue's snapshot and open-blocker count are
 unchanged, and a listing summary that reports no open blockers needs no

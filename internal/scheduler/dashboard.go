@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -265,7 +266,8 @@ func localContext(ctx context.Context) (context.Context, context.CancelFunc) {
 // A re-read spends this repository's share of the refresh budget. Once that
 // share is spent the pass stops reading and keeps the last readable snapshot
 // of the refusals it did not reach, so a window full of refusals cannot hide
-// the queue.
+// the queue. The refusals are visited in turn, so a slow one cannot always
+// precede the refusals behind it and keep them out of the queue forever.
 func (s *Scheduler) withRefusedIssues(budget discovery, repo config.Repository, listed []github.Issue) ([]github.Issue, []issueReadFailure, error) {
 	rows, err := s.db.QueryContext(budget.local, "SELECT issue_number FROM issue_refusals WHERE repository=? ORDER BY issue_number", strings.ToLower(repo.Repo))
 	if err != nil {
@@ -296,7 +298,7 @@ func (s *Scheduler) withRefusedIssues(budget discovery, repo config.Repository, 
 	}
 	issues := append([]github.Issue(nil), listed...)
 	var failed []issueReadFailure
-	for _, number := range missing {
+	for _, number := range s.refusalOrder(missing, repo.Repo) {
 		key := issueKey(repo.Repo, number)
 		entry, usable := s.cachedRefusal(key)
 		if usable {
@@ -318,6 +320,10 @@ func (s *Scheduler) withRefusedIssues(budget discovery, repo config.Repository, 
 			issues, failed = addRefusal(issues, failed, number, entry)
 			continue
 		}
+		// The refusal is read now, so the next pass starts after it. A slow
+		// refusal that spends the repository's share must not keep the
+		// refusals behind it out of the queue for good.
+		s.setRefusalCursor(repo.Repo, number)
 		issue, err := s.readRefusedIssue(budget, repo, number)
 		if issueNotFound(err) {
 			// The issue is gone: no label can be removed and nothing can be
@@ -366,6 +372,28 @@ func (s *Scheduler) cachedRefusal(key string) (*refusedIssueSnapshot, bool) {
 	return &entry, s.deps.Now().Before(entry.expiresAt)
 }
 
+// refusalOrder returns the refusals to visit, starting after the repository's
+// cursor. Every pass reads the refusals in turn, so a refusal that always
+// spends the repository's share cannot keep the refusals behind it out of the
+// queue for good.
+func (s *Scheduler) refusalOrder(missing []int, repo string) []int {
+	cursor, _ := s.refusalCursors.get(strings.ToLower(repo))
+	index := sort.SearchInts(missing, cursor+1)
+	if index == 0 {
+		return missing
+	}
+	order := make([]int, 0, len(missing))
+	order = append(order, missing[index:]...)
+	order = append(order, missing[:index]...)
+	return order
+}
+
+// setRefusalCursor records the refusal the pass last read, so the next pass
+// starts after it.
+func (s *Scheduler) setRefusalCursor(repo string, number int) {
+	s.refusalCursors.put(strings.ToLower(repo), number)
+}
+
 // addRefusal adds one refused issue to the pass: its readable snapshot, or the
 // failure remembered for it. A snapshot that was never read adds nothing.
 func addRefusal(issues []github.Issue, failed []issueReadFailure, number int, entry *refusedIssueSnapshot) ([]github.Issue, []issueReadFailure) {
@@ -399,6 +427,9 @@ func (s *Scheduler) readRefusedIssue(budget discovery, repo config.Repository, n
 	issue, err := s.deps.GitHub.GetIssue(readCtx, repo.Repo, number)
 	cancel()
 	if err != nil {
+		// The read is over, so the failure happened now: its backoff starts
+		// here rather than when the read began.
+		now = s.deps.Now()
 		// A missing issue is a conclusive answer, not a failed read: the row
 		// must be forgotten rather than kept visible from a stale snapshot.
 		if issueNotFound(err) {
