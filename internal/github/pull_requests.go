@@ -162,8 +162,7 @@ func (c *Client) CreateDraftPullRequest(ctx context.Context, repo, branch, base 
 		return nil, codedError("github.invalid_input", "cannot encode PR", err)
 	}
 	data, err := c.requestWithAttempts(ctx, input, "POST", path, false, 1)
-	var failure *Error
-	if errors.As(err, &failure) && strings.Contains(strings.ToLower(failure.Error()), "draft pull requests are not supported in this repository") && strings.Contains(failure.Error(), "(HTTP 422)") {
+	if errors.Is(err, errDraftsUnsupported) {
 		payload.Draft = false
 		input, err = json.Marshal(payload)
 		if err != nil {
