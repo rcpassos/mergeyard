@@ -101,11 +101,12 @@ failure can still resolve. Permanent answers, such as a closed or inaccessible
 PR or a 422 size or validation rejection, stop retrying and keep the warning.
 Transient failures back off from one minute up to one hour, and a finished run
 stops after a returned failure. Published bodies are capped at GitHub's 65536-byte
-limit by truncating verification evidence and then the summary; escalated
-sections are rejected before an oversized write. The same policy covers
-verification evidence, escalation sections, and report/attention comments.
-Neither failures nor retries prevent readiness. Incomplete or ambiguous PR
-ownership markers are left intact for human repair.
+limit by truncating verification evidence and then the summary; generated bodies
+reserve headroom for an escalation section, and escalation details are truncated
+with a visible note when they cannot all fit. The same policy covers verification
+evidence, escalation sections, and report/attention comments. Neither failures
+nor retries prevent readiness. Incomplete or ambiguous PR ownership markers are
+left intact for human repair.
 
 ## Agent ports and session isolation
 

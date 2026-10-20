@@ -199,7 +199,7 @@ func (c *Client) UpdatePullRequest(ctx context.Context, repo string, number int,
 	if err != nil {
 		return nil, err
 	}
-	if _, err := GeneratePullRequestBody(content); err != nil {
+	if err := validatePullRequestContent(content); err != nil {
 		return nil, err
 	}
 	data, err := c.request(ctx, nil, "GET", path, false)
@@ -251,14 +251,35 @@ type PullRequestContent struct {
 }
 
 const (
-	summaryTruncatedSuffix = "\n\n[truncated]"
-	excerptTruncatedSuffix = "\n[truncated]"
-	commandTruncatedSuffix = " [truncated]"
+	summaryTruncatedSuffix    = "\n\n[truncated]"
+	excerptTruncatedSuffix    = "\n[truncated]"
+	commandTruncatedSuffix    = " [truncated]"
+	maxPublishedCommandRunes  = 2000
+	maxEscalationReserveBytes = 4096
 )
+
+func validatePullRequestContent(content PullRequestContent) error {
+	if content.IssueNumber <= 0 || strings.TrimSpace(content.IssueTitle) == "" || strings.TrimSpace(content.Summary) == "" || strings.TrimSpace(content.RunID) == "" || strings.ContainsAny(content.RunID, "\r\n`") {
+		return codedError("github.invalid_input", "expected an issue number, title, summary, and single-line run ID", nil)
+	}
+	for _, text := range []string{content.Summary, content.RunID} {
+		for _, marker := range []string{generatedStart, generatedEnd, escalationStart, escalationEnd} {
+			if strings.Contains(text, marker) {
+				return codedError("github.invalid_input", "generated content contains reserved ownership markers", nil)
+			}
+		}
+	}
+	if content.Verification != nil {
+		if err := verification.Validate(content.Verification); err != nil {
+			return codedError("github.invalid_input", "invalid verification evidence", err)
+		}
+	}
+	return nil
+}
 
 // GeneratePullRequestBody encloses the generated text in stable ownership markers.
 func GeneratePullRequestBody(content PullRequestContent) (string, error) {
-	return generatePullRequestBody(content, MaxBodyBytes)
+	return generatePullRequestBody(content, MaxBodyBytes-maxEscalationReserveBytes)
 }
 
 // generatePullRequestBody caps one generated block at limit. Verification
@@ -268,22 +289,17 @@ func generatePullRequestBody(content PullRequestContent, limit int) (string, err
 	if limit < 1 {
 		return "", codedError("github.invalid_input", "generated PR body exceeds GitHub's size limit", nil)
 	}
-	if content.IssueNumber <= 0 || strings.TrimSpace(content.IssueTitle) == "" || strings.TrimSpace(content.Summary) == "" || strings.TrimSpace(content.RunID) == "" || strings.ContainsAny(content.RunID, "\r\n`") {
-		return "", codedError("github.invalid_input", "expected an issue number, title, summary, and single-line run ID", nil)
-	}
-	for _, text := range []string{content.Summary, content.RunID} {
-		for _, marker := range []string{generatedStart, generatedEnd, escalationStart, escalationEnd} {
-			if strings.Contains(text, marker) {
-				return "", codedError("github.invalid_input", "generated content contains reserved ownership markers", nil)
-			}
-		}
+	if err := validatePullRequestContent(content); err != nil {
+		return "", err
 	}
 	entries := content.Verification
 	if entries != nil {
-		if err := verification.Validate(entries); err != nil {
-			return "", codedError("github.invalid_input", "invalid verification evidence", err)
-		}
 		entries = verification.Capped(entries)
+		for i := range entries {
+			if runes := []rune(entries[i].Command); len(runes) > maxPublishedCommandRunes {
+				entries[i].Command = truncateRunes(entries[i].Command, commandTruncatedSuffix, maxPublishedCommandRunes)
+			}
+		}
 	}
 	summary := content.Summary
 	omitted := 0
@@ -324,18 +340,31 @@ func generatePullRequestBody(content PullRequestContent, limit int) (string, err
 			continue
 		}
 		if len(entries) > 1 {
-			// Keep failed evidence for as long as possible when dropping.
-			drop := len(entries) - 1
-			if entries[drop].Outcome == "failed" {
-				for i := len(entries) - 2; i >= 0; i-- {
-					if entries[i].Outcome != "failed" {
-						drop = i
-						break
-					}
+			// Binary-search how many entries must go, dropping non-failed
+			// evidence first, so a large report is not re-marshaled per entry.
+			order := evidenceDropOrder(entries)
+			lo, hi, best := 0, len(order), -1
+			var bestEntries []verification.Entry
+			var bestBody string
+			for lo <= hi {
+				mid := (lo + hi) / 2
+				kept, dropped := omitEvidence(entries, order[:mid])
+				candidate, err := renderPullRequestBody(content, summary, kept, dropped)
+				if err != nil {
+					return "", err
+				}
+				if len(candidate) <= limit {
+					best, bestEntries, bestBody = mid, kept, candidate
+					hi = mid - 1
+				} else {
+					lo = mid + 1
 				}
 			}
-			entries = append(entries[:drop:drop], entries[drop+1:]...)
-			omitted++
+			if best >= 0 {
+				entries, omitted, body = bestEntries, best, bestBody
+				continue
+			}
+			entries, omitted = omitEvidence(entries, order)
 			if body, err = renderPullRequestBody(content, summary, entries, omitted); err != nil {
 				return "", err
 			}
@@ -377,6 +406,38 @@ func generatePullRequestBody(content PullRequestContent, limit int) (string, err
 		return "", codedError("github.invalid_input", "generated PR body exceeds GitHub's size limit", nil)
 	}
 	return body, nil
+}
+
+func evidenceDropOrder(entries []verification.Entry) []int {
+	order := make([]int, 0, len(entries)-1)
+	for i := len(entries) - 1; i >= 0 && len(order) < len(entries)-1; i-- {
+		if entries[i].Outcome != "failed" {
+			order = append(order, i)
+		}
+	}
+	for i := len(entries) - 1; i >= 0 && len(order) < len(entries)-1; i-- {
+		if entries[i].Outcome == "failed" {
+			order = append(order, i)
+		}
+	}
+	return order
+}
+
+func omitEvidence(entries []verification.Entry, drop []int) ([]verification.Entry, int) {
+	if len(drop) == 0 {
+		return entries, 0
+	}
+	dropped := make(map[int]struct{}, len(drop))
+	for _, index := range drop {
+		dropped[index] = struct{}{}
+	}
+	kept := make([]verification.Entry, 0, len(entries)-len(drop))
+	for i, entry := range entries {
+		if _, ok := dropped[i]; !ok {
+			kept = append(kept, entry)
+		}
+	}
+	return kept, len(drop)
 }
 
 func truncateRunes(text, suffix string, limit int) string {
@@ -459,25 +520,56 @@ func roleSettingLiteral(value, fallback string) string {
 // receives only the space the preserved body leaves, so the final result stays
 // within GitHub's limit.
 func UpdatePullRequestBody(body string, content PullRequestContent) (string, error) {
-	budget := MaxBodyBytes
-	for {
-		generated, err := generatePullRequestBody(content, budget)
-		if err != nil {
-			return "", err
-		}
-		updated, err := splicePullRequestBody(body, generated)
-		if err != nil {
-			return "", err
-		}
-		if len(updated) <= MaxBodyBytes {
-			return updated, nil
-		}
-		overflow := len(updated) - MaxBodyBytes
-		if budget <= overflow {
-			return "", codedError("github.invalid_input", "PR body exceeds GitHub's size limit", nil)
-		}
-		budget -= overflow
+	budget, err := pullRequestBodyBudget(body)
+	if err != nil {
+		return "", err
 	}
+	generated, err := generatePullRequestBody(content, budget)
+	if err != nil {
+		return "", err
+	}
+	updated, err := splicePullRequestBody(body, generated)
+	if err != nil {
+		return "", err
+	}
+	if len(updated) > MaxBodyBytes {
+		return "", codedError("github.invalid_input", "PR body exceeds GitHub's size limit", nil)
+	}
+	return updated, nil
+}
+
+// pullRequestBodyBudget returns the space available to one generated block
+// after preserved user text and escalation content, including headroom for a
+// future escalation section.
+func pullRequestBodyBudget(body string) (int, error) {
+	start, end := strings.Index(body, generatedStart), strings.Index(body, generatedEnd)
+	if start < 0 && end < 0 {
+		separator := 0
+		if body != "" {
+			separator = 2
+		}
+		return MaxBodyBytes - len(body) - separator - maxEscalationReserveBytes, nil
+	}
+	if start < 0 || end < start || strings.Count(body, generatedStart) != 1 || strings.Count(body, generatedEnd) != 1 {
+		return 0, codedError("pr.invalid_generated_section", "PR body has incomplete or ambiguous ownership markers", nil)
+	}
+	preserved := start + len(body) - (end + len(generatedEnd))
+	reserve := maxEscalationReserveBytes
+	flagStart, flagEnd := strings.Index(body, escalationStart), strings.Index(body, escalationEnd)
+	if flagStart >= 0 || flagEnd >= 0 {
+		if flagStart < 0 || flagEnd < flagStart || strings.Count(body, escalationStart) != 1 || strings.Count(body, escalationEnd) != 1 {
+			return 0, codedError("pr.invalid_generated_section", "PR body has ambiguous escalation ownership markers", nil)
+		}
+		flagEnd += len(escalationEnd)
+		if flagStart >= start+len(generatedStart) && flagEnd <= end {
+			if existing := flagEnd - flagStart + 1; existing > reserve {
+				reserve = existing
+			}
+		} else if flagStart < end+len(generatedEnd) && flagEnd > start {
+			return 0, codedError("pr.invalid_generated_section", "PR body has overlapping ownership markers", nil)
+		}
+	}
+	return MaxBodyBytes - preserved - reserve, nil
 }
 
 func splicePullRequestBody(body, generated string) (string, error) {

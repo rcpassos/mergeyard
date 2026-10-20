@@ -8,8 +8,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/verification"
 )
@@ -535,7 +537,7 @@ func TestUpdatePullRequestBodyFitsGeneratedContentIntoRemainingBudget(t *testing
 }
 
 func TestGeneratePullRequestBodyMarksOmittedEvidence(t *testing.T) {
-	entries := make([]verification.Entry, 20)
+	entries := make([]verification.Entry, 200)
 	for i := range entries {
 		entries[i] = verification.Entry{Command: strings.Repeat("cmd ", 5000), Outcome: "passed", Excerpt: nil}
 	}
@@ -562,5 +564,53 @@ func TestGeneratePullRequestBodyMarksOmittedEvidence(t *testing.T) {
 	}
 	if len(body) > github.MaxBodyBytes || strings.Contains(body, "no verification reported") || !strings.Contains(body, "go test failed") {
 		t.Fatalf("single entry lost under summary pressure: %d bytes", len(body))
+	}
+}
+
+func TestGeneratePullRequestBodyBulkOmitsManyEntries(t *testing.T) {
+	entries := make([]verification.Entry, 20000)
+	for i := range entries {
+		entries[i] = verification.Entry{Command: "go test", Outcome: "passed", Excerpt: nil}
+	}
+	started := time.Now()
+	body, err := github.GeneratePullRequestBody(github.PullRequestContent{
+		IssueNumber: 12, IssueTitle: "Size", Summary: "Implemented", RunID: "run-1", Verification: entries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("bulk truncation took %s", elapsed)
+	}
+	if len(body) > github.MaxBodyBytes || !strings.Contains(body, "verification entries omitted") {
+		t.Fatalf("many entries were not omitted in bulk: %d bytes", len(body))
+	}
+}
+
+func TestEscalationFitsAfterNearLimitVerification(t *testing.T) {
+	entries := make([]verification.Entry, 2000)
+	for i := range entries {
+		entries[i] = verification.Entry{Command: strings.Repeat("cmd ", 500), Outcome: "passed", Excerpt: nil}
+	}
+	body, err := github.GeneratePullRequestBody(github.PullRequestContent{
+		IssueNumber: 12, IssueTitle: "Size", Summary: "Implemented", RunID: "run-1", Verification: entries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := make([]escalation.Flag, 100)
+	for i := range reasons {
+		reasons[i] = escalation.Flag{Reason: "dependency manifests", Files: []string{"package.json", "go.mod"}}
+	}
+	updated, err := github.UpdateEscalationBody(body, escalation.Snapshot{HeadSHA: "approved", Reasons: reasons})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) > github.MaxBodyBytes || !strings.Contains(updated, "Needs careful review") {
+		t.Fatalf("escalation did not fit: %d bytes", len(updated))
+	}
+	t.Logf("generated body %d, escalated body %d", len(body), len(updated))
+	if !strings.Contains(updated, "Additional escalation details omitted") {
+		t.Fatal("truncated escalation details were not marked")
 	}
 }
