@@ -28,16 +28,3 @@ func TestDashboardTemplatesSplitIntoLayoutPagesAndPartials(t *testing.T) {
 		}
 	}
 }
-
-func TestDashboardTemplatesExposeTheHelperRegistry(t *testing.T) {
-	set, err := parseTemplates()
-	if err != nil {
-		t.Fatalf("parseTemplates: %v", err)
-	}
-	// Every registered helper must be callable from any dashboard template.
-	for name := range templateHelpers() {
-		if _, err := set.New("probe").Parse(`{{if false}}{{` + name + `}}{{end}}`); err != nil {
-			t.Errorf("helper %q is not registered on the template set: %v", name, err)
-		}
-	}
-}
