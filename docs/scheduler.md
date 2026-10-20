@@ -55,8 +55,10 @@ advancing work. Successful stops are idempotent. `Watch(ctx, runID)` returns the
 live attempt of the current automated phase, rejecting missing or finished
 sessions.
 
-A preparing run whose Git ownership was never saved can still own a branch and
-a worktree from an interrupted creation, and the next run for the same issue
+A run whose Git ownership was never saved can still own a branch and a worktree
+from an interrupted creation, whatever state it stopped in (a failed Prepare
+leaves NEEDS_ATTENTION and a Retry leaves CLAIMING, both with the preparation
+intent in place), and the next run for the same issue
 has a different ID, so it cannot recover them. Stop considers that preparation
 before it stops: the leftovers are released when they are proven to hold no
 work, so the next run prepares instead of refusing them. Leftovers with commits

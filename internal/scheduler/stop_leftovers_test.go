@@ -306,16 +306,13 @@ func TestStopPreparingRunKeepsLeftoversThatHoldWork(t *testing.T) {
 	}
 }
 
-// unownedRunIn moves a run that claimed an issue and prepared it without
-// saving its Git ownership into the state the stop arrives in: the Prepare
-// that failed leaves NEEDS_ATTENTION, and a Retry of it leaves CLAIMING.
-func unownedRunIn(t *testing.T, rt *app.Runtime, id string, state workflow.State) workflow.Run {
+// runAfterFailedPrepare moves a run that started preparing into the state a
+// stop finds it in after the Prepare failed: NEEDS_ATTENTION, or CLAIMING once
+// a Retry moved it on. It saves no Git ownership.
+func runAfterFailedPrepare(t *testing.T, rt *app.Runtime, id string, state workflow.State) workflow.Run {
 	t.Helper()
 	ctx := context.Background()
 	run := preparingRun(t, rt, id)
-	if state == workflow.Preparing {
-		return run
-	}
 	run, err := rt.Workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.OperationFailed, Failure: &fault.Error{Code: "git.prepare_failed", Message: "Could not prepare the worktree"}})
 	if err != nil {
 		t.Fatal(err)
@@ -341,7 +338,7 @@ func TestStopReleasesLeftoversOfAnUnownedRunInAnyState(t *testing.T) {
 		t.Run(string(state), func(t *testing.T) {
 			s, rt, api, _, _, _ := localFlow(t, successfulScript)
 			ctx := context.Background()
-			run := unownedRunIn(t, rt, "interrupted", state)
+			run := runAfterFailedPrepare(t, rt, "interrupted", state)
 			prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
 			if err != nil {
 				t.Fatal(err)
@@ -387,7 +384,7 @@ func TestStopKeepsLeftoversThatHoldWorkOfAnUnownedRunInAnyState(t *testing.T) {
 		t.Run(string(state), func(t *testing.T) {
 			s, rt, api, _, _, _ := localFlow(t, successfulScript)
 			ctx := context.Background()
-			run := unownedRunIn(t, rt, "interrupted", state)
+			run := runAfterFailedPrepare(t, rt, "interrupted", state)
 			prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
 			if err != nil {
 				t.Fatal(err)
@@ -416,12 +413,21 @@ func TestStopKeepsLeftoversThatHoldWorkOfAnUnownedRunInAnyState(t *testing.T) {
 }
 
 // TestStopKeepsTheWorktreeOfASavedOwnershipInAnyState proves that a run that
-// saved its ownership keeps its branch and worktree on Stop, even after a
-// failure moved it to NEEDS_ATTENTION.
+// saved its ownership keeps its branch and worktree on Stop, whatever state a
+// failure or a Retry moved it to.
 func TestStopKeepsTheWorktreeOfASavedOwnershipInAnyState(t *testing.T) {
+	for _, state := range []workflow.State{workflow.NeedsAttention, workflow.Claiming} {
+		t.Run(string(state), func(t *testing.T) {
+			stopSavedOwnership(t, state)
+		})
+	}
+}
+
+func stopSavedOwnership(t *testing.T, state workflow.State) {
+	t.Helper()
 	s, rt, api, _, _, _ := localFlow(t, successfulScript)
 	ctx := context.Background()
-	run := unownedRunIn(t, rt, "owned", workflow.NeedsAttention)
+	run := runAfterFailedPrepare(t, rt, "owned", state)
 	prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
 	if err != nil {
 		t.Fatal(err)
@@ -451,15 +457,15 @@ func TestStopKeepsTheWorktreeOfASavedOwnershipInAnyState(t *testing.T) {
 	}
 }
 
-// TestStopWithoutAnIntentChangesNothingInAnyState proves that a run that never
-// started preparing has nothing to release: it stops without a flag or an
+// TestStopWithoutAnIntentChangesNothingInAnyState proves that a run whose
+// preparation never created a branch or worktree has nothing to release: it stops without a flag or an
 // explanation.
 func TestStopWithoutAnIntentChangesNothingInAnyState(t *testing.T) {
 	for _, state := range []workflow.State{workflow.NeedsAttention, workflow.Claiming} {
 		t.Run(string(state), func(t *testing.T) {
 			s, rt, api, _, _, _ := localFlow(t, successfulScript)
 			ctx := context.Background()
-			run := unownedRunIn(t, rt, "untouched", state)
+			run := runAfterFailedPrepare(t, rt, "untouched", state)
 			if err := s.Stop(ctx, run.ID); err != nil {
 				t.Fatal(err)
 			}
