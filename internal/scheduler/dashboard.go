@@ -169,8 +169,9 @@ func refusalReadWindowFor(ctx context.Context, allowance time.Time) time.Duratio
 	return window
 }
 
-// budgetCutShort reports that the caller's budget ended a read before the full
-// refusalReadWindow: the read's deadline, set shorter than that window, expired
+// budgetCutShort reports that the caller's budget, or the repository's share of
+// it, ended a read before the full refusalReadWindow: the read's deadline, set
+// shorter than that window, expired
 // while the read was still waiting for GitHub. A timeout GitHub reported before
 // the deadline is GitHub's own failure, however small the repository's share of
 // the budget was.
@@ -432,7 +433,8 @@ func (s *Scheduler) readRefusedIssue(budget discovery, repo config.Repository, n
 	window := refusalReadWindowFor(budget.github, budget.allowance)
 	readCtx, cancel := context.WithTimeout(budget.github, window)
 	issue, err := s.deps.GitHub.GetIssue(readCtx, repo.Repo, number)
-	cutShort := budgetCutShort(readCtx, window)
+	// The deadline's verdict must be read before cancel() overwrites it.
+	cutShort := err != nil && budgetCutShort(readCtx, window)
 	cancel()
 	if err != nil {
 		// The read is over, so the failure happened now: its backoff starts
