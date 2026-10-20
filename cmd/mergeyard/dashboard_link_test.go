@@ -1,12 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/rcpassos/mergeyard/internal/web"
 )
@@ -81,6 +87,242 @@ func TestCleanupDashboardHandoffsRemovesOnlyExpiredPages(t *testing.T) {
 	}
 }
 
+// waitForFile waits until the detached launcher wrote path with at least the
+// expected number of lines and returns its contents. The launcher is not
+// waited for, so its side effect lands after the command returned.
+func waitForFile(t *testing.T, path string, lines int) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil && strings.Count(string(data), "\n") >= lines {
+			return string(data)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s was not written: %q %v", path, data, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// browserProcesses waits for the launchers to record their processes and
+// returns them.
+func browserProcesses(t *testing.T, path string) []int {
+	t.Helper()
+	data := waitForFile(t, path, 1)
+	var pids []int
+	for _, field := range strings.Fields(data) {
+		pid, err := strconv.Atoi(field)
+		if err != nil {
+			t.Fatalf("launcher recorded no process id: %q", field)
+		}
+		pids = append(pids, pid)
+	}
+	return pids
+}
+
+// assertDetachedProcess fails when pid shares the session or the process
+// group of the test process, which is how Mergeyard launches the browser.
+func assertDetachedProcess(t *testing.T, pid int) {
+	t.Helper()
+	sid, err := unix.Getsid(pid)
+	if err != nil {
+		t.Fatalf("read the browser session: %v", err)
+	}
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		t.Fatalf("read the browser process group: %v", err)
+	}
+	ownSid, err := unix.Getsid(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownPgid, err := syscall.Getpgid(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid == ownSid || pgid == ownPgid {
+		t.Fatalf("the browser stayed with Mergeyard: session %d, process group %d", sid, pgid)
+	}
+	if sid != pid || pgid != pid {
+		t.Fatalf("the browser did not lead its own session and process group: session %d, process group %d, process %d", sid, pgid, pid)
+	}
+}
+
+// assertProcessAlive fails when the process is gone.
+func assertProcessAlive(t *testing.T, pid int) {
+	t.Helper()
+	if err := syscall.Kill(pid, syscall.Signal(0)); err != nil {
+		t.Fatalf("process %d is gone: %v", pid, err)
+	}
+}
+
+// writeBlockingTool writes a launcher that records its process and then
+// sleeps, the way a browser stays open.
+func writeBlockingTool(t *testing.T, dir, name, pidFile string) {
+	t.Helper()
+	writeTool(t, dir, name, "#!/bin/sh\nprintf '%s\\n' \"$$\" > '"+pidFile+"'\nexec /bin/sleep 60\n")
+}
+
+// useDesktopEntry points the default web browser at a desktop entry in an
+// owner-only data home and returns the entry's path. The entry runs command
+// when it holds a command.
+func useDesktopEntry(t *testing.T, tools, command string) string {
+	t.Helper()
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_DATA_DIRS", "")
+	desktop := filepath.Join(dataHome, "applications", "browser.desktop")
+	if err := os.MkdirAll(filepath.Dir(desktop), 0700); err != nil {
+		t.Fatal(err)
+	}
+	entry := "[Desktop Entry]\n"
+	if command != "" {
+		entry += "Exec=" + command + " %u\n"
+	}
+	if err := os.WriteFile(desktop, []byte(entry), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeTool(t, tools, "xdg-settings", "#!/bin/sh\necho browser.desktop\n")
+	return desktop
+}
+
+func TestOpenBrowserReturnsRightAwayWithEveryLauncher(t *testing.T) {
+	cases := []struct {
+		name string
+		// launchers are the fake launchers present in PATH.
+		launchers []string
+		// resolved makes the default web browser resolve to a desktop entry.
+		resolved bool
+	}{
+		{name: "gio", launchers: []string{"gio"}, resolved: true},
+		{name: "gtk-launch", launchers: []string{"gtk-launch"}, resolved: true},
+		{name: "desktop entry", resolved: true},
+		{name: "sensible-browser", launchers: []string{"sensible-browser"}},
+		{name: "x-www-browser", launchers: []string{"x-www-browser"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			useBrowserPlatform(t, "linux")
+			t.Setenv("HOME", t.TempDir())
+			tools := t.TempDir()
+			pidFile := filepath.Join(tools, "browser.pid")
+			// The browser stays open, so Mergeyard must not wait for it.
+			writeBlockingTool(t, tools, "browser", pidFile)
+			for _, name := range tc.launchers {
+				writeBlockingTool(t, tools, name, pidFile)
+			}
+			if tc.resolved {
+				useDesktopEntry(t, tools, filepath.Join(tools, "browser"))
+			} else {
+				t.Setenv("XDG_DATA_HOME", t.TempDir())
+				t.Setenv("XDG_DATA_DIRS", "")
+			}
+			t.Setenv("PATH", tools)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			started := time.Now()
+			if err := openBrowser(ctx, t.TempDir(), "http://127.0.0.1:7331/?token=one-time", io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			if elapsed := time.Since(started); elapsed > 10*time.Second {
+				t.Fatalf("openBrowser waited for the browser: %v", elapsed)
+			}
+			pid := browserProcesses(t, pidFile)[0]
+			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			assertProcessAlive(t, pid)
+			assertDetachedProcess(t, pid)
+			// The interrupt that stops Mergeyard never reaches the browser.
+			cancel()
+			assertProcessAlive(t, pid)
+		})
+	}
+}
+
+func TestOpenBrowserReportsALauncherThatCannotStartAndTriesTheNext(t *testing.T) {
+	cases := []struct {
+		name string
+		// broken is the launcher in PATH that cannot start.
+		broken string
+		// brokenDesktop makes the desktop entry's own command the launcher
+		// that cannot start.
+		brokenDesktop bool
+		// working is the launcher that takes over.
+		working string
+		// resolved makes the default web browser resolve to a desktop entry.
+		resolved bool
+	}{
+		{name: "gio", broken: "gio", working: "gtk-launch", resolved: true},
+		{name: "desktop entry", brokenDesktop: true, working: "sensible-browser", resolved: true},
+		{name: "sensible-browser", broken: "sensible-browser", working: "x-www-browser"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			useBrowserPlatform(t, "linux")
+			t.Setenv("HOME", t.TempDir())
+			tools := t.TempDir()
+			launched := filepath.Join(tools, "launched")
+			marker := tc.broken
+			// The launcher cannot start because it is not executable.
+			if tc.broken != "" {
+				if err := os.WriteFile(filepath.Join(tools, tc.broken), []byte("#!/bin/sh\nexit 0\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeTool(t, tools, tc.working, "#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+launched+"'\n")
+			if tc.resolved {
+				command := ""
+				if tc.brokenDesktop {
+					command = filepath.Join(tools, "browser")
+					marker = command
+					if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				useDesktopEntry(t, tools, command)
+			} else {
+				t.Setenv("XDG_DATA_HOME", t.TempDir())
+				t.Setenv("XDG_DATA_DIRS", "")
+			}
+			t.Setenv("PATH", tools)
+			var reported bytes.Buffer
+
+			if err := openBrowser(context.Background(), t.TempDir(), "http://127.0.0.1:7331/?token=one-time", &reported); err != nil {
+				t.Fatal(err)
+			}
+
+			waitForFile(t, launched, 1)
+			if !strings.Contains(reported.String(), marker) {
+				t.Fatalf("the launcher that could not start was not reported: %q", reported.String())
+			}
+		})
+	}
+}
+
+func TestOpenBrowserReportsEveryLauncherThatCouldNotStart(t *testing.T) {
+	useBrowserPlatform(t, "linux")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tools := t.TempDir()
+	t.Setenv("PATH", tools)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_DIRS", t.TempDir())
+
+	err := openBrowser(context.Background(), t.TempDir(), "http://127.0.0.1:7331/?token=one-time", io.Discard)
+	if err == nil {
+		t.Fatal("openBrowser accepted a browser that could not be started")
+	}
+	for _, name := range []string{"sensible-browser", "x-www-browser"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("the missing launcher %s was not reported: %v", name, err)
+		}
+	}
+	if !strings.Contains(err.Error(), "HTTP browser launcher") {
+		t.Fatalf("missing browser guidance: %v", err)
+	}
+}
+
 func TestOpenBrowserUsesDefaultWebBrowserAndSnapAccessiblePage(t *testing.T) {
 	useBrowserPlatform(t, "linux")
 	home := t.TempDir()
@@ -103,18 +345,15 @@ func TestOpenBrowserUsesDefaultWebBrowserAndSnapAccessiblePage(t *testing.T) {
 	}
 	address := "http://127.0.0.1:7331/?token=one-time"
 
-	if err := openBrowser(context.Background(), t.TempDir(), address); err != nil {
+	if err := openBrowser(context.Background(), t.TempDir(), address, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 
-	args, err := os.ReadFile(launched)
-	if err != nil {
-		t.Fatalf("default browser was not launched: %v", err)
-	}
-	if strings.Contains(string(args), "one-time") || strings.Contains(string(args), "token=") {
+	args := waitForFile(t, launched, 3)
+	if strings.Contains(args, "one-time") || strings.Contains(args, "token=") {
 		t.Fatalf("launcher received the dashboard token: %q", args)
 	}
-	fields := strings.Split(strings.TrimSpace(string(args)), "\n")
+	fields := strings.Split(strings.TrimSpace(args), "\n")
 	if len(fields) != 3 || fields[0] != "launch" || fields[1] != desktop {
 		t.Fatalf("launcher did not select the default web browser: %q", args)
 	}
@@ -160,18 +399,15 @@ func TestOpenBrowserFallbackLaunchesTheResolvedBrowserCommand(t *testing.T) {
 	}
 	address := "http://127.0.0.1:7331/?token=one-time"
 
-	if err := openBrowser(context.Background(), t.TempDir(), address); err != nil {
+	if err := openBrowser(context.Background(), t.TempDir(), address, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 
-	args, err := os.ReadFile(launched)
-	if err != nil {
-		t.Fatalf("resolved browser was not launched: %v", err)
-	}
-	if strings.Contains(string(args), "one-time") || strings.Contains(string(args), "token=") {
+	args := waitForFile(t, launched, 1)
+	if strings.Contains(args, "one-time") || strings.Contains(args, "token=") {
 		t.Fatalf("browser command received the dashboard token: %q", args)
 	}
-	if !strings.Contains(string(args), "file://") || !strings.Contains(string(args), dashboardHandoffFile) {
+	if !strings.Contains(args, "file://") || !strings.Contains(args, dashboardHandoffFile) {
 		t.Fatalf("browser command did not receive the handoff page: %q", args)
 	}
 	links, err := filepath.Glob(filepath.Join(home, linuxDashboardLinksDirName, dashboardHandoffPrefix+"*", dashboardHandoffFile))
@@ -201,7 +437,7 @@ func TestOpenBrowserReportsMissingBrowserWithoutUsingTheHTMLHandler(t *testing.T
 	t.Setenv("XDG_DATA_HOME", emptyData)
 	t.Setenv("XDG_DATA_DIRS", emptyData)
 
-	if err := openBrowser(context.Background(), t.TempDir(), "http://127.0.0.1:7331/?token=one-time"); err == nil {
+	if err := openBrowser(context.Background(), t.TempDir(), "http://127.0.0.1:7331/?token=one-time", io.Discard); err == nil {
 		t.Fatal("openBrowser accepted a browser that could not be selected")
 	} else if !strings.Contains(err.Error(), "HTTP browser launcher") {
 		t.Fatalf("missing browser guidance: %v", err)
@@ -219,7 +455,7 @@ func TestOpenMacBrowserKeepsTokenOffTheCommandLine(t *testing.T) {
 	t.Setenv("PATH", tools)
 	address := "http://127.0.0.1:7331/?token=one-time"
 
-	if err := openBrowser(context.Background(), t.TempDir(), address); err != nil {
+	if err := openBrowser(context.Background(), t.TempDir(), address, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 

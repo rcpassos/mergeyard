@@ -249,7 +249,7 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 		}
 	}
 	// Keep the browser launcher blocked throughout startup and control requests.
-	// SIGINT/SIGTERM must also terminate and reap it during runtime shutdown.
+	// The launcher is detached, so the runtime shutdown must leave it running.
 	// The platform launcher records its arguments; the macOS AppleScript path
 	// also records stdin because the tokenized URL travels there.
 	browserStarted := filepath.Join(home, "browser-started")
@@ -440,6 +440,14 @@ func TestStartProcessesLockAndShutdown(t *testing.T) {
 	}
 	if err := first.Wait(); err != nil {
 		t.Fatalf("SIGTERM shutdown: %v", err)
+	}
+	if runtime.GOOS == "linux" {
+		// The browser the runtime launched is detached: shutting the runtime
+		// down must not terminate it.
+		for _, pid := range browserProcesses(t, browserStarted) {
+			assertProcessAlive(t, pid)
+			assertDetachedProcess(t, pid)
+		}
 	}
 	// No arguments also dispatches start; the persistent lock file is reusable
 	// and the restarted runtime rotates the secret it shares with the CLI.

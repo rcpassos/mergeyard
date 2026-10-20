@@ -683,10 +683,9 @@ func TestCLIOpenFollowsTheOneTimeDashboardLink(t *testing.T) {
 	if code != 0 || !opened || !strings.Contains(out, "http://127.0.0.1:7331/?token=one-time") {
 		t.Fatalf("open: %d %t %q %s", code, opened, out, errOut)
 	}
-	data, err := os.ReadFile(launched)
-	args := strings.TrimSpace(string(data))
-	if err != nil || strings.Contains(args, "one-time") || strings.Contains(args, "token=") {
-		t.Fatalf("launcher received the link or its token: %q %v", data, err)
+	args := strings.TrimSpace(waitForFile(t, launched, 3))
+	if strings.Contains(args, "one-time") || strings.Contains(args, "token=") {
+		t.Fatalf("launcher received the link or its token: %q", args)
 	}
 	fields := strings.Split(args, "\n")
 	if len(fields) != 3 || fields[0] != "launch" || fields[1] != desktop {

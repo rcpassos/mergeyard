@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rcpassos/mergeyard/internal/web"
@@ -20,6 +23,8 @@ const (
 	linuxDashboardLinksDirName = "mergeyard-dashboard-handoff"
 	dashboardHandoffPrefix     = "handoff-"
 	dashboardHandoffFile       = "dashboard.html"
+	// missingBrowserLauncher is reported when no launcher could start.
+	missingBrowserLauncher = "could not find an HTTP browser launcher; install gio or open the printed dashboard link"
 )
 
 // browserPlatform is runtime.GOOS. Tests set it to exercise each launcher
@@ -30,8 +35,9 @@ var browserPlatform = runtime.GOOS
 // without exposing its token in a process command line. On macOS, AppleScript
 // asks LaunchServices for the default HTTP browser and receives the URL over
 // stdin. Elsewhere, the URL goes into an owner-only handoff page and only that
-// path reaches the explicitly selected browser.
-func openBrowser(ctx context.Context, root, address string) error {
+// path reaches the explicitly selected browser; the launchers that could not
+// start are reported to stderr.
+func openBrowser(ctx context.Context, root, address string, stderr io.Writer) error {
 	if browserPlatform == "darwin" {
 		return openMacBrowser(ctx, address)
 	}
@@ -40,7 +46,7 @@ func openBrowser(ctx context.Context, root, address string) error {
 	if err != nil {
 		return err
 	}
-	return launchHandoffPage(ctx, page)
+	return launchHandoffPage(ctx, page, stderr)
 }
 
 // openMacBrowser uses the HTTP handler rather than the HTML file association.
@@ -65,28 +71,59 @@ func appleScriptString(value string) string {
 // gtk-launch is installed, the browser command is read from the selected
 // desktop entry. The page is never handed to xdg-open, which would use the
 // HTML association.
-func launchHandoffPage(ctx context.Context, page string) error {
+//
+// The browser is never waited for. A launcher that cannot start is reported
+// and the next fallback is tried; when no launcher starts, every failure is
+// part of the returned error.
+func launchHandoffPage(ctx context.Context, page string, stderr io.Writer) error {
+	failures, launched := tryHandoffLaunchers(ctx, page)
+	if launched {
+		for _, failure := range failures {
+			fmt.Fprintf(stderr, "mergeyard: browser launcher not used: %v\n", failure)
+		}
+		return nil
+	}
+	if len(failures) == 0 {
+		return errors.New(missingBrowserLauncher)
+	}
+	return fmt.Errorf("%s: %w", missingBrowserLauncher, errors.Join(failures...))
+}
+
+// tryHandoffLaunchers starts the launchers in order and reports the first one
+// that started. The failures are the launchers that could not start, so the
+// caller can report them.
+func tryHandoffLaunchers(ctx context.Context, page string) (failures []error, launched bool) {
+	launch := func(name string, args ...string) bool {
+		if err := startDetachedLauncher(name, args...); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", name, err))
+			return false
+		}
+		return true
+	}
 	if id := defaultBrowserID(ctx); id != "" {
 		if desktop, ok := desktopFilePath(id); ok {
-			if wait, err := startLauncher(ctx, "gio", "launch", desktop, page); err == nil {
-				return wait()
+			if launch("gio", "launch", desktop, page) {
+				return failures, true
 			}
-			if wait, err := startLauncher(ctx, "gtk-launch", id, page); err == nil {
-				return wait()
+			if launch("gtk-launch", id, page) {
+				return failures, true
 			}
-			if wait, err := startDesktopBrowser(ctx, desktop, page); err == nil {
-				return wait()
+			args, err := desktopBrowserArgs(desktop, page)
+			if err != nil {
+				failures = append(failures, fmt.Errorf("%s: %w", desktop, err))
+			} else if launch(args[0], args[1:]...) {
+				return failures, true
 			}
-		} else if wait, err := startLauncher(ctx, "gtk-launch", id, page); err == nil {
-			return wait()
+		} else if launch("gtk-launch", id, page) {
+			return failures, true
 		}
 	}
 	for _, name := range []string{"sensible-browser", "x-www-browser"} {
-		if wait, err := startLauncher(ctx, name, page); err == nil {
-			return wait()
+		if launch(name, page) {
+			return failures, true
 		}
 	}
-	return fmt.Errorf("could not find an HTTP browser launcher; install gio or open the printed dashboard link")
+	return failures, false
 }
 
 func defaultBrowserID(ctx context.Context) string {
@@ -132,19 +169,20 @@ func desktopFilePath(id string) (string, bool) {
 	return "", false
 }
 
-// startDesktopBrowser reads the selected desktop entry's Exec command, expands
-// its file field codes, and starts that browser directly. It preserves the HTTP
-// browser choice when gio and gtk-launch are not installed.
-func startDesktopBrowser(ctx context.Context, desktopPath, page string) (func() error, error) {
+// desktopBrowserArgs reads the selected desktop entry's Exec command and
+// expands its file field codes into the arguments that open the handoff page.
+// It preserves the HTTP browser choice when gio and gtk-launch are not
+// installed.
+func desktopBrowserArgs(desktopPath, page string) ([]string, error) {
 	command, err := desktopExec(desktopPath)
 	if err != nil {
 		return nil, err
 	}
 	args, ok := desktopLaunchArgs(command, page, desktopPath)
 	if !ok {
-		return nil, fmt.Errorf("desktop entry has no executable command")
+		return nil, errors.New("desktop entry has no executable command")
 	}
-	return startLauncher(ctx, args[0], args[1:]...)
+	return args, nil
 }
 
 func desktopExec(path string) ([]string, error) {
@@ -289,14 +327,21 @@ func expandDesktopFieldCodes(value, page, fileURL, desktopPath string) (string, 
 	return expanded.String(), placed
 }
 
-// startLauncher starts name and returns its Wait function. A start error means
-// no process ran, so the caller can try another browser launcher.
-func startLauncher(ctx context.Context, name string, args ...string) (func() error, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+// startDetachedLauncher starts a browser launcher in its own session and
+// process group. The launcher is not tied to Mergeyard's context: the command
+// never waits for it, and stopping Mergeyard never terminates it. The browser
+// therefore outlives the command that opened it. A start error means no
+// process ran, so the caller can report it and try the next launcher.
+func startDetachedLauncher(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return err
 	}
-	return cmd.Wait, nil
+	// Reap the launcher once it exits so a closed browser does not linger as a
+	// zombie. The browser it started keeps running in its own session.
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // writeDashboardHandoffPage writes an owner-only page that redirects the

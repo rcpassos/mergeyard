@@ -27,6 +27,9 @@ _Avoid_: API key, token (the browser CSRF token is separate)
 
 **Dashboard handoff page**: The owner-only local HTML page that redirects the browser to a single-use dashboard link, so the token never enters a process command line. Linux keeps it in a non-hidden home directory so confined browsers can read it; macOS passes the URL to the default HTTP browser over stdin instead.
 
+**Detached browser**: The browser Mergeyard opens for the dashboard. It outlives the command that opened it: `mergeyard open` returns at once, and stopping `mergeyard start` never closes a browser the user is watching.
+_Avoid_: Child browser, owned browser
+
 **Queue group**: One of six buckets the dashboard sorts open runs and eligible issues into: **Running**, **Waiting for harness**, **Ready**, **Blocked**, **Needs attention**, **Waiting for your merge**. Every open run and queued issue belongs to exactly one group; ended runs leave the queue.
 - **Running**: Mergeyard or the user is actively moving the run forward, including a manual takeover and waiting for CI.
 - **Waiting for harness**: the run is paused by a usage limit or an exhausted-credit block.
