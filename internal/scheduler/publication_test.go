@@ -614,6 +614,13 @@ func TestRunFinishingAfterTransientFailureStopsAttentionPublication(t *testing.T
 	}
 }
 
+// ghRefusal is what gh reports for a refused request: the status line and a
+// summary on stderr, and the response body on stdout.
+type ghRefusal struct {
+	stderr string
+	stdout string
+}
+
 // ghComments answers the gh calls that publish a report comment: it lists the
 // comments of an issue and creates one. A create can be refused with GitHub's
 // own answer, so the scheduler classifies what GitHub actually said.
@@ -621,7 +628,7 @@ type ghComments struct {
 	mu       sync.Mutex
 	posts    int
 	bodies   []string
-	refusals []string
+	refusals []ghRefusal
 }
 
 func (g *ghComments) Run(_ context.Context, input []byte, args ...string) ([]byte, []byte, error) {
@@ -636,7 +643,7 @@ func (g *ghComments) Run(_ context.Context, input []byte, args ...string) ([]byt
 		if len(g.refusals) > 0 {
 			refusal := g.refusals[0]
 			g.refusals = g.refusals[1:]
-			return nil, []byte(refusal), errors.New("exit status 1")
+			return []byte(refusal.stdout), []byte(refusal.stderr), errors.New("exit status 1")
 		}
 		var payload struct {
 			Body string `json:"body"`
@@ -710,7 +717,10 @@ func ghCommentFlow(t *testing.T, runner *ghComments, now func() time.Time) (*sch
 
 func TestThrottledReportCommentBacksOffAndIsDelivered(t *testing.T) {
 	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
-	runner := &ghComments{refusals: []string{"HTTP 422: Unprocessable Entity (HTTP 422)\n{\"message\":\"Validation failed, or the endpoint has been spammed\"}"}}
+	runner := &ghComments{refusals: []ghRefusal{{
+		stderr: "gh: Validation failed, or the endpoint has been spammed (HTTP 422)",
+		stdout: `{"message": "Validation failed, or the endpoint has been spammed"}`,
+	}}}
 	s, rt := ghCommentFlow(t, runner, func() time.Time { return now })
 	seedReportPublication(t, rt, "report-throttled", "MANUAL", 101)
 	if _, err := s.Reconcile(context.Background()); err != nil {
@@ -744,12 +754,25 @@ func TestThrottledReportCommentBacksOffAndIsDelivered(t *testing.T) {
 }
 
 func TestPermanentRefusalStopsPublicationWithWarning(t *testing.T) {
-	for _, tc := range []struct{ name, refusal string }{
-		{"oversized body", "HTTP 422: Unprocessable Entity (HTTP 422)\n{\"message\":\"Body is too long (maximum is 65536 characters)\"}"},
-		{"invalid field", "HTTP 422: Unprocessable Entity (HTTP 422)\n{\"message\":\"Validation Failed\",\"errors\":[{\"resource\":\"IssueComment\",\"field\":\"body\",\"code\":\"missing\"}]}"},
+	for _, tc := range []struct {
+		name    string
+		refusal ghRefusal
+	}{
+		{"oversized body", ghRefusal{
+			stderr: "gh: Body is too long (maximum is 65536 characters) (HTTP 422)",
+			stdout: `{"message": "Body is too long (maximum is 65536 characters)"}`,
+		}},
+		{"invalid field", ghRefusal{
+			stderr: "gh: Validation Failed (HTTP 422)",
+			stdout: `{"message": "Validation Failed", "errors": [{"resource": "IssueComment", "field": "body", "code": "missing"}]}`,
+		}},
+		{"nested size error", ghRefusal{
+			stderr: "gh: Validation Failed (HTTP 422)",
+			stdout: `{"message": "Validation Failed", "errors": [{"resource": "IssueComment", "field": "body", "code": "custom", "message": "body is too long (maximum is 65536 characters)"}]}`,
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			runner := &ghComments{refusals: []string{tc.refusal}}
+			runner := &ghComments{refusals: []ghRefusal{tc.refusal}}
 			s, rt := ghCommentFlow(t, runner, time.Now)
 			seedReportPublication(t, rt, "report-permanent", "MANUAL", 101)
 			for range 3 {
