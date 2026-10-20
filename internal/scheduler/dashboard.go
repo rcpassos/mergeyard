@@ -150,25 +150,32 @@ func refusedReadCanceled(ctx context.Context) bool {
 	return ctx.Err() != nil && !budgetSpent(ctx)
 }
 
-// refusalReadWindowFor returns the time one refused-issue read may take, and
-// whether the caller's own budget cut it short. A read the budget cut short
-// is merely slow: it is read again on the next refresh instead of being
-// remembered as the issue's failure for a whole window. The allowance bounds
-// the read, so a refresh cannot spend more on refused issues than it reserved
-// for them.
-func refusalReadWindowFor(ctx context.Context, allowance time.Time) (time.Duration, bool) {
-	window, cutShort := refusalReadWindow, false
+// refusalReadWindowFor returns the time one refused-issue read may take. The
+// caller's budget and the repository's allowance bound the read, so a refresh
+// cannot spend more on refused issues than it reserved for them, and the window
+// is shorter than refusalReadWindow when either leaves less.
+func refusalReadWindowFor(ctx context.Context, allowance time.Time) time.Duration {
+	window := refusalReadWindow
 	if deadline, ok := ctx.Deadline(); ok {
 		if half := time.Until(deadline) / 2; half < window {
-			window, cutShort = half, true
+			window = half
 		}
 	}
 	if !allowance.IsZero() {
 		if left := time.Until(allowance); left < window {
-			window, cutShort = left, true
+			window = left
 		}
 	}
-	return window, cutShort
+	return window
+}
+
+// budgetCutShort reports that the caller's budget ended a read before the full
+// refusalReadWindow: the read's deadline, set shorter than that window, expired
+// while the read was still waiting for GitHub. A timeout GitHub reported before
+// the deadline is GitHub's own failure, however small the repository's share of
+// the budget was.
+func budgetCutShort(readCtx context.Context, window time.Duration) bool {
+	return window < refusalReadWindow && errors.Is(readCtx.Err(), context.DeadlineExceeded)
 }
 
 // refusalAllowance returns the instant after which a repository stops
@@ -422,9 +429,10 @@ func (s *Scheduler) readRefusedIssue(budget discovery, repo config.Repository, n
 		return entry.issue, entry.err
 	}
 	now := s.deps.Now()
-	window, cutShort := refusalReadWindowFor(budget.github, budget.allowance)
+	window := refusalReadWindowFor(budget.github, budget.allowance)
 	readCtx, cancel := context.WithTimeout(budget.github, window)
 	issue, err := s.deps.GitHub.GetIssue(readCtx, repo.Repo, number)
+	cutShort := budgetCutShort(readCtx, window)
 	cancel()
 	if err != nil {
 		// The read is over, so the failure happened now: its backoff starts

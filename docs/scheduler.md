@@ -291,9 +291,11 @@ when that snapshot refreshes. A failed refresh keeps the last snapshot, or
 records the issue's scoped failure until a snapshot exists, and backs off for
 the same window instead of retrying on every pass. Each refused read gets a
 bounded child context, so a slow request cannot consume the budget reserved for
-the rest of discovery. A read that the refresh budget cut short is merely slow
-and is read again on the next refresh, while a read that used its whole window
-is GitHub's own failure and backs off for the full window.
+the rest of discovery. A read that the refresh budget ended before the full
+read window is merely slow and is read again on the next refresh. A timeout
+that GitHub reports before the budget ends the read is GitHub's own failure and
+backs off for the full window, however small the repository's share of the
+budget is, so the number of enabled repositories does not change it.
 
 The refused reads share the caller's refresh budget with the rest of the pass:
 they may spend at most half of it, and each repository may spend a share of

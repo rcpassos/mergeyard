@@ -223,6 +223,47 @@ func TestQueueBacksOffTheWholeWindowAfterAGenuineTimeout(t *testing.T) {
 	}
 }
 
+// A repository's share of the refresh budget falls below the read window once
+// three or more repositories split it. A timeout that GitHub reports before the
+// budget ends the read is still GitHub's own, so it backs off for the whole
+// window whatever the number of repositories.
+func TestQueueBacksOffTheWholeWindowAfterAGenuineTimeoutAcrossRepositories(t *testing.T) {
+	repositories := []string{"owner/first", "owner/second", "owner/third"}
+	api := &fakeGitHub{issues: map[string][]github.Issue{}}
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	s, runtime := configuredAt(t, api, "repositories:\n  - repo: owner/first\n  - repo: owner/second\n  - repo: owner/third\n", rejectingGit{}, func() time.Time { return now })
+	refuseIssues(t, runtime, api, repositories, 1)
+
+	reads := 0
+	api.getIssue = func(string, int) (github.Issue, error) {
+		reads++
+		return github.Issue{}, &fault.Error{Code: "github.timeout", Message: "The GitHub request timed out; it will retry"}
+	}
+	refresh, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	report, err := s.QueueReport(refresh)
+	cancel()
+	if err == nil || !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want scoped refused-issue timeouts", err)
+	}
+	if reads != len(repositories) || len(report.Failures) != len(repositories) {
+		t.Fatalf("reads = %d, failures = %+v, want one timeout per repository", reads, report.Failures)
+	}
+
+	// The next refresh falls inside the window, so no repository reads again.
+	now = now.Add(31 * time.Second)
+	reads = 0
+	report, err = s.QueueReport(context.Background())
+	if err == nil || !scheduler.GitHubFailure(err) {
+		t.Fatalf("queue error = %v, want the remembered timeouts", err)
+	}
+	if reads != 0 {
+		t.Fatalf("refused-issue reads = %d, want the timeouts to back off for the window", reads)
+	}
+	if len(report.Failures) != len(repositories) {
+		t.Fatalf("queue failures = %+v, want the remembered timeouts", report.Failures)
+	}
+}
+
 // unfairGitHub makes one refused issue of one repository block until the
 // read's deadline, so it spends that repository's whole allowance. The other
 // refused issues are read at once.
