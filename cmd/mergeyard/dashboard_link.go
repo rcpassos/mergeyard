@@ -35,7 +35,7 @@ var browserPlatform = runtime.GOOS
 // without exposing its token in a process command line. On macOS, AppleScript
 // asks LaunchServices for the default HTTP browser and receives the URL over
 // stdin. Elsewhere, the URL goes into an owner-only handoff page and only that
-// path reaches the explicitly selected browser. The launchers that could not
+// path reaches the explicitly selected browser; the launchers that could not
 // start are reported to stderr.
 func openBrowser(ctx context.Context, root, address string, stderr io.Writer) error {
 	if browserPlatform == "darwin" {

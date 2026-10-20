@@ -157,11 +157,34 @@ func assertProcessAlive(t *testing.T, pid int) {
 	}
 }
 
-// writeBlockingTool writes a launcher that records its process and stays open
-// until the test ends, the way a browser does.
+// writeBlockingTool writes a launcher that records its process and then
+// sleeps, the way a browser stays open.
 func writeBlockingTool(t *testing.T, dir, name, pidFile string) {
 	t.Helper()
 	writeTool(t, dir, name, "#!/bin/sh\nprintf '%s\\n' \"$$\" > '"+pidFile+"'\nexec /bin/sleep 60\n")
+}
+
+// useDesktopEntry points the default web browser at a desktop entry in an
+// owner-only data home and returns the entry's path. The entry runs command
+// when it holds a command.
+func useDesktopEntry(t *testing.T, tools, command string) string {
+	t.Helper()
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("XDG_DATA_DIRS", "")
+	desktop := filepath.Join(dataHome, "applications", "browser.desktop")
+	if err := os.MkdirAll(filepath.Dir(desktop), 0700); err != nil {
+		t.Fatal(err)
+	}
+	entry := "[Desktop Entry]\n"
+	if command != "" {
+		entry += "Exec=" + command + " %u\n"
+	}
+	if err := os.WriteFile(desktop, []byte(entry), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeTool(t, tools, "xdg-settings", "#!/bin/sh\necho browser.desktop\n")
+	return desktop
 }
 
 func TestOpenBrowserReturnsRightAwayWithEveryLauncher(t *testing.T) {
@@ -184,25 +207,16 @@ func TestOpenBrowserReturnsRightAwayWithEveryLauncher(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			tools := t.TempDir()
 			pidFile := filepath.Join(tools, "browser.pid")
-			// The browser stays open until the test ends, so Mergeyard must
-			// not wait for it.
+			// The browser stays open, so Mergeyard must not wait for it.
 			writeBlockingTool(t, tools, "browser", pidFile)
 			for _, name := range tc.launchers {
 				writeBlockingTool(t, tools, name, pidFile)
 			}
-			dataHome := t.TempDir()
-			t.Setenv("XDG_DATA_HOME", dataHome)
-			t.Setenv("XDG_DATA_DIRS", "")
-			desktop := filepath.Join(dataHome, "applications", "browser.desktop")
-			if err := os.MkdirAll(filepath.Dir(desktop), 0700); err != nil {
-				t.Fatal(err)
-			}
-			entry := "[Desktop Entry]\nExec=" + filepath.Join(tools, "browser") + " %u\n"
-			if err := os.WriteFile(desktop, []byte(entry), 0600); err != nil {
-				t.Fatal(err)
-			}
 			if tc.resolved {
-				writeTool(t, tools, "xdg-settings", "#!/bin/sh\necho browser.desktop\n")
+				useDesktopEntry(t, tools, filepath.Join(tools, "browser"))
+			} else {
+				t.Setenv("XDG_DATA_HOME", t.TempDir())
+				t.Setenv("XDG_DATA_DIRS", "")
 			}
 			t.Setenv("PATH", tools)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -229,14 +243,18 @@ func TestOpenBrowserReturnsRightAwayWithEveryLauncher(t *testing.T) {
 func TestOpenBrowserReportsALauncherThatCannotStartAndTriesTheNext(t *testing.T) {
 	cases := []struct {
 		name string
-		// broken is the launcher that cannot start.
+		// broken is the launcher in PATH that cannot start.
 		broken string
+		// brokenDesktop makes the desktop entry's own command the launcher
+		// that cannot start.
+		brokenDesktop bool
 		// working is the launcher that takes over.
 		working string
 		// resolved makes the default web browser resolve to a desktop entry.
 		resolved bool
 	}{
 		{name: "gio", broken: "gio", working: "gtk-launch", resolved: true},
+		{name: "desktop entry", brokenDesktop: true, working: "sensible-browser", resolved: true},
 		{name: "sensible-browser", broken: "sensible-browser", working: "x-www-browser"},
 	}
 	for _, tc := range cases {
@@ -245,23 +263,27 @@ func TestOpenBrowserReportsALauncherThatCannotStartAndTriesTheNext(t *testing.T)
 			t.Setenv("HOME", t.TempDir())
 			tools := t.TempDir()
 			launched := filepath.Join(tools, "launched")
+			marker := tc.broken
 			// The launcher cannot start because it is not executable.
-			if err := os.WriteFile(filepath.Join(tools, tc.broken), []byte("#!/bin/sh\nexit 0\n"), 0600); err != nil {
-				t.Fatal(err)
+			if tc.broken != "" {
+				if err := os.WriteFile(filepath.Join(tools, tc.broken), []byte("#!/bin/sh\nexit 0\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			writeTool(t, tools, tc.working, "#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+launched+"'\n")
-			dataHome := t.TempDir()
-			t.Setenv("XDG_DATA_HOME", dataHome)
-			t.Setenv("XDG_DATA_DIRS", "")
-			desktop := filepath.Join(dataHome, "applications", "browser.desktop")
-			if err := os.MkdirAll(filepath.Dir(desktop), 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(desktop, []byte("[Desktop Entry]\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
 			if tc.resolved {
-				writeTool(t, tools, "xdg-settings", "#!/bin/sh\necho browser.desktop\n")
+				command := ""
+				if tc.brokenDesktop {
+					command = filepath.Join(tools, "browser")
+					marker = command
+					if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				useDesktopEntry(t, tools, command)
+			} else {
+				t.Setenv("XDG_DATA_HOME", t.TempDir())
+				t.Setenv("XDG_DATA_DIRS", "")
 			}
 			t.Setenv("PATH", tools)
 			var reported bytes.Buffer
@@ -271,7 +293,7 @@ func TestOpenBrowserReportsALauncherThatCannotStartAndTriesTheNext(t *testing.T)
 			}
 
 			waitForFile(t, launched, 1)
-			if !strings.Contains(reported.String(), tc.broken) {
+			if !strings.Contains(reported.String(), marker) {
 				t.Fatalf("the launcher that could not start was not reported: %q", reported.String())
 			}
 		})

@@ -34,8 +34,9 @@ handed over.
   signals and lifetime, and the extra helper process buys nothing a user or
   the runtime can observe.
 - **Run the browser through the shared process policy.** Rejected: that policy
-  owns the process group and stops it when the command ends, which is the
-  opposite of what a browser needs.
+  (ADR-0003) owns the process group and stops it when the caller's context
+  ends, which is the opposite of what a browser needs. The browser is the one
+  command that must outlive the call.
 
 ## Consequences
 
