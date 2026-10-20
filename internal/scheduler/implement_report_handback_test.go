@@ -96,6 +96,10 @@ fi`
 	if strings.Contains(report, "Added feature") || strings.Contains(report, "implement test") {
 		t.Fatalf("review input used the superseded attempt's report: %s", report)
 	}
+	evidence := text[end:]
+	if !strings.Contains(evidence, "retry test") || strings.Contains(evidence, "implement test") {
+		t.Fatalf("review input carried another attempt's evidence: %s", evidence)
+	}
 	published, err := api.GetPullRequest(ctx, current.Repository, current.PRNumber)
 	if err != nil {
 		t.Fatal(err)
