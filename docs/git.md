@@ -125,9 +125,16 @@ and it is preserved and reported.
 
 If `worktree add` was interrupted, the creation never finished, so the next
 attempt removes the partial worktree and local branch and creates them again
-from the fetched base. The leftover branch is discarded only while it still
-points at the recorded start, and an existing checkout must still be on the run
-branch and attached to the managed base. Git writes the worktree link,
+from the fetched base. It applies the same "holds no work" rule as the release
+above, through one shared check: the leftover branch is discarded only while it
+still points at the recorded start, an existing checkout must still be on the
+run branch and attached to the managed base, and it must hold nothing beyond
+the recorded start. A checkout that Git still holds locked for initialization
+is compared with the recorded start like an unfinished one, because a
+creation killed midway leaves a HEAD and only some of the files. An untracked
+file, an edited tracked file, or a file outside the recorded tree is preserved
+and refused with `git.branch_conflict`, which names the worktree and the
+reason. Git writes the worktree link,
 reciprocal registration, and common directory before HEAD, so a deadline in
 that window leaves no readable checkout; that state is recognizable only when
 those links point back to this run's managed base, Git still holds the

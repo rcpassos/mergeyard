@@ -566,8 +566,11 @@ func TestPrepareRecoversAnUnfinishedInitializationHoldingOnlyTheStart(t *testing
 	}
 }
 
-func TestPrepareRecoversWorktreeInterruptedDuringCheckout(t *testing.T) {
-	f := newFixture(t)
+// interruptDuringCheckout makes the requested run's checkout stall in a smudge
+// filter, so Git leaves a written HEAD, some of the files, and the
+// initialization lock. It returns the base path with the filter still set.
+func interruptDuringCheckout(t *testing.T, f fixture) string {
+	t.Helper()
 	setup := f.request
 	setup.RunID, setup.IssueNumber = "setup", 6
 	if _, err := f.manager.Prepare(context.Background(), setup); err != nil {
@@ -599,11 +602,29 @@ func TestPrepareRecoversWorktreeInterruptedDuringCheckout(t *testing.T) {
 	if err != nil || len(locks) == 0 {
 		t.Fatalf("interrupted checkout did not leave an initialization lock: %v, %v", locks, err)
 	}
+	return base
+}
 
+func TestPrepareRecoversWorktreeInterruptedDuringCheckout(t *testing.T) {
+	f := newFixture(t)
+	base := interruptDuringCheckout(t, f)
 	git(t, base, "config", "filter.slow.smudge", "cat")
 	run := prepare(t, f)
 	if data, err := os.ReadFile(filepath.Join(run.Path, "payload")); err != nil || string(data) != "smudged content\n" {
 		t.Fatalf("recovered payload = %q, %v", data, err)
+	}
+}
+
+func TestPreparePreservesAnInterruptedCheckoutHoldingAnExtraFile(t *testing.T) {
+	f := newFixture(t)
+	base := interruptDuringCheckout(t, f)
+	git(t, base, "config", "filter.slow.smudge", "cat")
+	path := filepath.Join(f.root, "worktrees", "owner-repo", f.request.RunID)
+	write(t, path, "human.txt", "uncommitted human work\n")
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireConflictNaming(t, err, path)
+	if data, err := os.ReadFile(filepath.Join(path, "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("the extra file was deleted: %q, %v", data, err)
 	}
 }
 

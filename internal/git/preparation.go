@@ -130,8 +130,8 @@ func (m *Manager) preparedWorktreeDiscardable(ctx context.Context, run Run, inte
 			return false, err
 		}
 		if initializing {
-			// Git writes HEAD before the working tree, so a checkout stopped
-			// midway reads as a checkout whose files are missing or untracked.
+			// A checkout cut short after HEAD was written reads as one whose
+			// files are missing or untracked, so its status proves nothing.
 			// Compare it with the recorded start like an unfinished one.
 			return m.preparedDirectoryHoldsOnlyStart(ctx, run, intent.BaseSHA)
 		}
