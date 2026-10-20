@@ -106,7 +106,8 @@ func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent p
 // way an interrupted creation is recognized: an absent path, an empty
 // directory, Git's own unfinished initialization, or a checkout on the run
 // branch attached to the managed base. Such a checkout must also be clean,
-// because a change or a commit is work that is never deleted.
+// because a change, a commit, or an ignored file is work that is never
+// deleted.
 func (m *Manager) preparedWorktreeDiscardable(ctx context.Context, run Run, intent prepareIntent) (bool, error) {
 	owned, state, err := interruptedWorktreeOwnership(ctx, run)
 	if err != nil {
@@ -125,7 +126,9 @@ func (m *Manager) preparedWorktreeDiscardable(ctx context.Context, run Run, inte
 		// the recorded start, unchanged and without additions, is safe.
 		return m.preparedDirectoryHoldsOnlyStart(ctx, run, intent.BaseSHA)
 	default:
-		status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all")
+		// Ignored files are a person's work too: a build output or a local
+		// secret never shows in the plain status, so they are listed explicitly.
+		status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all", "--ignored")
 		if err != nil {
 			if ctx.Err() != nil {
 				return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
@@ -187,7 +190,9 @@ func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, 
 			return false, nil
 		}
 	}
-	untracked, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "--work-tree="+run.Path, "ls-files", "-o", "--exclude-standard")
+	// Ignored files are listed too, because an ignore rule says nothing about
+	// whether a person's data may be deleted.
+	untracked, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "--work-tree="+run.Path, "ls-files", "-o")
 	if err != nil {
 		return false, err
 	}

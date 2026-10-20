@@ -482,3 +482,46 @@ func TestStopWithoutAnIntentChangesNothingInAnyState(t *testing.T) {
 		})
 	}
 }
+
+// TestStopKeepsIgnoredFilesOfAnUnownedRunInAnyState proves that a file Git
+// ignores is work too: it never shows in the plain status, yet Stop must not
+// delete it with the leftover worktree, and must name the leftovers.
+func TestStopKeepsIgnoredFilesOfAnUnownedRunInAnyState(t *testing.T) {
+	for _, state := range []workflow.State{workflow.NeedsAttention, workflow.Claiming} {
+		t.Run(string(state), func(t *testing.T) {
+			s, rt, api, _, _, _ := localFlow(t, successfulScript)
+			ctx := context.Background()
+			run := runAfterFailedPrepare(t, rt, "interrupted", state)
+			prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := filepath.Join(rt.Workspace.Root, "repos", "owner-repo", "base")
+			exclude := filepath.Join(base, ".git", "info", "exclude")
+			if err := os.MkdirAll(filepath.Dir(exclude), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(exclude, []byte(".env\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(prepared.Path, ".env"), []byte("secret\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if status := gitCommand(t, prepared.Path, "status", "--porcelain"); status != "" {
+				t.Fatalf("the file is not ignored: %q", status)
+			}
+			if err := s.Stop(ctx, run.ID); err != nil {
+				t.Fatal(err)
+			}
+			if data, err := os.ReadFile(filepath.Join(prepared.Path, ".env")); err != nil || string(data) != "secret\n" {
+				t.Fatalf("the ignored file was deleted: %q, %v", data, err)
+			}
+			if !has(api.issues["owner/repo"][0], "agent-needs-attention") {
+				t.Fatalf("the preserved leftovers did not flag the issue: %+v", api.issues["owner/repo"][0].Labels)
+			}
+			if comment, ok := api.leftoverComments[7]; !ok || comment.Path != prepared.Path {
+				t.Fatalf("the preserved leftovers were not named on the issue: %+v", api.leftoverComments)
+			}
+		})
+	}
+}

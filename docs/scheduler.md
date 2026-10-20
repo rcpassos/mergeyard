@@ -61,8 +61,8 @@ leaves NEEDS_ATTENTION and a Retry leaves CLAIMING, both with the preparation
 intent in place), and the next run for the same issue
 has a different ID, so it cannot recover them. Stop considers that preparation
 before it stops: the leftovers are released when they are proven to hold no
-work, so the next run prepares instead of refusing them. Leftovers with commits
-or changes are kept, never deleted, and so is a checkout Git never finished
+work, so the next run prepares instead of refusing them. Leftovers with commits,
+changes, or ignored files are kept, never deleted, and so is a checkout Git never finished
 initializing while its directory holds anything beyond the recorded start: the
 run records them, the issue is flagged for attention, and a comment names the
 branch and the worktree the user has to remove. The preparation of a run that

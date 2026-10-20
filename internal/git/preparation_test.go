@@ -232,6 +232,58 @@ func TestDiscardPreparationPreservesLeftoversWithChanges(t *testing.T) {
 	}
 }
 
+// TestDiscardPreparationPreservesIgnoredFilesInACheckout proves that a file the
+// repository ignores is still a person's work: it does not show in the plain
+// status of a checkout, so the release must look for it explicitly.
+func TestDiscardPreparationPreservesIgnoredFilesInACheckout(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	write(t, run.Path, "local.ignored", "local data\n")
+	if status := git(t, run.Path, "status", "--porcelain"); status != "" {
+		t.Fatalf("the fixture file is not ignored: %q", status)
+	}
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leftovers.Preserved || leftovers.Reason == "" {
+		t.Fatalf("the ignored file was not reported: %+v", leftovers)
+	}
+	if data, err := os.ReadFile(filepath.Join(run.Path, "local.ignored")); err != nil || string(data) != "local data\n" {
+		t.Fatalf("the ignored file was deleted: %q, %v", data, err)
+	}
+	if branch := git(t, run.BasePath, "branch", "--list", run.Branch); branch == "" {
+		t.Fatal("the branch of the preserved worktree was deleted")
+	}
+}
+
+// TestDiscardPreparationPreservesIgnoredFilesInAnUnfinishedInitialization
+// proves the same for a directory Git never finished initializing.
+func TestDiscardPreparationPreservesIgnoredFilesInAnUnfinishedInitialization(t *testing.T) {
+	f := newFixture(t)
+	path := interruptBeforeHead(t, f)
+	// An exclude rule of the managed base hides the file from Git's ignore
+	// listing without a tracked .gitignore.
+	exclude := filepath.Join(f.root, "repos", "owner-repo", "base", ".git", "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(exclude), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exclude, []byte(".env\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, ".env", "local data\n")
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leftovers.Preserved || leftovers.Reason == "" {
+		t.Fatalf("the ignored file was not reported: %+v", leftovers)
+	}
+	if data, err := os.ReadFile(filepath.Join(path, ".env")); err != nil || string(data) != "local data\n" {
+		t.Fatalf("the ignored file was deleted: %q, %v", data, err)
+	}
+}
+
 // TestDiscardPreparationPreservesLeftoversWithCommits proves that leftovers
 // holding commits are never deleted: they are reported instead.
 func TestDiscardPreparationPreservesLeftoversWithCommits(t *testing.T) {

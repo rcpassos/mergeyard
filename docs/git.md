@@ -107,7 +107,7 @@ preserved and refused with `git.branch_conflict`.
 not continue. It reads the run's intent and removes the branch and the
 worktree it identifies, but only while they hold no work: the branch still at
 the recorded start, and a checkout that belongs to the run and is clean. A
-leftover with commits or changes is preserved and reported with the reason, so
+leftover with commits, changes, or ignored files (a `.env`, a build output) is preserved and reported with the reason, so
 the caller can name it for human attention. The intent is released only after
 the leftovers are gone, and a run without an intent never removes what another
 run created. A failure to attempt the release is returned as an error, so the
