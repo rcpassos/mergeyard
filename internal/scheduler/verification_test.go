@@ -132,6 +132,10 @@ func TestVerificationBodyRetriesLatestReportOnRestartWithCommentsDisabled(t *tes
 	}
 	t.Cleanup(func() { restarted.Close() })
 	publisher.offline = false
+	// The deferred attempt backs off; age it so the restart can retry.
+	if _, err := restarted.DB.Exec(`UPDATE verification_attempts SET last_attempt_at='2000-01-01T00:00:00Z' WHERE run_id=?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
 	s, err = scheduler.New(cfg, schedulerResources(restarted), scheduler.Dependencies{GitHub: publisher, Runner: r})
 	if err != nil {
 		t.Fatal(err)
@@ -285,6 +289,10 @@ func TestStalledVerificationPublicationReleasesReconciliationAndRetries(t *testi
 		t.Fatal(err)
 	}
 	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	// Age the deferred attempt so the stalled write is exercised now.
+	if _, err := rt.DB.Exec(`UPDATE verification_attempts SET last_attempt_at='2000-01-01T00:00:00Z' WHERE run_id=?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
 	stalled := &stalledEvidenceGitHub{branchGitHub: branchGitHub{api}}
 	s, err = scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: stalled, Runner: r})
 	if err != nil {
@@ -311,6 +319,11 @@ func TestStalledVerificationPublicationReleasesReconciliationAndRetries(t *testi
 	}
 	if !warning {
 		t.Fatal("publication timeout warning was not saved")
+	}
+	// The budget expiry stays retryable but backs off; age the attempt so the
+	// healthy scheduler can retry it immediately.
+	if _, err := rt.DB.Exec(`UPDATE verification_attempts SET last_attempt_at='2000-01-01T00:00:00Z' WHERE run_id=?`, run.ID); err != nil {
+		t.Fatal(err)
 	}
 	healthy := &evidenceGitHub{branchGitHub: branchGitHub{api}}
 	s, err = scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: healthy, Runner: r})
@@ -376,22 +389,38 @@ func failingVerificationFlow(t *testing.T, code string) (*scheduler.Scheduler, *
 	return s, rt, publisher, cfg
 }
 
+func failingVerificationFlowAt(t *testing.T, code string, now func() time.Time) (*scheduler.Scheduler, *app.Runtime, *evidenceGitHub, config.Config) {
+	t.Helper()
+	_, rt, publisher, cfg := failingVerificationFlow(t, code)
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: publisher, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, rt, publisher, cfg
+}
+
 func TestFailingVerificationPublicationKeepsAttemptsBounded(t *testing.T) {
-	s, rt, publisher, cfg := failingVerificationFlow(t, "github.unavailable")
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	s, rt, publisher, cfg := failingVerificationFlowAt(t, "github.unavailable", func() time.Time { return now })
 	ctx := context.Background()
-	// MANUAL keeps the run open so every reconciliation retries, like a live
-	// run whose PR updates keep failing while it waits for a human.
+	// MANUAL keeps the run open so transient failures retry after backoff,
+	// like a live run whose PR updates keep failing while it waits for a human.
 	seedVerificationRun(t, rt, "probe-manual", "MANUAL", 7, 101)
 	baseline := countEvents(t, rt, `SELECT count(*) FROM events`)
 	growth := []int{}
-	for range 3 {
+	for i := range 3 {
 		if _, err := s.Reconcile(ctx); err != nil {
 			t.Fatal(err)
 		}
 		growth = append(growth, countEvents(t, rt, `SELECT count(*) FROM events`))
+		if i == 0 {
+			now = now.Add(time.Minute + time.Second)
+		} else if i == 1 {
+			now = now.Add(2*time.Minute + time.Second)
+		}
 	}
 	if publisher.updates != 3 {
-		t.Fatalf("live run publication attempts = %d, want one per reconciliation", publisher.updates)
+		t.Fatalf("live run publication attempts = %d, want one per backoff window", publisher.updates)
 	}
 	if attempts := countEvents(t, rt, `SELECT count(*) FROM events WHERE type='verification.attempted'`); attempts != 0 {
 		t.Fatalf("publication attempts saved %d event rows", attempts)
@@ -403,7 +432,7 @@ func TestFailingVerificationPublicationKeepsAttemptsBounded(t *testing.T) {
 		t.Fatalf("warnings = %d, want one per source and code", warnings)
 	}
 	var warning string
-	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id=? AND type='verification.warning'`, "probe-manual").Scan(&warning); err != nil || !strings.Contains(warning, "will retry") {
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id=? AND type='verification.warning'`, "probe-manual").Scan(&warning); err != nil || !strings.Contains(warning, "deferred") {
 		t.Fatalf("live-run warning = %q, %v", warning, err)
 	}
 	var attempts int
@@ -416,7 +445,7 @@ func TestFailingVerificationPublicationKeepsAttemptsBounded(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/probe-manual", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "verification.warning") || !strings.Contains(response.Body.String(), "will retry") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "verification.warning") || !strings.Contains(response.Body.String(), "deferred") {
 		t.Fatalf("run page lost the publication warning: %d", response.Code)
 	}
 }
@@ -469,9 +498,9 @@ func TestFinishedRunStopsRetryingUnresolvableVerificationFailure(t *testing.T) {
 	}
 }
 
-// A transport failure, rate limit or shared-budget timeout stays retryable even
-// for a finished run: it does not show the PR can never be updated.
-func TestFinishedRunRetriesTransientVerificationFailure(t *testing.T) {
+// A finished run has no later reader for the evidence, so a returned failure
+// stops retries even when the failure itself is otherwise transient.
+func TestFinishedRunStopsRetryingTransientVerificationFailure(t *testing.T) {
 	s, rt, publisher, _ := failingVerificationFlow(t, "github.unavailable")
 	ctx := context.Background()
 	seedVerificationRun(t, rt, "probe-transient", "STOPPED", 7, 101)
@@ -483,8 +512,8 @@ func TestFinishedRunRetriesTransientVerificationFailure(t *testing.T) {
 		}
 		growth = append(growth, countEvents(t, rt, `SELECT count(*) FROM events`))
 	}
-	if publisher.updates != 3 {
-		t.Fatalf("transient failure was not retried: %d calls", publisher.updates)
+	if publisher.updates != 1 {
+		t.Fatalf("finished run was retried %d times, want a single delivery attempt", publisher.updates)
 	}
 	if growth[0] != baseline+1 || growth[1] != growth[0] || growth[2] != growth[0] {
 		t.Fatalf("transient failures grew event rows: baseline %d, after reconciliations %v", baseline, growth)
@@ -493,12 +522,12 @@ func TestFinishedRunRetriesTransientVerificationFailure(t *testing.T) {
 		t.Fatalf("warnings = %d, want one per source and code", warnings)
 	}
 	var warning string
-	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id=? AND type='verification.warning'`, "probe-transient").Scan(&warning); err != nil || !strings.Contains(warning, "will retry") {
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id=? AND type='verification.warning'`, "probe-transient").Scan(&warning); err != nil || !strings.Contains(warning, "will not retry") {
 		t.Fatalf("transient warning = %q, %v", warning, err)
 	}
 	var failed bool
-	if err := rt.DB.QueryRow(`SELECT failed FROM verification_attempts WHERE run_id=?`, "probe-transient").Scan(&failed); err != nil || failed {
-		t.Fatalf("transient failure marked the run stopped: %v, %v", failed, err)
+	if err := rt.DB.QueryRow(`SELECT failed FROM verification_attempts WHERE run_id=?`, "probe-transient").Scan(&failed); err != nil || !failed {
+		t.Fatalf("finished-run failure not recorded as terminal: %v, %v", failed, err)
 	}
 }
 
@@ -514,7 +543,8 @@ func TestFinishedRunPublishesAfterBudgetTimeoutRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	stalled := &stalledEvidenceGitHub{branchGitHub: branchGitHub{api}}
-	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: stalled})
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: stalled, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,8 +560,9 @@ func TestFinishedRunPublishesAfterBudgetTimeoutRecovers(t *testing.T) {
 	if err := rt.DB.QueryRow(`SELECT failed FROM verification_attempts WHERE run_id=?`, "probe-timeout").Scan(&failed); err != nil || failed {
 		t.Fatalf("budget timeout marked the run stopped: %v, %v", failed, err)
 	}
+	now = now.Add(time.Minute + time.Second)
 	healthy := &evidenceGitHub{branchGitHub: branchGitHub{api}}
-	s, err = scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: healthy})
+	s, err = scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: healthy, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +581,7 @@ func TestInterruptedVerificationAttemptStaysRetryableForFinishedRun(t *testing.T
 	ctx := context.Background()
 	seedVerificationRun(t, rt, "probe-interrupted", "STOPPED", 7, 101)
 	if _, err := rt.DB.ExecContext(ctx, `INSERT INTO verification_attempts(run_id,source_attempt,attempts,last_attempt_at,failed)
-		VALUES(?,?,1,strftime('%Y-%m-%dT%H:%M:%fZ','now'),0)`, "probe-interrupted", "probe-interrupted-attempt"); err != nil {
+		VALUES(?,?,1,'2000-01-01T00:00:00Z',0)`, "probe-interrupted", "probe-interrupted-attempt"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Reconcile(ctx); err != nil {
@@ -591,9 +622,8 @@ func (f *finiteSlowBodyGitHub) UpdatePullRequest(ctx context.Context, repo strin
 	return f.fakeGitHub.UpdatePullRequest(ctx, repo, n, content)
 }
 func TestSlowVerificationPublicationDoesNotStarveHealthyPRAfterRestart(t *testing.T) {
-	// STOPPED runs keep retrying transient failures, so durable
-	// least-recently-attempted rotation is what lets the healthy PR through
-	// after the restart.
+	// The budget timeout leaves the first PR retryable but backing off, so the
+	// untouched healthy PR is attempted after the restart instead of starving.
 	api := &fakeGitHub{issues: map[string][]github.Issue{}, prs: map[string]*github.PullRequest{
 		"first": {Number: 101, Body: "human first"}, "second": {Number: 102, Body: "human second"},
 	}}
@@ -633,19 +663,102 @@ func TestSlowVerificationPublicationDoesNotStarveHealthyPRAfterRestart(t *testin
 		t.Fatal(err)
 	}
 	t.Logf("body publication call order: %v", client.calls)
-	if len(client.calls) != 3 || client.calls[0] != 101 || client.calls[1] != 102 || client.calls[2] != 101 {
-		t.Fatalf("pending evidence did not rotate after restart: %v", client.calls)
-	}
-	delivered := false
-	for _, n := range client.calls {
-		if n == 102 {
-			delivered = true
-		}
-	}
-	if !delivered {
-		t.Fatal("healthy second PR was never attempted after repeated bounded retries of finite-slow first PR")
+	if len(client.calls) != 2 || client.calls[0] != 101 || client.calls[1] != 102 {
+		t.Fatalf("pending evidence did not let the healthy PR through after restart: %v", client.calls)
 	}
 	if !strings.Contains(api.prs["second"].Body, "Valid evidence") {
 		t.Fatal("healthy second PR evidence was not published")
+	}
+}
+
+func TestVerificationPublicationStopsOnPermanentFailure(t *testing.T) {
+	for _, code := range []string{"github.invalid_input", "github.forbidden", "github.not_found"} {
+		t.Run(code, func(t *testing.T) {
+			s, rt, publisher, _ := failingVerificationFlow(t, code)
+			ctx := context.Background()
+			seedVerificationRun(t, rt, "probe-permanent", "MANUAL", 7, 101)
+			for range 3 {
+				if _, err := s.Reconcile(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if publisher.updates != 1 {
+				t.Fatalf("permanent failure retried: %d calls", publisher.updates)
+			}
+			var failed, stopped bool
+			if err := rt.DB.QueryRow(`SELECT failed,stopped FROM verification_attempts WHERE run_id=?`, "probe-permanent").Scan(&failed, &stopped); err != nil || !failed || !stopped {
+				t.Fatalf("permanent failure state = %v %v, %v", failed, stopped, err)
+			}
+			var warning string
+			if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id=? AND type='verification.warning'`, "probe-permanent").Scan(&warning); err != nil || !strings.Contains(warning, "cannot update this PR") {
+				t.Fatalf("permanent warning = %q, %v", warning, err)
+			}
+			if warnings := countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id=? AND type='verification.warning'`, "probe-permanent"); warnings != 1 {
+				t.Fatalf("warnings = %d, want one", warnings)
+			}
+		})
+	}
+}
+
+func TestRunFinishingAfterTransientFailureStopsVerificationPublication(t *testing.T) {
+	s, rt, publisher, _ := failingVerificationFlow(t, "github.unavailable")
+	seedVerificationRun(t, rt, "probe-finishes-later", "MANUAL", 7, 101)
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.updates != 1 {
+		t.Fatalf("verification attempts = %d, want 1", publisher.updates)
+	}
+	if _, err := rt.DB.Exec(`UPDATE runs SET state='STOPPED' WHERE id='probe-finishes-later'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if publisher.updates != 1 {
+		t.Fatalf("finished verification retried: %d calls", publisher.updates)
+	}
+	var stopped bool
+	if err := rt.DB.QueryRow(`SELECT stopped FROM verification_attempts WHERE run_id='probe-finishes-later'`).Scan(&stopped); err != nil || !stopped {
+		t.Fatalf("finished verification was not stopped: %v, %v", stopped, err)
+	}
+	if warnings := countEvents(t, rt, `SELECT count(*) FROM events WHERE run_id='probe-finishes-later' AND type='verification.warning'`); warnings != 1 {
+		t.Fatalf("warnings = %d, want one", warnings)
+	}
+	var message string
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id='probe-finishes-later' AND type='verification.warning'`).Scan(&message); err != nil || !strings.Contains(message, "deferred") {
+		t.Fatalf("verification warning was rewritten: %q, %v", message, err)
+	}
+	if err := rt.DB.QueryRow(`SELECT json_extract(payload_json,'$.message') FROM events WHERE run_id='probe-finishes-later' AND type='publication.stopped'`).Scan(&message); err != nil || !strings.Contains(message, "will not retry") || !strings.Contains(message, "No further retries") {
+		t.Fatalf("verification stop event = %q, %v", message, err)
+	}
+}
+
+func TestVerificationPublicationBacksOffRecoverableFailures(t *testing.T) {
+	for _, code := range []string{"github.command_failed", "github.not_logged_in", "github.timeout"} {
+		t.Run(code, func(t *testing.T) {
+			now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+			s, rt, publisher, _ := failingVerificationFlowAt(t, code, func() time.Time { return now })
+			seedVerificationRun(t, rt, "probe-recoverable", "MANUAL", 7, 101)
+			for range 2 {
+				if _, err := s.Reconcile(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if publisher.updates != 1 {
+				t.Fatalf("recoverable failure retried before backoff: %d calls", publisher.updates)
+			}
+			now = now.Add(time.Minute + time.Second)
+			if _, err := s.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if publisher.updates != 2 {
+				t.Fatalf("recoverable failure did not retry after backoff: %d calls", publisher.updates)
+			}
+			var failed, stopped bool
+			if err := rt.DB.QueryRow(`SELECT failed,stopped FROM verification_attempts WHERE run_id=?`, "probe-recoverable").Scan(&failed, &stopped); err != nil || !failed || stopped {
+				t.Fatalf("recoverable failure state = %v %v, %v", failed, stopped, err)
+			}
+		})
 	}
 }

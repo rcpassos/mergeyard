@@ -8,8 +8,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/escalation"
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/verification"
 )
@@ -315,7 +317,7 @@ func TestPullRequestInvalidInputsDoNotInvokeGH(t *testing.T) {
 func TestPullRequestCreationDoesNotRetryOtherFailures(t *testing.T) {
 	content := github.PullRequestContent{IssueNumber: 12, IssueTitle: "Pull requests", Summary: "Summary", RunID: "run-123"}
 	for _, tc := range []struct{ stderr, code string }{
-		{"gh: Validation Failed (HTTP 422)", "github.command_failed"},
+		{"gh: Validation Failed (HTTP 422)", "github.invalid_input"},
 		{"gh: Forbidden (HTTP 403)", "github.forbidden"},
 		{"gh: Bad Gateway (HTTP 502)", "github.unavailable"},
 		{"connection reset by peer", "github.unavailable"},
@@ -467,5 +469,148 @@ func TestVerificationBodyIsSafeAndReplacedWithoutChangingUserText(t *testing.T) 
 	again, err := github.UpdatePullRequestBody(updated, content)
 	if err != nil || again != updated {
 		t.Fatal("update not idempotent")
+	}
+}
+
+func TestGeneratePullRequestBodyCapsVerificationAndSummary(t *testing.T) {
+	excerpt := strings.Repeat("é", verification.MaxExcerptRunes)
+	entries := make([]verification.Entry, 30)
+	for i := range entries {
+		copy := excerpt
+		entries[i] = verification.Entry{Command: strings.Repeat("command ", 20), Outcome: "passed", Excerpt: &copy}
+	}
+	body, err := github.GeneratePullRequestBody(github.PullRequestContent{
+		IssueNumber: 12, IssueTitle: "Size", Summary: "Implemented", RunID: "run-1", Verification: entries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > github.MaxBodyBytes || !strings.Contains(body, "<!-- mergeyard:generated:start -->") || !strings.Contains(body, "<!-- mergeyard:generated:end -->") || !strings.Contains(body, "Verification evidence") {
+		t.Fatalf("oversized or broken body: %d bytes", len(body))
+	}
+
+	body, err = github.GeneratePullRequestBody(github.PullRequestContent{
+		IssueNumber: 12, IssueTitle: "Size", Summary: strings.Repeat("summary ", 20000), RunID: "run-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > github.MaxBodyBytes || !strings.Contains(body, "[truncated]") || !strings.HasSuffix(body, "<!-- mergeyard:generated:end -->") {
+		t.Fatalf("oversized or broken summary body: %d bytes", len(body))
+	}
+}
+
+func TestUpdatePullRequestRejectsBodyOverGitHubLimit(t *testing.T) {
+	content := github.PullRequestContent{IssueNumber: 12, IssueTitle: "Size", Summary: "Summary", RunID: "run-1"}
+	runner := &recordedGH{responses: []response{{stdout: pullRequestJSON(24, true, strings.Repeat("x", github.MaxBodyBytes))}}}
+	_, err := github.New(runner).UpdatePullRequest(context.Background(), "rcpassos/mergeyard", 24, content)
+	requireCode(t, err, "github.invalid_input")
+	if len(runner.calls) != 1 {
+		t.Fatalf("oversized body reached a write: %+v", runner.calls)
+	}
+}
+
+func TestUpdatePullRequestBodyFitsGeneratedContentIntoRemainingBudget(t *testing.T) {
+	excerpt := strings.Repeat("é", verification.MaxExcerptRunes)
+	entries := make([]verification.Entry, 30)
+	for i := range entries {
+		copy := excerpt
+		entries[i] = verification.Entry{Command: "go test", Outcome: "passed", Excerpt: &copy}
+	}
+	content := github.PullRequestContent{IssueNumber: 12, IssueTitle: "Size", Summary: "Implemented", RunID: "run-1", Verification: entries}
+	prefix := strings.Repeat("human ", 10000)
+	suffix := "\n\nchecklist"
+	old, err := github.GeneratePullRequestBody(github.PullRequestContent{IssueNumber: 12, IssueTitle: "Size", Summary: "Old summary", RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := github.UpdatePullRequestBody(prefix+old+suffix, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) > github.MaxBodyBytes || !strings.HasPrefix(updated, prefix) || !strings.HasSuffix(updated, suffix) {
+		t.Fatalf("updated body = %d bytes, prefix/suffix preserved = %v/%v", len(updated), strings.HasPrefix(updated, prefix), strings.HasSuffix(updated, suffix))
+	}
+	if !strings.Contains(updated, "<!-- mergeyard:generated:start -->") || !strings.Contains(updated, "<!-- mergeyard:generated:end -->") {
+		t.Fatal("ownership markers lost")
+	}
+}
+
+func TestGeneratePullRequestBodyMarksOmittedEvidence(t *testing.T) {
+	entries := make([]verification.Entry, 200)
+	for i := range entries {
+		entries[i] = verification.Entry{Command: strings.Repeat("cmd ", 5000), Outcome: "passed", Excerpt: nil}
+	}
+	entries[len(entries)-1] = verification.Entry{Command: "go test failed", Outcome: "failed", Excerpt: nil}
+	body, err := github.GeneratePullRequestBody(github.PullRequestContent{
+		IssueNumber: 12, IssueTitle: "Size", Summary: "Implemented", RunID: "run-1", Verification: entries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > github.MaxBodyBytes || strings.Contains(body, "no verification reported") {
+		t.Fatalf("omitted evidence misreported: %d bytes", len(body))
+	}
+	if !strings.Contains(body, "go test failed") || !strings.Contains(body, "verification entries omitted") {
+		t.Fatal("omitted evidence or failed entry lost")
+	}
+
+	body, err = github.GeneratePullRequestBody(github.PullRequestContent{
+		IssueNumber: 12, IssueTitle: "Size", Summary: strings.Repeat("summary ", 10000), RunID: "run-1",
+		Verification: []verification.Entry{{Command: "go test failed", Outcome: "failed", Excerpt: nil}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > github.MaxBodyBytes || strings.Contains(body, "no verification reported") || !strings.Contains(body, "go test failed") {
+		t.Fatalf("single entry lost under summary pressure: %d bytes", len(body))
+	}
+}
+
+func TestGeneratePullRequestBodyBulkOmitsManyEntries(t *testing.T) {
+	entries := make([]verification.Entry, 20000)
+	for i := range entries {
+		entries[i] = verification.Entry{Command: "go test", Outcome: "passed", Excerpt: nil}
+	}
+	started := time.Now()
+	body, err := github.GeneratePullRequestBody(github.PullRequestContent{
+		IssueNumber: 12, IssueTitle: "Size", Summary: "Implemented", RunID: "run-1", Verification: entries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("bulk truncation took %s", elapsed)
+	}
+	if len(body) > github.MaxBodyBytes || !strings.Contains(body, "verification entries omitted") {
+		t.Fatalf("many entries were not omitted in bulk: %d bytes", len(body))
+	}
+}
+
+func TestEscalationFitsAfterNearLimitVerification(t *testing.T) {
+	entries := make([]verification.Entry, 2000)
+	for i := range entries {
+		entries[i] = verification.Entry{Command: strings.Repeat("cmd ", 500), Outcome: "passed", Excerpt: nil}
+	}
+	body, err := github.GeneratePullRequestBody(github.PullRequestContent{
+		IssueNumber: 12, IssueTitle: "Size", Summary: "Implemented", RunID: "run-1", Verification: entries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := make([]escalation.Flag, 100)
+	for i := range reasons {
+		reasons[i] = escalation.Flag{Reason: "dependency manifests", Files: []string{"package.json", "go.mod"}}
+	}
+	updated, err := github.UpdateEscalationBody(body, escalation.Snapshot{HeadSHA: "approved", Reasons: reasons})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) > github.MaxBodyBytes || !strings.Contains(updated, "Needs careful review") {
+		t.Fatalf("escalation did not fit: %d bytes", len(updated))
+	}
+	t.Logf("generated body %d, escalated body %d", len(body), len(updated))
+	if !strings.Contains(updated, "Additional escalation details omitted") {
+		t.Fatal("truncated escalation details were not marked")
 	}
 }

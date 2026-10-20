@@ -68,7 +68,7 @@ const refreshEvents = [
   'run.claimed', 'run.preparing', 'run.needs_attention', 'run.stop_requested', 'run.stopped', 'run.failed',
   'run.takeover_requested', 'run.retry_requested', 'run.retry_rejected', 'review.approval_invalidated',
   'run.handback_requested', 'run.handback_inspected', 'run.handback_committed', 'run.handback_pending', 'run.completed', 'run.manual', 'run.handed_back', 'run.waiting_for_harness',
-  'publication.pending', 'publication.warning', 'publication.published',
+  'publication.pending', 'publication.warning', 'publication.published', 'publication.stopped',
   'pr.merge_observed', 'merge.cleanup_updated', 'ci.updated', 'escalation.updated', 'pr.readiness_started', 'review.completed', 'review.restored', 'fix.completed', 'fix.committed', 'fix.pushed', 'phase.started', 'phase.attempt_started', 'harness.session_discovered', 'harness.session_resume_failed', 'phase.completed', 'phase.failed', 'pr.created', 'pr.ready_for_review',
   'reconcile.repository_failed', 'reconcile.issue_failed', 'reconcile.run_failed',
 ];

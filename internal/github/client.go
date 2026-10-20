@@ -382,6 +382,10 @@ func commandError(stderr []byte, cause error) (*Error, bool) {
 		code = "github.label_not_found"
 	case status == 404 || status == 410:
 		code = "github.not_found"
+	case status == 400 || status == 422:
+		// GitHub answered that the request is invalid, for example a body over
+		// its size limit or a rejected mutation. Retrying cannot change that.
+		code = "github.invalid_input"
 	case Unavailable([]byte(lower)):
 		code, transient = "github.unavailable", true
 	}

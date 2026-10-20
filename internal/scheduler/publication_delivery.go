@@ -12,15 +12,18 @@ import (
 
 // commentDelivery pairs a frozen comment with its queue's persistence operations.
 // The queue owns identities, SQL and event payloads; this policy owns transport,
-// validation, cancellation and warning suppression for both publication kinds.
+// validation, cancellation, terminal state and warning suppression for both
+// publication kinds.
 type commentDelivery struct {
-	repository   string
-	number       int
-	body         string
-	warningCode  string
-	startAttempt func(context.Context) error
-	saveWarning  func(context.Context, *sql.Tx, string) (events.Draft, error)
-	saveReceipt  func(context.Context, *sql.Tx, *github.Comment) (events.Draft, error)
+	runID, repository, body, warningCode string
+	number                               int
+	finished                             bool
+	warnings                             publicationWarnings
+	startAttempt                         func(context.Context) error
+	saveWarning                          func(context.Context, *sql.Tx, publicationOutcome) (events.Draft, error)
+	saveAttemptResult                    func(context.Context, *sql.Tx, publicationOutcome) error
+	stopPayload                          func(publicationOutcome) map[string]any
+	saveReceipt                          func(context.Context, *sql.Tx, *github.Comment) (events.Draft, error)
 }
 
 func (s *Scheduler) publishComments(ctx context.Context, pending []commentDelivery) error {
@@ -41,7 +44,7 @@ func (s *Scheduler) publishComments(ctx context.Context, pending []commentDelive
 		if !supported {
 			cause = &fault.Error{Code: "publication.unsupported"}
 		} else {
-			comment, cause = publisher.EnsureReportComment(publicationCtx, p.repository, p.number, p.body)
+			comment, cause = publisher.EnsureReportComment(publicationCtx, p.repository, p.number, github.CapCommentBody(p.body))
 		}
 		if cause == nil && (comment == nil || comment.ID <= 0 || comment.URL == "") {
 			cause = &fault.Error{Code: "github.invalid_response"}
@@ -49,21 +52,35 @@ func (s *Scheduler) publishComments(ctx context.Context, pending []commentDelive
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		var err error
-		if cause != nil {
-			code := publicationCode(cause)
-			if code == p.warningCode {
-				continue
-			}
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
-				return p.saveWarning(ctx, tx, code)
-			})
-		} else {
-			_, err = s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+		if cause == nil {
+			if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
 				return p.saveReceipt(ctx, tx, comment)
-			})
+			}); err != nil {
+				return err
+			}
+			continue
 		}
-		if err != nil {
+		outcome := outcomeFor(cause, publicationCtx, p.finished, p.warnings)
+		if outcome.Code != p.warningCode {
+			if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+				return p.saveWarning(ctx, tx, outcome)
+			}); err != nil {
+				return err
+			}
+			continue
+		}
+		if !outcome.Stopped {
+			if err := p.saveAttemptResult(ctx, nil, outcome); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+			if err := p.saveAttemptResult(ctx, tx, outcome); err != nil {
+				return events.Draft{}, err
+			}
+			return events.Draft{RunID: p.runID, Type: publicationStoppedEvent, Payload: p.stopPayload(outcome)}, nil
+		}); err != nil {
 			return err
 		}
 	}
