@@ -117,8 +117,11 @@ A checkout that Git never finished initializing has no readable HEAD, so its
 contents are proved against the recorded start instead: every file the
 directory holds must match the recorded tree, and it must hold no file the
 tree does not. A file the tree holds and the directory does not is a partial
-checkout, and nothing is lost by removing the directory. Anything else is
-work, and it is preserved and reported.
+checkout, and nothing is lost by removing the directory. A submodule of the
+recorded tree is inspected separately, because Git compares a submodule by the
+commit it points at and never by the files inside it, and it skips the subtree
+of an indexed submodule when it lists untracked files. Anything else is work,
+and it is preserved and reported.
 
 If `worktree add` was interrupted, the creation never finished, so the next
 attempt removes the partial worktree and local branch and creates them again

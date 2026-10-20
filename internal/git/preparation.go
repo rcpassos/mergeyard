@@ -191,7 +191,50 @@ func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, 
 	if err != nil {
 		return false, err
 	}
-	return untracked == "", nil
+	if untracked != "" {
+		return false, nil
+	}
+	return m.preparedSubmodulesHoldNothing(ctx, run, start)
+}
+
+// preparedSubmodulesHoldNothing reports whether every submodule of the
+// recorded tree is empty in the directory. Git compares a submodule by the
+// commit it points at and never by the files inside it, and it skips the
+// subtree of an indexed submodule when it lists untracked files, so the other
+// checks cannot see a person adding files to an uninitialized submodule.
+func (m *Manager) preparedSubmodulesHoldNothing(ctx context.Context, run Run, start string) (bool, error) {
+	out, err := command(ctx, run.BasePath, "git.ls_tree", "ls-tree", "-r", "-z", start)
+	if err != nil {
+		return false, err
+	}
+	for _, record := range strings.Split(out, "\x00") {
+		if record == "" {
+			continue
+		}
+		fields, path, ok := strings.Cut(record, "\t")
+		if !ok {
+			// A record the release cannot read is not proof of an empty
+			// submodule.
+			return false, nil
+		}
+		mode, _, ok := strings.Cut(fields, " ")
+		if !ok || mode != "160000" {
+			continue
+		}
+		entries, err := os.ReadDir(filepath.Join(run.Path, path))
+		if errors.Is(err, os.ErrNotExist) {
+			// The checkout never created the submodule.
+			continue
+		}
+		if err != nil {
+			return false, failure("git.worktree", filepath.Join(run.Path, path), err)
+		}
+		if len(entries) > 0 {
+			// The submodule holds files that no other check can verify.
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // removePreparedWorktree deletes a discarded preparation's worktree and its

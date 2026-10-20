@@ -101,6 +101,49 @@ func TestDiscardPreparationReleasesAnUnfinishedInitialization(t *testing.T) {
 	}
 }
 
+// seedSubmodule adds a submodule to the fixture's seed repository, so the
+// recorded tree holds a gitlink.
+func seedSubmodule(t *testing.T, f fixture) {
+	t.Helper()
+	root := t.TempDir()
+	remote := filepath.Join(root, "module.git")
+	seed := filepath.Join(root, "module-seed")
+	git(t, root, "init", "--bare", "--initial-branch=main", remote)
+	git(t, root, "init", "--initial-branch=main", seed)
+	write(t, seed, "module.txt", "module\n")
+	git(t, seed, "add", ".")
+	git(t, seed, "commit", "-m", "module")
+	git(t, seed, "remote", "add", "origin", remote)
+	git(t, seed, "push", "origin", "main")
+	git(t, f.seed, "-c", "protocol.file.allow=always", "submodule", "add", "--", remote, "module")
+	git(t, f.seed, "commit", "-m", "add submodule")
+	git(t, f.seed, "push", "origin", "main")
+}
+
+// TestDiscardPreparationPreservesHumanWorkInAnUninitializedSubmodule proves
+// that a submodule of the recorded tree is inspected: Git compares a submodule
+// by the commit it points at and never by the files inside it, so a person can
+// add files to an uninitialized submodule that no other check would see.
+func TestDiscardPreparationPreservesHumanWorkInAnUninitializedSubmodule(t *testing.T) {
+	f := newFixture(t)
+	seedSubmodule(t, f)
+	path := interruptBeforeHead(t, f)
+	if err := os.MkdirAll(filepath.Join(path, "module"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(path, "module"), "human.txt", "uncommitted human work\n")
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leftovers.Preserved || leftovers.Reason == "" {
+		t.Fatalf("the human work in the submodule was not reported: %+v", leftovers)
+	}
+	if data, err := os.ReadFile(filepath.Join(path, "module", "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("the human work was deleted: %q, %v", data, err)
+	}
+}
+
 // TestPrepareBranchConflictKeepsTheMetadataDeadline proves that the lookup of
 // the checkout that holds a conflicting branch keeps the metadata deadline, so
 // a stalled lookup cannot hold the preparation open for its whole budget.
