@@ -103,6 +103,15 @@ start, and that commit stays the run's comparison point. A worktree that
 differs in any other way holds work that arrived after the creation, so it is
 preserved and refused with `git.branch_conflict`.
 
+`Manager.DiscardPreparation` releases the leftovers of a preparation that will
+not continue. It reads the run's intent and removes the branch and the
+worktree it identifies, but only while they hold no work: the branch still at
+the recorded start, and a checkout that belongs to the run and is clean. A
+leftover with commits or changes is preserved and reported with the reason, so
+the caller can name it for human attention. The intent is released only after
+the leftovers are gone, and a run without an intent never removes what another
+run created.
+
 If `worktree add` was interrupted, the creation never finished, so the next
 attempt removes the partial worktree and local branch and creates them again
 from the fetched base. The leftover branch is discarded only while it still
@@ -192,6 +201,8 @@ wrapped cause. Key codes include `git.invalid_input`, `git.base_checkout`,
 and `git.canceled`.
 Operation failures retain codes such as `git.clone`, `git.fetch`, `git.worktree`,
 `git.stage`, `git.commit`, and `git.cleanup`.
+A branch conflict names the blocker, so a run that cannot prepare says which
+branch or worktree it would have to remove first.
 
 `go test ./internal/git` runs integration tests against temporary local bare
 repositories. Tests isolate user Git configuration and use a test identity;

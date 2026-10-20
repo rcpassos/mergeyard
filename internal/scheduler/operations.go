@@ -3,12 +3,15 @@ package scheduler
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 
+	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/execution/durable"
 	"github.com/rcpassos/mergeyard/internal/fault"
+	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
@@ -110,6 +113,12 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 	if _, err := s.db.ExecContext(ctx, `UPDATE phase_attempts SET status='stopped',ended_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE run_id=? AND status='running'`, run.ID); err != nil {
 		return err
 	}
+	// A preparing run whose ownership was never saved can still own a branch
+	// and a worktree from an interrupted creation. Release them now, so the
+	// next run for the same issue can prepare instead of refusing them.
+	if err := s.releasePreparation(ctx, repo, run); err != nil {
+		return err
+	}
 	// Clear ready even if stop arrived before claim processing removed it.
 	// Keep stop intent pending on failure so a terminal run cannot redispatch.
 	if err := s.deps.GitHub.RemoveLabel(ctx, repo.Repo, run.IssueNumber, repo.Labels.Ready); err != nil {
@@ -129,6 +138,72 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 	}
 	_, err := s.workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.Stop})
 	return err
+}
+
+// releasePreparation releases the leftovers of an interrupted preparation, so
+// the next run for the same issue can prepare instead of refusing them. Only
+// a preparing run without saved ownership can own them: a run that saved its
+// ownership keeps its branch and worktree, because Stop preserves the work of
+// a run.
+func (s *Scheduler) releasePreparation(ctx context.Context, repo config.Repository, run workflow.Run) error {
+	if run.State != workflow.Preparing {
+		return nil
+	}
+	owned, err := s.savedOwnership(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	if owned {
+		return nil
+	}
+	leftovers, err := s.deps.Git.DiscardPreparation(ctx, managedgit.PrepareRequest{Repository: repo.Repo, BaseBranch: repo.BaseBranch, RunID: run.ID, IssueNumber: run.IssueNumber})
+	if err != nil {
+		return err
+	}
+	if !leftovers.Preserved {
+		return nil
+	}
+	return s.preserveLeftovers(ctx, repo, run, leftovers)
+}
+
+// savedOwnership reports whether a run saved its Git ownership. A run without
+// it owns no branch or worktree.
+func (s *Scheduler) savedOwnership(ctx context.Context, id string) (bool, error) {
+	var gitJSON sql.NullString
+	if err := s.db.QueryRowContext(ctx, "SELECT git_json FROM scheduler_runs WHERE run_id=?", id).Scan(&gitJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !gitJSON.Valid || gitJSON.String == "" {
+		return false, nil
+	}
+	var gitRun managedgit.Run
+	if err := json.Unmarshal([]byte(gitJSON.String), &gitRun); err != nil {
+		return false, err
+	}
+	return gitRun.ID != "", nil
+}
+
+// preserveLeftovers records the leftovers an interrupted preparation left
+// behind and names them on the issue that needs attention. The run keeps
+// naming them, so the dashboard and the reconciliation know that the
+// artifacts belong to it.
+func (s *Scheduler) preserveLeftovers(ctx context.Context, repo config.Repository, run workflow.Run, leftovers managedgit.Leftovers) error {
+	if _, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
+		if _, err := tx.ExecContext(ctx, "UPDATE runs SET branch=?, worktree_path=? WHERE id=?", leftovers.Branch, leftovers.Path, run.ID); err != nil {
+			return events.Draft{}, err
+		}
+		return events.Draft{RunID: run.ID, Type: "run.stop_leftovers", Payload: map[string]string{
+			"branch": leftovers.Branch,
+			"path":   leftovers.Path,
+			"reason": leftovers.Reason,
+		}}, nil
+	}); err != nil {
+		return err
+	}
+	return s.deps.GitHub.EnsureStopLeftoversComment(ctx, repo.Repo, run.IssueNumber, run.ID, leftovers.Branch, leftovers.Path, leftovers.Reason)
 }
 
 // Watch returns only the live attempt of the current phase. The CLI attaches

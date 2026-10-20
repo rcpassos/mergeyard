@@ -338,10 +338,16 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 		}
 	}
 	if remoteExists && !owned {
-		return Run{}, failure("git.branch_conflict", run.Path, errors.New("existing branch or worktree is not owned by this run"))
+		return Run{}, &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: "the remote branch " + run.Branch + " exists and is not owned by this run"}
 	}
 	if (localExists || pathExists) && !owned && !intentOwned {
-		return Run{}, failure("git.branch_conflict", run.Path, errors.New("existing branch or worktree is not owned by this run"))
+		// Name the blocker, so a run that cannot prepare says what it would
+		// have to remove first.
+		blocked := "the local branch " + run.Branch
+		if pathExists {
+			blocked = "the worktree " + run.Path
+		}
+		return Run{}, &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: blocked + " exists and is not owned by this run"}
 	}
 	recoveryCtx, recoveryCancel := m.worktreeDeadline(ctx)
 	if pathExists {
@@ -363,7 +369,7 @@ func (m *Manager) Prepare(ctx context.Context, req PrepareRequest) (Run, error) 
 					run.BaseSHA = intent.BaseSHA
 					return run, nil
 				}
-				return Run{}, failure("git.branch_conflict", run.Path, errors.New("prepared worktree holds work that this run cannot claim; preserved for inspection"))
+				return Run{}, &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: "the prepared worktree holds work that this run cannot claim; preserved for inspection"}
 			}
 			// Creation stopped partway, so the tree never reached an agent.
 			if err := removeInterruptedWorktree(recoveryCtx, run, intent.BaseSHA); err != nil {
@@ -596,6 +602,15 @@ func writeAtomicJSON(path string, value any) error {
 }
 
 func loadPrepareIntent(run Run) (prepareIntent, bool, error) {
+	intent, found, err := readPrepareIntent(run)
+	if err != nil || !found {
+		return prepareIntent{}, false, err
+	}
+	return intent, intent.identifies(run), nil
+}
+
+// readPrepareIntent reads the claim of one run's preparation.
+func readPrepareIntent(run Run) (prepareIntent, bool, error) {
 	data, err := os.ReadFile(prepareIntentPath(run))
 	if errors.Is(err, os.ErrNotExist) {
 		return prepareIntent{}, false, nil
@@ -607,14 +622,18 @@ func loadPrepareIntent(run Run) (prepareIntent, bool, error) {
 	if err := json.Unmarshal(data, &intent); err != nil {
 		return prepareIntent{}, false, failure("git.worktree", run.Path, fmt.Errorf("invalid prepare intent: %w", err))
 	}
+	return intent, true, nil
+}
+
+// identifies reports whether the claim describes this run. The fetched base
+// may have advanced since the interrupted attempt, and the recorded creation
+// state does not identify the run, so the identity match ignores both.
+func (i prepareIntent) identifies(run Run) bool {
 	want := newPrepareIntent(run, false)
-	// The fetched base may have advanced since the interrupted attempt, and
-	// the recorded creation state does not identify the run, so the identity
-	// match ignores both.
-	identity := intent
+	identity := i
 	identity.BaseSHA, want.BaseSHA = "", ""
 	identity.Created, want.Created = false, false
-	return intent, identity == want, nil
+	return identity == want
 }
 
 func removePrepareIntent(run Run) error {
@@ -675,7 +694,7 @@ func removeInterruptedWorktree(ctx context.Context, run Run, start string) error
 			return err
 		}
 		if head != start {
-			return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree creation left commits; preserved for inspection"))
+			return &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: "interrupted worktree creation left commits; preserved for inspection"}
 		}
 	}
 	ours, err := interruptedWorktreeOurs(ctx, run)
@@ -683,76 +702,17 @@ func removeInterruptedWorktree(ctx context.Context, run Run, start string) error
 		return err
 	}
 	if !ours {
-		return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree was changed; preserved for inspection"))
+		return &fault.Error{Code: "git.branch_conflict", Path: run.Path, Message: "interrupted worktree was changed; preserved for inspection"}
 	}
-	if err := os.RemoveAll(run.Path); err != nil {
-		return failure("git.worktree", run.Path, err)
-	}
-	// A killed 'worktree add' can leave an initialization lock, and prune
-	// preserves locked metadata, which would keep the branch checked out.
-	// Unlocking an unregistered or unlocked tree fails harmlessly; prune and
-	// branch deletion below report any real problem.
-	_, _ = command(ctx, run.BasePath, "git.worktree", "worktree", "unlock", "--", run.Path)
-	if _, err := command(ctx, run.BasePath, "git.worktree", "worktree", "prune", "--expire", "now"); err != nil {
-		return err
-	}
-	if !exists {
-		return nil
-	}
-	_, err = command(ctx, run.BasePath, "git.worktree", "branch", "-D", "--", run.Branch)
-	return err
+	return removePreparedWorktree(ctx, run)
 }
 
 // interruptedWorktreeOurs reports whether a leftover path is safe to discard:
 // it is empty, or it is still the run branch attached to the managed base.
 // Anything whose ownership cannot be established is preserved.
 func interruptedWorktreeOurs(ctx context.Context, run Run) (bool, error) {
-	if _, err := os.Lstat(run.Path); errors.Is(err, os.ErrNotExist) {
-		return true, nil
-	} else if err != nil {
-		return false, failure("git.worktree", run.Path, err)
-	}
-	if _, err := os.Lstat(filepath.Join(run.Path, ".git")); errors.Is(err, os.ErrNotExist) {
-		// Only an empty directory is provably unused before a checkout exists.
-		entries, err := os.ReadDir(run.Path)
-		if err != nil {
-			return false, failure("git.worktree", run.Path, err)
-		}
-		return len(entries) == 0, nil
-	} else if err != nil {
-		return false, failure("git.worktree", run.Path, err)
-	}
-	branch, err := command(ctx, run.Path, "git.worktree", "symbolic-ref", "--quiet", "--short", "HEAD")
-	if err != nil {
-		if ctx.Err() != nil {
-			return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
-		}
-		// Git writes the linked registration before HEAD, so a deadline here
-		// leaves no readable checkout. Accept it only when the link, backlink,
-		// and common directory point at this run's managed base.
-		return managedInitialization(run)
-	}
-	if branch != run.Branch {
-		return false, nil
-	}
-	common, err := command(ctx, run.Path, "git.worktree", "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		if ctx.Err() != nil {
-			return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
-		}
-		return false, nil
-	}
-	got, err := os.Stat(common)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	} else if err != nil {
-		return false, failure("git.worktree", run.Path, err)
-	}
-	want, err := os.Stat(filepath.Join(run.BasePath, ".git"))
-	if err != nil {
-		return false, failure("git.worktree", run.BasePath, err)
-	}
-	return os.SameFile(got, want), nil
+	owned, _, err := interruptedWorktreeOwnership(ctx, run)
+	return owned, err
 }
 
 // managedInitialization reports whether a checkout without HEAD is positively

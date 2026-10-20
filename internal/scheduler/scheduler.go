@@ -31,6 +31,7 @@ type GitHub interface {
 	RecheckIssueTrust(context.Context, string, github.Issue, string, []string) (github.TrustDecision, error)
 	EnsureTrustRefusalComment(context.Context, string, int, string) error
 	EnsureHarnessOverrideComment(context.Context, string, int, string) error
+	EnsureStopLeftoversComment(context.Context, string, int, string, string, string, string) error
 	ListLabeledIssues(context.Context, string, []string) ([]github.Issue, error)
 	GetIssue(context.Context, string, int) (github.Issue, error)
 	ListIssueComments(context.Context, string, int, []string) (github.IssueComments, error)
@@ -48,6 +49,7 @@ type GitHub interface {
 type Git interface {
 	Prepare(context.Context, managedgit.PrepareRequest) (managedgit.Run, error)
 	ConfirmOwnership(context.Context, managedgit.Run) error
+	DiscardPreparation(context.Context, managedgit.PrepareRequest) (managedgit.Leftovers, error)
 	CommitAndPush(context.Context, managedgit.Run, managedgit.Phase) (managedgit.CommitResult, error)
 	Inspect(context.Context, managedgit.Run) error
 	ListWorktrees(context.Context) ([]string, error)
