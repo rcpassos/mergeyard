@@ -2,41 +2,29 @@ package scheduler
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"testing"
 
-	"github.com/rcpassos/mergeyard/internal/config"
-	"github.com/rcpassos/mergeyard/internal/events"
 	"github.com/rcpassos/mergeyard/internal/fault"
-	"github.com/rcpassos/mergeyard/internal/workflow"
-	"github.com/rcpassos/mergeyard/internal/workspace"
 )
 
-// implementReport builds the report an attempt saves when it completes.
-func implementReport(status, summary, command string) string {
-	return fmt.Sprintf(`{"schema_version":4,"verification":[{"command":%q,"outcome":"passed","excerpt":null}],"criteria":[],"human_action":null,"status":%q,"summary":%q}`, command, status, summary)
+// implementAttempt is one saved implement attempt in the eligibility fixtures.
+type implementAttempt struct {
+	status   string
+	report   string
+	eligible int
 }
 
-// implementReportScheduler builds a scheduler over the migrated store the
-// runtime owns, with a GitHub boundary that only records publications.
-func implementReportScheduler(t *testing.T, db *sql.DB, api GitHub) *Scheduler {
-	t.Helper()
-	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
-	if err != nil {
-		t.Fatal(err)
+// implementReportJSON builds the report an attempt saves when it completes.
+// An empty command leaves out the verification evidence that only the current
+// report schema carries.
+func implementReportJSON(status, summary, command string) string {
+	verification := ""
+	if command != "" {
+		verification = fmt.Sprintf(`"verification":[{"command":%q,"outcome":"passed","excerpt":null}],`, command)
 	}
-	home, err := workspace.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	bus := events.New(db, nil)
-	s, err := New(cfg, Resources{DB: db, Events: bus, Workflow: workflow.New(db, bus), Workspace: home}, Dependencies{GitHub: api})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
+	return fmt.Sprintf(`{"schema_version":4,%s"criteria":[],"human_action":null,"status":%q,"summary":%q}`, verification, status, summary)
 }
 
 // The reviewer's implementer report must come from the attempt publication
@@ -45,53 +33,57 @@ func implementReportScheduler(t *testing.T, db *sql.DB, api GitHub) *Scheduler {
 // describe the same evidence instead of mixing two attempts.
 func TestCurrentImplementReportUsesSavedEligibility(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		attempts []struct {
-			status, report string
-			eligible       int
-		}
-		want    string
-		wantErr string
+		name      string
+		attempts  []implementAttempt
+		want      string
+		published string
+		wantErr   string
 	}{
 		{
 			name: "blocked check retry supersedes the earlier success",
-			attempts: []struct {
-				status, report string
-				eligible       int
-			}{
-				{"succeeded", implementReport("success", "Added feature", "implement test"), 1},
-				{"failed", implementReport("blocked", "Blocked on the API key", "retry test"), 1},
+			attempts: []implementAttempt{
+				{"succeeded", implementReportJSON("success", "Added feature", "implement test"), 1},
+				{"failed", implementReportJSON("blocked", "Blocked on the API key", "retry test"), 1},
 			},
-			want: "Blocked on the API key",
+			want:      "Blocked on the API key",
+			published: "Blocked on the API key",
 		},
 		{
 			name: "ineligible retry never supersedes the eligible attempt",
-			attempts: []struct {
-				status, report string
-				eligible       int
-			}{
-				{"succeeded", implementReport("success", "Added feature", "implement test"), 1},
-				{"failed", implementReport("failed", "Infrastructure failure", "retry test"), 0},
+			attempts: []implementAttempt{
+				{"succeeded", implementReportJSON("success", "Added feature", "implement test"), 1},
+				{"failed", implementReportJSON("failed", "Infrastructure failure", "retry test"), 0},
+			},
+			want:      "Added feature",
+			published: "Added feature",
+		},
+		{
+			name: "a report without verification evidence never displaces the published one",
+			attempts: []implementAttempt{
+				{"succeeded", implementReportJSON("success", "Added feature", "implement test"), 1},
+				{"failed", implementReportJSON("blocked", "Blocked on the API key", ""), 1},
+			},
+			want:      "Added feature",
+			published: "Added feature",
+		},
+		{
+			name: "an eligible report without verification evidence is still the implementer's account",
+			attempts: []implementAttempt{
+				{"succeeded", implementReportJSON("success", "Added feature", ""), 1},
 			},
 			want: "Added feature",
 		},
 		{
 			name: "succeeded attempt without a stored report fails closed",
-			attempts: []struct {
-				status, report string
-				eligible       int
-			}{
+			attempts: []implementAttempt{
 				{"succeeded", "", 0},
 			},
 			wantErr: "phase.result_missing",
 		},
 		{
 			name: "no eligible attempt leaves the report out",
-			attempts: []struct {
-				status, report string
-				eligible       int
-			}{
-				{"failed", implementReport("failed", "Infrastructure failure", "retry test"), 0},
+			attempts: []implementAttempt{
+				{"failed", implementReportJSON("failed", "Infrastructure failure", "retry test"), 0},
 			},
 		},
 	} {
@@ -99,7 +91,7 @@ func TestCurrentImplementReportUsesSavedEligibility(t *testing.T) {
 			ctx := context.Background()
 			db, _ := historyStore(t)
 			api := &recordingGitHub{}
-			s := implementReportScheduler(t, db, api)
+			s := eligibilityScheduler(t, db, api)
 			if _, err := db.ExecContext(ctx, `
 INSERT INTO runs(id,repository,issue_number,state,current_phase,review_round,pr_number) VALUES('eligibility','owner/repo',7,'NEEDS_ATTENTION','implement',0,101);
 INSERT INTO scheduler_runs(run_id,issue_json) VALUES('eligibility','{"number":7,"title":"Feature"}');`); err != nil {
@@ -129,19 +121,23 @@ INSERT INTO scheduler_runs(run_id,issue_json) VALUES('eligibility','{"number":7,
 				if result != nil {
 					t.Fatalf("report = %+v, want none", result)
 				}
-				return
-			}
-			if result == nil || result.Summary != tc.want {
+			} else if result == nil || result.Summary != tc.want {
 				t.Fatalf("report = %+v, want summary %q", result, tc.want)
 			}
 			// Publication must treat the same attempt as current.
 			if err := s.publishVerification(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if len(api.contents) != 1 || api.contents[0].Summary != tc.want {
-				t.Fatalf("published %+v, want one report summarised %q", api.contents, tc.want)
+			if tc.published == "" {
+				if len(api.contents) != 0 {
+					t.Fatalf("published %+v, want nothing", api.contents)
+				}
+				return
 			}
-			if len(result.Verification) != 1 || result.Verification[0].Command != api.contents[0].Verification[0].Command {
+			if len(api.contents) != 1 || api.contents[0].Summary != tc.published {
+				t.Fatalf("published %+v, want one report summarised %q", api.contents, tc.published)
+			}
+			if result == nil || len(result.Verification) != len(api.contents[0].Verification) {
 				t.Fatalf("verification = %+v, want %+v", result.Verification, api.contents[0].Verification)
 			}
 		})

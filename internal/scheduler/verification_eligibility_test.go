@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"database/sql"
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/config"
@@ -10,6 +11,26 @@ import (
 	"github.com/rcpassos/mergeyard/internal/workflow"
 	"github.com/rcpassos/mergeyard/internal/workspace"
 )
+
+// eligibilityScheduler builds a scheduler over the migrated store the runtime
+// owns, with the GitHub boundary the caller supplies.
+func eligibilityScheduler(t *testing.T, db *sql.DB, api GitHub) *Scheduler {
+	t.Helper()
+	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := events.New(db, nil)
+	s, err := New(cfg, Resources{DB: db, Events: bus, Workflow: workflow.New(db, bus), Workspace: home}, Dependencies{GitHub: api})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
 
 // A fix rejected after it was saved must stay the publication intent: the
 // rejection rewrites the attempt's error and status, while the frozen
@@ -36,20 +57,8 @@ INSERT INTO fix_attempts(attempt_id,session_id,target_sha,findings_json,permissi
  ('fix-attempt','session','target','[]','default','[]','{"schema_version":4,"status":"success","summary":"Fixed the finding","responses":[],"verification":[{"command":"fix test","outcome":"passed","excerpt":null}]}');`, tc.eligible); err != nil {
 				t.Fatal(err)
 			}
-			cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			home, err := workspace.Open(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			bus := events.New(db, nil)
 			api := &recordingGitHub{}
-			s, err := New(cfg, Resources{DB: db, Events: bus, Workflow: workflow.New(db, bus), Workspace: home}, Dependencies{GitHub: api})
-			if err != nil {
-				t.Fatal(err)
-			}
+			s := eligibilityScheduler(t, db, api)
 			if err := s.publishVerification(ctx); err != nil {
 				t.Fatal(err)
 			}

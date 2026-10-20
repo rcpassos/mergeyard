@@ -235,65 +235,59 @@ func latestEligibleVerification(run workflow.Run) []verification.Entry {
 	return latest
 }
 
-// newestSucceededImplementQuery reads the newest succeeded implement attempt.
-// A succeeded attempt without a stored report is a broken boundary, so the
-// report is read before the current evidence is chosen.
+// newestSucceededImplementQuery reads the report saved with the newest
+// succeeded implement attempt. A succeeded attempt without a stored report is a
+// broken boundary, so the report is read before the current evidence is chosen.
 const newestSucceededImplementQuery = `SELECT COALESCE(a.report_json,'') FROM phase_attempts a
  WHERE a.run_id=? AND a.phase='implement' AND a.step='' AND a.status='succeeded'
- ORDER BY a.rowid DESC LIMIT 1`
+ ORDER BY a.attempt DESC LIMIT 1`
 
 // currentImplementReportQuery reads the implement attempt publication treats as
-// current: the newest attempt whose report was saved as eligible, in the durable
-// attempt order publication uses. A valid blocked or failed report is eligible
-// too, so it supersedes an older success.
+// current: the newest eligible attempt whose report carries verification
+// evidence, in the durable attempt order publication uses. A valid blocked or
+// failed report is eligible too, so it supersedes an older success. An
+// eligible report without verification evidence is not publishable, but it
+// still carries the implementer's own account of the work, so it follows the
+// publishable attempts instead of replacing them.
 const currentImplementReportQuery = `SELECT COALESCE(a.report_json,'') FROM phase_attempts a
  WHERE a.run_id=? AND a.phase='implement' AND a.step='' AND a.report_eligible=1
- ORDER BY a.rowid DESC LIMIT 1`
+ ORDER BY (json_type(a.report_json,'$.verification')='array') DESC, a.rowid DESC LIMIT 1`
 
 // currentImplementReport returns the implement report the reviewer must judge.
-// Publication publishes the newest attempt whose report was saved as eligible,
-// including a valid blocked or failed report, so the review input must use that
-// same attempt. Otherwise the reviewer would read an older success report next
-// to the newer attempt's evidence while the PR body showed the newer summary.
-// The saved eligibility survives later rewrites of the attempt's error.
+// Publication publishes the newest attempt whose report was saved as eligible
+// and carries verification evidence, including a valid blocked or failed
+// report, so the review input must read that same attempt. Otherwise the
+// reviewer would see an older success report next to the newer attempt's
+// evidence while the pull request body showed the newer summary. The saved
+// eligibility survives later rewrites of the attempt's error.
 func (s *Scheduler) currentImplementReport(ctx context.Context, runID string) (*harness.PhaseResult, error) {
 	// A succeeded attempt without a stored report is a broken boundary. Fail
 	// like continuation instead of quietly falling back to an older attempt.
-	succeeded, err := s.savedImplementReport(ctx, newestSucceededImplementQuery, runID)
-	if err != nil {
+	// Its report must also stay readable: a corrupt stored report is not
+	// evidence the reviewer may read past.
+	var succeeded string
+	err := s.db.QueryRowContext(ctx, newestSucceededImplementQuery, runID).Scan(&succeeded)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	if succeeded != nil {
-		if _, err := savedImplementResult(succeeded); err != nil {
+	if err == nil {
+		if _, err := savedImplementResult(json.RawMessage(succeeded)); err != nil {
 			return nil, err
 		}
 	}
-	current, err := s.savedImplementReport(ctx, currentImplementReportQuery, runID)
-	if err != nil || current == nil {
+	var current string
+	err = s.db.QueryRowContext(ctx, currentImplementReportQuery, runID).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
-	result, err := savedImplementResult(current)
+	result, err := savedImplementResult(json.RawMessage(current))
 	if err != nil {
 		return nil, err
 	}
 	return &result, nil
-}
-
-// savedImplementReport reads the report saved with the attempt a query selects.
-// A missing row means the run has no such attempt; a missing report is a broken
-// boundary the caller must fail on.
-func (s *Scheduler) savedImplementReport(ctx context.Context, query, runID string) (json.RawMessage, error) {
-	var raw sql.NullString
-	if err := s.db.QueryRowContext(ctx, query, runID).Scan(&raw); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if !raw.Valid || raw.String == "" {
-		return nil, &fault.Error{Code: "phase.result_missing", Message: "Implement attempt has no saved report"}
-	}
-	return json.RawMessage(raw.String), nil
 }
 
 func (s *Scheduler) startReview(ctx context.Context, repo config.Repository, run workflow.Run, issue github.Issue, gitRun managedgit.Run, number int) error {

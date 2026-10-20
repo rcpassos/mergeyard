@@ -17,7 +17,7 @@ import (
 // success for publication. The reviewer must read the same attempt the PR body
 // shows, or the review input shows one attempt's report beside another
 // attempt's evidence.
-func TestReviewInputUsesTheAttemptPublicationPublished(t *testing.T) {
+func TestReviewInputUsesThePublishedImplementAttempt(t *testing.T) {
 	ctx := context.Background()
 	implement := `printf '%s\n' 'implemented' > feature.txt
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":4,"verification":[{"command":"implement test","outcome":"passed","excerpt":null}],"criteria":[],"human_action":null,"status":"success","summary":"Added feature"}}'`
