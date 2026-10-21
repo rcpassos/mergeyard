@@ -557,15 +557,6 @@ func TestPreparePreservesAnUnfinishedInitializationHoldingAnExtraFile(t *testing
 	}
 }
 
-func TestPrepareRecoversAnUnfinishedInitializationHoldingOnlyTheStart(t *testing.T) {
-	f := newFixture(t)
-	interruptBeforeHead(t, f)
-	run := prepare(t, f)
-	if got := git(t, run.Path, "branch", "--show-current"); got != run.Branch {
-		t.Fatalf("recovered worktree branch = %q", got)
-	}
-}
-
 // interruptDuringCheckout makes the requested run's checkout stall in a smudge
 // filter, so Git leaves a written HEAD, some of the files, and the
 // initialization lock. It returns the base path with the filter still set.
@@ -625,6 +616,68 @@ func TestPreparePreservesAnInterruptedCheckoutHoldingAnExtraFile(t *testing.T) {
 	requireConflictNaming(t, err, path)
 	if data, err := os.ReadFile(filepath.Join(path, "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
 		t.Fatalf("the extra file was deleted: %q, %v", data, err)
+	}
+}
+
+func TestPrepareRecoversAnInterruptedCheckoutWithACutShortFile(t *testing.T) {
+	f := newFixture(t)
+	base := interruptDuringCheckout(t, f)
+	git(t, base, "config", "filter.slow.smudge", "cat")
+	path := filepath.Join(f.root, "worktrees", "owner-repo", f.request.RunID)
+	// Git was writing this file when the deadline killed it.
+	write(t, path, "payload", "smudg")
+	run := prepare(t, f)
+	if data, err := os.ReadFile(filepath.Join(run.Path, "payload")); err != nil || string(data) != "smudged content\n" {
+		t.Fatalf("recovered payload = %q, %v", data, err)
+	}
+}
+
+func TestPrepareRecoversAnUnfinishedInitializationWithAnEmptyFile(t *testing.T) {
+	f := newFixture(t)
+	path := interruptBeforeHead(t, f)
+	write(t, path, "README.md", "")
+	run := prepare(t, f)
+	if data, err := os.ReadFile(filepath.Join(run.Path, "README.md")); err != nil || string(data) != "initial\n" {
+		t.Fatalf("recovered README = %q, %v", data, err)
+	}
+}
+
+func TestPreparePreservesAnUnfinishedInitializationWithAnEditedFile(t *testing.T) {
+	f := newFixture(t)
+	path := interruptBeforeHead(t, f)
+	write(t, path, "README.md", "edited by a person\n")
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireConflictNaming(t, err, path)
+	if data, err := os.ReadFile(filepath.Join(path, "README.md")); err != nil || string(data) != "edited by a person\n" {
+		t.Fatalf("the edit was deleted: %q, %v", data, err)
+	}
+}
+
+func TestPrepareRecoversAnInterruptedCreationWhoseWorktreeIsGone(t *testing.T) {
+	f := newFixture(t)
+	path := interruptWorktreeCreation(t, f)
+	// Only the branch and the registration remain.
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	run := prepare(t, f)
+	if got := git(t, run.Path, "branch", "--show-current"); got != run.Branch {
+		t.Fatalf("recovered worktree branch = %q", got)
+	}
+}
+
+func TestPrepareRecoversAnInterruptedCreationLeftEmpty(t *testing.T) {
+	f := newFixture(t)
+	path := interruptWorktreeCreation(t, f)
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	run := prepare(t, f)
+	if got := git(t, run.Path, "branch", "--show-current"); got != run.Branch {
+		t.Fatalf("recovered worktree branch = %q", got)
 	}
 }
 

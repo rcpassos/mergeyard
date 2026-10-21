@@ -95,11 +95,22 @@ func sshConfigKey() string {
 }
 
 func commandWithEnv(ctx context.Context, dir, code string, env []string, args ...string) (string, error) {
+	out, err := commandBytes(ctx, dir, code, env, args...)
+	stdout := string(out)
+	if err != nil || strings.ContainsRune(stdout, 0) {
+		return stdout, err
+	}
+	return strings.TrimSpace(stdout), nil
+}
+
+// commandBytes runs Git and returns its output exactly as written, for callers
+// that compare file contents.
+func commandBytes(ctx context.Context, dir, code string, env []string, args ...string) ([]byte, error) {
 	commandEnv := append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), env...)
 	commandEnv = append(commandEnv, sshEnvironment(dir)...)
 	result, err := proc.Run(ctx, proc.Request{Executable: "git", Args: args, Dir: dir, Env: commandEnv})
 	if ctx.Err() != nil {
-		return string(result.Stdout), contextFailure(ctx, code, dir, ctx.Err())
+		return result.Stdout, contextFailure(ctx, code, dir, ctx.Err())
 	}
 	if errors.Is(err, exec.ErrWaitDelay) && result.ExitCode == 0 {
 		// Git exited successfully; a hook or helper outlived it holding the
@@ -108,13 +119,9 @@ func commandWithEnv(ctx context.Context, dir, code string, env []string, args ..
 		err = nil
 	}
 	if err != nil {
-		return string(result.Stdout), failure(code, dir, fmt.Errorf("%s: %w", strings.TrimSpace(string(result.Stderr)), err))
+		return result.Stdout, failure(code, dir, fmt.Errorf("%s: %w", strings.TrimSpace(string(result.Stderr)), err))
 	}
-	stdout := string(result.Stdout)
-	if strings.ContainsRune(stdout, 0) {
-		return stdout, nil
-	}
-	return strings.TrimSpace(stdout), nil
+	return result.Stdout, nil
 }
 
 // contextFailure reports why a managed operation stopped. A deadline is a

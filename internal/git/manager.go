@@ -842,11 +842,11 @@ func managedInitialization(run Run) (bool, error) {
 	// Only Git's own initialization state may stand in for a missing HEAD: the
 	// worktree is still locked for initialization and the pending HEAD names
 	// exactly the run branch. Human edits that removed HEAD lack both.
-	locked, err := os.ReadFile(filepath.Join(admin, "locked"))
+	locked, err := initializationLocked(admin)
 	if err != nil {
-		return false, nil
+		return false, err
 	}
-	if strings.TrimSpace(string(locked)) != "initializing" {
+	if !locked {
 		return false, nil
 	}
 	pending, err := os.ReadFile(filepath.Join(admin, "HEAD.lock"))
@@ -861,6 +861,19 @@ func managedInitialization(run Run) (bool, error) {
 
 // gitDirTarget parses a linked worktree's ".git" file and resolves a relative
 // target against the worktree directory.
+// initializationLocked reports whether Git still holds a worktree's
+// registration locked for its own initialization. Only Git writes that lock
+// reason, and it removes the lock when the creation finishes.
+func initializationLocked(admin string) (bool, error) {
+	locked, err := os.ReadFile(filepath.Join(admin, "locked"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, failure("git.worktree", admin, err)
+	}
+	return strings.TrimSpace(string(locked)) == "initializing", nil
+}
+
 func gitDirTarget(content, worktree string) (string, bool) {
 	target, ok := strings.CutPrefix(strings.TrimSpace(content), "gitdir:")
 	if !ok {

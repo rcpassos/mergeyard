@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -27,9 +28,9 @@ type Leftovers struct {
 // the next run for the same issue can prepare. The preparation intent proves
 // that the branch and the worktree belong to this run. They are removed only
 // while they hold no work: the branch still at the recorded start, and a
-// checkout that belongs to the run and is clean. Leftovers with commits or
-// changes are preserved and reported, so the caller can name them for human
-// attention.
+// checkout that belongs to the run and holds nothing beyond the recorded start.
+// Leftovers with commits or changes are preserved and reported, so the caller
+// can name them for human attention.
 //
 // The returned error reports a failure to attempt the release, such as a
 // cancelled caller or a Git failure. A leftover that cannot be removed is
@@ -79,7 +80,8 @@ func (m *Manager) DiscardPreparation(ctx context.Context, req PrepareRequest) (L
 // once they are proven to hold no work. It returns the reason the leftovers
 // were preserved, or an empty reason when they were removed. The branch must
 // still sit at the recorded start, and the checkout must belong to this run
-// and be clean.
+// and hold nothing beyond the recorded start. Prepare's recovery of an
+// interrupted creation applies the same check.
 func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent prepareIntent) (string, error) {
 	if err := verifyBase(ctx, run.BasePath); err != nil {
 		return "", err
@@ -105,8 +107,10 @@ func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent p
 // this run and holds no work, so it can be discarded. Ownership is proven the
 // way an interrupted creation is recognized: an absent path, an empty
 // directory, Git's own unfinished initialization, or a checkout on the run
-// branch attached to the managed base. Such a checkout must also be clean,
-// because a change or a commit is work that is never deleted.
+// branch attached to the managed base. A checkout Git still holds locked for
+// initialization is compared with the recorded start, because a killed creation
+// leaves it partly written. Any other checkout must also be clean, because a
+// change or a commit is work that is never deleted.
 func (m *Manager) preparedWorktreeDiscardable(ctx context.Context, run Run, intent prepareIntent) (bool, error) {
 	owned, state, err := interruptedWorktreeOwnership(ctx, run)
 	if err != nil {
@@ -182,20 +186,31 @@ func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, 
 			return false, err
 		}
 	}
-	diff, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "--work-tree="+run.Path, "diff-files", "--name-status")
+	diff, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "--work-tree="+run.Path, "diff-files", "--name-status", "-z")
 	if err != nil {
 		return false, err
 	}
-	for _, record := range strings.Split(diff, "\n") {
-		if record == "" {
+	records := strings.Split(diff, "\x00")
+	for i := 0; i+1 < len(records); i += 2 {
+		status, path := records[i], records[i+1]
+		switch status {
+		case "D":
+			// Never written before the creation stopped.
 			continue
+		case "M":
+			// A killed checkout leaves the file it was writing cut short, and a
+			// cut-short file is a start of its recorded contents.
+			partial, err := preparedFileIsStartOfRecorded(ctx, run, start, path)
+			if err != nil {
+				return false, err
+			}
+			if partial {
+				continue
+			}
 		}
-		status, _, ok := strings.Cut(record, "\t")
-		if !ok || status != "D" {
-			// A file the directory holds differs from the recorded tree, so it
-			// holds work that the release must not discard.
-			return false, nil
-		}
+		// A file the directory holds differs from the recorded tree, so it
+		// holds work that the release must not discard.
+		return false, nil
 	}
 	untracked, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "--work-tree="+run.Path, "ls-files", "-o", "--exclude-standard")
 	if err != nil {
@@ -205,6 +220,35 @@ func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, 
 		return false, nil
 	}
 	return m.preparedSubmodulesHoldNothing(ctx, run, start)
+}
+
+// preparedFileIsStartOfRecorded reports whether a regular file in the
+// directory holds only the beginning of its recorded contents, empty included.
+// Git writes a file by opening it and then streaming the contents, so a creation
+// killed midway leaves such a file. A file that holds anything else is work.
+func preparedFileIsStartOfRecorded(ctx context.Context, run Run, start, path string) (bool, error) {
+	file := filepath.Join(run.Path, path)
+	info, err := os.Lstat(file)
+	if err != nil || !info.Mode().IsRegular() {
+		return false, nil
+	}
+	recorded, err := commandBytes(ctx, run.BasePath, "git.worktree", nil, "cat-file", "blob", start+":"+path)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, err
+		}
+		// A recorded entry that is not a readable blob, such as a submodule,
+		// proves nothing about the file.
+		return false, nil
+	}
+	if info.Size() > int64(len(recorded)) {
+		return false, nil
+	}
+	held, err := os.ReadFile(file)
+	if err != nil {
+		return false, failure("git.worktree", file, err)
+	}
+	return bytes.HasPrefix(recorded, held), nil
 }
 
 // preparedSubmodulesHoldNothing reports whether every submodule of the
@@ -275,7 +319,7 @@ func removePreparedWorktree(ctx context.Context, run Run) error {
 
 // checkoutLockedForInitialization reports whether Git still holds the
 // checkout's registration locked for initialization, which is how a killed
-// 'worktree add' leaves a checkout that stopped before its files were written.
+// 'worktree add' leaves a checkout that wrote HEAD but only some of its files.
 // The checkout is already proven to be attached to the managed base.
 func checkoutLockedForInitialization(run Run) (bool, error) {
 	link, err := os.ReadFile(filepath.Join(run.Path, ".git"))
@@ -286,13 +330,7 @@ func checkoutLockedForInitialization(run Run) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	locked, err := os.ReadFile(filepath.Join(admin, "locked"))
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	} else if err != nil {
-		return false, failure("git.worktree", run.Path, err)
-	}
-	return strings.TrimSpace(string(locked)) == "initializing", nil
+	return initializationLocked(admin)
 }
 
 // leftoverState classifies what a leftover path holds.
