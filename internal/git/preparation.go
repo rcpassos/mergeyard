@@ -37,10 +37,12 @@ type Leftovers struct {
 // that the branch and the worktree belong to this run. They are removed only
 // while they hold no work: the branch still at the recorded start, and a
 // checkout that belongs to the run and holds nothing beyond the recorded start,
-// not even an ignored file, because a local secret or a build output is a
-// person's data too. Leftovers with commits, changes, or ignored files are
-// preserved and reported, so the caller can name them for human attention. A
-// run without a claim returns at once, without waiting for another operation.
+// not even an ignored file, content beyond the start in a submodule, or saved
+// work in a submodule's repository, because a local secret, a build output, a
+// person's file, or a submodule stash is data too. Leftovers with commits,
+// changes, ignored files, or submodule content are preserved and reported, so
+// the caller can name them for human attention. A run without a claim returns
+// at once, without waiting for another operation.
 //
 // Leftovers the release cannot check are preserved and reported as
 // unverified: a claim that cannot be read or does not identify this run, a
@@ -194,8 +196,9 @@ func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent p
 // interruptedWorktreeOwnership found at the path. A checkout Git never
 // finished, or still holds locked for initialization, is compared with the
 // recorded start, because a killed creation leaves it partly written. Any other
-// checkout must also be clean, because a change, a commit, or an ignored file
-// is work that is never deleted.
+// checkout must also be clean and hold submodules with nothing beyond their
+// recorded commits, because a change, a commit, an ignored file, or submodule
+// content beyond the start is work that is never deleted.
 func (m *Manager) preparedWorktreeHoldsNothing(ctx context.Context, run Run, intent prepareIntent, state leftoverState) (bool, error) {
 	switch state {
 	case leftoverEmpty:
@@ -219,7 +222,7 @@ func (m *Manager) preparedWorktreeHoldsNothing(ctx context.Context, run Run, int
 		}
 		// Ignored files are a person's work too: a build output or a local
 		// secret never shows in the plain status, so they are listed explicitly.
-		status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all", "--ignored")
+		status, err := checkoutStatus(ctx, run.Path)
 		if err != nil {
 			if ctx.Err() != nil {
 				return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
@@ -228,18 +231,37 @@ func (m *Manager) preparedWorktreeHoldsNothing(ctx context.Context, run Run, int
 			// work, so the release fails and is retried instead of guessing.
 			return false, err
 		}
-		return status == "", nil
+		if status != "" {
+			return false, nil
+		}
+		// Git does not look inside a submodule directory that was never
+		// initialized, so status cannot see a person's files there.
+		return m.preparedSubmodulesHoldNothing(ctx, checkoutLocation{repoDir: run.BasePath, workTree: run.Path}, intent.BaseSHA)
 	}
 }
 
 // preparedDirectoryHoldsOnlyStart reports whether a directory that Git never
-// finished initializing holds no work beyond the recorded start. Every file it
-// holds must match the recorded tree, and it must hold no file the tree does
-// not. The working tree is compared through a temporary index, so the base's
-// own index and HEAD never affect the answer. A file the recorded tree holds
-// and the directory does not is a partial checkout: nothing is lost by
-// removing the directory.
+// finished initializing holds no work beyond the recorded start. It accepts
+// the missing files and cut-short files a killed creation leaves.
 func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, start string) (bool, error) {
+	return m.preparedDirectoryMatchesStart(ctx, run, start, true)
+}
+
+// preparedDirectoryHoldsExactlyStart reports whether a directory holds exactly
+// the recorded start. A missing or cut-short file is work, because the directory
+// is a completed checkout rather than a killed creation.
+func (m *Manager) preparedDirectoryHoldsExactlyStart(ctx context.Context, run Run, start string) (bool, error) {
+	return m.preparedDirectoryMatchesStart(ctx, run, start, false)
+}
+
+// preparedDirectoryMatchesStart reports whether a directory holds no work
+// beyond the recorded start. Every file it holds must match the recorded tree,
+// and it must hold no file the tree does not. The working tree is compared
+// through a temporary index, so the checkout's own index and HEAD never affect
+// the answer. A file the recorded tree holds and the directory does not is a
+// partial checkout, and a file holding only the beginning of its recorded
+// contents is a cut-short write; allowPartial accepts both.
+func (m *Manager) preparedDirectoryMatchesStart(ctx context.Context, run Run, start string, allowPartial bool) (bool, error) {
 	if !shaPattern.MatchString(start) {
 		return false, nil
 	}
@@ -275,17 +297,21 @@ func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, 
 		status, path := records[i], records[i+1]
 		switch status {
 		case "D":
-			// Never written before the creation stopped.
-			continue
-		case "M":
-			// A killed checkout leaves the file it was writing cut short, and a
-			// cut-short file is a start of its recorded contents.
-			partial, err := preparedFileIsStartOfRecorded(ctx, run, start, path)
-			if err != nil {
-				return false, err
-			}
-			if partial {
+			if allowPartial {
+				// Never written before the creation stopped.
 				continue
+			}
+		case "M":
+			if allowPartial {
+				// A killed checkout leaves the file it was writing cut short,
+				// and a cut-short file is a start of its recorded contents.
+				partial, err := preparedFileIsStartOfRecorded(ctx, run, start, path)
+				if err != nil {
+					return false, err
+				}
+				if partial {
+					continue
+				}
 			}
 		}
 		// A file the directory holds differs from the recorded tree, so it
@@ -301,7 +327,7 @@ func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, 
 	if untracked != "" {
 		return false, nil
 	}
-	return m.preparedSubmodulesHoldNothing(ctx, run, start)
+	return m.preparedSubmodulesHoldNothing(ctx, checkoutLocation{repoDir: run.BasePath, workTree: run.Path}, start)
 }
 
 // preparedFileIsStartOfRecorded reports whether a regular file in the
@@ -346,13 +372,34 @@ func preparedFileIsStartOfRecorded(ctx context.Context, run Run, start, path str
 	return false, nil
 }
 
-// preparedSubmodulesHoldNothing reports whether every submodule of the
-// recorded tree is empty in the directory. Git compares a submodule by the
-// commit it points at and never by the files inside it, and it skips the
-// subtree of an indexed submodule when it lists untracked files, so the other
-// checks cannot see a person adding files to an uninitialized submodule.
-func (m *Manager) preparedSubmodulesHoldNothing(ctx context.Context, run Run, start string) (bool, error) {
-	out, err := command(ctx, run.BasePath, "git.ls_tree", "ls-tree", "-r", "-z", start)
+// checkoutLocation names the repository and working tree of one checkout. They
+// differ for a submodule, whose repository is its own directory.
+type checkoutLocation struct {
+	repoDir  string
+	workTree string
+}
+
+// checkoutStatus lists every change in the checkout at dir, ignored files and
+// submodule changes included. The repository's .gitmodules ignore setting is
+// overridden, so it cannot hide an initialized submodule's changes.
+func checkoutStatus(ctx context.Context, dir string) (string, error) {
+	return command(ctx, dir, "git.status", "status", "--porcelain", "--untracked-files=all", "--ignored", "--ignore-submodules=none")
+}
+
+// preparedSubmodulesHoldNothing reports whether every submodule of the tree at
+// start, checked out at location, holds nothing beyond that tree. Git compares
+// a submodule by the commit it points at and never by the files inside it, and
+// it skips the subtree of an indexed submodule when it lists untracked files,
+// so status cannot see a person adding files to an uninitialized submodule. A
+// submodule the checkout never created, or one that is empty, holds nothing to
+// lose. An initialized submodule must still point at the recorded commit, hold
+// no physical or staged difference from the recorded tree, and carry no saved
+// repository data, and its own submodules are inspected the same way.
+func (m *Manager) preparedSubmodulesHoldNothing(ctx context.Context, location checkoutLocation, start string) (bool, error) {
+	if !shaPattern.MatchString(start) {
+		return false, nil
+	}
+	out, err := command(ctx, location.repoDir, "git.ls_tree", "ls-tree", "-r", "-z", start)
 	if err != nil {
 		return false, err
 	}
@@ -361,29 +408,104 @@ func (m *Manager) preparedSubmodulesHoldNothing(ctx context.Context, run Run, st
 			continue
 		}
 		fields, path, ok := strings.Cut(record, "\t")
-		if !ok {
+		parts := strings.Fields(fields)
+		if !ok || len(parts) != 3 {
 			// A record the release cannot read is not proof of an empty
 			// submodule.
 			return false, nil
 		}
-		mode, _, ok := strings.Cut(fields, " ")
-		if !ok || mode != "160000" {
+		if parts[0] != "160000" {
 			continue
 		}
-		entries, err := os.ReadDir(filepath.Join(run.Path, path))
+		dir := filepath.Join(location.workTree, path)
+		entries, err := os.ReadDir(dir)
 		if errors.Is(err, os.ErrNotExist) {
 			// The checkout never created the submodule.
 			continue
 		}
 		if err != nil {
-			return false, failure("git.worktree", filepath.Join(run.Path, path), err)
+			return false, failure("git.worktree", dir, err)
 		}
-		if len(entries) > 0 {
-			// The submodule holds files that no other check can verify.
+		if len(entries) == 0 {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err != nil {
+			// An uninitialized submodule has no checkout, so the recorded
+			// start provides only the empty directory. Any file here is work.
+			return false, nil
+		}
+		holdsNothing, err := m.preparedSubmoduleHoldsOnlyStart(ctx, dir, parts[2])
+		if err != nil {
+			return false, err
+		}
+		if !holdsNothing {
 			return false, nil
 		}
 	}
 	return true, nil
+}
+
+// preparedSubmoduleHoldsOnlyStart reports whether an initialized submodule
+// holds nothing beyond the recorded commit. The submodule must still point at
+// that commit, its real index and physical files must match the recorded tree,
+// and its Git repository must hold no saved work. The physical comparison uses
+// a fresh index, so assume-unchanged and skip-worktree flags cannot hide an
+// edit; the staged comparison catches work that only the real index holds. Its
+// own submodules are inspected the same way, because an uninitialized nested
+// submodule has the same blind spot.
+func (m *Manager) preparedSubmoduleHoldsOnlyStart(ctx context.Context, dir, start string) (bool, error) {
+	head, err := command(ctx, dir, "git.worktree", "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, contextFailure(ctx, "git.worktree", dir, ctx.Err())
+		}
+		return false, err
+	}
+	if head != start {
+		return false, nil
+	}
+	staged, err := preparedSubmoduleIndexHoldsNothing(ctx, dir, start)
+	if err != nil {
+		return false, err
+	}
+	if !staged {
+		return false, nil
+	}
+	holdsNothing, err := m.preparedDirectoryHoldsExactlyStart(ctx, Run{Path: dir, BasePath: dir}, start)
+	if err != nil {
+		return false, err
+	}
+	if !holdsNothing {
+		return false, nil
+	}
+	return preparedSubmoduleRepositoryHoldsNothing(ctx, dir, start)
+}
+
+// preparedSubmoduleIndexHoldsNothing reports whether the submodule's real index
+// still records the tree at start. A staged edit can leave the physical file
+// unchanged, so the fresh-index comparison cannot see it.
+func preparedSubmoduleIndexHoldsNothing(ctx context.Context, dir, start string) (bool, error) {
+	_, err := command(ctx, dir, "git.worktree", "diff-index", "--cached", "--quiet", "--ignore-submodules=none", start, "--")
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
+// preparedSubmoduleRepositoryHoldsNothing reports whether the submodule's Git
+// repository holds no commit beyond the recorded start and its remote-tracking
+// refs. Stashes, local branches, tags, and reflog entries can name commits that
+// removing the checkout would lose even when its files are clean.
+func preparedSubmoduleRepositoryHoldsNothing(ctx context.Context, dir, start string) (bool, error) {
+	out, err := command(ctx, dir, "git.worktree", "rev-list", "--max-count=1", "--all", "--reflog", "--not", start, "--remotes")
+	if err != nil {
+		return false, err
+	}
+	return out == "", nil
 }
 
 // removePreparedWorktree deletes a discarded preparation's worktree and its
