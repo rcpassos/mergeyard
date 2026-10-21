@@ -632,6 +632,23 @@ func TestPrepareRecoversAnInterruptedCheckoutWithACutShortFile(t *testing.T) {
 	}
 }
 
+func TestPrepareRecoversAnUnfinishedInitializationWithACutShortConvertedFile(t *testing.T) {
+	f := newFixture(t)
+	write(t, f.seed, ".gitattributes", "*.txt eol=crlf\n")
+	write(t, f.seed, "lines.txt", "one\ntwo\nthree\n")
+	git(t, f.seed, "add", ".")
+	git(t, f.seed, "commit", "-m", "converted file")
+	git(t, f.seed, "push", "origin", "main")
+	path := interruptBeforeHead(t, f)
+	// Git writes the converted contents, so the cut-short file is a start of
+	// those and not of the stored file.
+	write(t, path, "lines.txt", "one\r\ntw")
+	run := prepare(t, f)
+	if data, err := os.ReadFile(filepath.Join(run.Path, "lines.txt")); err != nil || string(data) != "one\r\ntwo\r\nthree\r\n" {
+		t.Fatalf("recovered file = %q, %v", data, err)
+	}
+}
+
 func TestPrepareRecoversAnUnfinishedInitializationWithAnEmptyFile(t *testing.T) {
 	f := newFixture(t)
 	path := interruptBeforeHead(t, f)

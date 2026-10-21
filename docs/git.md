@@ -122,7 +122,10 @@ tree, and it must hold no file the tree does not. A file the tree holds and
 the directory does not is a partial checkout, and nothing is lost by removing
 the directory. So is a file that holds only the beginning of its recorded
 contents, the empty file included, because a killed creation leaves the file
-it was writing cut short. A submodule of the
+it was writing cut short. Git writes some files converted, such as line
+endings, so the beginning may instead be of the converted contents, produced
+under the attributes of the recorded start and any filter the repository
+configures. A submodule of the
 recorded tree is inspected separately, because Git compares a submodule by the
 commit it points at and never by the files inside it, and it skips the subtree
 of an indexed submodule when it lists untracked files. Anything else is work,

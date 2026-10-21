@@ -225,29 +225,43 @@ func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, 
 // preparedFileIsStartOfRecorded reports whether a regular file in the
 // directory holds only the beginning of its recorded contents, empty included.
 // Git writes a file by opening it and then streaming the contents, so a creation
-// killed midway leaves such a file. A file that holds anything else is work.
+// killed midway leaves such a file. Git writes some files converted, such as
+// line endings or an ident expansion, so the beginning may also be of the
+// converted contents. A file that holds anything else is work.
 func preparedFileIsStartOfRecorded(ctx context.Context, run Run, start, path string) (bool, error) {
 	file := filepath.Join(run.Path, path)
 	info, err := os.Lstat(file)
 	if err != nil || !info.Mode().IsRegular() {
 		return false, nil
 	}
-	// One byte past the file's size tells a longer recorded file from an equal
-	// one, and is all of the recorded contents the comparison needs.
-	recorded, err := commandPrefix(ctx, run.BasePath, "git.worktree", nil, int(info.Size())+1, "cat-file", "blob", start+":"+path)
-	if err != nil {
-		if ctx.Err() != nil {
-			return false, err
-		}
-		// A recorded entry that is not a readable blob, such as a submodule,
-		// proves nothing about the file.
-		return false, nil
-	}
 	held, err := os.ReadFile(file)
 	if err != nil {
 		return false, failure("git.worktree", file, err)
 	}
-	return bytes.HasPrefix(recorded, held), nil
+	// One byte past the file's size is all of the recorded contents the
+	// comparison needs, so a large recorded file is never held whole.
+	limit := int(info.Size()) + 1
+	for _, args := range [][]string{
+		{"cat-file", "blob", start + ":" + path},
+		// The conversion follows the attributes of the recorded start, because
+		// the directory's own .gitattributes may not be written yet. It runs any
+		// filter the repository configures, as the checkout itself did.
+		{"--attr-source=" + start, "cat-file", "--filters", start + ":" + path},
+	} {
+		recorded, err := commandPrefix(ctx, run.BasePath, "git.worktree", nil, limit, args...)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false, err
+			}
+			// A recorded entry that is not a readable blob, such as a submodule,
+			// or a Git that cannot convert, proves nothing about the file.
+			continue
+		}
+		if bytes.HasPrefix(recorded, held) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // preparedSubmodulesHoldNothing reports whether every submodule of the
