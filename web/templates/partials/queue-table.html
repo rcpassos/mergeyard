@@ -1,0 +1,11 @@
+{{define "queue-table"}}<section class="card card-border bg-base-100"><div class="card-body gap-4">
+<nav class="flex flex-wrap items-center gap-2" aria-label="Queue group filters">
+<a class="btn btn-sm{{if not .QueueFilter}} btn-active{{end}}" href="/queue"{{if not .QueueFilter}} aria-current="true"{{end}}>All groups</a>
+{{range .Groups}}<a class="btn btn-sm{{if eq $.QueueFilter .Key}} btn-active{{end}}" href="/queue?group={{.Key}}"{{if eq $.QueueFilter .Key}} aria-current="true"{{end}}>{{.Name}} <span class="badge badge-sm">{{.Count}}</span></a>{{end}}
+</nav>
+<div class="overflow-x-auto"><table class="table table-sm">
+<caption class="sr-only">Open runs and queued issues by Queue group</caption>
+<thead><tr><th scope="col">Status</th>{{if .ShowRepository}}<th scope="col">Repository</th>{{end}}<th scope="col">Issue</th><th scope="col">Round / attempt</th><th scope="col">Updated</th><th scope="col">PR</th></tr></thead>
+<tbody>{{range .Groups}}{{if or (not $.QueueFilter) (eq $.QueueFilter .Key)}}{{template "queue-group-row" .}}{{end}}{{end}}</tbody>
+</table></div>
+</div></section>{{end}}

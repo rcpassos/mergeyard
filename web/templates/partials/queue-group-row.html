@@ -1,0 +1,42 @@
+{{define "queue-group-row"}}
+<tr class="bg-base-200"><th class="font-semibold" colspan="{{.Columns}}" scope="colgroup" id="group-{{.Key}}">{{.Name}} <span class="ml-2 text-sm font-normal text-base-content/70">{{.Count}}</span></th></tr>
+{{range .Runs}}<tr>
+<td class="align-top">{{statusBadge .}}</td>
+{{if $.ShowRepository}}<td class="align-top whitespace-nowrap"><a href="https://github.com/{{.Repository}}" target="_blank" rel="noreferrer">{{.Repository}}</a></td>{{end}}
+<td class="align-top"><a class="font-semibold [overflow-wrap:anywhere]" href="/runs/{{.ID}}">#{{.IssueNumber}} · {{if .Title}}{{.Title}}{{else}}View run{{end}}</a>
+<div class="mt-1 space-y-1 text-sm text-base-content/70">
+{{with .Merge}}{{if .Pending}}<p>Cleanup pending{{with .Remaining}} · {{range $index, $item := .}}{{if $index}}, {{end}}{{$item}}{{end}}{{end}}</p>{{else}}<p>Cleanup complete</p>{{end}}{{if .Error}}<p class="text-error">{{.Error}}</p>{{end}}{{end}}
+{{with .CI}}{{if .Warning}}<p class="text-warning">{{.Warning}}</p>{{end}}{{if .BaseWarning}}<p class="text-warning">{{.BaseWarning}}</p>{{end}}{{end}}
+{{with .HumanAction}}<p class="text-error">{{.Decision}}</p>{{end}}
+{{with .Escalation}}{{if .Reasons}}<p class="text-warning">Needs careful review: {{range $index, $reason := .Reasons}}{{if $index}}; {{end}}{{$reason.Reason}}{{end}}</p>{{end}}{{if .EvaluationWarning}}<p class="text-warning">{{.EvaluationWarning}}</p>{{end}}{{end}}
+{{with .HarnessWait}}{{if eq .Reason "credits_exhausted"}}<p class="text-warning">Explicit Retry required.</p>{{end}}{{end}}
+{{if .Stopping}}<p>Stop requested.</p>{{end}}
+{{if .LastErrorCode}}<p class="text-error"><code>{{.LastErrorCode}}</code>{{with .LastErrorMessage}} · {{.}}{{end}}</p>{{end}}
+</div></td>
+<td class="align-top whitespace-nowrap">{{if or .Round .Attempt}}{{.Round}} / {{.Attempt}}{{else}}—{{end}}</td>
+<td class="align-top whitespace-nowrap">{{with .UpdatedAt}}{{since .}}{{else}}—{{end}}</td>
+<td class="align-top whitespace-nowrap">{{if .PRURL}}<a href="{{.PRURL}}" target="_blank" rel="noreferrer">PR{{with .PRNumber}} #{{.}}{{end}}</a>{{else}}—{{end}}</td>
+</tr>{{end}}
+{{range .Issues}}<tr>
+<td class="align-top">{{issueBadge .}}</td>
+{{if $.ShowRepository}}<td class="align-top whitespace-nowrap"><a href="https://github.com/{{.Repository}}" target="_blank" rel="noreferrer">{{.Repository}}</a></td>{{end}}
+<td class="align-top"><a class="font-semibold [overflow-wrap:anywhere]" href="{{if .Issue.URL}}{{.Issue.URL}}{{else}}https://github.com/{{.Repository}}/issues/{{.Issue.Number}}{{end}}" target="_blank" rel="noreferrer">#{{.Issue.Number}} · {{.Issue.Title}}</a>
+<div class="mt-1 space-y-1 text-sm text-base-content/70">
+{{if .RefusalReason}}<p class="text-warning">Refused: {{.RefusalReason}}</p>{{end}}
+{{if .Blockers}}<p>Blocked by {{range $index, $blocker := .Blockers}}{{if $index}}, {{end}}{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer">#{{.Number}} {{.Title}}</a>{{else}}#{{.Number}} {{.Title}}{{end}}{{end}}</p>{{end}}
+</div></td>
+<td class="align-top text-base-content/50">—</td>
+<td class="align-top whitespace-nowrap">{{if .Issue.UpdatedAt.IsZero}}—{{else}}{{since .Issue.UpdatedAt}}{{end}}</td>
+<td class="align-top text-base-content/50">—</td>
+</tr>{{end}}
+{{range .Failures}}<tr>
+<td class="align-top"><span class="badge badge-error">GitHub failure</span></td>
+{{if $.ShowRepository}}<td class="align-top whitespace-nowrap">{{.Repository}}</td>{{end}}
+<td class="align-top">{{if .RunID}}<a class="font-semibold [overflow-wrap:anywhere]" href="/runs/{{.RunID}}">{{if .IssueNumber}}#{{.IssueNumber}} · {{end}}{{.Code}}</a>{{else}}<span class="font-semibold [overflow-wrap:anywhere]">{{if .IssueNumber}}#{{.IssueNumber}} · {{end}}{{.Code}}</span>{{end}}
+<p class="mt-1 text-sm text-error">{{.Message}}</p></td>
+<td class="align-top text-base-content/50">—</td>
+<td class="align-top text-base-content/50">—</td>
+<td class="align-top text-base-content/50">—</td>
+</tr>{{end}}
+{{if not .Count}}<tr><td class="text-base-content/70" colspan="{{.Columns}}">{{if eq .Key "ready"}}No eligible issues. Add the {{range $index, $label := .Labels}}{{if $index}} or {{end}}<code>{{$label}}</code>{{end}} label on GitHub.{{else}}{{.Empty}}{{end}}</td></tr>{{end}}
+{{end}}

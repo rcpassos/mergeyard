@@ -30,13 +30,13 @@ _Avoid_: API key, token (the browser CSRF token is separate)
 **Detached browser**: The browser Mergeyard opens for the dashboard. It outlives the command that opened it: `mergeyard open` returns at once, and stopping `mergeyard start` never closes a browser the user is watching.
 _Avoid_: Child browser, owned browser
 
-**Queue group**: The bucket the dashboard sorts an open run or a queued issue into, planned under [#215](https://github.com/rcpassos/mergeyard/issues/215) as six groups where every open run and queued issue belongs to exactly one group and ended runs leave the queue. The shipped dashboard does not group yet: it shows five areas of its own, headed Running, Ready, Blocked, Needs attention and Draft PRs · review pending, where a refused issue and a manual takeover land under Needs attention and a harness-waiting or ready-to-merge run stays under Running.
+**Queue group**: The bucket the dashboard sorts an open run or a queued issue into. There are six groups, in display order, and every open run and queued issue belongs to exactly one; ended runs leave the queue.
+- **Needs attention**: something is stuck until the user acts, including a scoped GitHub failure, a merged run whose cleanup has not finished, and an issue flagged for attention.
+- **Waiting for your merge**: the PR is approved and ready; only the user's merge remains.
 - **Running**: Mergeyard or the user is actively moving the run forward, including a manual takeover and waiting for CI.
 - **Waiting for harness**: the run is paused by a usage limit or an exhausted-credit block.
 - **Ready**: an eligible issue not yet claimed.
 - **Blocked**: an issue that cannot be claimed yet, because of open blockers or a refusal.
-- **Needs attention**: something is stuck until the user acts, including a scoped GitHub failure and a merged run whose cleanup has not finished.
-- **Waiting for your merge**: the PR is approved and ready; only the user's merge remains.
 _Avoid_: Section, column, lane
 
 **Scoped GitHub failure**: A GitHub read or write failure attributed to one repository or run. It is reported on the dashboard and skips only its subject; local-state failures still stop dispatch everywhere.

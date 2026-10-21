@@ -1550,16 +1550,23 @@ Default address: `http://127.0.0.1:7331`. The dashboard is the primary interface
 
 ### Queue
 
+Every open run and queued issue appears in exactly one of six groups, in this
+display order. Ended runs leave the queue.
+
 ```text
+Needs attention
+Waiting for your merge
 Running
 Waiting for harness
 Ready
 Blocked
-Needs attention
-Waiting for your merge
 ```
 
-These groups are the target of [#215](https://github.com/rcpassos/mergeyard/issues/215). The shipped dashboard still shows five areas of its own, as [web.md](web.md) describes.
+The Queue is one table with group header rows and group filter chips. Its
+columns are status, repository (only when more than one repository is
+configured), issue number and title, round/attempt, updated, and a PR link. A
+secondary line under the title carries blockers, refusal reasons, CI or base
+warnings, and error codes.
 
 ### Repository page
 
