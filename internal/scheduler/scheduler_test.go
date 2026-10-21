@@ -44,6 +44,7 @@ type fakeGitHub struct {
 // issue.
 type leftoverComment struct {
 	RunID, Branch, Worktree, Reason string
+	Unverified                      bool
 }
 
 // listingRequest records one label-filtered listing request.
@@ -96,7 +97,7 @@ func (f *fakeGitHub) EnsureStopLeftoversComment(_ context.Context, _ string, n i
 		f.leftoverComments = make(map[int]leftoverComment)
 	}
 	if _, exists := f.leftoverComments[n]; !exists {
-		f.leftoverComments[n] = leftoverComment{RunID: runID, Branch: leftovers.Branch, Worktree: leftovers.Worktree, Reason: leftovers.Reason}
+		f.leftoverComments[n] = leftoverComment{RunID: runID, Branch: leftovers.Branch, Worktree: leftovers.Worktree, Reason: leftovers.Reason, Unverified: leftovers.Unverified}
 	}
 	return nil
 }
