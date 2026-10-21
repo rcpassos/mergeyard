@@ -75,7 +75,11 @@ never posts an absolute local path; run detail and the `run.stop_leftovers`
 event keep the full path. The preparation of a run that already saved its
 ownership is never released, because that work belongs to the run. The
 leftovers are recorded in the `run.stop_leftovers` event, whose `unverified`
-field marks leftovers that could not be checked.
+field marks leftovers that could not be checked. They are recorded once: a
+repeated Stop that keeps them again leaves that record and its event alone,
+while a retry that verifies and removes them clears the run's branch and
+worktree and withdraws the attention flag recorded for them, so a stopped run
+never names artifacts that are gone.
 
 Repositories are visited in configuration order. Issues are ordered by creation
 time and then issue number. Only open ready issues without running/attention

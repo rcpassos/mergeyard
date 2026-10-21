@@ -22,6 +22,9 @@ type Leftovers struct {
 	Path string
 	// Preserved reports that the leftovers remain for human attention.
 	Preserved bool
+	// Released reports that the release checked this run's leftovers and
+	// nothing of them remains, so a caller can clear what it recorded earlier.
+	Released bool
 	// Reason explains why the leftovers were preserved.
 	Reason string
 	// Unverified reports that the release could not check the leftovers, so
@@ -116,7 +119,7 @@ func (m *Manager) releaseClaimedLeftovers(ctx context.Context, run Run) (Leftove
 	if err := removePrepareIntent(run); err != nil {
 		return Leftovers{}, err
 	}
-	return Leftovers{}, nil
+	return Leftovers{Released: true}, nil
 }
 
 // unverifiedLeftovers reports leftovers the release could not check. They are
