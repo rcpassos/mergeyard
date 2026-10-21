@@ -110,12 +110,21 @@ the recorded start, and a checkout that belongs to the run and holds nothing
 beyond the recorded start (a readable checkout must be clean, with no ignored
 file either). A leftover with commits, changes, or ignored files (a `.env`, a
 build output) is preserved and reported with the reason, so the caller can name
-it for human attention. So is a leftover whose managed base cannot be verified,
-because stopping the run must not depend on repairing it. A run without an
+it for human attention. Leftovers the release cannot check are preserved and
+reported as unverified, named by the run's branch and worktree: an intent that
+is empty, corrupt, or does not identify the run; a managed base that is missing
+or replaced; a checkout not attached to the managed base; or a Git check that
+fails or exceeds its deadline. Stopping the run must not depend on any of them,
+because a retry may never clear them. A run without an
 intent returns at once, without waiting for the Git lock. The intent is released only after
 the leftovers are gone, and a run without an intent never removes what another
-run created. A failure to attempt the release is returned as an error, so the
-caller retries it instead of reporting untouched leftovers as work.
+run created. Only a caller that gave up before the check finished, or invalid
+input, gets an error, so the caller retries instead of reporting a check that
+never ran.
+
+Intent writes reach the disk before they take effect: the temporary file is
+flushed before the rename and its directory after it, so a power loss cannot
+leave an empty intent or lose the rename.
 
 A checkout that Git never finished initializing has no readable HEAD, and one
 that Git still holds locked for initialization has a HEAD but only some of its

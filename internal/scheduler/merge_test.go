@@ -66,7 +66,7 @@ func TestMergeCleanupPendingIsVisible(t *testing.T) {
 	for _, path := range []string{"/", "/runs/" + run.ID} {
 		res := httptest.NewRecorder()
 		server.ServeHTTP(res, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331"+path, nil))
-		if res.Code != 200 || !strings.Contains(res.Body.String(), "Merged — cleanup pending") {
+		if res.Code != 200 || !strings.Contains(strings.ToLower(res.Body.String()), "cleanup pending") {
 			t.Fatalf("merge missing from %s", path)
 		}
 		if path != "/" && (!strings.Contains(res.Body.String(), "Remove running label") || strings.Contains(res.Body.String(), "unavailable <script>")) {

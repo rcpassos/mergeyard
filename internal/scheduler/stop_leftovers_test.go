@@ -458,9 +458,101 @@ func TestStopCompletesWhenTheManagedBaseIsGone(t *testing.T) {
 			if !has(api.issues["owner/repo"][0], "agent-needs-attention") {
 				t.Fatalf("the unverifiable leftovers did not flag the issue: %+v", api.issues["owner/repo"][0].Labels)
 			}
-			if _, ok := api.leftoverComments[7]; !ok {
+			if comment, ok := api.leftoverComments[7]; !ok || !comment.Unverified {
 				t.Fatalf("the unverifiable leftovers were not named on the issue: %+v", api.leftoverComments)
 			}
 		})
+	}
+}
+
+// requireStoppedUnverified proves that a stop finished on leftovers it could
+// not check: the run is STOPPED, nothing was deleted, the issue is flagged, and
+// the comment names the run's branch and worktree as unverified.
+func requireStoppedUnverified(t *testing.T, rt *app.Runtime, api *fakeGitHub, run workflow.Run, prepared managedgit.Run) {
+	t.Helper()
+	stopped, err := rt.Workflow.Get(context.Background(), run.ID)
+	if err != nil || stopped.State != workflow.Stopped {
+		t.Fatalf("stop: %+v %v", stopped, err)
+	}
+	if _, err := os.Stat(prepared.Path); err != nil {
+		t.Fatalf("the unverified worktree was removed: %v", err)
+	}
+	if !has(api.issues["owner/repo"][0], "agent-needs-attention") {
+		t.Fatalf("the unverified leftovers did not flag the issue: %+v", api.issues["owner/repo"][0].Labels)
+	}
+	comment, ok := api.leftoverComments[7]
+	if want := filepath.ToSlash(filepath.Join("worktrees", "owner-repo", run.ID)); !ok || !comment.Unverified || comment.Branch != "mergeyard/issue-7" || comment.Worktree != want {
+		t.Fatalf("the unverified leftovers were not named on the issue: %+v", api.leftoverComments)
+	}
+}
+
+// TestStopCompletesWhenTheLeftoversCannotBeChecked proves that a stop does not
+// wedge on a claim that a crash or a person left empty or corrupt, or on a
+// managed base replaced by another clone: the run reaches STOPPED and the
+// leftovers are kept and named as unverified.
+func TestStopCompletesWhenTheLeftoversCannotBeChecked(t *testing.T) {
+	base := func(rt *app.Runtime) string { return filepath.Join(rt.Workspace.Root, "repos", "owner-repo", "base") }
+	claim := func(content string) func(*testing.T, *app.Runtime, string) {
+		return func(t *testing.T, rt *app.Runtime, remote string) {
+			path, err := managedgit.PrepareIntentPath(rt.Workspace.Root, "owner/repo", "interrupted")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for name, breakIt := range map[string]func(*testing.T, *app.Runtime, string){
+		"empty claim":   claim(""),
+		"corrupt claim": claim(`{"id":"interrupted",`),
+		"replaced base": func(t *testing.T, rt *app.Runtime, remote string) {
+			if err := os.RemoveAll(base(rt)); err != nil {
+				t.Fatal(err)
+			}
+			gitCommand(t, rt.Workspace.Root, "clone", "--quiet", remote, base(rt))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, rt, api, remote, _, _ := localFlow(t, successfulScript)
+			ctx := context.Background()
+			run := runInState(t, rt, "interrupted", workflow.Preparing)
+			prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
+			if err != nil {
+				t.Fatal(err)
+			}
+			breakIt(t, rt, remote)
+			if err := s.Stop(ctx, run.ID); err != nil {
+				t.Fatal(err)
+			}
+			requireStoppedUnverified(t, rt, api, run, prepared)
+		})
+	}
+}
+
+// TestStopCompletesWhenGitHangsOnTheLeftovers proves that a Git check that
+// exceeds its deadline does not leave the stop pending: every attempt would
+// hang the same way, so the first one finishes the stop on unverified
+// leftovers, and another stop finds the run already STOPPED.
+func TestStopCompletesWhenGitHangsOnTheLeftovers(t *testing.T) {
+	_, rt, api, _, cfg, r := localFlow(t, successfulScript)
+	ctx := context.Background()
+	run := runInState(t, rt, "interrupted", workflow.Preparing)
+	prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installGitWrapper(t, "status", "exec /bin/sleep 600")
+	short := managedgit.NewWithTimeouts(rt.Workspace, managedgit.Timeouts{Metadata: time.Second, Worktree: time.Second, Clone: time.Second, Fetch: time.Second, Push: time.Second})
+	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: api, Git: short, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(ctx, run.ID); err != nil {
+		t.Fatalf("a hung Git check failed the stop: %v", err)
+	}
+	requireStoppedUnverified(t, rt, api, run, prepared)
+	if err := s.Stop(ctx, run.ID); err != nil {
+		t.Fatalf("a repeated stop failed: %v", err)
 	}
 }

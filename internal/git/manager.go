@@ -576,7 +576,9 @@ func writePrepareIntent(run Run, created bool) error {
 }
 
 // writeAtomicJSON replaces path with value in one rename so an interrupted
-// write never leaves a partial intent behind.
+// write never leaves a partial intent behind. The file reaches the disk before
+// the rename, and the directory after it, so a power loss cannot leave an
+// empty intent or lose the rename.
 func writeAtomicJSON(path string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -598,10 +600,31 @@ func writeAtomicJSON(path string, value any) error {
 		tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// syncDir flushes a directory's entries, so a rename into it survives a power
+// loss.
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	if err := dir.Sync(); err != nil {
+		dir.Close()
+		return err
+	}
+	return dir.Close()
 }
 
 // readPrepareIntent reads the claim of one run's preparation. The second
@@ -687,8 +710,8 @@ func (m *Manager) removeInterruptedWorktree(ctx context.Context, run Run, intent
 	if err != nil {
 		return err
 	}
-	if preserved != "" {
-		return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree not discarded: "+preserved))
+	if preserved.reason != "" {
+		return failure("git.branch_conflict", run.Path, errors.New("interrupted worktree not discarded: "+preserved.reason))
 	}
 	return nil
 }

@@ -13,7 +13,11 @@ var templateFiles = []string{"templates/*.html", "templates/pages/*.html", "temp
 // templateHelpers is the function registry available to every dashboard
 // template. Presentation helpers belong here, not in the page data.
 func templateHelpers() template.FuncMap {
-	return template.FuncMap{"outcomeAlert": outcomeAlert}
+	return template.FuncMap{
+		"outcomeAlert": outcomeAlert,
+		"statusBadge":  statusBadge, "stepLabel": stepLabel, "phaseLabel": phaseLabel,
+		"since": since, "until": until,
+	}
 }
 
 // outcomeVariants maps the outcome words agents and CI report (criteria

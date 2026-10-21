@@ -3,11 +3,11 @@
      so the dropdown anchors to the header's right edge and stays on screen
      wherever the pill wraps. */}}
 {{define "harness-pills"}}{{range .Harnesses}}<details class="dropdown dropdown-end static" id="harness-{{.Harness}}">
-<summary class="badge {{if .ProbeID}}badge-info{{else if .Available}}badge-success{{else}}badge-warning{{end}} h-auto min-h-5 max-w-full cursor-pointer"><span>{{.Harness}} · {{if .ProbeID}}Recovery probe {{if .ProbeAttemptID}}running{{else}}reserved{{end}}{{else if .Available}}Available{{else if eq .Reason "credits_exhausted"}}Out of credits{{else}}Usage limited{{if not .ResetAt.IsZero}} · resets {{template "harness-time" .ResetAt}}{{end}}{{end}}</span></summary>
+<summary class="badge {{if .ProbeID}}badge-info{{else if .Available}}badge-success{{else}}badge-warning{{end}} h-auto min-h-5 max-w-full cursor-pointer"><span>{{.Harness}} · {{if .ProbeID}}Recovery probe {{if .ProbeAttemptID}}running{{else}}reserved{{end}}{{else if .Available}}Available{{else if eq .Reason "credits_exhausted"}}Out of credits{{else}}Usage limited{{with until .ResetAt}} · resets {{.}}{{end}}{{end}}</span></summary>
 <div class="dropdown-content card card-sm z-10 mt-2 w-80 max-w-full bg-base-100 shadow-lg"><div class="card-body gap-3">
 <h2 class="card-title text-base">{{.Harness}}</h2>
 <dl class="space-y-2 text-sm [&_dt]:text-base-content/70">
-<div><dt>Status</dt><dd>{{if .Available}}Available{{else if eq .Reason "credits_exhausted"}}Credits exhausted · explicit recovery required{{if not .ResetAt.IsZero}} · Probe may run after temporary reset {{template "harness-time" .ResetAt}}{{end}}{{else if .ResetAt.IsZero}}Usage limited{{else}}Waiting until {{template "harness-time" .ResetAt}}{{end}}</dd></div>
+<div><dt>Status</dt><dd>{{if .Available}}Available{{else if eq .Reason "credits_exhausted"}}Credits exhausted · explicit recovery required{{with until .ResetAt}} · Probe may run after temporary reset {{.}}{{end}}{{else}}{{with until .ResetAt}}Waiting until {{.}}{{else}}Reset time unknown{{end}}{{end}}</dd></div>
 {{if .ProbeID}}<div><dt>Recovery probe</dt><dd>{{if .ProbeAttemptID}}Running{{else}}Reserved{{end}}{{if .ProbeRunID}} for run {{.ProbeRunID}}{{else}} · independent availability check{{end}}</dd></div>{{end}}
 {{if .Source}}<div><dt>Source</dt><dd>{{.Source}}</dd></div>{{end}}
 {{if .ResetTimeSource}}<div><dt>Reset time source</dt><dd>{{.ResetTimeSource}}</dd></div>{{end}}
@@ -16,8 +16,6 @@
 </dl>
 {{if .CheckEligible}}<form class="space-y-2" method="post" action="/harnesses/{{.Harness}}/check" hx-post="/harnesses/{{.Harness}}/check" hx-target="#content" hx-swap="outerHTML"><input type="hidden" name="csrf_token" value="{{$.Token}}"><p class="text-sm">Check availability uses account quota for one minimal model request with no engineering work. Stopped runs stay stopped.</p><button class="btn btn-sm btn-outline" type="submit">Check availability</button></form>{{end}}
 </div></div></details>{{end}}{{end}}
-
-{{define "harness-time"}}<time datetime="{{.UTC.Format "2006-01-02T15:04:05Z07:00"}}">{{.UTC.Format "2006-01-02 15:04 UTC"}}</time>{{end}}
 
 {{/* A content swap: the page content plus the header pills, refreshed out of
      band so live updates keep them current. */}}

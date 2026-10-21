@@ -21,6 +21,9 @@ type StoppedLeftovers struct {
 	Worktree string
 	// Reason explains why the leftovers were preserved.
 	Reason string
+	// Unverified reports that Mergeyard could not check the leftovers, so they
+	// may hold work or may no longer exist.
+	Unverified bool
 }
 
 // EnsureStopLeftoversComment explains the leftovers a stopped preparation left
@@ -47,8 +50,15 @@ func (c *Client) EnsureStopLeftoversComment(ctx context.Context, repo string, nu
 	}
 	marker := StopLeftoversMarker + ":" + runID
 	prefix := marker + "\nMergeyard stopped run " + runID + " while it was preparing and kept the leftovers it could not remove:\n\n"
+	// Unverified leftovers were never proven to hold work or to exist, and a
+	// removal that failed partway may have deleted part of what was proven
+	// empty, so the comment cannot claim that nothing was deleted.
+	deleted := "Mergeyard did not delete them."
+	if leftovers.Unverified {
+		deleted = "They could not be verified: they may hold work, or may no longer exist. Mergeyard deleted nothing it could not prove empty."
+	}
 	body := prefix + "- Local branch `" + leftovers.Branch + "`\n- Worktree `" + leftovers.Worktree + "` in the Mergeyard workspace on the machine that ran it\n\n" + leftovers.Reason +
-		"\n\nMergeyard did not delete them. Run detail shows the full worktree path. Remove the worktree and the branch before another run prepares this issue."
+		"\n\n" + deleted + " Run detail shows the full worktree path. Remove the worktree and the branch before another run prepares this issue."
 	_, err = c.ensureComment(ctx, repo, number, body, func(comment Comment) bool {
 		return comment.User != nil && strings.EqualFold(comment.User.Login, login) && strings.HasPrefix(comment.Body, prefix)
 	})

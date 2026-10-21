@@ -46,4 +46,10 @@ func TestStylesheetUsesStockThemesAndSystemFonts(t *testing.T) {
 	if !strings.Contains(css, `@source inline("alert-info alert-success alert-warning alert-error")`) {
 		t.Error("stylesheet does not keep the alert variants outcomeAlert returns from Go")
 	}
+	// statusBadge picks badge variants in Go too.
+	for _, variant := range []string{"badge-neutral", "badge-info", "badge-accent", "badge-warning", "badge-error", "badge-success", "badge-outline"} {
+		if !strings.Contains(string(built), "."+variant+"{") {
+			t.Errorf("built stylesheet lacks .%s", variant)
+		}
+	}
 }

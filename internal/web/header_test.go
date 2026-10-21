@@ -68,7 +68,7 @@ func TestHeaderShowsOnePillPerHarness(t *testing.T) {
 		if len(got) != len(want) {
 			t.Errorf("%s: %d pills, want %d: %v", page, len(got), len(want), got)
 		}
-		if !strings.Contains(body, `<time datetime="2026-10-21T14:30:00Z">`) {
+		if !strings.Contains(body, `<time datetime="2026-10-21T14:30:00Z" data-time="until">`) {
 			t.Errorf("%s: reset time is not a time element", page)
 		}
 	}

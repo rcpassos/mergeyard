@@ -140,7 +140,8 @@ events, and on discovery notifications for the visible queue or settings page.
 Run `make assets` to install the versions locked in `web/package-lock.json`
 and build Tailwind/daisyUI CSS, HTMX, Lucide SVGs, and the dashboard script.
 `make build` rebuilds assets before compiling Go. CI uses Node 24 for this step.
-Commit the generated `web/static/` files together with source changes.
+Commit the generated `web/static/` files, `site/theme.css` and `site/favicon.svg`
+together with source changes.
 
 Templates and generated assets are embedded in Go. `go build ./cmd/mergeyard`
 works directly from a checkout without Node, using the committed assets. The
@@ -155,9 +156,23 @@ progress notes, warning for CI or base warnings, harness waits and escalation,
 error for failures, human action and the last error, and success for merged or
 approved notes; the `outcomeAlert` template helper maps reported outcomes
 (criteria verdicts, finding severities, check states) to those variants.
-Page sections are daisyUI cards; messages inside them are alerts. The build
+Page sections are daisyUI cards; messages inside them are alerts.
+
+Each run shows one status badge. `statusOf` in `internal/web/status.go` maps
+the run's state, phase, review round, review-pending flag and harness wait to
+a human label and badge variant ("Reviewing · round 2", info; "Usage limited ·
+resets 14:30", warning; "Needs attention", error; "Merged", success outline),
+and the `statusBadge` helper renders it. Templates never print raw state or
+phase codes; those appear only inside timeline event details. The `since` and
+`until` helpers render a time as `<time datetime>` with a UTC fallback and
+render nothing for a zero time. The dashboard script formats these in the
+browser's locale and time zone, on load, after every swap and every 30
+seconds: past times as relative text with the absolute time on hover, resets
+and deadlines as absolute plus relative ("14:30, in 2 hr."). The build
 writes `web/static/favicon.svg`, the public site's mark drawn in each theme's
-primary color behind a `prefers-color-scheme` query.
+primary color behind a `prefers-color-scheme` query. It also writes the public
+website's copy of that favicon and `site/theme.css`, the same themes' variables
+for the build-free site (see [the website doc](website.md#theme)).
 
 `web/templates/layout.html` holds the page shell and the page switch. Each
 page has its own file under `web/templates/pages/`, and markup shared between
@@ -252,7 +267,9 @@ running labels, and adds attention when work exists before marking the run
 STOPPED. It preserves worktrees, branches, and PRs. A run without saved Git
 ownership, in any state, releases the leftovers its interrupted setup left, so the next run for the
 same issue prepares; leftovers that hold work are kept, and the issue is
-flagged for attention with a comment naming them. Repeating Stop on an
+flagged for attention with a comment naming them. Leftovers that cannot be
+checked, such as under a corrupt preparation intent or a replaced managed base,
+are kept and flagged the same way, and Stop still finishes. Repeating Stop on an
 already-stopped run returns without changing labels or emitting another event,
 so it cannot interfere with a newer run for the same issue. Existing Host,
 Origin, CSRF, and safe error-code checks apply.

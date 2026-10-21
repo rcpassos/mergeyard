@@ -484,7 +484,7 @@ func TestExplicitRetryDashboardAndCLIAPIShareScheduler(t *testing.T) {
 				}
 				page = httptest.NewRecorder()
 				server.ServeHTTP(page, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
-				for _, text := range []string{"Additional review round granted: 2", "Selected ACTIVE / fix", "run.retry_requested", "\"trigger\":\"retry\""} {
+				for _, text := range []string{"Additional review round granted: 2", "Selected Fixing · round", "run.retry_requested", "\"trigger\":\"retry\""} {
 					if page.Code != 200 || !strings.Contains(html.UnescapeString(page.Body.String()), text) {
 						t.Fatalf("retry detail missing %q: %s", text, page.Body.String())
 					}
