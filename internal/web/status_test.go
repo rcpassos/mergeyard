@@ -97,9 +97,9 @@ func richRun() runView {
 }
 
 // stripTimelineDetails drops the raw event details, the one place raw
-// codes may appear.
+// codes may appear. History disclosures keep their content in the check.
 func stripTimelineDetails(body string) string {
-	return regexp.MustCompile(`(?s)<details.*?</details>`).ReplaceAllString(body, "")
+	return regexp.MustCompile(`(?s)<details id="timeline-event-[^"]*".*?</details>`).ReplaceAllString(body, "")
 }
 
 var (

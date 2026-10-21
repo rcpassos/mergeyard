@@ -162,7 +162,9 @@ Each run shows one status badge. `statusOf` in `internal/web/status.go` maps
 the run's state, phase, review round, review-pending flag and harness wait to
 a human label and badge variant ("Reviewing · round 2", info; "Usage limited ·
 resets 14:30", warning; "Needs attention", error; "Merged", success outline),
-and the `statusBadge` helper renders it. Templates never print raw state or
+and the `statusBadge` helper renders it. The `lifecycleSteps` helper maps the
+same run fields to the stepper's current position, which stays on the phase a
+manual takeover or harness wait interrupted. Templates never print raw state or
 phase codes; those appear only inside timeline event details. The `since` and
 `until` helpers render a time as `<time datetime>` with a UTC fallback and
 render nothing for a zero time. The dashboard script formats these in the
@@ -253,8 +255,21 @@ log content. The timeline shows the latest 100 durable run events, newest first.
 
 Queue sections are Running, Ready, Blocked, Needs attention, and Draft
 PRs (review pending). Pending M1 runs automatically continue into an independent
-review. Run detail shows the reviewer settings/session, pinned SHA, verdict,
-findings and restoration diagnostics. Review events refresh the page over SSE. Attention
+review. Run detail is one scrolling page: a sticky header with the issue title,
+repository and number, status badge, issue and PR links (marked as external) and
+the run's eligible actions; a lifecycle stepper (Claimed → Implement → Review
+(round N) → Fix → CI → Ready → Merged); a current area holding the human action,
+last error, active harness wait, stop in progress, takeover state and resume
+command, and the ready-to-merge escalation; collapsible history for
+implementation attempts, review rounds, fixes, CI and readiness, publications,
+session recoveries, recovery probes, harness interruptions, retries, handbacks
+and run facts; then phase output and the timeline. The latest entry of each
+history kind is open and older entries are collapsed, and every disclosure has a
+stable ID. Long handback, credit-recovery and retry guidance sits behind "learn
+more" disclosures. SHAs and session IDs render shortened with a copy control
+carrying the full value. Run detail also shows the reviewer settings/session,
+pinned SHA, verdict, findings and restoration diagnostics. Review events refresh
+the page over SSE. Attention
 and manual runs also consume slots. Harness-waiting runs retain their slots and
 show account availability and effective reset provenance. Run history
 distinguishes interrupted executions and explicit grants from account gates where

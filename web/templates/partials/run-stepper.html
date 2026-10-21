@@ -1,0 +1,3 @@
+{{/* The lifecycle stepper marks every step the run has passed and the one it is
+     on. A manual takeover or a harness wait keeps the interrupted phase current. */}}
+{{define "run-stepper"}}{{with lifecycleSteps .Run}}<nav class="overflow-x-auto" aria-label="Run lifecycle"><ul class="steps w-full">{{range .}}<li class="step{{if .Done}} step-primary{{end}}"{{if .Current}} aria-current="step"{{end}}><span class="px-1 text-xs sm:text-sm{{if .Current}} font-bold text-primary{{end}}">{{.Label}}</span></li>{{end}}</ul></nav>{{end}}{{end}}

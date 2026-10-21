@@ -194,7 +194,12 @@ const (
 	draftPRSection
 )
 
-type timelineEntry struct{ Type, Time, Details string }
+type timelineEntry struct {
+	ID      int64
+	Type    string
+	Time    string
+	Details string
+}
 
 type pageData struct {
 	Harnesses                         []scheduler.HarnessAvailability
@@ -484,7 +489,7 @@ func summary(body string) string {
 }
 
 func (d *dashboard) timeline(ctx context.Context, id string) ([]timelineEntry, error) {
-	rows, err := d.DB.QueryContext(ctx, "SELECT type,created_at,payload_json FROM events WHERE run_id=? ORDER BY id DESC LIMIT 100", id)
+	rows, err := d.DB.QueryContext(ctx, "SELECT id,type,created_at,payload_json FROM events WHERE run_id=? ORDER BY id DESC LIMIT 100", id)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +497,7 @@ func (d *dashboard) timeline(ctx context.Context, id string) ([]timelineEntry, e
 	var timeline []timelineEntry
 	for rows.Next() {
 		var entry timelineEntry
-		if err := rows.Scan(&entry.Type, &entry.Time, &entry.Details); err != nil {
+		if err := rows.Scan(&entry.ID, &entry.Type, &entry.Time, &entry.Details); err != nil {
 			return nil, err
 		}
 		timeline = append(timeline, entry)
