@@ -92,7 +92,7 @@ func TestTemporaryLimitPreservesWorkAndResumesAfterRestart(t *testing.T) {
 				// Every page's header carries one pill per harness: the limited
 				// one with its reset time, the other one available.
 				other := map[string]string{"claude": "codex", "codex": "claude"}[agent]
-				for _, pill := range []string{agent + ` · Usage limited · resets <time datetime="` + reset.Format(time.RFC3339) + `"`, other + " · Available</summary>"} {
+				for _, pill := range []string{agent + ` · Usage limited · resets <time datetime="` + reset.Format(time.RFC3339) + `"`, other + " · Available</span></summary>"} {
 					if !strings.Contains(response.Body.String(), pill) {
 						t.Fatalf("%s missing pill %s: %s", path, pill, response.Body.String())
 					}

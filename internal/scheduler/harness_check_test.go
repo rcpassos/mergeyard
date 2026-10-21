@@ -242,7 +242,7 @@ func TestHarnessCheckBrowserControlsAndProtections(t *testing.T) {
 	}
 	h.detection = true
 	body := page()
-	if !strings.Contains(body, "claude · Out of credits</summary>") || !strings.Contains(body, ">Check availability<") || !strings.Contains(body, "uses account quota") || !strings.Contains(body, "no engineering work") {
+	if !strings.Contains(body, "claude · Out of credits</span></summary>") || !strings.Contains(body, ">Check availability<") || !strings.Contains(body, "uses account quota") || !strings.Contains(body, "no engineering work") {
 		t.Fatalf("missing disclosure: %s", body)
 	}
 	for _, restriction := range []string{"host", "origin", "csrf", "cross-site", "capability"} {
@@ -286,7 +286,7 @@ func TestHarnessCheckBrowserControlsAndProtections(t *testing.T) {
 		}
 		return strings.Contains(page(), "Availability check recovered")
 	})
-	if body := page(); !strings.Contains(body, "claude · Available</summary>") {
+	if body := page(); !strings.Contains(body, "claude · Available</span></summary>") {
 		t.Fatalf("recovered harness pill: %s", body)
 	}
 }

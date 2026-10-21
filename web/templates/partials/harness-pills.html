@@ -1,8 +1,10 @@
 {{/* One pill per harness. Its dropdown holds the availability details and,
-     for an eligible harness, Check availability. */}}
-{{define "harness-pills"}}{{range .Harnesses}}<details class="dropdown dropdown-end" id="harness-{{.Harness}}">
-<summary class="badge {{if .ProbeID}}badge-info{{else if .Available}}badge-success{{else}}badge-warning{{end}} cursor-pointer gap-1 whitespace-nowrap">{{.Harness}} · {{if .ProbeID}}Recovery probe {{if .ProbeAttemptID}}running{{else}}reserved{{end}}{{else if .Available}}Available{{else if eq .Reason "credits_exhausted"}}Out of credits{{else}}Usage limited{{if not .ResetAt.IsZero}} · resets {{template "harness-time" .ResetAt}}{{end}}{{end}}</summary>
-<div class="dropdown-content card card-sm z-10 mt-2 w-80 max-w-[calc(100vw-2rem)] bg-base-100 shadow-lg"><div class="card-body gap-3">
+     for an eligible harness, Check availability. The pill is not positioned,
+     so the dropdown anchors to the header's right edge and stays on screen
+     wherever the pill wraps. */}}
+{{define "harness-pills"}}{{range .Harnesses}}<details class="dropdown dropdown-end static" id="harness-{{.Harness}}">
+<summary class="badge {{if .ProbeID}}badge-info{{else if .Available}}badge-success{{else}}badge-warning{{end}} h-auto min-h-5 max-w-full cursor-pointer"><span>{{.Harness}} · {{if .ProbeID}}Recovery probe {{if .ProbeAttemptID}}running{{else}}reserved{{end}}{{else if .Available}}Available{{else if eq .Reason "credits_exhausted"}}Out of credits{{else}}Usage limited{{if not .ResetAt.IsZero}} · resets {{template "harness-time" .ResetAt}}{{end}}{{end}}</span></summary>
+<div class="dropdown-content card card-sm z-10 mt-2 w-80 max-w-full bg-base-100 shadow-lg"><div class="card-body gap-3">
 <h2 class="card-title text-base">{{.Harness}}</h2>
 <dl class="space-y-2 text-sm [&_dt]:text-base-content/70">
 <div><dt>Status</dt><dd>{{if .Available}}Available{{else if eq .Reason "credits_exhausted"}}Credits exhausted · explicit recovery required{{if not .ResetAt.IsZero}} · Probe may run after temporary reset {{template "harness-time" .ResetAt}}{{end}}{{else if .ResetAt.IsZero}}Usage limited{{else}}Waiting until {{template "harness-time" .ResetAt}}{{end}}</dd></div>
