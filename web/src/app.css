@@ -2,6 +2,8 @@
 @source "../templates/**/*.html";
 /* outcomeAlert in internal/web/templates.go returns these from Go. */
 @source inline("alert-info alert-success alert-warning alert-error");
+/* statusBadge in internal/web/status.go returns these from Go. */
+@source inline("badge-neutral badge-info badge-accent badge-warning badge-error badge-success badge-outline");
 @plugin "daisyui" {
   themes: light --default, dark --prefersdark;
   logs: false;

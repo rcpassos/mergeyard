@@ -2,7 +2,7 @@
 <div class="card card-border bg-base-100 md:card-side">{{template "scheduler" .}}<div class="stat border-base-300 max-md:border-t md:w-auto md:border-l"><span class="stat-value">{{.Used}} / {{.Limit}}</span><span class="stat-title">Concurrency slots in use</span><small class="stat-desc whitespace-normal">Includes attention, harness waiting, manual, and CI waiting runs.</small></div></div>
 {{if not .QueueReady}}<div class="alert alert-info"><p>Discovering ready and blocked issues on GitHub…</p></div>{{end}}
 {{if .QueueError}}<div class="alert alert-error" role="status"><p>{{.QueueError}}</p></div>{{end}}
-{{if .QueueTime}}<p class="text-sm text-base-content/70">GitHub queue last synced <time>{{.QueueTime}}</time></p>{{end}}
+{{if .QueueTime}}<p class="text-sm text-base-content/70">GitHub queue last synced {{since .QueueTime}}</p>{{end}}
 <div class="grid gap-4 lg:grid-cols-2">{{range .Sections}}{{template "queue-group" .}}{{end}}</div>
 {{if eq .Page "dashboard"}}<section class="card card-border bg-base-100"><div class="card-body"><h2 class="card-title justify-between">Recent runs <span class="text-sm font-normal text-base-content/70">{{len .Recent}}</span></h2>{{range .Recent}}{{template "run-row" .}}{{else}}<p class="text-base-content/70">Ended runs will appear here.</p>{{end}}</div></section>{{end}}
 {{end}}

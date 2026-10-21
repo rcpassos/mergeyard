@@ -415,7 +415,7 @@ func TestDashboardHandbackUsesProtectedSharedOperation(t *testing.T) {
 	request.Header.Set("HX-Request", "true")
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Selected ACTIVE / review") || !strings.Contains(response.Body.String(), "Granted additional review round: 2") || strings.Contains(response.Body.String(), ">Hand back run</button>") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Selected Reviewing · round") || !strings.Contains(response.Body.String(), "Granted additional review round: 2") || strings.Contains(response.Body.String(), ">Hand back run</button>") {
 		t.Fatalf("handback page: %d %s", response.Code, response.Body.String())
 	}
 	request = httptest.NewRequest("POST", "http://127.0.0.1:7331/api/runs/"+before.ID+"/handback", nil)
@@ -488,7 +488,7 @@ func TestHandbackPendingPublicationIsVisibleAndStopCancelsIt(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+before.ID, nil))
-	for _, text := range []string{"Selected ACTIVE / review", "Publication or reconciliation is incomplete", "Handback publication is pending"} {
+	for _, text := range []string{"Selected Reviewing · round", "Publication or reconciliation is incomplete", "Handback publication is pending"} {
 		if !strings.Contains(response.Body.String(), text) {
 			t.Fatalf("missing recovery detail %q", text)
 		}

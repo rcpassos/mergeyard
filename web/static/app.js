@@ -194,6 +194,43 @@ document.body.addEventListener('htmx:afterRequest', (event) => {
     refresh();
   }
 });
+// The server renders each time as <time datetime> with a UTC fallback. Show
+// them in the browser's locale and time zone: past times as relative text with
+// the absolute time on hover, resets and deadlines as absolute plus relative.
+const absoluteTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const clockTime = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' });
+const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' });
+const timeUnits = [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60], ['second', 1]];
+
+function relativeText(at) {
+  const seconds = (at.getTime() - Date.now()) / 1000;
+  for (const [unit, size] of timeUnits) {
+    if (Math.abs(seconds) >= size) return relativeTime.format(Math.trunc(seconds / size), unit);
+  }
+  return relativeTime.format(0, 'second');
+}
+
+function formatTimes(root) {
+  const elements = [...root.querySelectorAll('time[datetime]')];
+  if (root.matches?.('time[datetime]')) elements.push(root);
+  for (const element of elements) {
+    const at = new Date(element.dateTime);
+    if (Number.isNaN(at.getTime())) continue;
+    const absolute = absoluteTime.format(at);
+    element.title = absolute;
+    if (element.dataset.time === 'until') {
+      const today = at.toDateString() === new Date().toDateString();
+      element.textContent = `${today ? clockTime.format(at) : absolute}, ${relativeText(at)}`;
+    } else {
+      element.textContent = relativeText(at);
+    }
+  }
+}
+
+formatTimes(document);
+document.body.addEventListener('htmx:load', (event) => formatTimes(event.detail.elt));
+setInterval(() => formatTimes(document), 30000);
+
 document.body.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-copy]');
   if (!button) return;
