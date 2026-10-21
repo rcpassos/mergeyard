@@ -149,7 +149,8 @@ make lint   # gofmt, go vet, and an unused-code check
 make build  # rebuild dashboard assets with Node.js 24, then compile Go
 ```
 
-Commit generated `web/static/` files with dashboard source changes.
+Commit generated `web/static/` files, `site/theme.css` and `site/favicon.svg`
+with dashboard source changes.
 
 `make lint` also runs the pinned Staticcheck unused-code check (`U1000`), so code
 left behind by a change fails lint instead of accumulating. It downloads Staticcheck
