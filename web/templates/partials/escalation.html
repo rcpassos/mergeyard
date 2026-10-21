@@ -1,5 +1,5 @@
 {{define "escalation"}}{{with .}}
-{{if .Reasons}}<div class="notice"><span class="badge badge-warning">Needs careful review</span><ul>{{range .Reasons}}<li>{{.Reason}}<ul>{{range .Files}}<li><code>{{.}}</code></li>{{end}}</ul></li>{{end}}</ul></div>{{end}}
-{{if .EvaluationWarning}}<p class="notice">{{.EvaluationWarning}}</p>{{end}}
-{{if .PublicationWarning}}<p class="notice">{{.PublicationWarning}}</p>{{end}}
+{{if .Reasons}}<div class="alert alert-warning"><div><span class="badge">Needs careful review</span><ul class="mt-2 list-disc pl-5">{{range .Reasons}}<li>{{.Reason}}<ul class="list-disc pl-5">{{range .Files}}<li><code>{{.}}</code></li>{{end}}</ul></li>{{end}}</ul></div></div>{{end}}
+{{if .EvaluationWarning}}<div class="alert alert-warning"><p>{{.EvaluationWarning}}</p></div>{{end}}
+{{if .PublicationWarning}}<div class="alert alert-warning"><p>{{.PublicationWarning}}</p></div>{{end}}
 {{end}}{{end}}

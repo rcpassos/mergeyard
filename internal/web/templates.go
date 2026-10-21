@@ -13,7 +13,33 @@ var templateFiles = []string{"templates/*.html", "templates/pages/*.html", "temp
 // templateHelpers is the function registry available to every dashboard
 // template. Presentation helpers belong here, not in the page data.
 func templateHelpers() template.FuncMap {
-	return template.FuncMap{}
+	return template.FuncMap{"outcomeAlert": outcomeAlert}
+}
+
+// outcomeVariants maps the outcome words agents and CI report (criteria
+// verdicts, finding severities and outcomes, fix resolutions, verification
+// and check states) to the daisyUI alert variant that shows them.
+var outcomeVariants = map[string]string{
+	"met": "alert-success", "passed": "alert-success", "fixed": "alert-success",
+	"not_met": "alert-error", "failed": "alert-error", "not_fixed": "alert-error", "blocking": "alert-error",
+	"pending": "alert-info", "note": "alert-info", "no_longer_applies": "alert-info",
+}
+
+// outcomeAlert returns the alert variant for a reported outcome. A boolean is
+// an acceptance criterion's met flag; anything unrecognised is a warning.
+func outcomeAlert(outcome any) string {
+	switch value := outcome.(type) {
+	case bool:
+		if value {
+			return "alert-success"
+		}
+		return "alert-error"
+	case string:
+		if variant, ok := outcomeVariants[value]; ok {
+			return variant
+		}
+	}
+	return "alert-warning"
 }
 
 // parseTemplates builds the dashboard's template set from the embedded files.

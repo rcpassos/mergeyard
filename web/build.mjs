@@ -1,12 +1,18 @@
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import themes from 'daisyui/theme/object.js';
 
 await mkdir('static/icons', { recursive: true });
 await mkdir('static/licenses', { recursive: true });
 await copyFile('node_modules/htmx.org/dist/htmx.min.js', 'static/htmx.min.js');
 await copyFile('src/app.js', 'static/app.js');
-for (const icon of ['pause', 'play']) {
+for (const icon of ['pause', 'play', 'info', 'circle-check', 'triangle-alert', 'circle-x']) {
   await copyFile(`node_modules/lucide-static/icons/${icon}.svg`, `static/icons/${icon}.svg`);
 }
 for (const name of ['htmx.org', 'tailwindcss', 'daisyui', 'lucide-static']) {
   await copyFile(`node_modules/${name}/LICENSE`, `static/licenses/${name}.txt`);
 }
+
+// The public site's mark, drawn in the stock theme colors so it follows the
+// dashboard's light or dark primary.
+const colors = (theme) => `.tile{fill:${themes[theme]['--color-base-200']}}.mark{stroke:${themes[theme]['--color-primary']}}`;
+await writeFile('static/favicon.svg', `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><style>${colors('light')}@media (prefers-color-scheme: dark){${colors('dark')}}</style><rect class="tile" width="40" height="40" rx="9"/><g class="mark" fill="none" stroke-width="2.7" stroke-linecap="round"><path d="M10 9v9c0 8 20 0 20 9v4M30 9v6c0 8-20 0-20 9v7"/><circle cx="10" cy="9" r="3"/><circle cx="30" cy="9" r="3"/><circle cx="10" cy="31" r="3"/><circle cx="30" cy="31" r="3"/></g></svg>\n`);
