@@ -298,29 +298,51 @@ func TestDiscardPreparationReleasesACleanInitializedSubmodule(t *testing.T) {
 // of a leftover checkout Git still holds locked for initialization.
 func TestDiscardPreparationPreservesAHiddenEditInAnInitializingSubmodule(t *testing.T) {
 	for _, flag := range []string{"--assume-unchanged", "--skip-worktree"} {
-		t.Run(flag, func(t *testing.T) {
-			f := newFixture(t)
-			seedSubmodule(t, f)
-			run := prepare(t, f)
-			submodule := filepath.Join(run.Path, "module")
-			git(t, run.Path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
-			git(t, submodule, "update-index", flag, "module.txt")
-			write(t, submodule, "module.txt", "edited by a person\n")
-			if status := git(t, submodule, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
-				t.Fatalf("the fixture edit is not hidden from status: %q", status)
-			}
-			lockInitialization(t, run)
-			leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !leftovers.Preserved || leftovers.Unverified || leftovers.Reason == "" {
-				t.Fatalf("the hidden edit was not reported: %+v", leftovers)
-			}
-			if data, err := os.ReadFile(filepath.Join(submodule, "module.txt")); err != nil || string(data) != "edited by a person\n" {
-				t.Fatalf("the hidden edit was deleted: %q, %v", data, err)
-			}
-		})
+		for _, edit := range []struct {
+			name, content string
+			delete        bool
+		}{
+			{"nonprefix edit", "edited by a person\n", false},
+			{"prefix edit", "mod", false},
+			{"empty file", "", false},
+			{"deleted file", "", true},
+		} {
+			t.Run(flag+"/"+edit.name, func(t *testing.T) {
+				f := newFixture(t)
+				seedSubmodule(t, f)
+				run := prepare(t, f)
+				submodule := filepath.Join(run.Path, "module")
+				git(t, run.Path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+				git(t, submodule, "update-index", flag, "module.txt")
+				if edit.delete {
+					if err := os.Remove(filepath.Join(submodule, "module.txt")); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					write(t, submodule, "module.txt", edit.content)
+				}
+				if status := git(t, submodule, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
+					t.Fatalf("the fixture edit is not hidden from status: %q", status)
+				}
+				lockInitialization(t, run)
+				leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !leftovers.Preserved || leftovers.Unverified || leftovers.Reason == "" {
+					t.Fatalf("the hidden edit was not reported: %+v", leftovers)
+				}
+				if edit.delete {
+					if _, err := os.Stat(filepath.Join(submodule, "module.txt")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("the deleted file was recreated: %v", err)
+					}
+					return
+				}
+				if data, err := os.ReadFile(filepath.Join(submodule, "module.txt")); err != nil || string(data) != edit.content {
+					t.Fatalf("the hidden edit was deleted: %q, %v", data, err)
+				}
+			})
+		}
 	}
 }
 
@@ -349,6 +371,81 @@ func TestDiscardPreparationPreservesASubmoduleStashInAnInitializingCheckout(t *t
 	}
 	if stash := git(t, submodule, "stash", "list"); stash == "" {
 		t.Fatal("the stashed work was deleted")
+	}
+}
+
+// TestDiscardPreparationPreservesAStagedSubmoduleEditInAnInitializingCheckout
+// proves that work staged in a submodule's real index is preserved even when
+// the physical file matches the recorded commit and .gitmodules hides the
+// submodule from the parent's status.
+func TestDiscardPreparationPreservesAStagedSubmoduleEditInAnInitializingCheckout(t *testing.T) {
+	f := newFixture(t)
+	seedSubmoduleWithIgnore(t, f, "all")
+	run := prepare(t, f)
+	submodule := filepath.Join(run.Path, "module")
+	git(t, run.Path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+	write(t, submodule, "module.txt", "staged by a person\n")
+	git(t, submodule, "add", "module.txt")
+	// Restore the physical file without touching the staged index.
+	write(t, submodule, "module.txt", "module\n")
+	if staged := git(t, submodule, "show", ":module.txt"); staged != "staged by a person" {
+		t.Fatalf("the fixture edit is not staged: %q", staged)
+	}
+	if status := git(t, run.Path, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
+		t.Fatalf("the fixture staged edit is not hidden from status: %q", status)
+	}
+	lockInitialization(t, run)
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leftovers.Preserved || leftovers.Unverified || leftovers.Reason == "" {
+		t.Fatalf("the staged edit was not reported: %+v", leftovers)
+	}
+	if staged := git(t, submodule, "show", ":module.txt"); staged != "staged by a person" {
+		t.Fatalf("the staged edit was deleted: %q", staged)
+	}
+}
+
+// TestDiscardPreparationReleasesACleanInitializedSubmoduleBehindItsRemote
+// proves that remote-tracking refs are not work: a clean submodule stays
+// disposable after its remote advances and the new tip is fetched.
+func TestDiscardPreparationReleasesACleanInitializedSubmoduleBehindItsRemote(t *testing.T) {
+	f := newFixture(t)
+	seedSubmodule(t, f)
+	run := prepare(t, f)
+	submodule := filepath.Join(run.Path, "module")
+	git(t, run.Path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+	start := git(t, submodule, "rev-parse", "HEAD")
+
+	remote := git(t, submodule, "remote", "get-url", "origin")
+	clone := filepath.Join(t.TempDir(), "module")
+	git(t, filepath.Dir(clone), "clone", "--quiet", remote, clone)
+	write(t, clone, "module.txt", "newer module\n")
+	git(t, clone, "add", ".")
+	git(t, clone, "commit", "-m", "advance module")
+	git(t, clone, "push", "origin", "main")
+	git(t, submodule, "-c", "protocol.file.allow=always", "fetch", "origin")
+
+	if got := git(t, submodule, "rev-parse", "HEAD"); got != start {
+		t.Fatalf("the fixture moved submodule HEAD to %s, want %s", got, start)
+	}
+	if got := git(t, submodule, "rev-parse", "origin/main"); got == start {
+		t.Fatal("the fixture remote was not advanced")
+	}
+	if status := git(t, submodule, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
+		t.Fatalf("the initialized submodule is not clean: %q", status)
+	}
+	lockInitialization(t, run)
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftovers.Preserved {
+		t.Fatalf("the clean submodule behind its remote was preserved: %+v", leftovers)
+	}
+	if _, err := os.Stat(run.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the leftover survived the release: %v", err)
 	}
 }
 

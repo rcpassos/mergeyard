@@ -112,21 +112,22 @@ file either, and its submodules must hold nothing beyond their recorded
 commits). The status check overrides any `.gitmodules` `ignore` setting, so it
 cannot hide an edit inside an initialized submodule. An initialized submodule's
 files are compared with its recorded commit through a fresh index, so
-`assume-unchanged` and `skip-worktree` flags cannot hide an edit either, and its
-repository must hold no saved work such as a stash or a local branch. A leftover
-with commits, changes, ignored files (a `.env`, a build output), or content
-beyond the recorded start in a submodule is preserved and reported with the
-reason, so the caller can name it for human attention. Leftovers the release
-cannot check are preserved and reported as unverified, named by the run's
-branch and worktree: an intent that is empty, corrupt, or does not identify the
-run; a managed base that is missing or replaced; a checkout not attached to the
-managed base; or a Git check that fails or exceeds its deadline. Stopping the run
-must not depend on any of them, because a retry may never clear them. A run
-without an intent returns at once, without waiting for the Git lock. The intent
-is released only after the leftovers are gone, and a run without an intent
-never removes what another run created. Only a caller that gave up before the
-check finished, or invalid input, gets an error, so the caller retries instead
-of reporting a check that never ran.
+`assume-unchanged` and `skip-worktree` flags cannot hide an edit either. Its
+real index must still match as well, so staged-only work is not discarded, and
+its repository must hold no saved work such as a stash or a local branch. A
+leftover with commits, changes, ignored files (a `.env`, a build output), or
+content beyond the recorded start in a submodule is preserved and reported
+with the reason, so the caller can name it for human attention. Leftovers the
+release cannot check are preserved and reported as unverified, named by the
+run's branch and worktree: an intent that is empty, corrupt, or does not
+identify the run; a managed base that is missing or replaced; a checkout not
+attached to the managed base; or a Git check that fails or exceeds its
+deadline. Stopping the run must not depend on any of them, because a retry may
+never clear them. A run without an intent returns at once, without waiting for
+the Git lock. The intent is released only after the leftovers are gone, and a
+run without an intent never removes what another run created. Only a caller
+that gave up before the check finished, or invalid input, gets an error, so the
+caller retries instead of reporting a check that never ran.
 
 Intent writes reach the disk before they take effect: the temporary file is
 flushed before the rename and its directory after it, so a power loss cannot
@@ -151,8 +152,9 @@ clean, unlocked checkout gets the same submodule inspection: the recorded start
 provides only the empty directory for an uninitialized submodule, so a file
 inside it is work even though status does not list it. An initialized submodule
 must still point at its recorded commit; its files are compared through a fresh
-index, so index flags cannot hide an edit, and its repository must hold no saved
-work such as a stash. Its own submodules are inspected the same way.
+index, so index flags cannot hide an edit, and its real index must still match,
+so staged-only work stays. Its repository must hold no saved work such as a
+stash. Its own submodules are inspected the same way.
 
 If `worktree add` was interrupted, the creation never finished, so the next
 attempt removes the partial worktree and local branch and creates them again
