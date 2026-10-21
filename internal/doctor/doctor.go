@@ -24,10 +24,15 @@ const (
 	Error        Severity = "error"
 	Warning      Severity = "warning"
 	Unverifiable Severity = "unverifiable"
+	// Pass marks a check that succeeded. Passes are kept for UI surfaces that
+	// show every check; the CLI writes only the three finding groups.
+	Pass Severity = "pass"
 )
 
-// Finding identifies a failed or inconclusive check. Scope is a machine tool,
-// configuration path, or repository (optionally including its role).
+// Finding identifies one check result. In Report.Findings it is a failed or
+// inconclusive check; in Report.Passes it is a successful one with Severity
+// Pass. Scope is a machine tool, configuration path, or repository (optionally
+// including its role).
 type Finding struct {
 	Severity Severity
 	Code     string
@@ -48,7 +53,12 @@ func (f Finding) RepositoryScoped(repositories []config.Repository) bool {
 	return false
 }
 
-type Report struct{ Findings []Finding }
+type Report struct {
+	Findings []Finding
+	// Passes records the checks that succeeded, in check order, each with a
+	// stable pass code and scope.
+	Passes []Finding
+}
 
 func (r Report) HasErrors() bool {
 	for _, finding := range r.Findings {
@@ -111,12 +121,15 @@ func Check(ctx context.Context, path string, options Options) Report {
 		report.add(Error, code, "configuration", err.Error())
 		return report
 	}
+	report.pass("config.valid", "configuration", "configuration loaded and validated")
 	for _, warning := range doc.Warnings {
 		report.add(Warning, warning.Code, warning.Path, warning.Message)
 	}
 	portEnd := cfg.AgentPorts.Base + ((65536-cfg.AgentPorts.Base)/cfg.AgentPorts.Size)*cfg.AgentPorts.Size
 	if cfg.Port >= cfg.AgentPorts.Base && cfg.Port < portEnd {
 		report.add(Warning, "agent_ports.dashboard_overlap", "agent_ports", "Allocatable agent port blocks overlap the dashboard port; retained merge-ready runs can use additional blocks beyond concurrency. Choose another agent_ports.base or dashboard port")
+	} else {
+		report.pass("agent_ports.separate", "agent_ports", "dashboard port is outside the allocatable agent port blocks")
 	}
 	if options.Executor == nil {
 		options.Executor = runner.NewLocal(runner.Options{})
@@ -147,6 +160,10 @@ func Check(ctx context.Context, path string, options Options) Report {
 
 func (r *Report) add(severity Severity, code, scope, message string) {
 	r.Findings = append(r.Findings, Finding{severity, code, scope, message})
+}
+
+func (r *Report) pass(code, scope, message string) {
+	r.Passes = append(r.Passes, Finding{Pass, code, scope, message})
 }
 
 type checker struct {
@@ -216,6 +233,7 @@ func (c *checker) machine(cfg config.Config) {
 			c.report.add(Error, "internal.tool_missing", tool.name, "tool is missing or cannot run: "+err.Error())
 		} else {
 			c.tools[tool.name] = true
+			c.report.pass("internal.tool_ready", tool.name, "tool runs")
 		}
 	}
 	if c.tools["gh"] {
@@ -225,6 +243,8 @@ func (c *checker) machine(cfg config.Config) {
 			} else {
 				c.report.add(Error, "github.not_logged_in", "gh", "GitHub authentication failed; run gh auth login: "+err.Error())
 			}
+		} else {
+			c.report.pass("github.authenticated", "gh", "GitHub authentication succeeded")
 		}
 	}
 	assigned := make(map[string]bool)
@@ -247,6 +267,7 @@ func (c *checker) machine(cfg config.Config) {
 			continue
 		}
 		c.tools[agent] = true
+		c.report.pass("harness.ready", agent, "assigned harness runs")
 		v, ok := parseVersion(string(result.Stdout) + " " + string(result.Stderr))
 		if !ok {
 			c.report.add(Unverifiable, "harness.version_unverifiable", agent, "cannot parse the installed version; minimum required: "+facts.minimum.String())
@@ -254,13 +275,21 @@ func (c *checker) machine(cfg config.Config) {
 			c.versions[agent] = v
 			if v.less(facts.minimum) {
 				c.report.add(Error, "harness.version_unsupported", agent, "installed "+v.String()+"; minimum required: "+facts.minimum.String())
+			} else {
+				c.report.pass("harness.version_supported", agent, "installed version meets the minimum "+facts.minimum.String())
 			}
 		}
 		if _, err := c.command("", execPath, facts.auth...); err != nil {
 			c.report.add(Error, "harness.not_logged_in", agent, "harness login check failed; log in with the configured executable: "+err.Error())
+		} else {
+			c.report.pass("harness.logged_in", agent, "harness login check succeeded")
 		}
 	}
-	if assigned[registry.Claude] && cfg.Agents.Claude.PermissionMode == "bypassPermissions" && c.options.EffectiveUID() == 0 {
-		c.report.add(Error, "harness.root_bypass_permissions", registry.Claude, "bypassPermissions cannot run as root; run as a non-root user or change agents.claude.permission_mode")
+	if assigned[registry.Claude] && cfg.Agents.Claude.PermissionMode == "bypassPermissions" {
+		if c.options.EffectiveUID() == 0 {
+			c.report.add(Error, "harness.root_bypass_permissions", registry.Claude, "bypassPermissions cannot run as root; run as a non-root user or change agents.claude.permission_mode")
+		} else {
+			c.report.pass("harness.root_bypass_permissions", registry.Claude, "bypassPermissions is not running as root")
+		}
 	}
 }

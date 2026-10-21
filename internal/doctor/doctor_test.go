@@ -14,6 +14,22 @@ import (
 	"github.com/rcpassos/mergeyard/internal/runner"
 )
 
+// The CLI keeps its documented error/warning/unverifiable output even when
+// the report also carries passes for the dashboard.
+func TestDoctorWriteOmitsPasses(t *testing.T) {
+	report := doctor.Report{
+		Findings: []doctor.Finding{{Severity: doctor.Warning, Code: "config.unknown_field", Scope: "port", Message: "unknown field is ignored"}},
+		Passes:   []doctor.Finding{{Severity: doctor.Pass, Code: "config.valid", Scope: "configuration", Message: "configuration loaded and validated"}},
+	}
+	var out strings.Builder
+	if err := report.Write(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "config.unknown_field") || strings.Contains(out.String(), "config.valid") || strings.Contains(out.String(), "configuration loaded") {
+		t.Fatalf("doctor output includes passes: %q", out.String())
+	}
+}
+
 func TestInvalidConfigurationIsAnError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("implementer: {agent: unknown}\n"), 0600); err != nil {
@@ -242,6 +258,16 @@ func requireFinding(t *testing.T, report doctor.Report, severity doctor.Severity
 	t.Fatalf("missing %s %s (%s) in %+v", severity, code, scope, report)
 }
 
+func requirePass(t *testing.T, report doctor.Report, code string) {
+	t.Helper()
+	for _, pass := range report.Passes {
+		if pass.Severity == doctor.Pass && pass.Code == code {
+			return
+		}
+	}
+	t.Fatalf("missing pass %s in %+v", code, report)
+}
+
 func TestMissingMachineToolsAreErrors(t *testing.T) {
 	for _, tc := range []struct{ command, scope, code string }{
 		{"git --version", "git", "internal.tool_missing"},
@@ -320,6 +346,9 @@ func TestHealthyMachineHasNoFindings(t *testing.T) {
 	report := doctor.Check(context.Background(), path, opts)
 	if len(report.Findings) != 0 {
 		t.Fatalf("healthy machine: %+v", report)
+	}
+	for _, code := range []string{"config.valid", "workspace.writable", "config.port_available", "internal.tool_ready", "github.authenticated", "harness.ready", "harness.version_supported", "harness.logged_in"} {
+		requirePass(t, report, code)
 	}
 }
 
@@ -403,6 +432,8 @@ func TestRequestedCapabilities(t *testing.T) {
 				requireFinding(t, report, tc.severity, tc.code, "implementer")
 			} else if len(report.Findings) != 0 {
 				t.Fatalf("supported capabilities: %+v", report)
+			} else {
+				requirePass(t, report, "harness.capabilities_supported")
 			}
 		})
 	}
@@ -441,6 +472,8 @@ func TestRoleSkills(t *testing.T) {
 				requireFinding(t, report, tc.severity, tc.code, "octo/repo implementer")
 			} else if len(report.Findings) != 0 {
 				t.Fatalf("available role skill: %+v", report)
+			} else {
+				requirePass(t, report, "harness.skill_ready")
 			}
 		})
 	}
@@ -475,6 +508,21 @@ func TestUnavailableRepositorySkillCanUsePersonalSkill(t *testing.T) {
 	report := doctor.Check(context.Background(), path, opts)
 	if len(report.Findings) != 0 {
 		t.Fatalf("readable personal skill fallback: %+v", report)
+	}
+}
+
+func TestInstructionFilesWithUnknownClaudeVersionAreUnverifiable(t *testing.T) {
+	path, fake, opts := repositorySetup(t, "")
+	setConfig(t, path, "repositories.0.implementer.agent", "claude")
+	setConfig(t, path, "repositories.0.reviewer.agent", "claude")
+	fake.responses["claude --version"] = runner.ExecResult{Stdout: []byte("Claude development build")}
+	fake.repositoryFiles = fakeRegularRepositoryFiles("AGENTS.md\n")
+	report := doctor.Check(context.Background(), path, opts)
+	requireFinding(t, report, doctor.Unverifiable, "harness.instructions_unverifiable", "octo/repo")
+	for _, pass := range report.Passes {
+		if pass.Code == "harness.instructions_match" {
+			t.Fatalf("instruction check passed without a Claude version: %+v", pass)
+		}
 	}
 }
 

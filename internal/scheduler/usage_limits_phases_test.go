@@ -188,13 +188,12 @@ func TestReviewAndFixWaitAllowancesAreIndependent(t *testing.T) {
 							if phase == workflow.Fix {
 								role, label = "implementer", "Fix"
 							}
-							for _, path := range []string{"/runs/" + waiting.ID, "/settings"} {
-								response := httptest.NewRecorder()
-								server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil))
-								for _, value := range []string{label + ", round 1 · " + role, "temporary_limit", "Exactly one additional usage-limit wait granted; allowance 3"} {
-									if response.Code != 200 || !strings.Contains(response.Body.String(), value) {
-										t.Errorf("%s missing %q", path, value)
-									}
+							path := "/runs/" + waiting.ID
+							response := httptest.NewRecorder()
+							server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+							for _, value := range []string{label + ", round 1 · " + role, "temporary_limit", "Exactly one additional usage-limit wait granted; allowance 3"} {
+								if response.Code != 200 || !strings.Contains(response.Body.String(), value) {
+									t.Errorf("%s missing %q", path, value)
 								}
 							}
 						}

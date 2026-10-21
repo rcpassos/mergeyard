@@ -59,17 +59,33 @@ func (c *checker) repository(repo config.Repository) {
 		c.report.add(Unverifiable, "harness.repository_files_unverifiable", repo.Repo, "cannot inspect instruction files and repository skills without a fetched base branch")
 		return
 	}
+	instructionsMatch := true
 	if files["CLAUDE.md"] == fileUnverifiable || files["AGENTS.md"] == fileUnverifiable {
+		instructionsMatch = false
 		c.report.add(Unverifiable, "harness.instructions_unverifiable", repo.Repo, "instruction-file symlink targets leave the repository and cannot be verified for the future worktree")
 	}
 	for _, role := range []config.Role{repo.Implementer, repo.Reviewer} {
 		if role.Agent == registry.Codex && files["CLAUDE.md"] == fileRegular && files["AGENTS.md"] != fileRegular && files["AGENTS.md"] != fileUnverifiable {
+			instructionsMatch = false
 			c.report.add(Warning, "harness.instructions_missing", repo.Repo, "Codex is assigned but the base branch has CLAUDE.md without AGENTS.md; add AGENTS.md for repository instructions")
 			break
 		}
 	}
-	if v, known := c.versions[registry.Claude]; known && v.less(claudeMinimum) && files["AGENTS.md"] == fileRegular && files["CLAUDE.md"] != fileRegular && files["CLAUDE.md"] != fileUnverifiable && (repo.Implementer.Agent == registry.Claude || repo.Reviewer.Agent == registry.Claude) {
-		c.report.add(Warning, "harness.instructions_missing", repo.Repo, "Claude below 2.1.277 cannot read AGENTS.md without CLAUDE.md; upgrade Claude or add CLAUDE.md")
+	claudeAssigned := repo.Implementer.Agent == registry.Claude || repo.Reviewer.Agent == registry.Claude
+	agentsWithoutClaude := files["AGENTS.md"] == fileRegular && files["CLAUDE.md"] != fileRegular && files["CLAUDE.md"] != fileUnverifiable
+	if claudeAssigned && agentsWithoutClaude {
+		v, known := c.versions[registry.Claude]
+		switch {
+		case !known:
+			instructionsMatch = false
+			c.report.add(Unverifiable, "harness.instructions_unverifiable", repo.Repo, "cannot verify whether AGENTS.md alone provides instructions without a parseable Claude version")
+		case v.less(claudeMinimum):
+			instructionsMatch = false
+			c.report.add(Warning, "harness.instructions_missing", repo.Repo, "Claude below 2.1.277 cannot read AGENTS.md without CLAUDE.md; upgrade Claude or add CLAUDE.md")
+		}
+	}
+	if instructionsMatch {
+		c.report.pass("harness.instructions_match", repo.Repo, "instruction files match the assigned harnesses")
 	}
 }
 
@@ -94,8 +110,12 @@ func (c *checker) pushPermission(repository config.Repository) bool {
 		c.report.add(Error, "github.invalid_response", repo, "expected repository metadata from GitHub")
 		return true
 	}
-	if metadata.Private != nil && !*metadata.Private && len(repository.TrustedLabelers) == 0 {
-		c.report.add(Warning, "github.public_without_trusted_labelers", repo, "public repository has no trusted_labelers; write, maintain, and admin permission can authorize local agent execution. Configure an explicit list to narrow trust")
+	if metadata.Private != nil && !*metadata.Private {
+		if len(repository.TrustedLabelers) == 0 {
+			c.report.add(Warning, "github.public_without_trusted_labelers", repo, "public repository has no trusted_labelers; write, maintain, and admin permission can authorize local agent execution. Configure an explicit list to narrow trust")
+		} else {
+			c.report.pass("github.trusted_labelers", repo, "public repository narrows trust to the configured trusted labelers")
+		}
 	}
 	if metadata.Permissions == nil || metadata.Permissions.Push == nil {
 		c.report.add(Unverifiable, "github.push_unverifiable", repo, "GitHub did not report permissions.push for the authenticated account")
@@ -105,6 +125,7 @@ func (c *checker) pushPermission(repository config.Repository) bool {
 		c.report.add(Error, "github.push_forbidden", repo, "the authenticated GitHub account does not have push permission")
 		return false
 	}
+	c.report.pass("github.push_permission", repo, "the authenticated GitHub account has push permission")
 	return true
 }
 
@@ -123,10 +144,15 @@ func (c *checker) labels(repo config.Repository) {
 		c.report.add(Error, "github.invalid_response", repo.Repo, err.Error())
 		return
 	}
+	missing := false
 	for _, name := range []string{repo.Labels.Ready, repo.Labels.Running, repo.Labels.NeedsAttention} {
 		if !names[strings.ToLower(name)] {
+			missing = true
 			c.report.add(Error, "github.label_missing", repo.Repo, fmt.Sprintf("required label %q is missing; create it or update this repository's label configuration", name))
 		}
+	}
+	if !missing {
+		c.report.pass("github.labels_ready", repo.Repo, "required labels exist")
 	}
 }
 
@@ -176,6 +202,7 @@ func (c *checker) repositoryFiles(repo config.Repository, pushAllowed bool) map[
 		}
 		return nil
 	}
+	c.report.pass("git.origin_accessible", repo.Repo, "origin is accessible")
 	branch := repo.BaseBranch
 	if branch == "" {
 		for _, line := range strings.Split(string(refs.Stdout), "\n") {
@@ -205,6 +232,7 @@ func (c *checker) repositoryFiles(repo config.Repository, pushAllowed bool) map[
 		c.report.add(severity, "git.base_branch", repo.Repo, fmt.Sprintf("base branch %q cannot be resolved on origin", branch))
 		return nil
 	}
+	c.report.pass("git.base_branch", repo.Repo, fmt.Sprintf("base branch %q resolves on origin", branch))
 	dir, err := os.MkdirTemp("", "mergeyard-doctor-")
 	if err != nil {
 		c.report.add(Error, "workspace.probe_failed", repo.Repo, err.Error())
@@ -225,12 +253,15 @@ func (c *checker) repositoryFiles(repo config.Repository, pushAllowed bool) map[
 		c.report.add(accessSeverity(fetch.Stderr, err), "git.fetch", repo.Repo, "fetch failed: "+err.Error())
 		return nil
 	}
+	c.report.pass("git.fetch", repo.Repo, "shallow fetch succeeded")
 	if pushAllowed {
 		// --dry-run does not contact receive hooks or prove branch-protection
 		// acceptance. GitHub permissions above establish account authorization.
 		target := "refs/heads/mergeyard/" + filepath.Base(dir)
 		if push, err := c.command(dir, "git", "-c", "push.gpgSign=false", "push", "--dry-run", "--no-verify", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", remote, "refs/heads/doctor:"+target); err != nil {
 			c.report.add(accessSeverity(push.Stderr, err), "git.push_access", repo.Repo, "push transport check failed (dry run): "+err.Error())
+		} else {
+			c.report.pass("git.push_access", repo.Repo, "dry-run push transport succeeded")
 		}
 	}
 	paths := repositoryFilePaths(repo)
@@ -256,5 +287,6 @@ func (c *checker) repositoryFiles(repo config.Repository, pushAllowed bool) map[
 		c.report.add(Unverifiable, "git.tree_unverifiable", repo.Repo, "cannot interpret repository file checks: "+err.Error())
 		return nil
 	}
+	c.report.pass("git.tree_readable", repo.Repo, "base branch files and skills can be inspected")
 	return files
 }

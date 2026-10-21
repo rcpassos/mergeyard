@@ -46,7 +46,7 @@ type dashboard struct {
 	queueReady   bool
 	queueError   string
 	queueTime    string
-	diagnostics  string
+	diagnostics  *doctor.Report
 	cliDir       string
 }
 
@@ -78,7 +78,7 @@ func NewDashboard(bus *events.Bus, control Scheduler, options DashboardOptions) 
 	if err != nil {
 		return nil, err
 	}
-	s.dashboard = &dashboard{DashboardOptions: options, diagnostics: "Diagnostics have not been run.", cliDir: cliDir}
+	s.dashboard = &dashboard{DashboardOptions: options, cliDir: cliDir}
 	return s, nil
 }
 
@@ -98,10 +98,8 @@ func (s *Server) RunUpdates(ctx context.Context) {
 			checkCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			defer cancel()
 			report := d.Diagnostics(checkCtx)
-			var result strings.Builder
-			report.Write(&result)
 			d.mu.Lock()
-			d.diagnostics = result.String()
+			d.diagnostics = &report
 			d.mu.Unlock()
 			s.bus.Notify(ctx, events.Draft{Type: "diagnostics.updated", Payload: struct{}{}})
 		}()
@@ -199,20 +197,21 @@ const (
 type timelineEntry struct{ Type, Time, Details string }
 
 type pageData struct {
-	Harnesses                                 []scheduler.HarnessAvailability
-	RecoveryRuns                              []workflow.Run
-	Page, Title, Path, Token                  string
-	Boot                                      bool
-	Paused                                    bool
-	Used, Limit                               int
-	Sections                                  []queueSection
-	Recent                                    []runView
-	Run                                       *runView
-	Timeline                                  []timelineEntry
-	Log, LogMessage                           string
-	QueueReady                                bool
-	QueueError, QueueTime                     string
-	ConfigPath, ConfigText, Workspace, Doctor string
+	Harnesses                         []scheduler.HarnessAvailability
+	Page, Title, Path, Token          string
+	Boot                              bool
+	Paused                            bool
+	Used, Limit                       int
+	Sections                          []queueSection
+	Recent                            []runView
+	Run                               *runView
+	Timeline                          []timelineEntry
+	Log, LogMessage                   string
+	QueueReady                        bool
+	QueueError, QueueTime             string
+	ConfigPath, ConfigText, Workspace string
+	ConfigGroups                      []settingsGroup
+	Doctor                            *doctor.Report
 }
 
 // pageMeta names the page and title served at path. The locked boot layout
@@ -241,7 +240,7 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		data.Sections = emptySections()
-		data.ConfigText, data.Doctor = "Runtime configuration is not connected.", "Diagnostics have not been run."
+		data.ConfigText = "Runtime configuration is not connected."
 		if data.Page == "run" {
 			s.respondError(w, r, &fault.Error{Code: "internal.run_not_found"}, "internal.run_not_found", http.StatusNotFound, "Run not found")
 			return
@@ -268,18 +267,27 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 	queue := append([]scheduler.QueueIssue(nil), d.queue...)
 	queueFailures := append([]scheduler.Finding(nil), d.queueFailure...)
 	data.QueueReady, data.QueueError, data.QueueTime = d.queueReady, d.queueError, d.queueTime
-	data.Doctor = d.diagnostics
+	var report *doctor.Report
+	if d.diagnostics != nil {
+		// A published report is never mutated; newDoctorReport clones its
+		// slices before presenting them.
+		copied := *d.diagnostics
+		report = &copied
+	}
 	d.mu.RUnlock()
 	failures := append(d.Scheduler.ReconcileFailures(), queueFailures...)
 	if data.Page == "settings" {
 		data.ConfigPath, data.Workspace = d.ConfigPath, d.Workspace.Root
+		data.ConfigGroups = settingsGroups(d.Config)
 		cfg, err := yaml.Marshal(d.Config)
-		data.ConfigText = string(cfg)
 		if err != nil {
 			return err
 		}
-		data.RecoveryRuns, err = d.Scheduler.Runs(ctx)
-		return err
+		data.ConfigText = string(cfg)
+		if report != nil {
+			data.Doctor = newDoctorReport(*report)
+		}
+		return nil
 	}
 	runs, err := d.runs(ctx, id)
 	if err != nil {

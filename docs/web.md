@@ -256,12 +256,15 @@ PRs (review pending). Pending M1 runs automatically continue into an independent
 review. Run detail shows the reviewer settings/session, pinned SHA, verdict,
 findings and restoration diagnostics. Review events refresh the page over SSE. Attention
 and manual runs also consume slots. Harness-waiting runs retain their slots and
-show account availability and effective reset provenance. Run and settings history
+show account availability and effective reset provenance. Run history
 distinguishes interrupted executions and explicit grants from account gates where
 no execution started. Ready-to-merge runs release their slot and wait for the user's
 merge. Recent runs are limited to the latest 20 ended runs. The settings page
-displays resolved values, configuration/workspace paths, doctor results, and
-harness recovery history; it has no configuration write endpoint.
+shows the configuration path and workspace, the resolved values as grouped
+key/value tables for global settings, agents, global roles, each repository and
+its roles, the raw effective YAML in a disclosure, and doctor results as one
+pass, warn or fail row per check; it has no configuration write endpoint.
+Recovery and handback history stays with the run it belongs to.
 
 `POST /runs/{id}/stop` uses the same `Scheduler.Stop` as the CLI. It coordinates
 with in-flight operations, stops running phase sessions, removes ready and

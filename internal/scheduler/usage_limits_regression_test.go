@@ -283,12 +283,11 @@ func TestMixedRolesWaitBeforeFirstReviewExecution(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, path := range []string{"/runs/" + waiting.ID, "/settings"} {
-				response := httptest.NewRecorder()
-				server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil))
-				if response.Code != 200 || !strings.Contains(response.Body.String(), "Account gate; no execution started.") || strings.Contains(response.Body.String(), "consecutive 0 / allowance 0") {
-					t.Errorf("misleading pre-launch wait on %s: %d %s", path, response.Code, response.Body.String())
-				}
+			path := "/runs/" + waiting.ID
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+			if response.Code != 200 || !strings.Contains(response.Body.String(), "Account gate; no execution started.") || strings.Contains(response.Body.String(), "consecutive 0 / allowance 0") {
+				t.Errorf("misleading pre-launch wait on %s: %d %s", path, response.Code, response.Body.String())
 			}
 			root := runtime.Workspace.Root
 			if err := runtime.Close(); err != nil {

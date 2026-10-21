@@ -15,6 +15,8 @@ import (
 func (c *checker) access(cfg config.Config) {
 	if err := probeWorkspace(cfg.Workspace); err != nil {
 		c.report.add(Error, "workspace.not_writable", cfg.Workspace, err.Error())
+	} else {
+		c.report.pass("workspace.writable", cfg.Workspace, "workspace or its nearest existing parent is writable")
 	}
 	if cfg.Port < 1 || cfg.Port > 65535 {
 		c.report.add(Error, "config.invalid_port", "port", "dashboard port must be between 1 and 65535")
@@ -28,7 +30,9 @@ func (c *checker) access(cfg config.Config) {
 	}
 	if err := listener.Close(); err != nil {
 		c.report.add(Error, "config.port_unavailable", address, err.Error())
+		return
 	}
+	c.report.pass("config.port_available", address, "dashboard port is available")
 }
 
 func expandHome(path string) (string, error) {

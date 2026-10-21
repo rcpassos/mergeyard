@@ -14,8 +14,8 @@ var templateFiles = []string{"templates/*.html", "templates/pages/*.html", "temp
 // template. Presentation helpers belong here, not in the page data.
 func templateHelpers() template.FuncMap {
 	return template.FuncMap{
-		"outcomeAlert": outcomeAlert,
-		"statusBadge":  statusBadge, "stepLabel": stepLabel, "phaseLabel": phaseLabel,
+		"outcomeAlert": outcomeAlert, "doctorBadge": doctorBadge, "doctorKind": doctorKind,
+		"statusBadge": statusBadge, "stepLabel": stepLabel, "phaseLabel": phaseLabel,
 		"since": since, "until": until,
 	}
 }
