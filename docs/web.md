@@ -119,9 +119,11 @@ link only races the browser once.
 
 Failed scheduler actions return HTTP 500 with a safe diagnostic code in the
 response body and `X-Mergeyard-Error-Code` header. The dashboard displays that
-code. Structured logs retain the action, code, and underlying cause; the cause
-is not sent to the browser. Uncoded or malformed errors use
-`internal.scheduler_control`.
+code in an error toast, which stays until dismissed; successes and copy
+confirmations show as toasts that dismiss themselves. A blocked clipboard opens
+a modal with the text selected for a manual copy. Structured logs retain the
+action, code, and underlying cause; the cause is not sent to the browser.
+Uncoded or malformed errors use `internal.scheduler_control`.
 
 SSE carries the event type as `event`, the durable numeric ID as `id`, and the
 complete JSON event as `data`. Fresh connections start with live events.
@@ -181,7 +183,8 @@ registers them on the whole template set.
 ## Runtime pages
 
 `GET /`, `/queue`, `/runs/{id}`, and `/settings` are server-rendered pages.
-HTMX requests to the same URLs return the `#content` fragment; responses vary
+HTMX requests to the same URLs return the `#content` fragment plus an
+out-of-band refresh of the header's harness pills; responses vary
 by `HX-Request` and are never cached. A navigation without the owner session
 header gets the boot layout: the dashboard script attaches the stored session
 and requests the same URL with `HX-Request`, so pages and forms work with
@@ -361,8 +364,11 @@ identity protections, and an unknown run answers `internal.run_not_found`.
 
 `POST /harnesses/{harness}/check` calls the shared `Scheduler.CheckHarness`
 operation. JSON clients receive the durable check snapshot; browser forms refresh
-the dashboard. Harness availability offers **Check availability** only for a
-credit block with supported detection, no owning probe, and no future timed wait.
+the dashboard. Every page's header shows one pill per harness (available, usage
+limited with its reset time, out of credits, or a recovery probe running or
+reserved); its dropdown holds the availability details and offers **Check
+availability** only for a credit block with supported detection, no owning
+probe, and no future timed wait.
 The form discloses account quota use and the minimal request's lack of engineering
 work. Check remains available with no eligible affected runs; recovery does not
 revive stopped runs. The endpoint retains Host, Origin, CSRF, and CLI workspace

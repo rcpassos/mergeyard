@@ -2,12 +2,14 @@
 @source "../templates/**/*.html";
 /* outcomeAlert in internal/web/templates.go returns these from Go. */
 @source inline("alert-info alert-success alert-warning alert-error");
+/* The dashboard script builds toasts and the connection dot from these. */
+@source inline("status-neutral status-success status-warning status-error size-3 max-w-sm btn-ghost btn-xs [overflow-wrap:anywhere]");
 /* statusBadge in internal/web/status.go returns these from Go. */
 @source inline("badge-neutral badge-info badge-accent badge-warning badge-error badge-success badge-outline");
 @plugin "daisyui" {
   themes: light --default, dark --prefersdark;
   logs: false;
-  include: rootcolor, rootscrolllock, rootscrollgutter, scrollbar, alert, card, table, modal, toast, steps, tooltip, dropdown, collapse, badge, button, loading, stat;
+  include: rootcolor, rootscrolllock, rootscrollgutter, scrollbar, alert, card, table, modal, toast, steps, tooltip, dropdown, collapse, badge, button, loading, stat, status, textarea;
 }
 
 /* Colors come from the stock daisyUI themes and fonts from Tailwind's system
@@ -46,4 +48,8 @@
 .alert-warning::before { mask-image: url("icons/triangle-alert.svg"); }
 .alert-error::before { mask-image: url("icons/circle-x.svg"); }
 .alert a { color: inherit; text-decoration: underline; }
-#action-error:empty, #copy-status:empty { display: none; }
+/* A toast's dismiss button sits in a third column. */
+.toast .alert:has(> button) { grid-template-columns: auto minmax(0, 1fr) auto; }
+/* A harness pill opens its dropdown; the summary needs no disclosure marker. */
+#harness-pills summary { list-style: none; }
+#harness-pills summary::-webkit-details-marker { display: none; }
