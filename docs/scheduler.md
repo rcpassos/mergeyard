@@ -303,23 +303,25 @@ refusal or the 15-minute window spends another read, while a relabelled issue
 returns to the listing. Refusals whose issue is closed or deleted are forgotten
 when that snapshot refreshes. A failed refresh keeps the last snapshot, or
 records the issue's scoped failure until a snapshot exists, and backs off for
-the same window instead of retrying on every pass. Each refused read gets a
-bounded child context, so a slow request cannot consume the budget reserved for
-the rest of discovery. A read that the refresh budget ended before the full
-read window is merely slow and is read again on the next refresh. A timeout
-that GitHub reports before the budget ends the read is GitHub's own failure and
-backs off for the full window, however small the repository's share of the
-budget is, so the number of enabled repositories does not change it.
+the same window instead of retrying on every pass. The refused reads' shared
+part of the refresh budget decides only whether a read may start: a read
+starts only when that share can still pay for the full read window, and then
+gets it. Its own window expiring therefore means GitHub hung, and the issue
+backs off for the full window. The number of enabled repositories, which
+splits the share, cannot shorten that window. A read the caller's refresh
+budget ends before the full window is merely slow and is read again on the
+next refresh. A read the share cannot afford is not started, and the issue
+keeps its last readable snapshot until a later refresh reads it.
 
 The refused reads share the caller's refresh budget with the rest of the pass:
-they may spend at most half of it, and each repository may spend a share of
-what is left, split among the repositories this pass has not discovered yet.
-Once that share is spent the pass stops reading and keeps the last readable
-snapshot of the refusals it did not reach, so a window full of refusals cannot
-spend the whole refresh and leave the other repositories without a queue. The
-refusals of a repository are read in turn, so a refusal that always spends the
-repository's share cannot keep the refusals behind it out of the queue for
-good. The local lookups that assemble the queue do not share the budget
+they may spend at most half of it, and each repository starts reads from a
+share of what is left, split among the repositories this pass has not
+discovered yet. Once a repository's share is spent the pass stops starting its
+reads and keeps the last readable snapshot of the refusals it did not reach, so
+a window full of refusals cannot spend the whole refresh and leave the other
+repositories without a queue. The refusals of a repository are read in turn, so
+a refusal that always spends the repository's share cannot keep the refusals
+behind it out of the queue for good. The local lookups that assemble the queue do not share the budget
 reserved for GitHub, so a spent budget costs the refresh its fresh refusals
 rather than its whole queue, and a repository the refresh could not list is
 reported on its own instead of failing the queue.

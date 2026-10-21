@@ -349,7 +349,7 @@ func (g *deadlineGitHub) GetIssue(ctx context.Context, repo string, number int) 
 	return github.Issue{}, &fault.Error{Code: "github.timeout", Message: "The GitHub request timed out; it will retry", Err: ctx.Err()}
 }
 
-// A refused-issue read that hits its bounded deadline stays scoped to its
+// A refused-issue read that reaches its own full window stays scoped to its
 // issue instead of discarding discoveries from the rest of the pass, and backs
 // off so the next refresh does not return to the same slow read.
 func TestQueueScopesRefusedIssueDeadlineAndBacksOff(t *testing.T) {
@@ -371,7 +371,9 @@ func TestQueueScopesRefusedIssueDeadlineAndBacksOff(t *testing.T) {
 				t.Fatal(err)
 			}
 			for pass := 1; pass <= 2; pass++ {
-				refreshCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+				// The window fits in the refresh budget, so the read reaches
+				// GitHub's own timeout and the other repository still fits.
+				refreshCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 				report, err := s.QueueReport(refreshCtx)
 				cancel()
 				if err == nil || !scheduler.GitHubFailure(err) {
@@ -428,10 +430,11 @@ func TestQueueDoesNotCacheRefusedReadCancellation(t *testing.T) {
 
 	// The canceled read was not cached: the next pass tries it again.
 	api.calls = githubCalls{}
-	deadlineCtx, deadlineCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	gated.slowRepo = ""
+	deadlineCtx, deadlineCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer deadlineCancel()
-	if _, err := s.QueueReport(deadlineCtx); !scheduler.GitHubFailure(err) {
-		t.Fatalf("retried queue error = %v, want a scoped timeout", err)
+	if _, err := s.QueueReport(deadlineCtx); err != nil {
+		t.Fatalf("retried queue error = %v, want the retried read to succeed", err)
 	}
 	if api.calls.issueReads != 1 {
 		t.Fatalf("canceled refused read was cached: %d reads on retry", api.calls.issueReads)
