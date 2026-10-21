@@ -144,9 +144,10 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 	// that stay behind.
 	if leftovers.Preserved {
 		if err := s.deps.GitHub.EnsureStopLeftoversComment(ctx, repo.Repo, run.IssueNumber, run.ID, github.StoppedLeftovers{
-			Branch:   leftovers.Branch,
-			Worktree: s.workspaceRelative(leftovers.Path),
-			Reason:   leftovers.Reason,
+			Branch:     leftovers.Branch,
+			Worktree:   s.workspaceRelative(leftovers.Path),
+			Reason:     leftovers.Reason,
+			Unverified: leftovers.Unverified,
 		}); err != nil {
 			return err
 		}
@@ -220,10 +221,11 @@ func (s *Scheduler) recordLeftovers(ctx context.Context, run workflow.Run, lefto
 		if _, err := tx.ExecContext(ctx, "UPDATE runs SET branch=?, worktree_path=? WHERE id=?", leftovers.Branch, leftovers.Path, run.ID); err != nil {
 			return events.Draft{}, err
 		}
-		return events.Draft{RunID: run.ID, Type: "run.stop_leftovers", Payload: map[string]string{
-			"branch": leftovers.Branch,
-			"path":   leftovers.Path,
-			"reason": leftovers.Reason,
+		return events.Draft{RunID: run.ID, Type: "run.stop_leftovers", Payload: map[string]any{
+			"branch":     leftovers.Branch,
+			"path":       leftovers.Path,
+			"reason":     leftovers.Reason,
+			"unverified": leftovers.Unverified,
 		}}, nil
 	})
 	return err

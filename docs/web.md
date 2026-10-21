@@ -252,7 +252,9 @@ running labels, and adds attention when work exists before marking the run
 STOPPED. It preserves worktrees, branches, and PRs. A run without saved Git
 ownership, in any state, releases the leftovers its interrupted setup left, so the next run for the
 same issue prepares; leftovers that hold work are kept, and the issue is
-flagged for attention with a comment naming them. Repeating Stop on an
+flagged for attention with a comment naming them. Leftovers that cannot be
+checked, such as under a corrupt preparation intent or a replaced managed base,
+are kept and flagged the same way, and Stop still finishes. Repeating Stop on an
 already-stopped run returns without changing labels or emitting another event,
 so it cannot interfere with a newer run for the same issue. Existing Host,
 Origin, CSRF, and safe error-code checks apply.

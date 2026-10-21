@@ -297,14 +297,119 @@ func TestDiscardPreparationPreservesLeftoversWhenTheBaseIsGone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a missing base failed the release: %v", err)
 	}
-	if !leftovers.Preserved || leftovers.Branch != run.Branch || leftovers.Path != run.Path || leftovers.Reason == "" {
+	requireUnverified(t, f, run, leftovers)
+}
+
+// requireUnverified proves that leftovers the release could not check are
+// reported as unverified under the run's names, and that nothing was deleted:
+// the worktree, the branch where its base still has it, and the claim.
+func requireUnverified(t *testing.T, f fixture, run managedgit.Run, leftovers managedgit.Leftovers) {
+	t.Helper()
+	if !leftovers.Preserved || !leftovers.Unverified || leftovers.Branch != run.Branch || leftovers.Path != run.Path || leftovers.Reason == "" {
 		t.Fatalf("the unverifiable leftovers were not reported: %+v", leftovers)
 	}
 	if _, err := os.Stat(run.Path); err != nil {
-		t.Fatalf("the worktree was removed without its base: %v", err)
+		t.Fatalf("the unverified worktree was removed: %v", err)
 	}
 	if _, err := os.Stat(prepareIntentPath(t, f)); err != nil {
 		t.Fatalf("the claim was released with leftovers still in place: %v", err)
+	}
+}
+
+// TestDiscardPreparationPreservesLeftoversWhenTheClaimIsUnreadable proves that
+// an empty or corrupt claim, which a crash or a person can leave, does not make
+// the release fail: the leftovers cannot be proven to be this run's, so the
+// branch and the worktree preparation creates for the run are reported instead.
+func TestDiscardPreparationPreservesLeftoversWhenTheClaimIsUnreadable(t *testing.T) {
+	for name, content := range map[string]string{"empty": "", "corrupt": `{"id":"run-1","branch":`, "foreign": `{}`} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			run := prepare(t, f)
+			if err := os.WriteFile(prepareIntentPath(t, f), []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+			if err != nil {
+				t.Fatalf("an unreadable claim failed the release: %v", err)
+			}
+			requireUnverified(t, f, run, leftovers)
+			if branch := git(t, run.BasePath, "branch", "--list", run.Branch); branch == "" {
+				t.Fatal("the branch was deleted under an unreadable claim")
+			}
+		})
+	}
+}
+
+// TestDiscardPreparationPreservesLeftoversWhenTheBaseIsReplaced proves that a
+// managed base replaced by another clone does not make the release fail: the
+// leftovers are attached to a base that is gone, so they are reported as
+// unverified instead of removed.
+func TestDiscardPreparationPreservesLeftoversWhenTheBaseIsReplaced(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	if err := os.RemoveAll(run.BasePath); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.root, "clone", "--quiet", f.remote, run.BasePath)
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatalf("a replaced base failed the release: %v", err)
+	}
+	requireUnverified(t, f, run, leftovers)
+}
+
+// TestDiscardPreparationReportsAnotherBranchAsWork proves that a checkout a
+// person moved to another branch is work the release found, not leftovers it
+// could not check.
+func TestDiscardPreparationReportsAnotherBranchAsWork(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	git(t, run.Path, "checkout", "--quiet", "-b", "person/topic")
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leftovers.Preserved || leftovers.Unverified || leftovers.Reason == "" {
+		t.Fatalf("the other branch was not reported as work: %+v", leftovers)
+	}
+	if got := git(t, run.Path, "branch", "--show-current"); got != "person/topic" {
+		t.Fatalf("the other checkout was changed: %q", got)
+	}
+}
+
+// TestDiscardPreparationPreservesLeftoversWhenGitFails proves that a Git check
+// that fails or exceeds its deadline does not make the release fail, so a stop
+// cannot wedge on it, and that the leftovers stay claimed for a later release
+// once Git answers again.
+func TestDiscardPreparationPreservesLeftoversWhenGitFails(t *testing.T) {
+	for name, body := range map[string]string{"failing": "exit 128", "hung": "exec /bin/sleep 600"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			run := prepare(t, f)
+			installGitWrapper(t, "status", body)
+			manager := managerWithTimeouts(t, f, shortTimeouts(time.Second))
+			leftovers, err := manager.DiscardPreparation(context.Background(), f.request)
+			if err != nil {
+				t.Fatalf("a Git failure failed the release: %v", err)
+			}
+			requireUnverified(t, f, run, leftovers)
+		})
+	}
+}
+
+// TestDiscardPreparationReportsACancelledCaller proves that a caller that gave
+// up gets an error instead of a verdict, so the stop is attempted again rather
+// than finished on a check that never ran.
+func TestDiscardPreparationReportsACancelledCaller(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := f.manager.DiscardPreparation(ctx, f.request); err == nil {
+		t.Fatal("a cancelled caller got a verdict")
+	}
+	if _, err := os.Stat(run.Path); err != nil {
+		t.Fatalf("a cancelled release removed the worktree: %v", err)
 	}
 }
 

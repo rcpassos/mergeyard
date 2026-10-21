@@ -50,6 +50,33 @@ func TestStopLeftoversCommentNamesTheLeftoversAndReplaysOnce(t *testing.T) {
 	}
 }
 
+// TestStopLeftoversCommentSaysUnverifiedLeftoversCouldNotBeVerified proves
+// that leftovers the release could not check are explained as unverified, so a
+// reader does not assume they were found to hold work. Verified leftovers do
+// not carry that sentence.
+func TestStopLeftoversCommentSaysUnverifiedLeftoversCouldNotBeVerified(t *testing.T) {
+	for _, unverified := range []bool{true, false} {
+		r := &recordedGH{responses: []response{{stdout: []byte(`{"login":"mergeyard-user"}`)}, {stdout: []byte(`[]`)}, {err: errors.New("recorded only")}}}
+		leftovers := github.StoppedLeftovers{Branch: "mergeyard/issue-7", Worktree: "worktrees/owner-repo/run-1", Reason: "reason", Unverified: unverified}
+		// Only the posted body matters, so the write's answer is not modelled.
+		_ = github.New(r).EnsureStopLeftoversComment(context.Background(), "owner/repo", 7, "run-1", leftovers)
+		var posted struct {
+			Body string `json:"body"`
+		}
+		if len(r.calls) != 3 || json.Unmarshal(r.calls[2].input, &posted) != nil {
+			t.Fatalf("no comment was posted: %d requests", len(r.calls))
+		}
+		if got := strings.Contains(posted.Body, "could not be verified"); got != unverified {
+			t.Fatalf("unverified=%v, but the comment says otherwise: %s", unverified, posted.Body)
+		}
+		for _, want := range []string{"mergeyard/issue-7", "worktrees/owner-repo/run-1"} {
+			if !strings.Contains(posted.Body, want) {
+				t.Fatalf("the comment does not name %q: %s", want, posted.Body)
+			}
+		}
+	}
+}
+
 // TestStopLeftoversCommentReplayFindsACommentInTheOldFormat proves that a
 // comment already posted with an absolute path is still found by the replay, so
 // the new wording never posts a second comment for the same run.
