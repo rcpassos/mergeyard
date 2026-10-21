@@ -89,6 +89,14 @@ func TestTemporaryLimitPreservesWorkAndResumesAfterRestart(t *testing.T) {
 						t.Fatalf("%s missing %s: %d %s", path, value, response.Code, response.Body.String())
 					}
 				}
+				// Every page's header carries one pill per harness: the limited
+				// one with its reset time, the other one available.
+				other := map[string]string{"claude": "codex", "codex": "claude"}[agent]
+				for _, pill := range []string{agent + ` · Usage limited · resets <time datetime="` + reset.Format(time.RFC3339) + `"`, other + " · Available</summary>"} {
+					if !strings.Contains(response.Body.String(), pill) {
+						t.Fatalf("%s missing pill %s: %s", path, pill, response.Body.String())
+					}
+				}
 			}
 			status := httptest.NewRecorder()
 			server.ServeHTTP(status, apiRequest(t, runtime.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))

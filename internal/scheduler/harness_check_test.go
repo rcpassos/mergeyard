@@ -242,7 +242,7 @@ func TestHarnessCheckBrowserControlsAndProtections(t *testing.T) {
 	}
 	h.detection = true
 	body := page()
-	if !strings.Contains(body, ">Check availability<") || !strings.Contains(body, "uses account quota") || !strings.Contains(body, "no engineering work") {
+	if !strings.Contains(body, "claude · Out of credits</summary>") || !strings.Contains(body, ">Check availability<") || !strings.Contains(body, "uses account quota") || !strings.Contains(body, "no engineering work") {
 		t.Fatalf("missing disclosure: %s", body)
 	}
 	for _, restriction := range []string{"host", "origin", "csrf", "cross-site", "capability"} {
@@ -277,7 +277,7 @@ func TestHarnessCheckBrowserControlsAndProtections(t *testing.T) {
 	request.Header.Set("HX-Request", "true")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	if response.Code != 200 || !strings.Contains(response.Body.String(), "independent availability check") || strings.Contains(response.Body.String(), ">Check availability<") {
+	if response.Code != 200 || !strings.Contains(response.Body.String(), "claude · Recovery probe ") || !strings.Contains(response.Body.String(), "independent availability check") || strings.Contains(response.Body.String(), ">Check availability<") {
 		t.Fatalf("running UI: %d %s", response.Code, response.Body)
 	}
 	waitFor(t, func() bool {
@@ -286,6 +286,9 @@ func TestHarnessCheckBrowserControlsAndProtections(t *testing.T) {
 		}
 		return strings.Contains(page(), "Availability check recovered")
 	})
+	if body := page(); !strings.Contains(body, "claude · Available</summary>") {
+		t.Fatalf("recovered harness pill: %s", body)
+	}
 }
 
 // Delay the second harness until Check starts: tmux accepting a session does

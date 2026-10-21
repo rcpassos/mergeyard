@@ -13,7 +13,7 @@ func TestDashboardTemplatesSplitIntoLayoutPagesAndPartials(t *testing.T) {
 		t.Fatalf("parseTemplates: %v", err)
 	}
 	for _, name := range []string{
-		"layout", "content",
+		"layout", "content", "swap", "harness-pills", "harness-time",
 		"queue-page", "run-detail", "settings", "boot", "locked-content",
 		"scheduler", "queue-group", "run-row", "human-action", "escalation", "verification", "phase-output",
 	} {

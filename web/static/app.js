@@ -1,7 +1,75 @@
 const SESSION_KEY = 'mergeyard.session';
 const SESSION_HEADER = 'X-Mergeyard-Session';
-const status = document.querySelector('#connection');
 const content = document.querySelector('#content');
+
+// The live-update connection shows as a status dot; its text reaches
+// assistive technology through a status region and sighted users as a tooltip.
+const connectionStates = {
+  connecting: ['status-neutral', 'Connecting to live updates…'],
+  connected: ['status-success', 'Live updates connected'],
+  reconnecting: ['status-warning', 'Reconnecting to live updates…'],
+  locked: ['status-error', 'Dashboard locked'],
+};
+function showConnection(state) {
+  const connection = document.querySelector('#connection');
+  if (!connection) return;
+  const [variant, text] = connectionStates[state];
+  connection.dataset.state = state;
+  connection.dataset.tip = text;
+  connection.querySelector('.status').className = `status ${variant} size-3`;
+  connection.querySelector('.sr-only').textContent = text;
+}
+
+// Toasts carry action feedback: a success dismisses itself, an error stays
+// until dismissed and is announced as an alert.
+function showToast(kind, text) {
+  const region = document.querySelector('#toasts');
+  if (!region) return;
+  // A repeated failure, such as a live refresh failing on every event, keeps
+  // one toast instead of stacking copies.
+  if ([...region.children].some((toast) => toast.textContent.startsWith(text))) return;
+  const toast = document.createElement('div');
+  toast.className = `alert alert-${kind} max-w-sm`;
+  toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  const message = document.createElement('p');
+  message.className = '[overflow-wrap:anywhere]';
+  message.textContent = text;
+  toast.append(message);
+  if (kind === 'error') {
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'btn btn-ghost btn-xs';
+    dismiss.textContent = 'Dismiss';
+    dismiss.addEventListener('click', () => toast.remove());
+    toast.append(dismiss);
+  } else {
+    setTimeout(() => toast.remove(), 3000);
+  }
+  region.append(toast);
+}
+
+// Live updates refresh the header pills out of band; an open pill dropdown
+// stays open across the refresh.
+let openPills = [];
+document.body.addEventListener('htmx:oobBeforeSwap', (event) => {
+  if (event.detail.target.id !== 'harness-pills') return;
+  openPills = [...event.detail.target.querySelectorAll('details[open]')].map((pill) => pill.id);
+});
+document.body.addEventListener('htmx:oobAfterSwap', (event) => {
+  if (event.detail.target.id !== 'harness-pills') return;
+  for (const id of openPills) document.getElementById(id)?.setAttribute('open', '');
+});
+
+// A blocked clipboard opens a modal with the text selected for a manual copy.
+function showCopyFallback(text) {
+  const dialog = document.querySelector('#copy-fallback');
+  if (!dialog) return;
+  const field = dialog.querySelector('textarea');
+  field.value = text;
+  dialog.showModal();
+  field.focus();
+  field.select();
+}
 
 function readSession() {
   try {
@@ -49,7 +117,7 @@ function lockDashboard(rejected) {
   }
   clearSession();
   session = '';
-  status.textContent = 'Dashboard locked';
+  showConnection('locked');
   location.reload();
 }
 
@@ -119,7 +187,7 @@ async function startEvents() {
       return;
     }
     if (!response.ok || !response.body) throw new Error(`live updates: ${response.status}`);
-    status.textContent = 'Live updates connected';
+    showConnection('connected');
     refresh();
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -139,7 +207,7 @@ async function startEvents() {
   }
   streamController = null;
   if (!session) return;
-  status.textContent = 'Reconnecting to live updates…';
+  showConnection('reconnecting');
   setTimeout(startEvents, 2000);
 }
 
@@ -157,7 +225,7 @@ document.body.addEventListener('htmx:afterSwap', () => {
 // boot page. The script attaches the stored session and loads the real content.
 if (content && content.hasAttribute('data-boot')) {
   if (!session) {
-    status.textContent = 'Dashboard locked';
+    showConnection('locked');
   } else {
     htmx.ajax('GET', location.pathname + location.search, {
       target: '#content', swap: 'outerHTML', headers: { [SESSION_HEADER]: session },
@@ -182,26 +250,25 @@ document.body.addEventListener('htmx:responseError', (event) => {
     return;
   }
   const code = xhr.getResponseHeader('X-Mergeyard-Error-Code');
-  document.querySelector('#action-error').textContent = (xhr.status === 409 || code?.startsWith('takeover.') || code?.startsWith('handback.'))
+  showToast('error', (xhr.status === 409 || code?.startsWith('takeover.') || code?.startsWith('handback.'))
     ? xhr.responseText.trim()
     : code
     ? `${code}: The action failed. Check the application log for details.`
-    : 'The request failed. Refresh the page and try again.';
+    : 'The request failed. Refresh the page and try again.');
 });
 document.body.addEventListener('htmx:afterRequest', (event) => {
   if (event.detail.successful && event.detail.requestConfig.verb === 'post') {
-    document.querySelector('#action-error').textContent = '';
+    showToast('success', 'Action completed.');
     refresh();
   }
 });
 document.body.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-copy]');
   if (!button) return;
-  const message = document.querySelector('#copy-status');
   try {
     await navigator.clipboard.writeText(button.dataset.copy);
-    message.textContent = 'Copied to clipboard.';
+    showToast('success', 'Copied to clipboard.');
   } catch {
-    message.textContent = `Copy this text: ${button.dataset.copy}`;
+    showCopyFallback(button.dataset.copy);
   }
 });

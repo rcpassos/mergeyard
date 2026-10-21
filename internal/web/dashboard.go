@@ -249,7 +249,8 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 	}
 	name := "layout"
 	if r.Header.Get("HX-Request") == "true" {
-		name = "content"
+		// A swap replaces the page content and refreshes the header pills.
+		name = "swap"
 	}
 	w.Header().Add("Vary", "HX-Request")
 	w.Header().Add("Vary", DashboardSessionHeader)
