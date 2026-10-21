@@ -284,6 +284,90 @@ func TestDiscardPreparationPreservesIgnoredFilesInAnUnfinishedInitialization(t *
 	}
 }
 
+// TestDiscardPreparationPreservesLeftoversWhenTheBaseIsGone proves that a claim
+// that outlives its managed base does not make the release fail: the leftovers
+// cannot be proven empty, so they are reported instead and stopping goes on.
+func TestDiscardPreparationPreservesLeftoversWhenTheBaseIsGone(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	if err := os.RemoveAll(run.BasePath); err != nil {
+		t.Fatal(err)
+	}
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatalf("a missing base failed the release: %v", err)
+	}
+	if !leftovers.Preserved || leftovers.Branch != run.Branch || leftovers.Path != run.Path || leftovers.Reason == "" {
+		t.Fatalf("the unverifiable leftovers were not reported: %+v", leftovers)
+	}
+	if _, err := os.Stat(run.Path); err != nil {
+		t.Fatalf("the worktree was removed without its base: %v", err)
+	}
+	if _, err := os.Stat(prepareIntentPath(t, f)); err != nil {
+		t.Fatalf("the claim was released with leftovers still in place: %v", err)
+	}
+}
+
+// TestDiscardPreparationWithoutAClaimDoesNotWaitForTheGitLock proves that a run
+// that never started preparing returns at once while another operation holds
+// the manager's lock.
+func TestDiscardPreparationWithoutAClaimDoesNotWaitForTheGitLock(t *testing.T) {
+	f := newFixture(t)
+	setup := f.request
+	setup.RunID, setup.IssueNumber = "setup", 6
+	if _, err := f.manager.Prepare(context.Background(), setup); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(f.root, "repos", "owner-repo", "base", ".git", "hooks", "reference-transaction")
+	marker := filepath.Join(t.TempDir(), "head-prepared")
+	script := fmt.Sprintf(`#!/bin/sh
+[ "$1" = prepared ] || exit 0
+while read old new ref; do
+  if [ "$ref" = HEAD ] && [ "$new" = ref:refs/heads/mergeyard/issue-7 ]; then
+    : > '%s'
+    /bin/sleep 10
+  fi
+done
+`, marker)
+	if err := os.MkdirAll(filepath.Dir(hook), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	busy, cancelBusy := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		cancelBusy()
+		<-done
+	})
+	go func() {
+		defer close(done)
+		_, _ = f.manager.Prepare(busy, f.request)
+	}()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the busy operation never took the lock")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	idle := f.request
+	idle.RunID, idle.IssueNumber = "idle", 8
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	leftovers, err := f.manager.DiscardPreparation(ctx, idle)
+	if err != nil {
+		t.Fatalf("a run without a claim waited for the lock: %v", err)
+	}
+	if leftovers.Preserved {
+		t.Fatalf("a run without a claim reported leftovers: %+v", leftovers)
+	}
+}
+
 // TestDiscardPreparationPreservesLeftoversWithCommits proves that leftovers
 // holding commits are never deleted: they are reported instead.
 func TestDiscardPreparationPreservesLeftoversWithCommits(t *testing.T) {

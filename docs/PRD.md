@@ -1185,10 +1185,12 @@ Every transition to `NEEDS_ATTENTION` persists a nonempty `human_action` with th
 6. marks the run `STOPPED`.
 
 Stop never deletes code. A run whose worktree setup was interrupted before an
-agent could work releases only the untouched leftovers it created: the branch
-still at its recorded start and a clean checkout. Leftovers with commits or
-changes are kept, the issue is flagged for attention, and the explanation names
-the branch and the worktree the user has to remove.
+agent could work, in whatever state it stopped, releases only the untouched
+leftovers it created: the branch still at its recorded start and a checkout
+with no change and no ignored file. Leftovers with commits, changes, or ignored
+files are kept, and so are leftovers whose managed base cannot be verified. The
+issue is flagged for attention, and the explanation names the branch and the
+worktree the user has to remove.
 
 ### Retry
 
