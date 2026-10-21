@@ -358,6 +358,25 @@ func TestDiscardPreparationPreservesLeftoversWhenTheBaseIsReplaced(t *testing.T)
 	requireUnverified(t, f, run, leftovers)
 }
 
+// TestDiscardPreparationReportsAnotherBranchAsWork proves that a checkout a
+// person moved to another branch is work the release found, not leftovers it
+// could not check.
+func TestDiscardPreparationReportsAnotherBranchAsWork(t *testing.T) {
+	f := newFixture(t)
+	run := prepare(t, f)
+	git(t, run.Path, "checkout", "--quiet", "-b", "person/topic")
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leftovers.Preserved || leftovers.Unverified || leftovers.Reason == "" {
+		t.Fatalf("the other branch was not reported as work: %+v", leftovers)
+	}
+	if got := git(t, run.Path, "branch", "--show-current"); got != "person/topic" {
+		t.Fatalf("the other checkout was changed: %q", got)
+	}
+}
+
 // TestDiscardPreparationPreservesLeftoversWhenGitFails proves that a Git check
 // that fails or exceeds its deadline does not make the release fail, so a stop
 // cannot wedge on it, and that the leftovers stay claimed for a later release

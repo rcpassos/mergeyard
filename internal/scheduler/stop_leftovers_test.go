@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -543,16 +542,7 @@ func TestStopCompletesWhenGitHangsOnTheLeftovers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	real, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git is unavailable")
-	}
-	dir := t.TempDir()
-	script := "#!/bin/sh\ncase \" $* \" in *\" status \"*) exec /bin/sleep 600;; esac\nexec " + real + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	installGitWrapper(t, "status", "exec /bin/sleep 600")
 	short := managedgit.NewWithTimeouts(rt.Workspace, managedgit.Timeouts{Metadata: time.Second, Worktree: time.Second, Clone: time.Second, Fetch: time.Second, Push: time.Second})
 	s, err := scheduler.New(cfg, schedulerResources(rt), scheduler.Dependencies{GitHub: api, Git: short, Runner: r})
 	if err != nil {

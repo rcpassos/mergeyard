@@ -59,27 +59,29 @@ func (m *Manager) DiscardPreparation(ctx context.Context, req PrepareRequest) (L
 	if _, err := os.Lstat(prepareIntentPath(run)); errors.Is(err, os.ErrNotExist) {
 		return Leftovers{}, nil
 	}
-	leftovers, err := m.discardPreparation(ctx, run)
+	leftovers, err := m.releaseClaimedLeftovers(ctx, run)
 	if err == nil {
 		return leftovers, nil
 	}
 	if ctx.Err() != nil {
 		return Leftovers{}, err
 	}
-	// The check failed on its own, not because the caller gave up. The
-	// leftovers are named the way preparation names them for this run.
-	code := "git.failure"
+	// The check or the removal failed on its own, not because the caller gave
+	// up. A removal that failed partway may have deleted part of leftovers
+	// already proven empty, never anything else. The leftovers are named the
+	// way preparation names them for this run.
+	reason := "Git could not check or remove them; preserved for inspection"
 	var failed *fault.Error
 	if errors.As(err, &failed) && failed.Code != "" {
-		code = failed.Code
+		reason = "Git could not check or remove them (" + failed.Code + "); preserved for inspection"
 	}
-	return unverifiedLeftovers(run, prepareIntent{}, "Git could not check them ("+code+"); preserved for inspection"), nil
+	return unverifiedLeftovers(run, prepareIntent{}, reason), nil
 }
 
-// discardPreparation releases the leftovers named by this run's claim while
-// holding the manager's lock. Its errors are the failures DiscardPreparation
-// turns into unverified leftovers.
-func (m *Manager) discardPreparation(ctx context.Context, run Run) (Leftovers, error) {
+// releaseClaimedLeftovers releases the leftovers named by this run's claim
+// while holding the manager's lock. Its errors are the failures
+// DiscardPreparation turns into unverified leftovers.
+func (m *Manager) releaseClaimedLeftovers(ctx context.Context, run Run) (Leftovers, error) {
 	ctx, release, err := m.begin(ctx, m.timeouts.Metadata+m.timeouts.Worktree)
 	if err != nil {
 		return Leftovers{}, err
@@ -166,10 +168,13 @@ func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent p
 	if err != nil {
 		return preservation{}, err
 	}
-	if !owned {
+	if state == leftoverDetached {
 		// A checkout that is not attached to the managed base, such as one
 		// whose base was replaced, cannot be checked for work.
-		return preservation{reason: "the prepared worktree cannot be claimed by this run; preserved for inspection", unverified: true}, nil
+		return preservation{reason: "the prepared worktree is not attached to the managed base; preserved for inspection", unverified: true}, nil
+	}
+	if !owned {
+		return preservation{reason: "the prepared worktree holds work that this run cannot claim; preserved for inspection"}, nil
 	}
 	empty, err := m.preparedWorktreeHoldsNothing(ctx, run, intent, state)
 	if err != nil {
@@ -182,13 +187,12 @@ func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent p
 }
 
 // preparedWorktreeHoldsNothing reports whether a leftover worktree that
-// belongs to this run holds no work, so it can be discarded. Ownership is
-// proven the way an interrupted creation is recognized: an absent path, an
-// empty directory, Git's own unfinished initialization, or a checkout on the
-// run branch attached to the managed base. A checkout Git still holds locked
-// for initialization is compared with the recorded start, because a killed
-// creation leaves it partly written. Any other checkout must also be clean,
-// because a change, a commit, or an ignored file is work that is never deleted.
+// belongs to this run holds no work, so it can be discarded. State is what
+// interruptedWorktreeOwnership found at the path. A checkout Git never
+// finished, or still holds locked for initialization, is compared with the
+// recorded start, because a killed creation leaves it partly written. Any other
+// checkout must also be clean, because a change, a commit, or an ignored file
+// is work that is never deleted.
 func (m *Manager) preparedWorktreeHoldsNothing(ctx context.Context, run Run, intent prepareIntent, state leftoverState) (bool, error) {
 	switch state {
 	case leftoverEmpty:
@@ -433,6 +437,10 @@ const (
 	leftoverInitializing
 	// leftoverForeign means the path holds something this run cannot claim.
 	leftoverForeign
+	// leftoverDetached means the path holds a checkout that is not attached to
+	// the managed base, such as one whose base was replaced, so its contents
+	// cannot be checked.
+	leftoverDetached
 )
 
 // interruptedWorktreeOwnership reports whether a leftover path belongs to this
@@ -469,6 +477,9 @@ func interruptedWorktreeOwnership(ctx context.Context, run Run) (owned bool, sta
 		// leaves no readable checkout. Accept it only when the link, backlink,
 		// and common directory point at this run's managed base.
 		initializing, err := managedInitialization(run)
+		if err == nil && !initializing {
+			return false, leftoverDetached, nil
+		}
 		return initializing, leftoverInitializing, err
 	}
 	if branch != run.Branch {
@@ -479,11 +490,11 @@ func interruptedWorktreeOwnership(ctx context.Context, run Run) (owned bool, sta
 		if ctx.Err() != nil {
 			return false, leftoverForeign, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
 		}
-		return false, leftoverCheckout, nil
+		return false, leftoverDetached, nil
 	}
 	got, err := os.Stat(common)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, leftoverCheckout, nil
+		return false, leftoverDetached, nil
 	} else if err != nil {
 		return false, leftoverForeign, failure("git.worktree", run.Path, err)
 	}
@@ -491,5 +502,8 @@ func interruptedWorktreeOwnership(ctx context.Context, run Run) (owned bool, sta
 	if err != nil {
 		return false, leftoverForeign, failure("git.worktree", run.BasePath, err)
 	}
-	return os.SameFile(got, want), leftoverCheckout, nil
+	if !os.SameFile(got, want) {
+		return false, leftoverDetached, nil
+	}
+	return true, leftoverCheckout, nil
 }
