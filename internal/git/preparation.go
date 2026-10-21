@@ -232,16 +232,15 @@ func preparedFileIsStartOfRecorded(ctx context.Context, run Run, start, path str
 	if err != nil || !info.Mode().IsRegular() {
 		return false, nil
 	}
-	recorded, err := commandBytes(ctx, run.BasePath, "git.worktree", nil, "cat-file", "blob", start+":"+path)
+	// One byte past the file's size tells a longer recorded file from an equal
+	// one, and is all of the recorded contents the comparison needs.
+	recorded, err := commandPrefix(ctx, run.BasePath, "git.worktree", nil, int(info.Size())+1, "cat-file", "blob", start+":"+path)
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, err
 		}
 		// A recorded entry that is not a readable blob, such as a submodule,
 		// proves nothing about the file.
-		return false, nil
-	}
-	if info.Size() > int64(len(recorded)) {
 		return false, nil
 	}
 	held, err := os.ReadFile(file)

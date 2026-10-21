@@ -29,6 +29,18 @@ func TestRunCapturesOutputEnvironmentAndExit(t *testing.T) {
 	}
 }
 
+func TestRunKeepsOnlyTheStdoutLimitAndLetsTheCommandFinish(t *testing.T) {
+	result, err := proc.Run(context.Background(), proc.Request{
+		Executable:  "/bin/sh",
+		Args:        []string{"-c", `printf 0123456789; printf 'abcdefghij'`},
+		Dir:         t.TempDir(),
+		StdoutLimit: 12,
+	})
+	if err != nil || result.ExitCode != 0 || string(result.Stdout) != "0123456789ab" {
+		t.Fatalf("result = %+v, %v", result, err)
+	}
+}
+
 func TestRunReportsLaunchAndContextFailures(t *testing.T) {
 	if _, err := proc.Run(context.Background(), proc.Request{Executable: "/missing/executable"}); err == nil {
 		t.Fatal("missing executable was treated as a process exit")

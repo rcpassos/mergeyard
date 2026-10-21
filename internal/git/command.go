@@ -106,9 +106,16 @@ func commandWithEnv(ctx context.Context, dir, code string, env []string, args ..
 // commandBytes runs Git and returns its output exactly as written, for callers
 // that compare file contents.
 func commandBytes(ctx context.Context, dir, code string, env []string, args ...string) ([]byte, error) {
+	return commandPrefix(ctx, dir, code, env, 0, args...)
+}
+
+// commandPrefix is commandBytes that keeps at most limit bytes of output, so a
+// caller that needs only the beginning of a large file holds only that much.
+// A zero limit keeps all of it.
+func commandPrefix(ctx context.Context, dir, code string, env []string, limit int, args ...string) ([]byte, error) {
 	commandEnv := append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), env...)
 	commandEnv = append(commandEnv, sshEnvironment(dir)...)
-	result, err := proc.Run(ctx, proc.Request{Executable: "git", Args: args, Dir: dir, Env: commandEnv})
+	result, err := proc.Run(ctx, proc.Request{Executable: "git", Args: args, Dir: dir, Env: commandEnv, StdoutLimit: limit})
 	if ctx.Err() != nil {
 		return result.Stdout, contextFailure(ctx, code, dir, ctx.Err())
 	}

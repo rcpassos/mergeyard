@@ -859,8 +859,6 @@ func managedInitialization(run Run) (bool, error) {
 	return true, nil
 }
 
-// gitDirTarget parses a linked worktree's ".git" file and resolves a relative
-// target against the worktree directory.
 // initializationLocked reports whether Git still holds a worktree's
 // registration locked for its own initialization. Only Git writes that lock
 // reason, and it removes the lock when the creation finishes.
@@ -874,6 +872,8 @@ func initializationLocked(admin string) (bool, error) {
 	return strings.TrimSpace(string(locked)) == "initializing", nil
 }
 
+// gitDirTarget parses a linked worktree's ".git" file and resolves a relative
+// target against the worktree directory.
 func gitDirTarget(content, worktree string) (string, bool) {
 	target, ok := strings.CutPrefix(strings.TrimSpace(content), "gitdir:")
 	if !ok {
