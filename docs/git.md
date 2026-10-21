@@ -106,18 +106,26 @@ preserved and refused with `git.branch_conflict`.
 `Manager.DiscardPreparation` releases the leftovers of a preparation that will
 not continue. It reads the run's intent and removes the branch and the
 worktree it identifies, but only while they hold no work: the branch still at
-the recorded start, and a checkout that belongs to the run and is clean. A
+the recorded start, and a checkout that belongs to the run and holds nothing
+beyond the recorded start (a readable checkout must be clean). A
 leftover with commits or changes is preserved and reported with the reason, so
 the caller can name it for human attention. The intent is released only after
 the leftovers are gone, and a run without an intent never removes what another
 run created. A failure to attempt the release is returned as an error, so the
 caller retries it instead of reporting untouched leftovers as work.
 
-A checkout that Git never finished initializing has no readable HEAD, so its
-contents are proved against the recorded start instead: every file the
-directory holds must match the recorded tree, and it must hold no file the
-tree does not. A file the tree holds and the directory does not is a partial
-checkout, and nothing is lost by removing the directory. A submodule of the
+A checkout that Git never finished initializing has no readable HEAD, and one
+that Git still holds locked for initialization has a HEAD but only some of its
+files, so its status proves nothing. Its contents are proved against the
+recorded start instead: every file the directory holds must match the recorded
+tree, and it must hold no file the tree does not. A file the tree holds and
+the directory does not is a partial checkout, and nothing is lost by removing
+the directory. So is a file that holds only the beginning of its recorded
+contents, the empty file included, because a killed creation leaves the file
+it was writing cut short. Git writes some files converted, such as line
+endings, so the beginning may instead be of the converted contents, produced
+under the attributes of the recorded start and any filter the repository
+configures. A submodule of the
 recorded tree is inspected separately, because Git compares a submodule by the
 commit it points at and never by the files inside it, and it skips the subtree
 of an indexed submodule when it lists untracked files. Anything else is work,
@@ -125,10 +133,19 @@ and it is preserved and reported.
 
 If `worktree add` was interrupted, the creation never finished, so the next
 attempt removes the partial worktree and local branch and creates them again
-from the fetched base. The leftover branch is discarded only while it still
-points at the recorded start, and an existing checkout must still be on the run
-branch and attached to the managed base. Git writes the worktree link,
-reciprocal registration, and common directory before HEAD, so a deadline in
+from the fetched base. It applies the same "holds no work" rule as the release
+above, through one shared check: the leftover branch is discarded only while it
+still points at the recorded start, an existing checkout must still be on the
+run branch and attached to the managed base, and it must hold nothing beyond
+the recorded start. A checkout that Git still holds locked for initialization
+is compared with the recorded start like an unfinished one, because a
+creation killed midway leaves a HEAD and only some of the files. An untracked
+file, an edited tracked file, or a file outside the recorded tree is preserved
+and refused with `git.branch_conflict`, which names the worktree and the
+reason. Git removes the initialization lock before it runs a post-checkout
+hook, so a deadline during a hook that writes files leaves an unlocked
+checkout whose new files are preserved the same way. Git writes the worktree
+link, reciprocal registration, and common directory before HEAD, so a deadline in
 that window leaves no readable checkout; that state is recognizable only when
 those links point back to this run's managed base, Git still holds the
 initialization lock, and the pending HEAD names the run branch. Anything else,

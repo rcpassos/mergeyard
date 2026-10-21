@@ -28,6 +28,9 @@ type Request struct {
 	Stdin      io.Reader
 	// WaitDelay bounds output draining; zero uses the default.
 	WaitDelay time.Duration
+	// StdoutLimit keeps at most this many bytes of output and reads the rest
+	// without keeping it; zero keeps everything.
+	StdoutLimit int
 }
 
 // Result reports the captured output and exit of one invocation.
@@ -62,7 +65,10 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	// Bound pipe draining as well as the lifetime of the direct child.
 	cmd.WaitDelay = waitDelay
 	cmd.Dir, cmd.Env, cmd.Stdin = req.Dir, req.Env, req.Stdin
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	cmd.Stdout, cmd.Stderr = io.Writer(&stdout), &stderr
+	if req.StdoutLimit > 0 {
+		cmd.Stdout = &limitedWriter{buf: &stdout, limit: req.StdoutLimit}
+	}
 	err := cmd.Run()
 	result := Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
 	if cmd.ProcessState != nil {
@@ -81,4 +87,19 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		err = errors.Join(err, ctx.Err())
 	}
 	return result, err
+}
+
+// limitedWriter keeps the first limit bytes written and drops the rest, while
+// reporting every write as complete so the command is never blocked or failed
+// by the cap.
+type limitedWriter struct {
+	buf   *bytes.Buffer
+	limit int
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if room := w.limit - w.buf.Len(); room > 0 {
+		w.buf.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
 }
