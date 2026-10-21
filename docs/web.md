@@ -234,8 +234,8 @@ harness recovery history; it has no configuration write endpoint.
 `POST /runs/{id}/stop` uses the same `Scheduler.Stop` as the CLI. It coordinates
 with in-flight operations, stops running phase sessions, removes ready and
 running labels, and adds attention when work exists before marking the run
-STOPPED. It preserves worktrees, branches, and PRs. A preparing run whose
-setup was interrupted releases the leftovers it owns, so the next run for the
+STOPPED. It preserves worktrees, branches, and PRs. A run without saved Git
+ownership, in any state, releases the leftovers its interrupted setup left, so the next run for the
 same issue prepares; leftovers that hold work are kept, and the issue is
 flagged for attention with a comment naming them. Repeating Stop on an
 already-stopped run returns without changing labels or emitting another event,

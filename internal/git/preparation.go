@@ -28,24 +28,33 @@ type Leftovers struct {
 // the next run for the same issue can prepare. The preparation intent proves
 // that the branch and the worktree belong to this run. They are removed only
 // while they hold no work: the branch still at the recorded start, and a
-// checkout that belongs to the run and holds nothing beyond the recorded start.
-// Leftovers with commits or changes are preserved and reported, so the caller
-// can name them for human attention.
+// checkout that belongs to the run and holds nothing beyond the recorded start,
+// not even an ignored file, because a local secret or a build output is a
+// person's data too. Leftovers with commits, changes, or ignored files are
+// preserved and reported, as are leftovers whose managed base cannot be
+// verified, so the caller can name them for human attention. A run without a
+// claim returns at once, without waiting for another operation.
 //
 // The returned error reports a failure to attempt the release, such as a
 // cancelled caller or a Git failure. A leftover that cannot be removed is
 // reported through the returned leftovers instead, because stopping the run
 // must not depend on removing them.
 func (m *Manager) DiscardPreparation(ctx context.Context, req PrepareRequest) (Leftovers, error) {
+	run, err := m.newRun(req)
+	if err != nil {
+		return Leftovers{}, err
+	}
+	// A run without a claim created nothing to release, so it must not wait
+	// for another operation's lock. Only this run's own operations write its
+	// claim, and they are serialized with this call by the caller.
+	if _, err := os.Lstat(prepareIntentPath(run)); errors.Is(err, os.ErrNotExist) {
+		return Leftovers{}, nil
+	}
 	ctx, release, err := m.begin(ctx, m.timeouts.Metadata+m.timeouts.Worktree)
 	if err != nil {
 		return Leftovers{}, err
 	}
 	defer release()
-	run, err := m.newRun(req)
-	if err != nil {
-		return Leftovers{}, err
-	}
 	intent, found, err := readPrepareIntent(run)
 	if err != nil {
 		return Leftovers{}, err
@@ -84,7 +93,13 @@ func (m *Manager) DiscardPreparation(ctx context.Context, req PrepareRequest) (L
 // interrupted creation applies the same check.
 func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent prepareIntent) (string, error) {
 	if err := verifyBase(ctx, run.BasePath); err != nil {
-		return "", err
+		if ctx.Err() != nil {
+			return "", err
+		}
+		// The claim outlives the managed base, which a person may have fixed by
+		// hand. Without the base the branch and the checkout cannot be proven
+		// empty, and stopping the run must not depend on repairing it.
+		return "the managed base cannot be verified; preserved for inspection", nil
 	}
 	atStart, err := branchAtStart(ctx, run, intent.BaseSHA)
 	if err != nil {
@@ -110,7 +125,7 @@ func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent p
 // branch attached to the managed base. A checkout Git still holds locked for
 // initialization is compared with the recorded start, because a killed creation
 // leaves it partly written. Any other checkout must also be clean, because a
-// change or a commit is work that is never deleted.
+// change, a commit, or an ignored file is work that is never deleted.
 func (m *Manager) preparedWorktreeDiscardable(ctx context.Context, run Run, intent prepareIntent) (bool, error) {
 	owned, state, err := interruptedWorktreeOwnership(ctx, run)
 	if err != nil {
@@ -139,7 +154,9 @@ func (m *Manager) preparedWorktreeDiscardable(ctx context.Context, run Run, inte
 			// Compare it with the recorded start like an unfinished one.
 			return m.preparedDirectoryHoldsOnlyStart(ctx, run, intent.BaseSHA)
 		}
-		status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all")
+		// Ignored files are a person's work too: a build output or a local
+		// secret never shows in the plain status, so they are listed explicitly.
+		status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all", "--ignored")
 		if err != nil {
 			if ctx.Err() != nil {
 				return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
@@ -212,7 +229,9 @@ func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, 
 		// holds work that the release must not discard.
 		return false, nil
 	}
-	untracked, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "--work-tree="+run.Path, "ls-files", "-o", "--exclude-standard")
+	// Ignored files are listed too, because an ignore rule says nothing about
+	// whether a person's data may be deleted.
+	untracked, err := commandWithEnv(ctx, run.BasePath, "git.worktree", env, "--work-tree="+run.Path, "ls-files", "-o")
 	if err != nil {
 		return false, err
 	}
