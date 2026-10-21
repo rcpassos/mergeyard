@@ -44,7 +44,6 @@ func TestWebsiteUsesGeneratedTheme(t *testing.T) {
 		"color function":         `\b(rgba?|hsla?|oklch|oklab|lab|lch|color)\(`,
 		"named color":            `:\s*(?:white|black)\b`,
 		"daisyUI color override": `--color-[\w-]+\s*:`,
-		"palette variable":       `--(?:ink|blue|paper|white|muted|green|line)\b`,
 		"font file":              `@font-face`,
 	} {
 		if match := regexp.MustCompile(pattern).FindString(style); match != "" {

@@ -158,8 +158,7 @@ Page sections are daisyUI cards; messages inside them are alerts. The build
 writes `web/static/favicon.svg`, the public site's mark drawn in each theme's
 primary color behind a `prefers-color-scheme` query. It also writes the public
 website's copy of that favicon and `site/theme.css`, the same themes' variables
-for the build-free site (see [the website doc](website.md#theme)); commit them
-with the dashboard assets.
+for the build-free site (see [the website doc](website.md#theme)).
 
 `web/templates/layout.html` holds the page shell and the page switch. Each
 page has its own file under `web/templates/pages/`, and markup shared between
