@@ -164,6 +164,16 @@ func seedNestedSubmodule(t *testing.T, f fixture) {
 	git(t, f.seed, "push", "origin", "main")
 }
 
+// lockInitialization reinstates the lock Git holds while it initializes a
+// worktree, so the leftover is checked like an unfinished checkout.
+func lockInitialization(t *testing.T, run managedgit.Run) {
+	t.Helper()
+	lock := filepath.Join(run.BasePath, ".git", "worktrees", run.ID, "locked")
+	if err := os.WriteFile(lock, []byte("initializing\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestDiscardPreparationPreservesHumanWorkInAnUninitializedSubmodule proves
 // that a submodule of the recorded tree is inspected: Git compares a submodule
 // by the commit it points at and never by the files inside it, so a person can
@@ -280,6 +290,91 @@ func TestDiscardPreparationReleasesACleanInitializedSubmodule(t *testing.T) {
 	base := filepath.Join(f.root, "repos", "owner-repo", "base")
 	if branch := git(t, base, "branch", "--list", "mergeyard/issue-7"); branch != "" {
 		t.Fatalf("the branch survived the release: %s", branch)
+	}
+}
+
+// TestDiscardPreparationPreservesAHiddenEditInAnInitializingSubmodule proves
+// that index flags cannot hide a tracked edit inside an initialized submodule
+// of a leftover checkout Git still holds locked for initialization.
+func TestDiscardPreparationPreservesAHiddenEditInAnInitializingSubmodule(t *testing.T) {
+	for _, flag := range []string{"--assume-unchanged", "--skip-worktree"} {
+		t.Run(flag, func(t *testing.T) {
+			f := newFixture(t)
+			seedSubmodule(t, f)
+			run := prepare(t, f)
+			submodule := filepath.Join(run.Path, "module")
+			git(t, run.Path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+			git(t, submodule, "update-index", flag, "module.txt")
+			write(t, submodule, "module.txt", "edited by a person\n")
+			if status := git(t, submodule, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
+				t.Fatalf("the fixture edit is not hidden from status: %q", status)
+			}
+			lockInitialization(t, run)
+			leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !leftovers.Preserved || leftovers.Unverified || leftovers.Reason == "" {
+				t.Fatalf("the hidden edit was not reported: %+v", leftovers)
+			}
+			if data, err := os.ReadFile(filepath.Join(submodule, "module.txt")); err != nil || string(data) != "edited by a person\n" {
+				t.Fatalf("the hidden edit was deleted: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+// TestDiscardPreparationPreservesASubmoduleStashInAnInitializingCheckout proves
+// that a clean submodule checkout does not prove its repository holds no saved
+// work: a stash must survive, because removal deletes the submodule's Git
+// repository with it.
+func TestDiscardPreparationPreservesASubmoduleStashInAnInitializingCheckout(t *testing.T) {
+	f := newFixture(t)
+	seedSubmodule(t, f)
+	run := prepare(t, f)
+	submodule := filepath.Join(run.Path, "module")
+	git(t, run.Path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+	write(t, submodule, "module.txt", "saved by a person\n")
+	git(t, submodule, "stash", "push", "-m", "person work")
+	if stash := git(t, submodule, "stash", "list"); stash == "" {
+		t.Fatal("the fixture stash was not created")
+	}
+	lockInitialization(t, run)
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leftovers.Preserved || leftovers.Unverified || leftovers.Reason == "" {
+		t.Fatalf("the stashed work was not reported: %+v", leftovers)
+	}
+	if stash := git(t, submodule, "stash", "list"); stash == "" {
+		t.Fatal("the stashed work was deleted")
+	}
+}
+
+// TestDiscardPreparationReleasesACleanInitializedSubmoduleInAnInitializingCheckout
+// proves that the extra checks do not preserve a clean initialized submodule
+// that holds nothing beyond its recorded commit and has no saved repository
+// data.
+func TestDiscardPreparationReleasesACleanInitializedSubmoduleInAnInitializingCheckout(t *testing.T) {
+	f := newFixture(t)
+	seedSubmodule(t, f)
+	run := prepare(t, f)
+	submodule := filepath.Join(run.Path, "module")
+	git(t, run.Path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+	if status := git(t, submodule, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
+		t.Fatalf("the initialized submodule is not clean: %q", status)
+	}
+	lockInitialization(t, run)
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftovers.Preserved {
+		t.Fatalf("the clean initialized submodule was preserved: %+v", leftovers)
+	}
+	if _, err := os.Stat(run.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the leftover survived the release: %v", err)
 	}
 }
 

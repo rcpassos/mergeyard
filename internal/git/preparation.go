@@ -34,11 +34,12 @@ type Leftovers struct {
 // that the branch and the worktree belong to this run. They are removed only
 // while they hold no work: the branch still at the recorded start, and a
 // checkout that belongs to the run and holds nothing beyond the recorded start,
-// not even an ignored file or content beyond the start in a submodule, because
-// a local secret, a build output, or a person's file in a submodule is data
-// too. Leftovers with commits, changes, ignored files, or submodule content are
-// preserved and reported, so the caller can name them for human attention. A
-// run without a claim returns at once, without waiting for another operation.
+// not even an ignored file, content beyond the start in a submodule, or saved
+// work in a submodule's repository, because a local secret, a build output, a
+// person's file, or a submodule stash is data too. Leftovers with commits,
+// changes, ignored files, or submodule content are preserved and reported, so
+// the caller can name them for human attention. A run without a claim returns
+// at once, without waiting for another operation.
 //
 // Leftovers the release cannot check are preserved and reported as
 // unverified: a claim that cannot be read or does not identify this run, a
@@ -232,7 +233,7 @@ func (m *Manager) preparedWorktreeHoldsNothing(ctx context.Context, run Run, int
 		}
 		// Git does not look inside a submodule directory that was never
 		// initialized, so status cannot see a person's files there.
-		return preparedSubmodulesHoldNothing(ctx, checkoutLocation{repoDir: run.BasePath, workTree: run.Path}, intent.BaseSHA)
+		return m.preparedSubmodulesHoldNothing(ctx, checkoutLocation{repoDir: run.BasePath, workTree: run.Path}, intent.BaseSHA)
 	}
 }
 
@@ -305,7 +306,7 @@ func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, 
 	if untracked != "" {
 		return false, nil
 	}
-	return preparedSubmodulesHoldNothing(ctx, checkoutLocation{repoDir: run.BasePath, workTree: run.Path}, start)
+	return m.preparedSubmodulesHoldNothing(ctx, checkoutLocation{repoDir: run.BasePath, workTree: run.Path}, start)
 }
 
 // preparedFileIsStartOfRecorded reports whether a regular file in the
@@ -370,10 +371,10 @@ func checkoutStatus(ctx context.Context, dir string) (string, error) {
 // it skips the subtree of an indexed submodule when it lists untracked files,
 // so status cannot see a person adding files to an uninitialized submodule. A
 // submodule the checkout never created, or one that is empty, holds nothing to
-// lose. An initialized submodule must still point at the recorded commit and be
-// clean, ignored files included, and its own submodules are inspected the same
-// way.
-func preparedSubmodulesHoldNothing(ctx context.Context, location checkoutLocation, start string) (bool, error) {
+// lose. An initialized submodule must still point at the recorded commit, hold
+// no physical file beyond the recorded tree, and carry no saved repository
+// data, and its own submodules are inspected the same way.
+func (m *Manager) preparedSubmodulesHoldNothing(ctx context.Context, location checkoutLocation, start string) (bool, error) {
 	if !shaPattern.MatchString(start) {
 		return false, nil
 	}
@@ -412,7 +413,7 @@ func preparedSubmodulesHoldNothing(ctx context.Context, location checkoutLocatio
 			// start provides only the empty directory. Any file here is work.
 			return false, nil
 		}
-		holdsNothing, err := preparedSubmoduleHoldsOnlyStart(ctx, dir, parts[2])
+		holdsNothing, err := m.preparedSubmoduleHoldsOnlyStart(ctx, dir, parts[2])
 		if err != nil {
 			return false, err
 		}
@@ -425,10 +426,12 @@ func preparedSubmodulesHoldNothing(ctx context.Context, location checkoutLocatio
 
 // preparedSubmoduleHoldsOnlyStart reports whether an initialized submodule
 // holds nothing beyond the recorded commit. The submodule must still point at
-// that commit and be clean, ignored files included. Its own submodules are
-// inspected the same way, because an uninitialized nested submodule has the
-// same blind spot.
-func preparedSubmoduleHoldsOnlyStart(ctx context.Context, dir, start string) (bool, error) {
+// that commit, its physical files must match the recorded tree, and its Git
+// repository must hold no saved work. The physical comparison uses a fresh
+// index, so assume-unchanged and skip-worktree flags cannot hide an edit,
+// unlike status. Its own submodules are inspected the same way, because an
+// uninitialized nested submodule has the same blind spot.
+func (m *Manager) preparedSubmoduleHoldsOnlyStart(ctx context.Context, dir, start string) (bool, error) {
 	head, err := command(ctx, dir, "git.worktree", "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		if ctx.Err() != nil {
@@ -439,17 +442,26 @@ func preparedSubmoduleHoldsOnlyStart(ctx context.Context, dir, start string) (bo
 	if head != start {
 		return false, nil
 	}
-	status, err := checkoutStatus(ctx, dir)
+	holdsNothing, err := m.preparedDirectoryHoldsOnlyStart(ctx, Run{Path: dir, BasePath: dir}, start)
 	if err != nil {
-		if ctx.Err() != nil {
-			return false, contextFailure(ctx, "git.worktree", dir, ctx.Err())
-		}
 		return false, err
 	}
-	if status != "" {
+	if !holdsNothing {
 		return false, nil
 	}
-	return preparedSubmodulesHoldNothing(ctx, checkoutLocation{repoDir: dir, workTree: dir}, head)
+	return preparedSubmoduleRepositoryHoldsNothing(ctx, dir, start)
+}
+
+// preparedSubmoduleRepositoryHoldsNothing reports whether the submodule's Git
+// repository holds no commit beyond the recorded start and its remote-tracking
+// refs. Stashes, local branches, tags, and reflog entries can name commits that
+// removing the checkout would lose even when its files are clean.
+func preparedSubmoduleRepositoryHoldsNothing(ctx context.Context, dir, start string) (bool, error) {
+	out, err := command(ctx, dir, "git.worktree", "rev-list", "--max-count=1", "--all", "--reflog", "--not", start, "--not", "--remotes")
+	if err != nil {
+		return false, err
+	}
+	return out == "", nil
 }
 
 // removePreparedWorktree deletes a discarded preparation's worktree and its
