@@ -37,4 +37,13 @@ func TestStylesheetUsesStockThemesAndSystemFonts(t *testing.T) {
 	if !strings.Contains(string(built), "prefers-color-scheme:dark") {
 		t.Error("built stylesheet has no dark theme for the system preference; rebuild the assets")
 	}
+	// outcomeAlert picks variants in Go, where Tailwind does not look.
+	for _, variant := range []string{"alert-info", "alert-success", "alert-warning", "alert-error"} {
+		if !strings.Contains(string(built), "."+variant+"{") {
+			t.Errorf("built stylesheet lacks .%s", variant)
+		}
+	}
+	if !strings.Contains(css, `@source inline("alert-info alert-success alert-warning alert-error")`) {
+		t.Error("stylesheet does not keep the alert variants outcomeAlert returns from Go")
+	}
 }

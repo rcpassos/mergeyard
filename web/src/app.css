@@ -1,5 +1,7 @@
 @import "tailwindcss" source(none);
 @source "../templates/**/*.html";
+/* outcomeAlert in internal/web/templates.go returns these from Go. */
+@source inline("alert-info alert-success alert-warning alert-error");
 @plugin "daisyui" {
   themes: light --default, dark --prefersdark;
   logs: false;

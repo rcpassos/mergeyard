@@ -31,4 +31,15 @@ func TestDashboardFollowsTheSystemThemeAndServesItsFavicon(t *testing.T) {
 	if !strings.Contains(favicon.Body.String(), "prefers-color-scheme: dark") {
 		t.Fatalf("favicon does not follow the color scheme: %s", favicon.Body)
 	}
+	// The mark colors itself with an inline style sheet, which the page policy
+	// would block wherever a browser applies the image's own response policy.
+	policy := favicon.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "style-src 'unsafe-inline'") || !strings.Contains(policy, "script-src 'none'") {
+		t.Fatalf("favicon policy blocks its own colors or allows scripts: %q", policy)
+	}
+	page := httptest.NewRecorder()
+	server.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7331/static/app.css", nil))
+	if strings.Contains(page.Header().Get("Content-Security-Policy"), "unsafe-inline") {
+		t.Fatalf("relaxed policy leaked beyond the favicon: %q", page.Header().Get("Content-Security-Policy"))
+	}
 }

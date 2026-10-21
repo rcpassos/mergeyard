@@ -127,6 +127,11 @@ func TestRunDetailMessagesRenderAsSeverityAlerts(t *testing.T) {
 			Criteria: []acceptance.Verdict{{ID: "AC1", Verdict: "met", Note: "Pages hold 50 orders."}, {ID: "AC2", Verdict: "not_met", Note: "Cursor exposes database IDs."}, {ID: "AC3", Verdict: "unverified", Note: "No load test ran."}},
 			Findings: []review.Finding{{ID: "F1", Severity: "blocking", Title: "Cursor leaks IDs", Details: "Encode the cursor."}, {ID: "F2", Severity: "note", Title: "Naming", Details: "Consider renaming pageSize."}}}}}}},
 			map[string]string{"Pages hold 50 orders.": "success", "Cursor exposes database IDs.": "error", "No load test ran.": "warning", "Encode the cursor.": "error", "Consider renaming pageSize.": "info"}},
+		{"fix history", runView{Run: workflow.Run{State: workflow.Active, FixHistory: []review.FixSnapshot{{Round: 1, Attempt: 1,
+			Findings: []review.Finding{{ID: "F1", Severity: "blocking", Title: "Cursor leaks IDs", Details: "Encode the opaque cursor."}},
+			CI: &ci.Snapshot{RepairCause: "ci.check_failed", Evidence: ci.Evidence{Checks: []ci.Check{
+				{Name: "unit tests", State: "passed", Conclusion: "success"}, {Name: "lint", State: "failed", Conclusion: "failure", Excerpt: "orders.go:88: unused variable"}}}}}}}},
+			map[string]string{"Encode the opaque cursor.": "error", "unit tests · success": "success", "orders.go:88: unused variable": "error"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
