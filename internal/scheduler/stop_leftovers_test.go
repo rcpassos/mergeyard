@@ -65,40 +65,7 @@ func TestStopPreparingRunReleasesAnInterruptedCreation(t *testing.T) {
 	s, rt, api, _, _, _ := localFlow(t, successfulScript)
 	ctx := context.Background()
 	run := preparingRun(t, rt, "interrupted")
-	git := managedgit.New(rt.Workspace)
-	// The managed base exists before the creation is interrupted.
-	if _, err := git.Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: "setup", IssueNumber: 6}); err != nil {
-		t.Fatal(err)
-	}
-	hook := filepath.Join(rt.Workspace.Root, "repos", "owner-repo", "base", ".git", "hooks", "post-checkout")
-	script := `#!/bin/sh
-case "$PWD" in
-  */worktrees/*) /bin/sleep 30 ;;
-esac
-exit 0
-`
-	if err := os.MkdirAll(filepath.Dir(hook), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(hook, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	interrupted, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	_, err := git.Prepare(interrupted, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
-	if err == nil {
-		t.Fatal("the interrupted creation was not interrupted")
-	}
-	if err := os.Remove(hook); err != nil {
-		t.Fatal(err)
-	}
-	path, err := managedgit.WorktreePath(rt.Workspace.Root, "owner/repo", run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("the interrupted creation left no worktree: %v", err)
-	}
+	path := interruptPreparingCheckout(t, rt, managedgit.New(rt.Workspace), run)
 	if err := s.Stop(ctx, run.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +146,147 @@ done
 	// absolute path, which would expose the operator's filesystem layout.
 	if want := filepath.ToSlash(filepath.Join("worktrees", "owner-repo", run.ID)); !ok || comment.Worktree != want {
 		t.Fatalf("the preserved work was not named on the issue: %+v", api.leftoverComments)
+	}
+}
+
+// seedRemoteSubmodule adds a submodule to the fixture's seed repository and
+// publishes it, so the next prepared checkout records a gitlink. A non-empty
+// ignore setting is written to .gitmodules, so status hides submodule changes.
+func seedRemoteSubmodule(t *testing.T, remote, ignore string) {
+	t.Helper()
+	root := filepath.Dir(remote)
+	moduleRemote := filepath.Join(root, "module.git")
+	moduleSeed := filepath.Join(root, "module-seed")
+	gitCommand(t, root, "init", "--bare", "--initial-branch=main", moduleRemote)
+	gitCommand(t, root, "init", "--initial-branch=main", moduleSeed)
+	if err := os.WriteFile(filepath.Join(moduleSeed, "module.txt"), []byte("module\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, moduleSeed, "add", ".")
+	gitCommand(t, moduleSeed, "commit", "-m", "module")
+	gitCommand(t, moduleSeed, "remote", "add", "origin", moduleRemote)
+	gitCommand(t, moduleSeed, "push", "origin", "main")
+	seed := filepath.Join(root, "seed")
+	gitCommand(t, seed, "-c", "protocol.file.allow=always", "submodule", "add", "--", moduleRemote, "module")
+	if ignore != "" {
+		gitCommand(t, seed, "config", "-f", ".gitmodules", "submodule.module.ignore", ignore)
+		gitCommand(t, seed, "add", ".gitmodules")
+	}
+	gitCommand(t, seed, "commit", "-m", "add submodule")
+	gitCommand(t, seed, "push", "origin", "main")
+}
+
+// interruptPreparingCheckout leaves a clean, unlocked checkout from an
+// interrupted preparation: Git finishes the checkout and stalls in its
+// post-checkout hook, after the initialization lock is gone.
+func interruptPreparingCheckout(t *testing.T, rt *app.Runtime, git *managedgit.Manager, run workflow.Run) string {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := git.Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: "setup", IssueNumber: 6}); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(rt.Workspace.Root, "repos", "owner-repo", "base", ".git", "hooks", "post-checkout")
+	script := `#!/bin/sh
+case "$PWD" in
+  */worktrees/*) /bin/sleep 30 ;;
+esac
+exit 0
+`
+	if err := os.MkdirAll(filepath.Dir(hook), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	interrupted, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := git.Prepare(interrupted, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7}); err == nil {
+		t.Fatal("the interrupted creation was not interrupted")
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	path, err := managedgit.WorktreePath(rt.Workspace.Root, "owner/repo", run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the interrupted creation left no worktree: %v", err)
+	}
+	return path
+}
+
+// TestStopPreparingRunKeepsOrReleasesTheSubmodulesOfAnInterruptedCheckout
+// proves that a stop keeps a person's work inside a submodule of a clean,
+// unlocked leftover checkout and names the leftovers, while empty submodule
+// directories still let it discard the checkout. The initialized submodule's
+// edit is hidden by .gitmodules, so it also proves the status check overrides
+// that setting.
+func TestStopPreparingRunKeepsOrReleasesTheSubmodulesOfAnInterruptedCheckout(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ignore     string
+		initialize bool
+		file       string
+		content    string
+	}{
+		{name: "empty submodule"},
+		{name: "file in uninitialized submodule", file: "human.txt", content: "uncommitted human work\n"},
+		{name: "edit in initialized submodule hidden by ignore", ignore: "all", initialize: true, file: "module.txt", content: "edited by a person\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, rt, api, remote, _, _ := localFlow(t, successfulScript)
+			seedRemoteSubmodule(t, remote, tc.ignore)
+			ctx := context.Background()
+			run := preparingRun(t, rt, "interrupted")
+			path := interruptPreparingCheckout(t, rt, managedgit.New(rt.Workspace), run)
+			if tc.initialize {
+				gitCommand(t, path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+			}
+			if tc.file != "" {
+				if err := os.MkdirAll(filepath.Join(path, "module"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(path, "module", tc.file), []byte(tc.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if status := gitCommand(t, path, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
+					t.Fatalf("the fixture work is not hidden from status: %q", status)
+				}
+			}
+			if err := s.Stop(ctx, run.ID); err != nil {
+				t.Fatal(err)
+			}
+			base := filepath.Join(rt.Workspace.Root, "repos", "owner-repo", "base")
+			if tc.file != "" {
+				if data, err := os.ReadFile(filepath.Join(path, "module", tc.file)); err != nil || string(data) != tc.content {
+					t.Fatalf("the work was deleted: %q, %v", data, err)
+				}
+				if !has(api.issues["owner/repo"][0], "agent-needs-attention") {
+					t.Fatalf("the preserved work did not flag the issue: %+v", api.issues["owner/repo"][0].Labels)
+				}
+				comment, ok := api.leftoverComments[7]
+				if want := filepath.ToSlash(filepath.Join("worktrees", "owner-repo", run.ID)); !ok || comment.Unverified || comment.Worktree != want {
+					t.Fatalf("the preserved work was not named on the issue: %+v", api.leftoverComments)
+				}
+				if branch := gitCommand(t, base, "branch", "--list", "mergeyard/issue-7"); branch == "" {
+					t.Fatal("the branch of the preserved work was deleted")
+				}
+				return
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the interrupted worktree survived the stop: %v", err)
+			}
+			if branch := gitCommand(t, base, "branch", "--list", "mergeyard/issue-7"); branch != "" {
+				t.Fatalf("the interrupted branch survived the stop: %s", branch)
+			}
+			if has(api.issues["owner/repo"][0], "agent-needs-attention") {
+				t.Fatalf("the released leftovers flagged the issue: %+v", api.issues["owner/repo"][0].Labels)
+			}
+			if _, ok := api.leftoverComments[7]; ok {
+				t.Fatalf("released leftovers were explained on the issue: %+v", api.leftoverComments)
+			}
+		})
 	}
 }
 

@@ -108,19 +108,21 @@ not continue. It reads the run's intent and removes the branch and the
 worktree it identifies, but only while they hold no work: the branch still at
 the recorded start, and a checkout that belongs to the run and holds nothing
 beyond the recorded start (a readable checkout must be clean, with no ignored
-file either). A leftover with commits, changes, or ignored files (a `.env`, a
-build output) is preserved and reported with the reason, so the caller can name
-it for human attention. Leftovers the release cannot check are preserved and
-reported as unverified, named by the run's branch and worktree: an intent that
-is empty, corrupt, or does not identify the run; a managed base that is missing
-or replaced; a checkout not attached to the managed base; or a Git check that
-fails or exceeds its deadline. Stopping the run must not depend on any of them,
-because a retry may never clear them. A run without an
-intent returns at once, without waiting for the Git lock. The intent is released only after
-the leftovers are gone, and a run without an intent never removes what another
-run created. Only a caller that gave up before the check finished, or invalid
-input, gets an error, so the caller retries instead of reporting a check that
-never ran.
+file either, and its submodules must hold nothing beyond their recorded
+commits). The status check overrides any `.gitmodules` `ignore` setting, so it
+cannot hide an edit inside an initialized submodule. A leftover with commits,
+changes, ignored files (a `.env`, a build output), or content beyond the
+recorded start in a submodule is preserved and reported with the reason, so the
+caller can name it for human attention. Leftovers the release cannot check are
+preserved and reported as unverified, named by the run's branch and worktree:
+an intent that is empty, corrupt, or does not identify the run; a managed base
+that is missing or replaced; a checkout not attached to the managed base; or a
+Git check that fails or exceeds its deadline. Stopping the run must not depend on any of them, because a retry
+may never clear them. A run without an intent returns at once, without waiting
+for the Git lock. The intent is released only after the leftovers are gone, and
+a run without an intent never removes what another run created. Only a caller
+that gave up before the check finished, or invalid input, gets an error, so the
+caller retries instead of reporting a check that never ran.
 
 Intent writes reach the disk before they take effect: the temporary file is
 flushed before the rename and its directory after it, so a power loss cannot
@@ -137,11 +139,15 @@ contents, the empty file included, because a killed creation leaves the file
 it was writing cut short. Git writes some files converted, such as line
 endings, so the beginning may instead be of the converted contents, produced
 under the attributes of the recorded start and any filter the repository
-configures. A submodule of the
-recorded tree is inspected separately, because Git compares a submodule by the
-commit it points at and never by the files inside it, and it skips the subtree
-of an indexed submodule when it lists untracked files. Anything else is work,
-and it is preserved and reported.
+configures. A submodule of the recorded tree is inspected separately, because
+Git compares a submodule by the commit it points at and never by the files
+inside it, and it skips the subtree of an indexed submodule when it lists
+untracked files. Anything else is work, and it is preserved and reported. A
+clean, unlocked checkout gets the same submodule inspection: the recorded start
+provides only the empty directory for an uninitialized submodule, so a file
+inside it is work even though status does not list it. An initialized submodule
+must still point at its recorded commit and be clean, ignored files included,
+and its own submodules are inspected the same way.
 
 If `worktree add` was interrupted, the creation never finished, so the next
 attempt removes the partial worktree and local branch and creates them again
@@ -152,21 +158,23 @@ run branch and attached to the managed base, and it must hold nothing beyond
 the recorded start. A checkout that Git still holds locked for initialization
 is compared with the recorded start like an unfinished one, because a
 creation killed midway leaves a HEAD and only some of the files. An untracked
-file, an edited tracked file, or a file outside the recorded tree is preserved
-and refused with `git.branch_conflict`, which names the worktree and the
-reason. Git removes the initialization lock before it runs a post-checkout
-hook, so a deadline during a hook that writes files leaves an unlocked
-checkout whose new files are preserved the same way. Git writes the worktree
-link, reciprocal registration, and common directory before HEAD, so a deadline in
-that window leaves no readable checkout; that state is recognizable only when
-those links point back to this run's managed base, Git still holds the
-initialization lock, and the pending HEAD names the run branch. Anything else,
-including a non-empty path whose Git metadata is missing or unreadable, is
-preserved because ownership cannot be established, and is refused with
-`git.branch_conflict`. Cleanup removes an interrupted initialization lock so
-Git no longer treats the branch as checked out. A matching intent never adopts
-a remote branch, and any branch, worktree, or remote branch without a recorded
-run or intent is still refused with `git.branch_conflict`.
+file, an edited tracked file, a file outside the recorded tree, or content
+beyond the recorded start in a submodule directory is preserved and refused
+with `git.branch_conflict`, which names the worktree and the reason. Git removes
+the initialization lock before it runs a post-checkout hook, so a deadline
+during a hook that writes files leaves an unlocked checkout whose new files are
+preserved the same way. Git writes the worktree link, reciprocal registration,
+and common directory before HEAD, so a deadline in that window leaves no
+readable checkout; that state is recognizable only when those links point back
+to this run's managed base, Git still holds the initialization lock, and the
+pending HEAD names the run branch.
+Anything else, including a non-empty path whose Git metadata is missing or
+unreadable, is preserved because ownership cannot be established, and is
+refused with `git.branch_conflict`. Cleanup removes an interrupted
+initialization lock so Git no longer treats the branch as checked out. A
+matching intent never adopts a remote branch, and any branch, worktree, or
+remote branch without a recorded run or intent is still refused with
+`git.branch_conflict`.
 
 ## Finishing a phase
 

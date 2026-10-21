@@ -34,8 +34,9 @@ type Leftovers struct {
 // that the branch and the worktree belong to this run. They are removed only
 // while they hold no work: the branch still at the recorded start, and a
 // checkout that belongs to the run and holds nothing beyond the recorded start,
-// not even an ignored file, because a local secret or a build output is a
-// person's data too. Leftovers with commits, changes, or ignored files are
+// not even an ignored file or content beyond the start in a submodule, because
+// a local secret, a build output, or a person's file in a submodule is data
+// too. Leftovers with commits, changes, ignored files, or submodule content are
 // preserved and reported, so the caller can name them for human attention. A
 // run without a claim returns at once, without waiting for another operation.
 //
@@ -191,8 +192,9 @@ func (m *Manager) discardPreparedWorktree(ctx context.Context, run Run, intent p
 // interruptedWorktreeOwnership found at the path. A checkout Git never
 // finished, or still holds locked for initialization, is compared with the
 // recorded start, because a killed creation leaves it partly written. Any other
-// checkout must also be clean, because a change, a commit, or an ignored file
-// is work that is never deleted.
+// checkout must also be clean and hold submodules with nothing beyond their
+// recorded commits, because a change, a commit, an ignored file, or submodule
+// content beyond the start is work that is never deleted.
 func (m *Manager) preparedWorktreeHoldsNothing(ctx context.Context, run Run, intent prepareIntent, state leftoverState) (bool, error) {
 	switch state {
 	case leftoverEmpty:
@@ -216,7 +218,7 @@ func (m *Manager) preparedWorktreeHoldsNothing(ctx context.Context, run Run, int
 		}
 		// Ignored files are a person's work too: a build output or a local
 		// secret never shows in the plain status, so they are listed explicitly.
-		status, err := command(ctx, run.Path, "git.status", "status", "--porcelain", "--untracked-files=all", "--ignored")
+		status, err := checkoutStatus(ctx, run.Path)
 		if err != nil {
 			if ctx.Err() != nil {
 				return false, contextFailure(ctx, "git.worktree", run.Path, ctx.Err())
@@ -225,7 +227,12 @@ func (m *Manager) preparedWorktreeHoldsNothing(ctx context.Context, run Run, int
 			// work, so the release fails and is retried instead of guessing.
 			return false, err
 		}
-		return status == "", nil
+		if status != "" {
+			return false, nil
+		}
+		// Git does not look inside a submodule directory that was never
+		// initialized, so status cannot see a person's files there.
+		return preparedSubmodulesHoldNothing(ctx, checkoutLocation{repoDir: run.BasePath, workTree: run.Path}, intent.BaseSHA)
 	}
 }
 
@@ -298,7 +305,7 @@ func (m *Manager) preparedDirectoryHoldsOnlyStart(ctx context.Context, run Run, 
 	if untracked != "" {
 		return false, nil
 	}
-	return m.preparedSubmodulesHoldNothing(ctx, run, start)
+	return preparedSubmodulesHoldNothing(ctx, checkoutLocation{repoDir: run.BasePath, workTree: run.Path}, start)
 }
 
 // preparedFileIsStartOfRecorded reports whether a regular file in the
@@ -343,13 +350,34 @@ func preparedFileIsStartOfRecorded(ctx context.Context, run Run, start, path str
 	return false, nil
 }
 
-// preparedSubmodulesHoldNothing reports whether every submodule of the
-// recorded tree is empty in the directory. Git compares a submodule by the
-// commit it points at and never by the files inside it, and it skips the
-// subtree of an indexed submodule when it lists untracked files, so the other
-// checks cannot see a person adding files to an uninitialized submodule.
-func (m *Manager) preparedSubmodulesHoldNothing(ctx context.Context, run Run, start string) (bool, error) {
-	out, err := command(ctx, run.BasePath, "git.ls_tree", "ls-tree", "-r", "-z", start)
+// checkoutLocation names the repository and working tree of one checkout. They
+// differ for a submodule, whose repository is its own directory.
+type checkoutLocation struct {
+	repoDir  string
+	workTree string
+}
+
+// checkoutStatus lists every change in the checkout at dir, ignored files and
+// submodule changes included. The repository's .gitmodules ignore setting is
+// overridden, so it cannot hide an initialized submodule's changes.
+func checkoutStatus(ctx context.Context, dir string) (string, error) {
+	return command(ctx, dir, "git.status", "status", "--porcelain", "--untracked-files=all", "--ignored", "--ignore-submodules=none")
+}
+
+// preparedSubmodulesHoldNothing reports whether every submodule of the tree at
+// start, checked out at location, holds nothing beyond that tree. Git compares
+// a submodule by the commit it points at and never by the files inside it, and
+// it skips the subtree of an indexed submodule when it lists untracked files,
+// so status cannot see a person adding files to an uninitialized submodule. A
+// submodule the checkout never created, or one that is empty, holds nothing to
+// lose. An initialized submodule must still point at the recorded commit and be
+// clean, ignored files included, and its own submodules are inspected the same
+// way.
+func preparedSubmodulesHoldNothing(ctx context.Context, location checkoutLocation, start string) (bool, error) {
+	if !shaPattern.MatchString(start) {
+		return false, nil
+	}
+	out, err := command(ctx, location.repoDir, "git.ls_tree", "ls-tree", "-r", "-z", start)
 	if err != nil {
 		return false, err
 	}
@@ -358,29 +386,70 @@ func (m *Manager) preparedSubmodulesHoldNothing(ctx context.Context, run Run, st
 			continue
 		}
 		fields, path, ok := strings.Cut(record, "\t")
-		if !ok {
+		parts := strings.Fields(fields)
+		if !ok || len(parts) != 3 {
 			// A record the release cannot read is not proof of an empty
 			// submodule.
 			return false, nil
 		}
-		mode, _, ok := strings.Cut(fields, " ")
-		if !ok || mode != "160000" {
+		if parts[0] != "160000" {
 			continue
 		}
-		entries, err := os.ReadDir(filepath.Join(run.Path, path))
+		dir := filepath.Join(location.workTree, path)
+		entries, err := os.ReadDir(dir)
 		if errors.Is(err, os.ErrNotExist) {
 			// The checkout never created the submodule.
 			continue
 		}
 		if err != nil {
-			return false, failure("git.worktree", filepath.Join(run.Path, path), err)
+			return false, failure("git.worktree", dir, err)
 		}
-		if len(entries) > 0 {
-			// The submodule holds files that no other check can verify.
+		if len(entries) == 0 {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err != nil {
+			// An uninitialized submodule has no checkout, so the recorded
+			// start provides only the empty directory. Any file here is work.
+			return false, nil
+		}
+		holdsNothing, err := preparedSubmoduleHoldsOnlyStart(ctx, dir, parts[2])
+		if err != nil {
+			return false, err
+		}
+		if !holdsNothing {
 			return false, nil
 		}
 	}
 	return true, nil
+}
+
+// preparedSubmoduleHoldsOnlyStart reports whether an initialized submodule
+// holds nothing beyond the recorded commit. The submodule must still point at
+// that commit and be clean, ignored files included. Its own submodules are
+// inspected the same way, because an uninitialized nested submodule has the
+// same blind spot.
+func preparedSubmoduleHoldsOnlyStart(ctx context.Context, dir, start string) (bool, error) {
+	head, err := command(ctx, dir, "git.worktree", "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, contextFailure(ctx, "git.worktree", dir, ctx.Err())
+		}
+		return false, err
+	}
+	if head != start {
+		return false, nil
+	}
+	status, err := checkoutStatus(ctx, dir)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, contextFailure(ctx, "git.worktree", dir, ctx.Err())
+		}
+		return false, err
+	}
+	if status != "" {
+		return false, nil
+	}
+	return preparedSubmodulesHoldNothing(ctx, checkoutLocation{repoDir: dir, workTree: dir}, head)
 }
 
 // removePreparedWorktree deletes a discarded preparation's worktree and its

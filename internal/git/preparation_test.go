@@ -105,6 +105,14 @@ func TestDiscardPreparationReleasesAnUnfinishedInitialization(t *testing.T) {
 // recorded tree holds a gitlink.
 func seedSubmodule(t *testing.T, f fixture) {
 	t.Helper()
+	seedSubmoduleWithIgnore(t, f, "")
+}
+
+// seedSubmoduleWithIgnore adds a submodule whose .gitmodules entry carries an
+// ignore setting, so the fixture reproduces a repository that hides submodule
+// changes from status.
+func seedSubmoduleWithIgnore(t *testing.T, f fixture, ignore string) {
+	t.Helper()
 	root := t.TempDir()
 	remote := filepath.Join(root, "module.git")
 	seed := filepath.Join(root, "module-seed")
@@ -116,6 +124,42 @@ func seedSubmodule(t *testing.T, f fixture) {
 	git(t, seed, "remote", "add", "origin", remote)
 	git(t, seed, "push", "origin", "main")
 	git(t, f.seed, "-c", "protocol.file.allow=always", "submodule", "add", "--", remote, "module")
+	if ignore != "" {
+		git(t, f.seed, "config", "-f", ".gitmodules", "submodule.module.ignore", ignore)
+		git(t, f.seed, "add", ".gitmodules")
+	}
+	git(t, f.seed, "commit", "-m", "add submodule")
+	git(t, f.seed, "push", "origin", "main")
+}
+
+// seedNestedSubmodule adds a submodule whose own recorded tree holds another
+// submodule, so the nested directory can be inspected recursively.
+func seedNestedSubmodule(t *testing.T, f fixture) {
+	t.Helper()
+	root := t.TempDir()
+	nestedRemote := filepath.Join(root, "nested.git")
+	nestedSeed := filepath.Join(root, "nested-seed")
+	git(t, root, "init", "--bare", "--initial-branch=main", nestedRemote)
+	git(t, root, "init", "--initial-branch=main", nestedSeed)
+	write(t, nestedSeed, "nested.txt", "nested\n")
+	git(t, nestedSeed, "add", ".")
+	git(t, nestedSeed, "commit", "-m", "nested")
+	git(t, nestedSeed, "remote", "add", "origin", nestedRemote)
+	git(t, nestedSeed, "push", "origin", "main")
+
+	moduleRemote := filepath.Join(root, "module.git")
+	moduleSeed := filepath.Join(root, "module-seed")
+	git(t, root, "init", "--bare", "--initial-branch=main", moduleRemote)
+	git(t, root, "init", "--initial-branch=main", moduleSeed)
+	write(t, moduleSeed, "module.txt", "module\n")
+	git(t, moduleSeed, "add", ".")
+	git(t, moduleSeed, "commit", "-m", "module")
+	git(t, moduleSeed, "-c", "protocol.file.allow=always", "submodule", "add", "--", nestedRemote, "nested")
+	git(t, moduleSeed, "commit", "-m", "add nested submodule")
+	git(t, moduleSeed, "remote", "add", "origin", moduleRemote)
+	git(t, moduleSeed, "push", "origin", "main")
+
+	git(t, f.seed, "-c", "protocol.file.allow=always", "submodule", "add", "--", moduleRemote, "module")
 	git(t, f.seed, "commit", "-m", "add submodule")
 	git(t, f.seed, "push", "origin", "main")
 }
@@ -140,6 +184,226 @@ func TestDiscardPreparationPreservesHumanWorkInAnUninitializedSubmodule(t *testi
 		t.Fatalf("the human work in the submodule was not reported: %+v", leftovers)
 	}
 	if data, err := os.ReadFile(filepath.Join(path, "module", "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("the human work was deleted: %q, %v", data, err)
+	}
+}
+
+// TestDiscardPreparationPreservesHumanWorkInAnUninitializedSubmoduleOfACheckout
+// proves that the clean, unlocked leftovers of an interrupted preparation are
+// inspected for content inside an uninitialized submodule, which Git's status
+// does not see.
+func TestDiscardPreparationPreservesHumanWorkInAnUninitializedSubmoduleOfACheckout(t *testing.T) {
+	f := newFixture(t)
+	seedSubmodule(t, f)
+	path := interruptWorktreeCreation(t, f)
+	write(t, filepath.Join(path, "module"), "human.txt", "uncommitted human work\n")
+	if status := git(t, path, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
+		t.Fatalf("the fixture file is not hidden from status: %q", status)
+	}
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leftovers.Preserved || leftovers.Unverified || leftovers.Reason == "" {
+		t.Fatalf("the human work in the submodule was not reported: %+v", leftovers)
+	}
+	if data, err := os.ReadFile(filepath.Join(path, "module", "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("the human work was deleted: %q, %v", data, err)
+	}
+	if branch := git(t, filepath.Join(f.root, "repos", "owner-repo", "base"), "branch", "--list", "mergeyard/issue-7"); branch == "" {
+		t.Fatal("the branch of the preserved work was deleted")
+	}
+}
+
+// TestDiscardPreparationPreservesWorkInAnInitializedSubmoduleHiddenByIgnore
+// proves that .gitmodules ignore settings cannot hide a person's work inside an
+// initialized submodule of a clean, unlocked leftover checkout.
+func TestDiscardPreparationPreservesWorkInAnInitializedSubmoduleHiddenByIgnore(t *testing.T) {
+	for _, tc := range []struct {
+		ignore, name, file, content string
+		commit                      bool
+	}{
+		{"dirty", "edited tracked file", "module.txt", "edited by a person\n", false},
+		{"untracked", "untracked file", "human.txt", "uncommitted human work\n", false},
+		{"all", "edited tracked file", "module.txt", "edited by a person\n", false},
+		{"all", "commit", "module.txt", "committed by a person\n", true},
+	} {
+		t.Run(tc.ignore+"/"+tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			seedSubmoduleWithIgnore(t, f, tc.ignore)
+			path := interruptWorktreeCreation(t, f)
+			submodule := filepath.Join(path, "module")
+			git(t, path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+			write(t, submodule, tc.file, tc.content)
+			if tc.commit {
+				git(t, submodule, "add", tc.file)
+				git(t, submodule, "commit", "-m", "person work")
+			}
+			if status := git(t, path, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
+				t.Fatalf("the fixture work is not hidden from status: %q", status)
+			}
+			leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !leftovers.Preserved || leftovers.Unverified || leftovers.Reason == "" {
+				t.Fatalf("the work in the submodule was not reported: %+v", leftovers)
+			}
+			if data, err := os.ReadFile(filepath.Join(path, "module", tc.file)); err != nil || string(data) != tc.content {
+				t.Fatalf("the work was deleted: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+// TestDiscardPreparationReleasesACleanInitializedSubmodule proves that an
+// initialized submodule holding exactly the recorded start is not mistaken for
+// work, so the release can still discard the leftover.
+func TestDiscardPreparationReleasesACleanInitializedSubmodule(t *testing.T) {
+	f := newFixture(t)
+	seedSubmodule(t, f)
+	path := interruptWorktreeCreation(t, f)
+	git(t, path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+	if status := git(t, path, "status", "--porcelain", "--untracked-files=all", "--ignored", "--ignore-submodules=none"); status != "" {
+		t.Fatalf("the initialized submodule is not clean: %q", status)
+	}
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftovers.Preserved {
+		t.Fatalf("the clean initialized submodule was preserved: %+v", leftovers)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the leftover survived the release: %v", err)
+	}
+	base := filepath.Join(f.root, "repos", "owner-repo", "base")
+	if branch := git(t, base, "branch", "--list", "mergeyard/issue-7"); branch != "" {
+		t.Fatalf("the branch survived the release: %s", branch)
+	}
+}
+
+// TestPreparePreservesHumanWorkInAnUninitializedSubmoduleOfAnInterruptedCheckout
+// proves that a retried Prepare keeps a clean, unlocked leftover checkout that
+// holds a file in an uninitialized submodule, and reports the branch conflict
+// that names it.
+func TestPreparePreservesHumanWorkInAnUninitializedSubmoduleOfAnInterruptedCheckout(t *testing.T) {
+	f := newFixture(t)
+	seedSubmodule(t, f)
+	path := interruptWorktreeCreation(t, f)
+	write(t, filepath.Join(path, "module"), "human.txt", "uncommitted human work\n")
+	if status := git(t, path, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
+		t.Fatalf("the fixture file is not hidden from status: %q", status)
+	}
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireConflictNaming(t, err, path)
+	if data, err := os.ReadFile(filepath.Join(path, "module", "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
+		t.Fatalf("the human work was deleted: %q, %v", data, err)
+	}
+}
+
+// TestPreparePreservesWorkInAnInitializedSubmoduleHiddenByIgnore proves that a
+// retried Prepare does not let .gitmodules ignore settings hide a person's work
+// inside an initialized submodule of an interrupted checkout.
+func TestPreparePreservesWorkInAnInitializedSubmoduleHiddenByIgnore(t *testing.T) {
+	for _, tc := range []struct {
+		ignore, name, file, content string
+		commit                      bool
+	}{
+		{"dirty", "edited tracked file", "module.txt", "edited by a person\n", false},
+		{"untracked", "untracked file", "human.txt", "uncommitted human work\n", false},
+		{"all", "edited tracked file", "module.txt", "edited by a person\n", false},
+		{"all", "commit", "module.txt", "committed by a person\n", true},
+	} {
+		t.Run(tc.ignore+"/"+tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			seedSubmoduleWithIgnore(t, f, tc.ignore)
+			path := interruptWorktreeCreation(t, f)
+			submodule := filepath.Join(path, "module")
+			git(t, path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+			write(t, submodule, tc.file, tc.content)
+			if tc.commit {
+				git(t, submodule, "add", tc.file)
+				git(t, submodule, "commit", "-m", "person work")
+			}
+			if status := git(t, path, "status", "--porcelain", "--untracked-files=all", "--ignored"); status != "" {
+				t.Fatalf("the fixture work is not hidden from status: %q", status)
+			}
+			_, err := f.manager.Prepare(context.Background(), f.request)
+			requireConflictNaming(t, err, path)
+			if data, err := os.ReadFile(filepath.Join(path, "module", tc.file)); err != nil || string(data) != tc.content {
+				t.Fatalf("the work was deleted: %q, %v", data, err)
+			}
+		})
+	}
+}
+
+// TestPrepareRecreatesAnInterruptedCheckoutWithEmptySubmoduleDirectories proves
+// that empty submodule directories are not mistaken for work: a retried Prepare
+// discards the leftover and creates it again.
+func TestPrepareRecreatesAnInterruptedCheckoutWithEmptySubmoduleDirectories(t *testing.T) {
+	f := newFixture(t)
+	seedSubmodule(t, f)
+	path := interruptWorktreeCreation(t, f)
+	entries, err := os.ReadDir(filepath.Join(path, "module"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("the interrupted checkout does not hold an empty submodule: %v, %v", entries, err)
+	}
+	run := prepare(t, f)
+	if run.Path != path {
+		t.Fatalf("the leftover was not recreated for the run: %+v", run)
+	}
+	if got := git(t, run.Path, "branch", "--show-current"); got != run.Branch {
+		t.Fatalf("recreated worktree branch = %q", got)
+	}
+	if got := git(t, run.Path, "rev-parse", "HEAD"); got != run.BaseSHA {
+		t.Fatalf("recreated worktree started at %s, want %s", got, run.BaseSHA)
+	}
+	entries, err = os.ReadDir(filepath.Join(run.Path, "module"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("the recreated checkout does not hold an empty submodule: %v, %v", entries, err)
+	}
+}
+
+// TestPrepareRecreatesAnInterruptedCheckoutWithACleanInitializedSubmodule
+// proves that an initialized submodule holding exactly the recorded start is
+// not mistaken for work, so a retried Prepare discards and recreates it.
+func TestPrepareRecreatesAnInterruptedCheckoutWithACleanInitializedSubmodule(t *testing.T) {
+	f := newFixture(t)
+	seedSubmodule(t, f)
+	path := interruptWorktreeCreation(t, f)
+	git(t, path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+	if status := git(t, path, "status", "--porcelain", "--untracked-files=all", "--ignored", "--ignore-submodules=none"); status != "" {
+		t.Fatalf("the initialized submodule is not clean: %q", status)
+	}
+	run := prepare(t, f)
+	if run.Path != path {
+		t.Fatalf("the leftover was not recreated for the run: %+v", run)
+	}
+	if got := git(t, run.Path, "branch", "--show-current"); got != run.Branch {
+		t.Fatalf("recreated worktree branch = %q", got)
+	}
+	if got := git(t, run.Path, "rev-parse", "HEAD"); got != run.BaseSHA {
+		t.Fatalf("recreated worktree started at %s, want %s", got, run.BaseSHA)
+	}
+}
+
+// TestPreparePreservesHumanWorkInAnUninitializedNestedSubmodule proves that the
+// submodule inspection recurses: a file inside a nested submodule that was
+// never initialized is invisible even to a status check that overrides
+// submodule ignore settings.
+func TestPreparePreservesHumanWorkInAnUninitializedNestedSubmodule(t *testing.T) {
+	f := newFixture(t)
+	seedNestedSubmodule(t, f)
+	path := interruptWorktreeCreation(t, f)
+	git(t, path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--", "module")
+	write(t, filepath.Join(path, "module", "nested"), "human.txt", "uncommitted human work\n")
+	if status := git(t, path, "status", "--porcelain", "--untracked-files=all", "--ignored", "--ignore-submodules=none"); status != "" {
+		t.Fatalf("the fixture file is not hidden from status: %q", status)
+	}
+	_, err := f.manager.Prepare(context.Background(), f.request)
+	requireConflictNaming(t, err, path)
+	if data, err := os.ReadFile(filepath.Join(path, "module", "nested", "human.txt")); err != nil || string(data) != "uncommitted human work\n" {
 		t.Fatalf("the human work was deleted: %q, %v", data, err)
 	}
 }
