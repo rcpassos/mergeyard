@@ -145,6 +145,12 @@ works directly from a checkout without Node, using the committed assets. The
 distributed binary needs no Node, asset directory, CDN, or external fonts.
 Third-party asset licenses are included under `web/static/licenses/`.
 
+`web/templates/layout.html` holds the page shell and the page switch. Each
+page has its own file under `web/templates/pages/`, and markup shared between
+pages lives in `web/templates/partials/`, one partial per file. Presentation
+helpers go in `templateHelpers` in `internal/web/templates.go`, which
+registers them on the whole template set.
+
 ## Runtime pages
 
 `GET /`, `/queue`, `/runs/{id}`, and `/settings` are server-rendered pages.

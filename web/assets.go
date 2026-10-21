@@ -5,5 +5,5 @@ import "embed"
 
 // Files embeds templates and generated, self-hosted frontend assets.
 //
-//go:embed templates/*.html static
+//go:embed templates/*.html templates/pages/*.html templates/partials/*.html static
 var Files embed.FS
