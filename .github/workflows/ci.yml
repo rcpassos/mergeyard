@@ -55,8 +55,8 @@ jobs:
         run: make test-python
       - name: Build
         run: make build
-      - name: Check committed dashboard assets
-        run: git diff --exit-code -- web/static
+      - name: Check committed dashboard and website theme assets
+        run: git diff --exit-code -- web/static site/theme.css site/favicon.svg
       - name: Validate release configuration
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:

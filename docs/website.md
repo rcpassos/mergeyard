@@ -4,6 +4,21 @@ The public landing page lives in `site/`, separate from the embedded local
 dashboard in `web/`. It is plain HTML, CSS, JavaScript, and SVG, with no build
 step, external fonts, analytics, or runtime dependencies.
 
+## Theme
+
+The site shares the dashboard's stock daisyUI `light` and `dark` themes and
+follows the OS preference; there is no manual toggle. `site/theme.css` holds
+only those theme variables, switched by `prefers-color-scheme`. The dashboard
+asset build (`make assets`, or `npm run build` in `web/`) writes it from the
+same daisyUI version the dashboard uses, along with `site/favicon.svg`, the
+dashboard's theme-following favicon. Both files are generated and committed;
+do not edit them by hand. CI rebuilds them and fails when the committed copies
+differ, so after a daisyUI upgrade commit the regenerated files with it.
+
+`site/style.css` is hand-written layout CSS. It sets no colors of its own: it
+uses the theme variables, or `color-mix()` blends of them for muted text and
+rules. Text uses the system sans and monospace stacks; there are no font files.
+
 ## Preview
 
 From the repository root:
@@ -45,7 +60,8 @@ external GitHub documentation are not separate pages in this sitemap. No
 synthetic modification dates are published.
 
 The sharing image is `site/social-preview.png` (1200 × 630), with an editable
-source in `site/social-preview.svg`. After editing the SVG, export it to PNG at
+source in `site/social-preview.svg`, drawn in the light theme's colors with its
+primary as the accent. After editing the SVG, export it to PNG at
 its intrinsic size and visually verify the result. The SVG can be opened in a
 browser and the root SVG captured at a 1200 × 630 viewport, device scale 1.
 The PNG is committed; deployment needs no image renderer or build dependency.

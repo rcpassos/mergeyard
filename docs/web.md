@@ -138,7 +138,8 @@ events, and on discovery notifications for the visible queue or settings page.
 Run `make assets` to install the versions locked in `web/package-lock.json`
 and build Tailwind/daisyUI CSS, HTMX, Lucide SVGs, and the dashboard script.
 `make build` rebuilds assets before compiling Go. CI uses Node 24 for this step.
-Commit the generated `web/static/` files together with source changes.
+Commit the generated `web/static/` files, `site/theme.css` and `site/favicon.svg`
+together with source changes.
 
 Templates and generated assets are embedded in Go. `go build ./cmd/mergeyard`
 works directly from a checkout without Node, using the committed assets. The
@@ -155,7 +156,9 @@ approved notes; the `outcomeAlert` template helper maps reported outcomes
 (criteria verdicts, finding severities, check states) to those variants.
 Page sections are daisyUI cards; messages inside them are alerts. The build
 writes `web/static/favicon.svg`, the public site's mark drawn in each theme's
-primary color behind a `prefers-color-scheme` query.
+primary color behind a `prefers-color-scheme` query. It also writes the public
+website's copy of that favicon and `site/theme.css`, the same themes' variables
+for the build-free site (see [the website doc](website.md#theme)).
 
 `web/templates/layout.html` holds the page shell and the page switch. Each
 page has its own file under `web/templates/pages/`, and markup shared between
