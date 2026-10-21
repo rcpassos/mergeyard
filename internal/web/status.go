@@ -66,7 +66,7 @@ func statusBadge(value any) template.HTML {
 	case runView:
 		status = statusOf(run.Run, run.ReviewPending)
 	case *runView:
-		status = statusOf(run.Run, run.ReviewPending)
+		return statusBadge(*run)
 	case workflow.Run:
 		status = statusOf(run, false)
 	default:

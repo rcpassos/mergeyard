@@ -153,7 +153,19 @@ progress notes, warning for CI or base warnings, harness waits and escalation,
 error for failures, human action and the last error, and success for merged or
 approved notes; the `outcomeAlert` template helper maps reported outcomes
 (criteria verdicts, finding severities, check states) to those variants.
-Page sections are daisyUI cards; messages inside them are alerts. The build
+Page sections are daisyUI cards; messages inside them are alerts.
+
+Each run shows one status badge. `statusOf` in `internal/web/status.go` maps
+the run's state, phase, review round, review-pending flag and harness wait to
+a human label and badge variant ("Reviewing · round 2", info; "Usage limited ·
+resets 14:30", warning; "Needs attention", error; "Merged", success outline),
+and the `statusBadge` helper renders it. Templates never print raw state or
+phase codes; those appear only inside timeline event details. The `since` and
+`until` helpers render a time as `<time datetime>` with a UTC fallback and
+render nothing for a zero time. The dashboard script formats these in the
+browser's locale and time zone, on load, after every swap and every 30
+seconds: past times as relative text with the absolute time on hover, resets
+and deadlines as absolute plus relative ("14:30, in 2 hr."). The build
 writes `web/static/favicon.svg`, the public site's mark drawn in each theme's
 primary color behind a `prefers-color-scheme` query.
 
