@@ -1,8 +1,8 @@
-{{define "locked-message"}}<h1>Dashboard locked</h1>
-<p class="notice">This dashboard is restricted to the workspace owner, so another local user cannot control runs.</p>
-<p>Open the link printed by <code>mergeyard start</code>, or run <code>mergeyard open</code> for a fresh one. The link is single-use and expires; the session it hands this browser lives only for this exact address and lasts until Mergeyard restarts.</p>{{end}}
+{{define "locked-message"}}<h1 class="text-3xl font-semibold">Dashboard locked</h1>
+<div class="alert alert-info"><p>This dashboard is restricted to the workspace owner, so another local user cannot control runs.</p></div>
+<p class="max-w-prose">Open the link printed by <code>mergeyard start</code>, or run <code>mergeyard open</code> for a fresh one. The link is single-use and expires; the session it hands this browser lives only for this exact address and lasts until Mergeyard restarts.</p>{{end}}
 
-{{define "boot"}}<main id="content" class="workbench" data-boot="true">{{template "locked-message" .}}
-<noscript><p class="notice">The dashboard needs JavaScript to attach its origin-scoped session. Use the <code>mergeyard</code> commands for script-free control.</p></noscript></main>{{end}}
+{{define "boot"}}<main id="content" class="space-y-4 pt-6" data-boot="true">{{template "locked-message" .}}
+<noscript><div class="alert alert-warning"><p>The dashboard needs JavaScript to attach its origin-scoped session. Use the <code>mergeyard</code> commands for script-free control.</p></div></noscript></main>{{end}}
 
-{{define "locked-content"}}<main id="content" class="workbench" data-locked="true">{{template "locked-message" .}}</main>{{end}}
+{{define "locked-content"}}<main id="content" class="space-y-4 pt-6" data-locked="true">{{template "locked-message" .}}</main>{{end}}

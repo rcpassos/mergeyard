@@ -145,6 +145,18 @@ works directly from a checkout without Node, using the committed assets. The
 distributed binary needs no Node, asset directory, CDN, or external fonts.
 Third-party asset licenses are included under `web/static/licenses/`.
 
+The dashboard uses the stock daisyUI `light` theme, and `dark` when the OS
+prefers dark; there is no manual toggle. `web/src/app.css` sets no color values,
+no daisyUI color variables, and no fonts: text uses Tailwind's system sans and
+mono stacks. Messages are daisyUI alerts by severity: info for discovery and
+progress notes, warning for CI or base warnings, harness waits and escalation,
+error for failures, human action and the last error, and success for merged or
+approved notes; the `outcomeAlert` template helper maps reported outcomes
+(criteria verdicts, finding severities, check states) to those variants.
+Page sections are daisyUI cards; messages inside them are alerts. The build
+writes `web/static/favicon.svg`, the public site's mark drawn in each theme's
+primary color behind a `prefers-color-scheme` query.
+
 `web/templates/layout.html` holds the page shell and the page switch. Each
 page has its own file under `web/templates/pages/`, and markup shared between
 pages lives in `web/templates/partials/`, one partial per file. Presentation
