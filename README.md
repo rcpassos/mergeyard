@@ -52,8 +52,8 @@ The installer source is [scripts/install.sh](scripts/install.sh).
 
 ### Build from source
 
-Before the first release, or for development, use Go 1.26.9 or newer
-(the module selects the Go 1.26.9 toolchain):
+Before the first release, or for development, use Go 1.26.10 or newer
+(the module selects the Go 1.26.10 toolchain):
 
 ```sh
 git clone https://github.com/rcpassos/mergeyard.git

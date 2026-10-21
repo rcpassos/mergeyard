@@ -1,0 +1,8 @@
+{{define "queue-page"}}
+<div class="status-bar">{{template "scheduler" .}}<div class="capacity"><span class="capacity-value">{{.Used}} / {{.Limit}}</span><span>Concurrency slots in use</span><small>Includes attention, harness waiting, manual, and CI waiting runs.</small></div></div>
+{{if not .QueueReady}}<p class="notice">Discovering ready and blocked issues on GitHub…</p>{{end}}
+{{if .QueueError}}<p class="notice" role="status">{{.QueueError}}</p>{{end}}
+{{if .QueueTime}}<p class="connection">GitHub queue last synced <time>{{.QueueTime}}</time></p>{{end}}
+<div class="queue-sections">{{range .Sections}}{{template "queue-group" .}}{{end}}</div>
+{{if eq .Page "dashboard"}}<section class="queue-section"><h2>Recent runs <span class="count">{{len .Recent}}</span></h2>{{range .Recent}}{{template "run-row" .}}{{else}}<p class="empty">Ended runs will appear here.</p>{{end}}</section>{{end}}
+{{end}}

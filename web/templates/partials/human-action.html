@@ -1,0 +1,1 @@
+{{define "human-action"}}{{if .}}<section class="notice failure human-action"><h2>Human action required</h2><p>{{.Decision}}</p>{{if .Files}}<h3>Files to inspect</h3><ul>{{range .Files}}<li><code>{{.}}</code></li>{{end}}</ul>{{end}}{{if .Options}}<h3>Options</h3><ul>{{range .Options}}<li>{{.}}</li>{{end}}</ul>{{end}}</section>{{end}}{{end}}

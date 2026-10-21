@@ -111,7 +111,7 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 	if bus == nil || scheduler == nil {
 		return nil, &fault.Error{Code: "internal.web_dependencies", Message: "Web server requires an event bus and scheduler"}
 	}
-	templates, err := template.ParseFS(webassets.Files, "templates/*.html")
+	templates, err := parseTemplates()
 	if err != nil {
 		return nil, &fault.Error{Code: "internal.web_templates", Message: "Could not parse dashboard templates", Err: err}
 	}

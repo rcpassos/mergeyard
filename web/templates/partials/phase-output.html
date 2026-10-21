@@ -1,0 +1,1 @@
+{{define "phase-output"}}<section id="phase-output"{{if .Run.CanStop}} hx-get="/runs/{{.Run.ID}}/output" hx-trigger="every 2s" hx-target="this" hx-swap="outerHTML" hx-sync="this:queue last"{{end}}><h2>Phase output</h2><p class="connection">{{.LogMessage}}</p><pre class="log-tail" tabindex="0">{{if .Log}}{{.Log}}{{else}}No readable output yet.{{end}}</pre></section>{{end}}

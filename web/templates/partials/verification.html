@@ -1,0 +1,2 @@
+{{define "verification"}}<h3>Verification evidence</h3>
+{{range .Verification}}<article class="notice"><h4><code>{{.Command}}</code> · {{.Outcome}}</h4>{{if .Excerpt}}<pre>{{.Excerpt}}</pre>{{end}}</article>{{else}}{{if .HasVerification}}<p>no verification reported</p>{{else}}<p>Verification was not recorded by this schema version.</p>{{end}}{{end}}{{end}}
