@@ -47,6 +47,10 @@ func TestRunsShowAHumanStatusBadge(t *testing.T) {
 		{"ready to merge", "Ready to merge", "badge-success", runView{Run: workflow.Run{State: workflow.ReadyToMerge, Phase: workflow.Review}}},
 		{"merged", "Merged", "badge-success badge-outline", runView{Run: workflow.Run{State: workflow.Completed, Phase: workflow.Review,
 			Merge: &maintenance.Snapshot{ObservedAt: "2026-10-21T10:00:00Z"}}}},
+		// An early merge is saved before the owned phase exits, so the run can
+		// still be ACTIVE; the observed merge wins.
+		{"merged before phase exit", "Merged", "badge-success badge-outline", runView{Run: workflow.Run{State: workflow.Active, Phase: workflow.Review,
+			RunMetadata: workflow.RunMetadata{ReviewRound: 2}, Merge: &maintenance.Snapshot{ObservedAt: "2026-10-21T10:00:00Z", Early: true}}}},
 		{"failed", "Failed", "badge-error badge-outline", runView{Run: workflow.Run{State: workflow.Failed, Phase: workflow.Implement}}},
 		{"stopped", "Stopped", "badge-neutral badge-outline", runView{Run: workflow.Run{State: workflow.Stopped}}},
 	}

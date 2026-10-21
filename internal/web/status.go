@@ -18,6 +18,11 @@ type runStatus struct {
 // statusOf is the single mapping from a run's lifecycle to what the owner
 // reads. Templates never print raw state or phase codes.
 func statusOf(run workflow.Run, reviewPending bool) runStatus {
+	// An observed merge is saved before the owned phase exits, so a merged
+	// run can still be ACTIVE until shutdown and cleanup finish.
+	if run.Merge != nil {
+		return runStatus{Label: "Merged", Variant: "badge-success badge-outline"}
+	}
 	switch run.State {
 	case workflow.Claiming, workflow.Preparing:
 		return runStatus{Label: "Starting", Variant: "badge-neutral"}
