@@ -530,6 +530,175 @@ func TestStopCompletesWhenTheLeftoversCannotBeChecked(t *testing.T) {
 	}
 }
 
+// stoppedWithUnverifiedLeftovers starts a run whose preparation was
+// interrupted, makes the first Stop keep the leftovers unchecked, and fails its
+// label removal so the run stays pending. The returned gate keeps Git status
+// failing until it is removed, so a retry can check the leftovers again.
+func stoppedWithUnverifiedLeftovers(t *testing.T, s *scheduler.Scheduler, rt *app.Runtime, api *fakeGitHub) (workflow.Run, managedgit.Run, string) {
+	t.Helper()
+	ctx := context.Background()
+	run := preparingRun(t, rt, "interrupted")
+	prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := filepath.Join(t.TempDir(), "fail-git-status")
+	installGitWrapper(t, "status", `if [ -e "`+gate+`" ]; then exit 1; fi`)
+	if err := os.WriteFile(gate, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The run may already carry the flag from an earlier failure, so the
+	// retry also has to withdraw it once the leftovers are gone.
+	api.issues["owner/repo"][0].Labels = append(api.issues["owner/repo"][0].Labels, github.Label{Name: "agent-needs-attention"})
+	failLabelRemovals(api, 1)
+	if err := s.Stop(ctx, run.ID); err == nil {
+		t.Fatal("the failed label removal did not fail the stop")
+	}
+	requireRecordedLeftovers(t, rt, run.ID, prepared)
+	return run, prepared, gate
+}
+
+// failLabelRemovals makes the next count label removals fail with a GitHub
+// outage.
+func failLabelRemovals(api *fakeGitHub, count int) {
+	api.mutate = func(action, _ string, _ int, _ string) error {
+		if action == "remove" && count > 0 {
+			count--
+			return &fault.Error{Code: "github.unavailable", Message: "GitHub is unavailable"}
+		}
+		return nil
+	}
+}
+
+// recordedLeftovers returns the branch and worktree the run records.
+func recordedLeftovers(t *testing.T, rt *app.Runtime, id string) (string, string) {
+	t.Helper()
+	var branch, path string
+	if err := rt.DB.QueryRow("SELECT COALESCE(branch,''), COALESCE(worktree_path,'') FROM runs WHERE id=?", id).Scan(&branch, &path); err != nil {
+		t.Fatal(err)
+	}
+	return branch, path
+}
+
+func requireRecordedLeftovers(t *testing.T, rt *app.Runtime, id string, prepared managedgit.Run) {
+	t.Helper()
+	if branch, path := recordedLeftovers(t, rt, id); branch != prepared.Branch || path != prepared.Path {
+		t.Fatalf("the leftovers are not recorded on the run: branch %q, worktree %q", branch, path)
+	}
+}
+
+func requireNoRecordedLeftovers(t *testing.T, rt *app.Runtime, id string) {
+	t.Helper()
+	if branch, path := recordedLeftovers(t, rt, id); branch != "" || path != "" {
+		t.Fatalf("the run still records leftovers that are gone: branch %q, worktree %q", branch, path)
+	}
+}
+
+func leftoverEvents(t *testing.T, rt *app.Runtime, id string) int {
+	t.Helper()
+	var count int
+	if err := rt.DB.QueryRow("SELECT count(*) FROM events WHERE run_id=? AND type='run.stop_leftovers'", id).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+// TestStopClearsLeftoversThatARetryRemoved proves that a retry which verifies
+// and removes the leftovers a failed Stop recorded clears that record: the
+// stopped run names no gone artifacts and does not flag the issue.
+func TestStopClearsLeftoversThatARetryRemoved(t *testing.T) {
+	s, rt, api, _, _, _ := localFlow(t, successfulScript)
+	ctx := context.Background()
+	run, prepared, gate := stoppedWithUnverifiedLeftovers(t, s, rt, api)
+	if err := os.Remove(gate); err != nil {
+		t.Fatal(err)
+	}
+	api.mutate = nil
+	if err := s.Stop(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := rt.Workflow.Get(ctx, run.ID)
+	if err != nil || stopped.State != workflow.Stopped {
+		t.Fatalf("stop: %+v %v", stopped, err)
+	}
+	requireNoRecordedLeftovers(t, rt, run.ID)
+	if _, err := os.Stat(prepared.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the removed leftovers survive in the record: %v", err)
+	}
+	if has(api.issues["owner/repo"][0], "agent-needs-attention") {
+		t.Fatalf("leftovers that are gone flagged the issue: %+v", api.issues["owner/repo"][0].Labels)
+	}
+	if _, ok := api.leftoverComments[7]; ok {
+		t.Fatalf("leftovers that are gone were explained on the issue: %+v", api.leftoverComments)
+	}
+}
+
+// TestStopKeepsLeftoversThatARetryStillFinds proves that a retry which still
+// finds work keeps the leftovers recorded, flags the issue and explains them,
+// without adding another stop-leftovers event.
+func TestStopKeepsLeftoversThatARetryStillFinds(t *testing.T) {
+	s, rt, api, _, _, _ := localFlow(t, successfulScript)
+	ctx := context.Background()
+	run, prepared, gate := stoppedWithUnverifiedLeftovers(t, s, rt, api)
+	if err := os.WriteFile(filepath.Join(prepared.Path, "human.txt"), []byte("work\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(gate); err != nil {
+		t.Fatal(err)
+	}
+	api.mutate = nil
+	if err := s.Stop(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := rt.Workflow.Get(ctx, run.ID)
+	if err != nil || stopped.State != workflow.Stopped {
+		t.Fatalf("stop: %+v %v", stopped, err)
+	}
+	requireRecordedLeftovers(t, rt, run.ID, prepared)
+	if !has(api.issues["owner/repo"][0], "agent-needs-attention") {
+		t.Fatalf("the preserved leftovers did not flag the issue: %+v", api.issues["owner/repo"][0].Labels)
+	}
+	comment, ok := api.leftoverComments[7]
+	if want := filepath.ToSlash(filepath.Join("worktrees", "owner-repo", run.ID)); !ok || comment.Branch != prepared.Branch || comment.Worktree != want {
+		t.Fatalf("the preserved leftovers were not named on the issue: %+v", api.leftoverComments)
+	}
+	if got := leftoverEvents(t, rt, run.ID); got != 1 {
+		t.Fatalf("the retry recorded %d stop-leftovers events, want 1", got)
+	}
+}
+
+// TestRepeatedStopRecordsTheSameLeftoversOnce proves that retries that keep
+// the same leftovers add one stop-leftovers event, not one per attempt.
+func TestRepeatedStopRecordsTheSameLeftoversOnce(t *testing.T) {
+	s, rt, api, _, _, _ := localFlow(t, successfulScript)
+	ctx := context.Background()
+	run := preparingRun(t, rt, "interrupted")
+	prepared, err := managedgit.New(rt.Workspace).Prepare(ctx, managedgit.PrepareRequest{Repository: "owner/repo", RunID: run.ID, IssueNumber: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.Path, "human.txt"), []byte("work\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	failLabelRemovals(api, 2)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := s.Stop(ctx, run.ID); err == nil {
+			t.Fatalf("attempt %d did not fail the label removal", attempt)
+		}
+		if got := leftoverEvents(t, rt, run.ID); got != 1 {
+			t.Fatalf("attempt %d recorded %d stop-leftovers events, want 1", attempt, got)
+		}
+	}
+	api.mutate = nil
+	if err := s.Stop(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireRecordedLeftovers(t, rt, run.ID, prepared)
+	if got := leftoverEvents(t, rt, run.ID); got != 1 {
+		t.Fatalf("the finished stop recorded %d stop-leftovers events, want 1", got)
+	}
+}
+
 // TestStopCompletesWhenGitHangsOnTheLeftovers proves that a Git check that
 // exceeds its deadline does not leave the stop pending: every attempt would
 // hang the same way, so the first one finishes the stop on unverified

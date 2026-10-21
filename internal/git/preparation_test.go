@@ -158,6 +158,20 @@ func TestPrepareBranchConflictKeepsTheMetadataDeadline(t *testing.T) {
 	requireCode(t, err, "git.timeout")
 }
 
+// TestDiscardPreparationWithoutAnIntentReleasesNothing proves that a run whose
+// preparation never recorded an intent reports no release, so a caller keeps
+// any record of leftovers it cannot prove are gone.
+func TestDiscardPreparationWithoutAnIntentReleasesNothing(t *testing.T) {
+	f := newFixture(t)
+	leftovers, err := f.manager.DiscardPreparation(context.Background(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftovers.Released || leftovers.Preserved {
+		t.Fatalf("a run without an intent reported a release: %+v", leftovers)
+	}
+}
+
 // TestDiscardPreparationReleasesTheLeftoversOfACompletedCreation proves that
 // a preparation whose ownership was never saved releases the branch and the
 // worktree it created, so the next run for the same issue can prepare.
@@ -169,8 +183,8 @@ func TestDiscardPreparationReleasesTheLeftoversOfACompletedCreation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if leftovers.Preserved {
-		t.Fatalf("untouched leftovers were preserved: %+v", leftovers)
+	if leftovers.Preserved || !leftovers.Released {
+		t.Fatalf("untouched leftovers were not released: %+v", leftovers)
 	}
 	if _, err := os.Stat(run.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the worktree survived the discard: %v", err)
@@ -199,8 +213,8 @@ func TestDiscardPreparationReleasesAnInterruptedCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if leftovers.Preserved {
-		t.Fatalf("the interrupted creation was preserved: %+v", leftovers)
+	if leftovers.Preserved || !leftovers.Released {
+		t.Fatalf("the interrupted creation was not released: %+v", leftovers)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the interrupted worktree survived the discard: %v", err)

@@ -139,6 +139,14 @@ func (s *Scheduler) stopRun(ctx context.Context, run workflow.Run) error {
 		if err := s.deps.GitHub.AddLabel(ctx, repo.Repo, run.IssueNumber, repo.Labels.NeedsAttention); err != nil {
 			return err
 		}
+	} else if recorded, err := s.stopLeftoversRecorded(ctx, run.ID); err != nil {
+		return err
+	} else if recorded {
+		// An earlier Stop recorded leftovers the retry removed, so the
+		// attention that record caused no longer has anything to explain.
+		if err := s.deps.GitHub.RemoveLabel(ctx, repo.Repo, run.IssueNumber, repo.Labels.NeedsAttention); err != nil {
+			return err
+		}
 	}
 	// The issue is flagged for attention; the explanation names the leftovers
 	// that stay behind.
@@ -186,7 +194,12 @@ func (s *Scheduler) releasePreparation(ctx context.Context, repo config.Reposito
 		return managedgit.Leftovers{}, err
 	}
 	if !leftovers.Preserved {
-		return managedgit.Leftovers{}, nil
+		if !leftovers.Released {
+			// Without an intent the release checked nothing, so a record from
+			// an earlier Stop must keep naming what may still be there.
+			return managedgit.Leftovers{}, nil
+		}
+		return managedgit.Leftovers{}, s.clearRecordedLeftovers(ctx, run.ID)
 	}
 	return leftovers, s.recordLeftovers(ctx, run, leftovers)
 }
@@ -212,11 +225,40 @@ func (s *Scheduler) savedOwnership(ctx context.Context, id string) (bool, error)
 	return gitRun.ID != "", nil
 }
 
+// clearRecordedLeftovers drops the branch and worktree an earlier Stop recorded
+// for leftovers that a later Stop verified and removed. A run without saved
+// ownership cannot otherwise own either artifact, so the record must not
+// outlive them.
+func (s *Scheduler) clearRecordedLeftovers(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE runs SET branch=NULL, worktree_path=NULL
+		WHERE id=? AND (branch IS NOT NULL OR worktree_path IS NOT NULL)`, id)
+	return err
+}
+
+// stopLeftoversRecorded reports whether an earlier Stop recorded leftovers for
+// this run. The event stays in the history after the record is cleared, so a
+// retry can withdraw the attention label the stale record added even when that
+// earlier Stop failed before reaching the label.
+func (s *Scheduler) stopLeftoversRecorded(ctx context.Context, id string) (bool, error) {
+	var recorded bool
+	err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM events WHERE run_id=? AND type='run.stop_leftovers')", id).Scan(&recorded)
+	return recorded, err
+}
+
 // recordLeftovers records the leftovers an interrupted preparation left
 // behind on the run that created them. The run keeps naming them, so the
 // dashboard shows what stays and the reconciliation knows that the artifacts
-// belong to it.
+// belong to it. The same branch and worktree are recorded once, so a repeated
+// Stop that keeps them again neither changes the record nor adds another
+// event; the first observation stays in the history.
 func (s *Scheduler) recordLeftovers(ctx context.Context, run workflow.Run, leftovers managedgit.Leftovers) error {
+	var branch, path string
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(branch,''), COALESCE(worktree_path,'') FROM runs WHERE id=?", run.ID).Scan(&branch, &path); err != nil {
+		return err
+	}
+	if branch == leftovers.Branch && path == leftovers.Path {
+		return nil
+	}
 	_, err := s.bus.Commit(ctx, func(tx *sql.Tx) (events.Draft, error) {
 		if _, err := tx.ExecContext(ctx, "UPDATE runs SET branch=?, worktree_path=? WHERE id=?", leftovers.Branch, leftovers.Path, run.ID); err != nil {
 			return events.Draft{}, err
