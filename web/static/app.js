@@ -49,15 +49,176 @@ function showToast(kind, text) {
 }
 
 // Live updates refresh the header pills out of band; an open pill dropdown
-// stays open across the refresh.
+// stays open across the refresh, and focus inside it stays on the same control.
 let openPills = [];
+let pillFocus = null;
 document.body.addEventListener('htmx:oobBeforeSwap', (event) => {
   if (event.detail.target.id !== 'harness-pills') return;
   openPills = [...event.detail.target.querySelectorAll('details[open]')].map((pill) => pill.id);
+  pillFocus = captureFocus(event.detail.target);
 });
 document.body.addEventListener('htmx:oobAfterSwap', (event) => {
   if (event.detail.target.id !== 'harness-pills') return;
   for (const id of openPills) document.getElementById(id)?.setAttribute('open', '');
+  restoreFocus(event.detail.target, pillFocus);
+});
+
+// Live updates replace whole nodes, so the browser forgets where the page was,
+// which disclosures were open and what was focused. Remember those around each
+// live swap and restore them once the new content is in place. Phase output is
+// remembered for every content swap so its pinning survives actions too. The
+// retry note also carries hx-preserve, but keeping its text here makes several
+// live swaps in a row safe even if preservation is unavailable.
+const swapSnapshots = new Map();
+
+// Describe an element from the nearest stable ID downwards. IDs survive the
+// swap; structure inside them does too, which covers a focused summary or a
+// button without an ID of its own.
+function selectorFor(element) {
+  const parts = [];
+  for (let node = element; node && node !== document.body; node = node.parentElement) {
+    if (node.id) {
+      parts.unshift(`#${CSS.escape(node.id)}`);
+      return parts.join(' > ');
+    }
+    let index = 1;
+    for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+      if (sibling.tagName === node.tagName) index += 1;
+    }
+    parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
+  }
+  return '';
+}
+
+// The nearest ID is the stable container the selector starts from.
+function anchorFor(element) {
+  for (let node = element; node && node !== document.body; node = node.parentElement) {
+    if (node.id) return node.id;
+  }
+  return '';
+}
+
+function captureFocus(root) {
+  const element = document.activeElement;
+  if (!element || element === document.body || !root.contains(element)) return null;
+  const snapshot = { element, selector: selectorFor(element), anchor: anchorFor(element) };
+  if (typeof element.selectionStart === 'number') {
+    snapshot.start = element.selectionStart;
+    snapshot.end = element.selectionEnd;
+    snapshot.direction = element.selectionDirection;
+  }
+  return snapshot;
+}
+
+// The selector addresses the old position, which another control can occupy
+// when the run's available actions change. Only restore focus to the same kind
+// of control that carried the identifying attributes. A path that starts at the
+// page container needs the text check too; paths inside a stable ID do not,
+// because their labels legitimately change with live state.
+function sameControl(candidate, original, anchor) {
+  if (candidate.tagName !== original.tagName) return false;
+  let identified = false;
+  for (const attribute of ['href', 'form', 'name', 'data-copy']) {
+    const value = original.getAttribute(attribute);
+    if (value === null) continue;
+    identified = true;
+    if (candidate.getAttribute(attribute) !== value) return false;
+  }
+  const form = original.closest('form[action]');
+  if (form) {
+    identified = true;
+    if (candidate.closest('form[action]')?.getAttribute('action') !== form.getAttribute('action')) return false;
+  }
+  return identified || anchor !== 'content' || candidate.textContent.trim() === original.textContent.trim();
+}
+
+function restoreFocus(root, snapshot) {
+  if (!snapshot?.selector) return;
+  const element = document.querySelector(snapshot.selector);
+  if (!element || !root.contains(element) || !sameControl(element, snapshot.element, snapshot.anchor)) return;
+  element.focus({ preventScroll: true });
+  if (snapshot.start != null && element.setSelectionRange) {
+    try {
+      element.setSelectionRange(snapshot.start, snapshot.end, snapshot.direction);
+    } catch {
+      // Selection ranges only apply to text controls.
+    }
+  }
+}
+
+function outputPre(root) {
+  const section = root.id === 'phase-output' ? root : root.querySelector('#phase-output');
+  return section?.querySelector('pre') || null;
+}
+
+function outputPinned(pre) {
+  // A few pixels of rounding should still count as the bottom.
+  return pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 4;
+}
+
+function pinOutput(pre) {
+  if (pre) pre.scrollTop = pre.scrollHeight;
+}
+
+function captureOutput(root) {
+  const pre = outputPre(root);
+  return pre && { top: pre.scrollTop, pinned: outputPinned(pre) };
+}
+
+function captureSwap(root, live) {
+  const note = root.querySelector('textarea[name="note"]');
+  return {
+    page: live && {
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      disclosures: [...root.querySelectorAll('details[id]')].map((details) => [details.id, details.open]),
+      focus: captureFocus(root),
+      note: note && { id: note.id, value: note.value },
+    },
+    output: captureOutput(root),
+  };
+}
+
+function restoreSwap(root, snapshot) {
+  if (snapshot.page) {
+    for (const [id, open] of snapshot.page.disclosures) {
+      const details = document.getElementById(id);
+      if (details?.tagName === 'DETAILS' && root.contains(details)) details.open = open;
+    }
+    if (snapshot.page.note) {
+      const note = document.getElementById(snapshot.page.note.id);
+      if (note && root.contains(note)) note.value = snapshot.page.note.value;
+    }
+  }
+  const pre = outputPre(root);
+  if (pre) {
+    if (snapshot.output) {
+      const bottom = Math.max(0, pre.scrollHeight - pre.clientHeight);
+      pre.scrollTop = snapshot.output.pinned ? bottom : Math.min(snapshot.output.top, bottom);
+    } else {
+      // A newly rendered output starts at its newest line.
+      pinOutput(pre);
+    }
+  }
+  restoreFocus(root, snapshot.page?.focus);
+  if (snapshot.page) window.scrollTo(snapshot.page.scrollX, snapshot.page.scrollY);
+}
+
+document.body.addEventListener('htmx:beforeSwap', (event) => {
+  const root = event.detail.target;
+  if (!root || (root.id !== 'content' && root.id !== 'phase-output')) return;
+  const live = root.id === 'content' && event.detail.requestConfig?.triggeringEvent?.type === 'dashboard-update';
+  swapSnapshots.set(root.id, captureSwap(root, live));
+});
+document.body.addEventListener('htmx:afterSwap', (event) => {
+  const id = event.detail.target?.id;
+  if (!id) return;
+  const snapshot = swapSnapshots.get(id);
+  if (!snapshot) return;
+  swapSnapshots.delete(id);
+  // An outerHTML swap reports the detached old element, so look the new one up.
+  const root = document.getElementById(id);
+  if (root) restoreSwap(root, snapshot);
 });
 
 // A blocked clipboard opens a modal with the text selected for a manual copy.
@@ -220,6 +381,10 @@ document.body.addEventListener('htmx:afterSwap', () => {
   }
   startEvents();
 });
+
+// A freshly rendered phase output opens at its newest line. Polling keeps it
+// there until the owner scrolls up.
+pinOutput(outputPre(document));
 
 // A browser navigation carries no session header, so the server answers with a
 // boot page. The script attaches the stored session and loads the real content.
