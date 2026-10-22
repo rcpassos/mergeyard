@@ -57,8 +57,8 @@ func TestRunsShowAHumanStatusBadge(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.run.ID, tc.run.Repository, tc.run.IssueNumber, tc.run.Title = "run-1", "owner/repo", 7, "Paginate orders"
-			row := pageData{Page: "dashboard", Path: "/", Title: "Dashboard", Sections: emptySections()}
-			row.Sections[runningSection].Runs = []runView{tc.run}
+			row := pageData{Page: "dashboard", Path: "/", Title: "Dashboard", Groups: emptyGroups()}
+			row.Groups[runningIndex].Runs = []runView{tc.run}
 			detail := pageData{Page: "run", Path: "/runs/run-1", Title: "Run detail", Run: &tc.run}
 			for page, data := range map[string]pageData{"run row": row, "run detail header": detail} {
 				body := renderContent(t, data)
@@ -110,8 +110,8 @@ var (
 func TestPagesKeepRawStateAndPhaseCodesInTimelineDetails(t *testing.T) {
 	run := richRun()
 	ended := runView{Run: workflow.Run{ID: "run-2", Repository: "owner/repo", IssueNumber: 8, State: workflow.Failed, Phase: workflow.Implement}}
-	dashboard := pageData{Page: "dashboard", Path: "/", Title: "Dashboard", Sections: emptySections(), Recent: []runView{ended}}
-	dashboard.Sections[runningSection].Runs = []runView{run}
+	dashboard := pageData{Page: "dashboard", Path: "/", Title: "Dashboard", Groups: emptyGroups(), Recent: []runView{ended}}
+	dashboard.Groups[runningIndex].Runs = []runView{run}
 	queue := dashboard
 	queue.Page, queue.Path, queue.Title = "queue", "/queue", "Queue"
 	detail := pageData{Page: "run", Path: "/runs/run-1", Title: "Run detail", Run: &run,
@@ -136,8 +136,8 @@ func TestRenderedTimesCarryTheirInstant(t *testing.T) {
 	run := richRun()
 	run.Merge = &maintenance.Snapshot{ObservedAt: "2026-10-21T10:00:00Z"}
 	harnesses := []scheduler.HarnessAvailability{{Harness: "claude", ResetAt: resetAt, Reason: "temporary_limit"}, {Harness: "codex", Available: true}}
-	dashboard := pageData{Page: "dashboard", Path: "/", Title: "Dashboard", Sections: emptySections(), Harnesses: harnesses, QueueTime: "2026-10-21T09:30:00Z"}
-	dashboard.Sections[runningSection].Runs = []runView{run}
+	dashboard := pageData{Page: "dashboard", Path: "/", Title: "Dashboard", Groups: emptyGroups(), Harnesses: harnesses, QueueTime: "2026-10-21T09:30:00Z"}
+	dashboard.Groups[runningIndex].Runs = []runView{run}
 	detail := pageData{Page: "run", Path: "/runs/run-1", Title: "Run detail", Run: &run, Harnesses: harnesses,
 		Timeline: []timelineEntry{{Type: "run.claimed", Time: "2026-10-21T07:00:00.000Z", Details: "{}"}}}
 

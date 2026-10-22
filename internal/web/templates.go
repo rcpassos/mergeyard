@@ -15,7 +15,7 @@ var templateFiles = []string{"templates/*.html", "templates/pages/*.html", "temp
 func templateHelpers() template.FuncMap {
 	return template.FuncMap{
 		"outcomeAlert": outcomeAlert, "doctorBadge": doctorBadge, "doctorKind": doctorKind,
-		"statusBadge": statusBadge, "stepLabel": stepLabel, "phaseLabel": phaseLabel,
+		"statusBadge": statusBadge, "issueBadge": issueBadge, "stepLabel": stepLabel, "phaseLabel": phaseLabel,
 		"since": since, "until": until,
 		"lifecycleSteps": lifecycleSteps, "shortCopy": shortCopy, "isLatest": isLatest, "currentMatters": currentMatters,
 	}

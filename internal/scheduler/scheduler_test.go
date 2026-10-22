@@ -35,7 +35,8 @@ type fakeGitHub struct {
 	creations        int
 	head             func(string) string
 	mutate           func(action, repo string, n int, label string) error
-	listHook         func() // runs inside each label-filtered listing request
+	listHook         func()             // runs inside each label-filtered listing request
+	listError        func(string) error // fails one repository's label-filtered listing
 	calls            githubCalls
 	listings         []listingRequest
 }
@@ -107,6 +108,11 @@ func (f *fakeGitHub) EnsureStopLeftoversComment(_ context.Context, _ string, n i
 func (f *fakeGitHub) ListLabeledIssues(_ context.Context, repo string, labels []string) ([]github.Issue, error) {
 	if f.listHook != nil {
 		f.listHook()
+	}
+	if f.listError != nil {
+		if err := f.listError(repo); err != nil {
+			return nil, err
+		}
 	}
 	f.calls.issueListings++
 	f.listings = append(f.listings, listingRequest{repo: repo, labels: append([]string(nil), labels...)})

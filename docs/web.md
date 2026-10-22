@@ -151,12 +151,14 @@ Third-party asset licenses are included under `web/static/licenses/`.
 The dashboard uses the stock daisyUI `light` theme, and `dark` when the OS
 prefers dark; there is no manual toggle. `web/src/app.css` sets no color values,
 no daisyUI color variables, and no fonts: text uses Tailwind's system sans and
-mono stacks. Messages are daisyUI alerts by severity: info for discovery and
-progress notes, warning for CI or base warnings, harness waits and escalation,
-error for failures, human action and the last error, and success for merged or
-approved notes; the `outcomeAlert` template helper maps reported outcomes
-(criteria verdicts, finding severities, check states) to those variants.
-Page sections are daisyUI cards; messages inside them are alerts.
+mono stacks. Messages in page sections are daisyUI alerts by severity: info
+for discovery and progress notes, warning for CI or base warnings, harness waits
+and escalation, error for failures, human action and the last error, and success
+for merged or approved notes; the `outcomeAlert` template helper maps reported
+outcomes (criteria verdicts, finding severities, check states) to those
+variants. Page sections are daisyUI cards; messages inside them are alerts. The
+Queue table keeps its secondary line as compact severity-colored text instead
+of alert blocks, so dense rows stay scannable.
 
 Each run shows one status badge. `statusOf` in `internal/web/status.go` maps
 the run's state, phase, review round, review-pending flag and harness wait to
@@ -253,33 +255,41 @@ text to 32 KiB. Malformed or incomplete events are skipped. Paths and symlinks
 cannot escape the runtime workspace. Templates escape all issue, event, and
 log content. The timeline shows the latest 100 durable run events, newest first.
 
-Queue sections are Running, Ready, Blocked, Needs attention, and Draft
-PRs (review pending). Pending M1 runs automatically continue into an independent
-review. Run detail is one scrolling page: a sticky header with the issue title,
-repository and number, status badge, issue and PR links (marked as external) and
-the run's eligible actions; a lifecycle stepper (Claimed → Implement → Review
-(round N) → Fix → CI → Ready → Merged); a current area holding the human action,
-last error, active harness wait, stop in progress, takeover state and resume
-command, and the ready-to-merge escalation; collapsible history for
-implementation attempts, review rounds, fixes, CI and readiness, publications,
-session recoveries, recovery probes, harness interruptions, retries, handbacks
-and run facts; then phase output and the timeline. The latest entry of each
-history kind is open and older entries are collapsed, and every disclosure has a
-stable ID. Long handback, credit-recovery and retry guidance sits behind "learn
-more" disclosures. SHAs and session IDs render shortened with a copy control
-carrying the full value. Run detail also shows the reviewer settings/session,
-pinned SHA, verdict, findings and restoration diagnostics. Review events refresh
-the page over SSE. Attention
-and manual runs also consume slots. Harness-waiting runs retain their slots and
-show account availability and effective reset provenance. Run history
-distinguishes interrupted executions and explicit grants from account gates where
-no execution started. Ready-to-merge runs release their slot and wait for the user's
-merge. Recent runs are limited to the latest 20 ended runs. The settings page
-shows the configuration path and workspace, the resolved values as grouped
-key/value tables for global settings, agents, global roles, each repository and
-its roles, the raw effective YAML in a disclosure, and doctor results as one
-pass, warn or fail row per check; it has no configuration write endpoint.
-Recovery and handback history stays with the run it belongs to.
+Queue groups are, in display order, Needs attention, Waiting for your merge,
+Running, Waiting for harness, Ready, and Blocked. Every open run and queued
+issue appears in exactly one group, ended runs leave the queue, and a refused
+issue is blocked rather than flagged for attention again. The Queue renders one
+table with status, repository (hidden when only one repository is configured),
+issue, round/attempt, updated, and PR columns, plus a filter chip per group and
+group-specific empty copy. Run rows carry the lifecycle badge; queued issues
+carry a Ready, Needs attention, Blocked, or Refused badge. The Ready empty copy
+names the enabled repositories' ready label or labels. The dashboard reuses the
+same grouped data for its cards. Pending M1 runs automatically continue into an
+independent review. Run detail is one scrolling page: a sticky header with the
+issue title, repository and number, status badge, issue and PR links (marked as
+external) and the run's eligible actions; a lifecycle stepper (Claimed →
+Implement → Review (round N) → Fix → CI → Ready → Merged); a current area holding
+the human action, last error, active harness wait, stop in progress, takeover
+state and resume command, and the ready-to-merge escalation; collapsible history
+for implementation attempts, review rounds, fixes, CI and readiness,
+publications, session recoveries, recovery probes, harness interruptions,
+retries, handbacks and run facts; then phase output and the timeline. The latest
+entry of each history kind is open and older entries are collapsed, and every
+disclosure has a stable ID. Long handback, credit-recovery and retry guidance
+sits behind "learn more" disclosures. SHAs and session IDs render shortened with
+a copy control carrying the full value. Run detail also shows the reviewer
+settings/session, pinned SHA, verdict, findings and restoration diagnostics.
+Review events refresh the page over SSE. Attention and manual runs also consume
+slots. Harness-waiting runs retain their slots and show account availability and
+effective reset provenance. Run history distinguishes interrupted executions and
+explicit grants from account gates where no execution started. Ready-to-merge
+runs release their slot and wait for the user's merge. Recent runs are limited to
+the latest 20 ended runs. The settings page shows the configuration path and
+workspace, the resolved values as grouped key/value tables for global settings,
+agents, global roles, each repository and its roles, the raw effective YAML in a
+disclosure, and doctor results as one pass, warn or fail row per check; it has no
+configuration write endpoint. Recovery and handback history stays with the run it
+belongs to.
 
 `POST /runs/{id}/stop` uses the same `Scheduler.Stop` as the CLI. It coordinates
 with in-flight operations, stops running phase sessions, removes ready and

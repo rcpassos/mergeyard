@@ -39,7 +39,7 @@ func pills(body string) map[string]string {
 
 func headerData(page string) pageData {
 	reset := time.Date(2026, 10, 21, 14, 30, 0, 0, time.UTC)
-	return pageData{Page: page, Path: "/", Title: "Dashboard", Token: "csrf-1", Sections: emptySections(), Harnesses: []scheduler.HarnessAvailability{
+	return pageData{Page: page, Path: "/", Title: "Dashboard", Token: "csrf-1", Groups: emptyGroups(), Harnesses: []scheduler.HarnessAvailability{
 		{Harness: "claude", Available: true, TemporaryLimitDetection: true},
 		{Harness: "codex", Reason: "usage_limited", ResetAt: reset, ResetTimeSource: "reported", Source: "fixture"},
 		{Harness: "gemini", Reason: "credits_exhausted", Source: "stderr", CheckEligible: true,

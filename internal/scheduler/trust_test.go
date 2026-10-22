@@ -186,8 +186,23 @@ func TestDashboardRendersRefusedIssueReason(t *testing.T) {
 		server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/queue", nil))
 		body := page.Body.String()
 		if strings.Contains(body, "Refused:") {
-			if page.Code != http.StatusOK || !strings.Contains(body, "owner/repo #7") || !strings.Contains(body, "&lt;script&gt;") || strings.Contains(body, "<script>alert(1)</script>") {
-				t.Fatalf("unsafe refusal rendering: %d %s", page.Code, body)
+			blocked := strings.Index(body, `id="group-blocked"`)
+			refused := strings.Index(body, "Refused:")
+			for _, group := range []string{"attention", "merge", "running", "harness", "ready", "blocked"} {
+				if !strings.Contains(body, `id="group-`+group+`"`) {
+					t.Fatalf("queue lacks group %q: %s", group, body)
+				}
+			}
+			if page.Code != http.StatusOK || !strings.Contains(body, "#7") || blocked < 0 || refused < blocked ||
+				!strings.Contains(body, "&lt;script&gt;") || strings.Contains(body, "<script>alert(1)</script>") ||
+				strings.Contains(body, ">Repository<") {
+				t.Fatalf("unsafe or ungrouped refusal rendering: %d %s", page.Code, body)
+			}
+			filtered := httptest.NewRecorder()
+			server.ServeHTTP(filtered, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/queue?group=blocked", nil))
+			narrowed := filtered.Body.String()
+			if filtered.Code != http.StatusOK || !strings.Contains(narrowed, `id="group-blocked"`) || strings.Contains(narrowed, `id="group-running"`) {
+				t.Fatalf("Queue group filter did not narrow the table: %d %s", filtered.Code, narrowed)
 			}
 			return
 		}

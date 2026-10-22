@@ -177,22 +177,44 @@ type issueView struct {
 	Issue         github.Issue
 	Blockers      []github.Issue
 	RefusalReason string
+	Attention     bool
 }
 
-type queueSection struct {
-	Name     string
-	Runs     []runView
-	Issues   []issueView
-	Failures []scheduler.Finding
+// queueGroup is one Queue group. Every open run and queued issue belongs to
+// exactly one group, in display order.
+type queueGroup struct {
+	Key            string
+	Name           string
+	Empty          string
+	Labels         []string
+	ShowRepository bool
+	Runs           []runView
+	Issues         []issueView
+	Failures       []scheduler.Finding
 }
 
+// Count is the number of rows a group holds.
+func (g queueGroup) Count() int { return len(g.Runs) + len(g.Issues) + len(g.Failures) }
+
+// Columns is the table width including the optional repository column.
+func (g queueGroup) Columns() int {
+	if g.ShowRepository {
+		return 6
+	}
+	return 5
+}
+
+// Group indexes follow the same display order.
 const (
-	runningSection = iota
-	readySection
-	blockedSection
-	attentionSection
-	draftPRSection
+	attentionIndex = iota
+	mergeIndex
+	runningIndex
+	harnessIndex
+	readyIndex
+	blockedIndex
 )
+
+const defaultReadyLabel = "ready-for-agent"
 
 type timelineEntry struct {
 	ID      int64
@@ -207,7 +229,8 @@ type pageData struct {
 	Boot                              bool
 	Paused                            bool
 	Used, Limit                       int
-	Sections                          []queueSection
+	Groups                            []queueGroup
+	QueueFilter                       string
 	Recent                            []runView
 	Run                               *runView
 	Timeline                          []timelineEntry
@@ -217,6 +240,11 @@ type pageData struct {
 	ConfigPath, ConfigText, Workspace string
 	ConfigGroups                      []settingsGroup
 	Doctor                            *doctor.Report
+}
+
+// ShowRepository reports whether the Queue shows which repository owns a row.
+func (d pageData) ShowRepository() bool {
+	return len(d.Groups) > 0 && d.Groups[0].ShowRepository
 }
 
 // pageMeta names the page and title served at path. The locked boot layout
@@ -238,13 +266,20 @@ func pageMeta(path string) (page, title string) {
 func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 	page, title := pageMeta(r.URL.Path)
 	data := pageData{Token: s.token, Paused: s.scheduler.Paused(), Path: r.URL.Path, Page: page, Title: title}
+	if page == "queue" {
+		data.QueueFilter = queueGroupFilter(r.URL.Query().Get("group"))
+		if data.QueueFilter != "" {
+			// A filtered Queue keeps its query across live swaps.
+			data.Path = r.URL.RequestURI()
+		}
+	}
 	if s.dashboard != nil {
 		if err := s.dashboard.populate(r.Context(), &data, r.PathValue("id")); err != nil {
 			s.respondError(w, r, err, "internal.dashboard_data", http.StatusInternalServerError, "Could not load dashboard data. Check the application log.")
 			return
 		}
 	} else {
-		data.Sections = emptySections()
+		data.Groups = emptyGroups()
 		data.ConfigText = "Runtime configuration is not connected."
 		if data.Page == "run" {
 			s.respondError(w, r, &fault.Error{Code: "internal.run_not_found"}, "internal.run_not_found", http.StatusNotFound, "Run not found")
@@ -315,50 +350,148 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 		data.Log, data.LogMessage = logTail(d.Workspace.Root, data.Run.LogPath)
 		return nil
 	}
-	data.Sections = emptySections()
-	data.Sections[attentionSection].Failures = uniqueFailures(failures)
-	existing := map[string]bool{}
-	for _, run := range runs {
-		key := fmt.Sprintf("%s/%d", strings.ToLower(run.Repository), run.IssueNumber)
-		if !run.State.Terminal() {
-			existing[key] = true
-			if run.State != workflow.ReadyToMerge {
-				data.Used++
-			}
-		}
-		section := runningSection
-		switch {
-		case run.State == workflow.Completed && run.Merge != nil && run.Merge.Pending():
-			section = attentionSection
-		case run.State.Terminal():
-			if len(data.Recent) < 20 {
-				data.Recent = append(data.Recent, run)
-			}
-			continue
-		case run.State == workflow.NeedsAttention || run.State == workflow.Manual:
-			section = attentionSection
-		case run.ReviewPending:
-			section = draftPRSection
-		}
-		data.Sections[section].Runs = append(data.Sections[section].Runs, run)
-	}
-	for _, item := range queue {
-		if existing[fmt.Sprintf("%s/%d", strings.ToLower(item.Repository), item.Issue.Number)] {
-			continue
-		}
-		section := readySection
-		if item.Attention {
-			section = attentionSection
-		} else if len(item.Blockers) > 0 {
-			section = blockedSection
-		}
-		data.Sections[section].Issues = append(data.Sections[section].Issues, issueView{Repository: item.Repository, Issue: item.Issue, Blockers: item.Blockers, RefusalReason: item.RefusalReason})
-	}
+	grouped := groupQueue(runs, queue, uniqueFailures(failures), queuePresentationFor(d.Config))
+	data.Groups, data.Recent, data.Used = grouped.Groups, grouped.Recent, grouped.Used
 	return nil
 }
 
-func emptySections() []queueSection {
-	return []queueSection{{Name: "Running"}, {Name: "Ready"}, {Name: "Blocked"}, {Name: "Needs attention"}, {Name: "Draft PRs · review pending"}}
+// groupedQueue is the dashboard's queue after every open run and queued issue
+// has been placed in its group, plus the ended runs and slots it accounts for.
+type groupedQueue struct {
+	Groups []queueGroup
+	Recent []runView
+	Used   int
+}
+
+// unqueuedGroup marks a run that has ended and left the Queue.
+const unqueuedGroup = -1
+
+// queuePresentation is the configuration-derived shape of the Queue table.
+type queuePresentation struct {
+	ShowRepository bool
+	ReadyLabels    []string
+}
+
+// queuePresentationFor reads the table shape from the configured repositories.
+// The repository column depends on every configured repository because a
+// disabled repository can still own retained runs and failures, while Ready
+// labels come only from the repositories that can queue new work.
+func queuePresentationFor(cfg config.Config) queuePresentation {
+	presentation := queuePresentation{ShowRepository: len(cfg.Repositories) > 1}
+	seen := map[string]bool{}
+	for _, repo := range cfg.Repositories {
+		if !repo.Enabled || repo.Labels.Ready == "" || seen[repo.Labels.Ready] {
+			continue
+		}
+		seen[repo.Labels.Ready] = true
+		presentation.ReadyLabels = append(presentation.ReadyLabels, repo.Labels.Ready)
+	}
+	if len(presentation.ReadyLabels) == 0 {
+		presentation.ReadyLabels = []string{defaultReadyLabel}
+	}
+	return presentation
+}
+
+// groupQueue sorts runs and queued issues into the six Queue groups. A run in
+// the queue owns its issue, so a stale queue snapshot never duplicates it, and
+// ended runs leave the queue for recent history. Concurrency accounting is
+// unchanged: every open run except ready-to-merge consumes a slot.
+func groupQueue(runs []runView, queue []scheduler.QueueIssue, failures []scheduler.Finding, presentation queuePresentation) groupedQueue {
+	groups := emptyGroups()
+	for index := range groups {
+		groups[index].ShowRepository = presentation.ShowRepository
+	}
+	groups[readyIndex].Labels = presentation.ReadyLabels
+	groups[attentionIndex].Failures = failures
+	result := groupedQueue{Groups: groups}
+	queued := map[string]bool{}
+	for _, run := range runs {
+		index := groupForRun(run)
+		if index == unqueuedGroup {
+			if len(result.Recent) < 20 {
+				result.Recent = append(result.Recent, run)
+			}
+			continue
+		}
+		queued[queueIssueKey(run.Repository, run.IssueNumber)] = true
+		if !run.State.Terminal() && run.State != workflow.ReadyToMerge {
+			result.Used++
+		}
+		result.Groups[index].Runs = append(result.Groups[index].Runs, run)
+	}
+	for _, item := range queue {
+		if queued[queueIssueKey(item.Repository, item.Issue.Number)] {
+			continue
+		}
+		issue := issueView{
+			Repository: item.Repository, Issue: item.Issue, Blockers: item.Blockers,
+			RefusalReason: item.RefusalReason, Attention: item.Attention,
+		}
+		index := issueGroup(issue)
+		result.Groups[index].Issues = append(result.Groups[index].Issues, issue)
+	}
+	return result
+}
+
+// groupForRun returns a run's group, or unqueuedGroup when it has ended. A
+// merge can be observed before the owned phase exits, so cleanup state can
+// keep even a terminal run in Needs attention.
+func groupForRun(run runView) int {
+	if run.Merge != nil && run.Merge.Pending() {
+		return attentionIndex
+	}
+	if run.State.Terminal() {
+		return unqueuedGroup
+	}
+	switch run.State {
+	case workflow.NeedsAttention:
+		return attentionIndex
+	case workflow.ReadyToMerge:
+		return mergeIndex
+	case workflow.WaitingForHarness:
+		return harnessIndex
+	default:
+		// CLAIMING, PREPARING, ACTIVE, WAITING_FOR_CI and MANUAL all run.
+		return runningIndex
+	}
+}
+
+// issueGroup places an unclaimed issue using the same precedence as its badge.
+func issueGroup(issue issueView) int {
+	switch classifyIssue(issue) {
+	case refusedIssue, blockedIssue:
+		return blockedIndex
+	case attentionIssue:
+		return attentionIndex
+	default:
+		return readyIndex
+	}
+}
+
+func queueIssueKey(repository string, number int) string {
+	return fmt.Sprintf("%s/%d", strings.ToLower(repository), number)
+}
+
+// queueGroupFilter keeps a known filter chip selected and ignores anything
+// else in the query, so a hand-edited URL still renders the whole queue.
+func queueGroupFilter(value string) string {
+	for _, group := range emptyGroups() {
+		if group.Key == value {
+			return value
+		}
+	}
+	return ""
+}
+
+func emptyGroups() []queueGroup {
+	return []queueGroup{
+		{Key: "attention", Name: "Needs attention", Empty: "Nothing needs you."},
+		{Key: "merge", Name: "Waiting for your merge", Empty: "Nothing is waiting for your merge."},
+		{Key: "running", Name: "Running", Empty: "No runs are in progress."},
+		{Key: "harness", Name: "Waiting for harness", Empty: "No runs are waiting for a harness."},
+		{Key: "ready", Name: "Ready", Labels: []string{defaultReadyLabel}},
+		{Key: "blocked", Name: "Blocked", Empty: "No issues are blocked."},
+	}
 }
 
 // uniqueFailures keeps the most recent discovery and reconcile views of the

@@ -77,11 +77,61 @@ func statusBadge(value any) template.HTML {
 	default:
 		return ""
 	}
+	return renderBadge(status)
+}
+
+// renderBadge draws one badge. Variants come from the fixed presentation
+// mappings, and labels are escaped.
+func renderBadge(status runStatus) template.HTML {
 	label := template.HTMLEscapeString(status.Label)
 	if reset := until(status.Reset); reset != "" {
 		label += " · resets " + string(reset)
 	}
 	return template.HTML(`<span class="badge ` + status.Variant + `">` + label + `</span>`)
+}
+
+// issuePlacement is where an unclaimed queue issue belongs. A refusal is
+// blocked even when discovery also flagged it for attention.
+type issuePlacement int
+
+const (
+	readyIssue issuePlacement = iota
+	attentionIssue
+	blockedIssue
+	refusedIssue
+)
+
+// classifyIssue is the single precedence shared by an issue's group and badge.
+func classifyIssue(issue issueView) issuePlacement {
+	switch {
+	case issue.RefusalReason != "":
+		return refusedIssue
+	case issue.Attention:
+		return attentionIssue
+	case len(issue.Blockers) > 0:
+		return blockedIssue
+	default:
+		return readyIssue
+	}
+}
+
+// issueStatus is how an unclaimed queue issue presents itself.
+func issueStatus(issue issueView) runStatus {
+	switch classifyIssue(issue) {
+	case refusedIssue:
+		return runStatus{Label: "Refused", Variant: "badge-warning"}
+	case attentionIssue:
+		return runStatus{Label: "Needs attention", Variant: "badge-error"}
+	case blockedIssue:
+		return runStatus{Label: "Blocked", Variant: "badge-neutral"}
+	default:
+		return runStatus{Label: "Ready", Variant: "badge-success badge-outline"}
+	}
+}
+
+// issueBadge renders a queued issue's status badge.
+func issueBadge(issue issueView) template.HTML {
+	return renderBadge(issueStatus(issue))
 }
 
 // stepLabel names the state and phase a retry or handback selected, in the

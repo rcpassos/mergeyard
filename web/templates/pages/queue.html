@@ -3,6 +3,6 @@
 {{if not .QueueReady}}<div class="alert alert-info"><p>Discovering ready and blocked issues on GitHub…</p></div>{{end}}
 {{if .QueueError}}<div class="alert alert-error" role="status"><p>{{.QueueError}}</p></div>{{end}}
 {{if .QueueTime}}<p class="text-sm text-base-content/70">GitHub queue last synced {{since .QueueTime}}</p>{{end}}
-<div class="grid gap-4 lg:grid-cols-2">{{range .Sections}}{{template "queue-group" .}}{{end}}</div>
+{{if eq .Page "queue"}}{{template "queue-table" .}}{{else}}<div class="grid gap-4 lg:grid-cols-2">{{range .Groups}}{{template "queue-group" .}}{{end}}</div>{{end}}
 {{if eq .Page "dashboard"}}<section class="card card-border bg-base-100"><div class="card-body"><h2 class="card-title justify-between">Recent runs <span class="text-sm font-normal text-base-content/70">{{len .Recent}}</span></h2>{{range .Recent}}{{template "run-row" .}}{{else}}<p class="text-base-content/70">Ended runs will appear here.</p>{{end}}</div></section>{{end}}
 {{end}}

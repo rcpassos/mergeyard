@@ -74,18 +74,18 @@ func assertAlerts(t *testing.T, body string, want map[string]string) {
 }
 
 func TestQueueMessagesRenderAsSeverityAlerts(t *testing.T) {
-	data := pageData{Page: "dashboard", Path: "/", Title: "Dashboard", Sections: emptySections(), QueueError: "GitHub discovery failed for owner/repo."}
-	data.Sections[blockedSection].Issues = []issueView{{Repository: "owner/repo", Issue: github.Issue{Number: 8, Title: "Refused issue"}, RefusalReason: "Untrusted label actor."}}
-	data.Sections[attentionSection].Failures = []scheduler.Finding{{Code: "github.rate_limited", Repository: "owner/repo", Message: "GitHub rate limit reached."}}
-	data.Sections[runningSection].Runs = []runView{{Run: workflow.Run{ID: "run-ci", Repository: "owner/repo", IssueNumber: 9, State: workflow.WaitingForCI,
+	data := pageData{Page: "dashboard", Path: "/", Title: "Dashboard", Groups: emptyGroups(), QueueError: "GitHub discovery failed for owner/repo."}
+	data.Groups[blockedIndex].Issues = []issueView{{Repository: "owner/repo", Issue: github.Issue{Number: 8, Title: "Refused issue"}, RefusalReason: "Untrusted label actor."}}
+	data.Groups[attentionIndex].Failures = []scheduler.Finding{{Code: "github.rate_limited", Repository: "owner/repo", Message: "GitHub rate limit reached."}}
+	data.Groups[runningIndex].Runs = []runView{{Run: workflow.Run{ID: "run-ci", Repository: "owner/repo", IssueNumber: 9, State: workflow.WaitingForCI,
 		CI: &ci.Snapshot{Warning: "Required check list is empty.", BaseWarning: "Base branch moved during verification."}}}}
-	data.Sections[attentionSection].Runs = []runView{
+	data.Groups[attentionIndex].Runs = []runView{
 		{Run: workflow.Run{ID: "run-human", Repository: "owner/repo", IssueNumber: 10, State: workflow.NeedsAttention,
 			HumanAction: &fault.HumanAction{Decision: "Choose which migration wins."}}},
 		{Run: workflow.Run{ID: "run-error", Repository: "owner/repo", IssueNumber: 11, State: workflow.NeedsAttention,
 			LastErrorCode: "phase.failed", LastErrorMessage: "Implementer exited with status 2."}},
 	}
-	data.Sections[draftPRSection].Runs = []runView{{Run: workflow.Run{ID: "run-merge", Repository: "owner/repo", IssueNumber: 12, State: workflow.ReadyToMerge,
+	data.Groups[mergeIndex].Runs = []runView{{Run: workflow.Run{ID: "run-merge", Repository: "owner/repo", IssueNumber: 12, State: workflow.ReadyToMerge,
 		Escalation: &escalation.Snapshot{EvaluationWarning: "Escalation rules could not be evaluated."}}}}
 
 	assertAlerts(t, renderContent(t, data), map[string]string{
