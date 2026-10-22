@@ -643,6 +643,12 @@ func (r Run) RetryAllowed() bool {
 	return r.State == NeedsAttention || r.State == Failed || r.CreditWaiting()
 }
 
+// Ended reports whether a run has left the Queue: its state is terminal and
+// its observed merge cleanup has finished.
+func (r Run) Ended() bool {
+	return r.State.Terminal() && (r.Merge == nil || !r.Merge.Pending())
+}
+
 // TakeoverResume returns the harness and active implementer session an
 // interactive resume must use. Role settings were fixed at claim, so they win;
 // the latest recorded implement attempt covers runs claimed before role

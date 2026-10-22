@@ -146,10 +146,15 @@ func TestDashboardQueuePlacesStatesAndIssuesInSixGroups(t *testing.T) {
 			t.Errorf("ended run %q is still a queue item", id)
 		}
 	}
-	if !strings.Contains(body, "8 / 1") {
-		t.Errorf("concurrency slots changed with the regrouping: %s", body)
+	if strings.Contains(body, "Pause scheduler") || strings.Contains(body, "8 / 1") {
+		t.Errorf("Queue still carries the Dashboard's overview controls: %s", body)
 	}
 	if !strings.Contains(body, ">Repository<") {
 		t.Errorf("two configured repositories do not show the repository column: %s", body)
+	}
+	dashboard := httptest.NewRecorder()
+	server.ServeHTTP(dashboard, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
+	if dashboard.Code != http.StatusOK || !strings.Contains(dashboard.Body.String(), "8 / 1") {
+		t.Errorf("Dashboard lost the concurrency slots: %d %s", dashboard.Code, dashboard.Body.String())
 	}
 }

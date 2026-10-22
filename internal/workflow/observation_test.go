@@ -3,7 +3,9 @@ package workflow_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +77,46 @@ func (db *transitionAfterSelection) QueryRowContext(ctx context.Context, query s
 		transition()
 	}
 	return db.DB.QueryRowContext(ctx, query, args...)
+}
+
+// The full history selects every ended run in update order. A terminal run
+// whose merge cleanup is still pending has not ended. The Dashboard's recent
+// selection stays bounded.
+func TestEndedHistoryObservesEveryEndedRun(t *testing.T) {
+	_, _, db := newWorkflow(t)
+	ctx := context.Background()
+	for i, state := range []workflow.State{workflow.Completed, workflow.Failed, workflow.Stopped, workflow.Completed, workflow.Failed} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO runs(id,repository,issue_number,state,updated_at) VALUES (?, 'owner/repo', ?, ?, ?)`,
+			fmt.Sprintf("ended-%d", i), i+1, state, fmt.Sprintf("2026-10-1%dT10:00:00Z", i+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO merge_cleanup(run_id,snapshot_json) VALUES
+ ('ended-0','{"observed_at":"2026-10-11T10:00:00Z","process_exited":true,"ready_removed":true,"running_removed":true,"attention_removed":true,"issue_closed":true,"review_restored":true,"worktree_removed":true,"branch_deleted":true}'),
+ ('ended-3','{"observed_at":"2026-10-14T10:00:00Z"}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO runs(id,repository,issue_number,state,updated_at) VALUES ('active','owner/repo',9,'ACTIVE','2026-10-20T10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	ended, err := workflow.ObserveEndedRuns(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, observation := range ended {
+		ids = append(ids, observation.ID)
+	}
+	if got := strings.Join(ids, ","); got != "ended-4,ended-2,ended-1,ended-0" {
+		t.Fatalf("ended history = %s", got)
+	}
+	recent, err := workflow.ObserveRecentRuns(ctx, db, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 6 {
+		t.Fatalf("recent selection = %d runs, want 6", len(recent))
+	}
 }
 
 func TestRecentObservationKeepsPhaseAndExecutionTogetherAcrossTransition(t *testing.T) {

@@ -131,6 +131,7 @@ func newServer(bus *events.Bus, scheduler Scheduler, operations Operations, work
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.page)
 	mux.HandleFunc("GET /queue", s.page)
+	mux.HandleFunc("GET /history", s.page)
 	mux.HandleFunc("GET /runs/{id}", s.page)
 	mux.HandleFunc("GET /runs/{id}/output", s.output)
 	mux.HandleFunc("GET /settings", s.page)

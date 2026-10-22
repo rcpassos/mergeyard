@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -160,7 +161,7 @@ func TestQueueGroupsEachItemExactlyOnce(t *testing.T) {
 	if total != len(runs)-3 {
 		t.Errorf("open runs in groups = %d, want %d", total, len(runs)-3)
 	}
-	// Ended runs leave the queue and keep the latest 20 history order.
+	// Ended runs leave the queue and keep the recently ended order.
 	for _, run := range grouped.Recent {
 		switch run.ID {
 		case "failed", "stopped", "completed":
@@ -174,6 +175,24 @@ func TestQueueGroupsEachItemExactlyOnce(t *testing.T) {
 	// Concurrency accounting is unchanged: every open run except Ready to merge.
 	if grouped.Used != 9 {
 		t.Errorf("concurrency slots used = %d, want 9", grouped.Used)
+	}
+}
+
+// The Dashboard's Recently ended list stops at ten; the history page is the
+// full view.
+func TestDashboardRecentlyEndedIsBounded(t *testing.T) {
+	var runs []runView
+	for i := 1; i <= 12; i++ {
+		runs = append(runs, runFor(fmt.Sprintf("ended-%02d", i), "owner/repo", i, workflow.Failed))
+	}
+	grouped := groupQueue(runs, nil, nil, queuePresentation{})
+	if len(grouped.Recent) != recentEndedLimit {
+		t.Fatalf("recent ended = %d runs, want %d", len(grouped.Recent), recentEndedLimit)
+	}
+	for i, run := range grouped.Recent {
+		if run.ID != runs[i].ID {
+			t.Errorf("recent ended[%d] = %s, want the caller's order %s", i, run.ID, runs[i].ID)
+		}
 	}
 }
 

@@ -59,9 +59,15 @@ func scanRunObservation(row interface{ Scan(...any) error }) (RunObservation, er
 	return v, nil
 }
 
+// terminalRunStates is the SQL list of terminal run states. A terminal run
+// whose merge cleanup is still pending has not left the Queue.
+const terminalRunStates = `'FAILED','STOPPED','COMPLETED'`
+
 // ObserveRecentRuns returns active runs plus the latest 20 terminal runs, or a
-// selected run regardless of age. Selection, ordering, lifecycle and execution
-// metadata share one statement; no snapshot transaction is introduced.
+// selected run regardless of age. The terminal window also carries merge
+// cleanup that is still pending, which Needs attention shows. Selection,
+// ordering, lifecycle and execution metadata share one statement; no snapshot
+// transaction is introduced.
 func ObserveRecentRuns(ctx context.Context, db queryer, selectedID string) ([]RunObservation, error) {
 	query := runObservationQuery
 	var args []any
@@ -69,10 +75,32 @@ func ObserveRecentRuns(ctx context.Context, db queryer, selectedID string) ([]Ru
 		query += " WHERE r.id=?"
 		args = append(args, selectedID)
 	} else {
-		query += ` WHERE r.state NOT IN ('FAILED','STOPPED','COMPLETED') OR r.id IN
- (SELECT id FROM runs WHERE state IN ('FAILED','STOPPED','COMPLETED') ORDER BY updated_at DESC,id LIMIT 20)`
+		query += ` WHERE r.state NOT IN (` + terminalRunStates + `) OR r.id IN
+ (SELECT id FROM runs WHERE state IN (` + terminalRunStates + `) ORDER BY updated_at DESC,id LIMIT 20)`
 	}
-	query += " ORDER BY r.updated_at DESC,r.id"
+	return observeRuns(ctx, db, query+" ORDER BY r.updated_at DESC,r.id", args...)
+}
+
+// ObserveEndedRuns returns every ended run, newest first, for the full
+// ended-run history. A terminal run whose merge cleanup is still pending has
+// not ended and remains in Needs attention. The recent selection stays bounded
+// for the Dashboard.
+func ObserveEndedRuns(ctx context.Context, db queryer) ([]RunObservation, error) {
+	observations, err := observeRuns(ctx, db, runObservationQuery+` WHERE r.state IN (`+terminalRunStates+`) ORDER BY r.updated_at DESC,r.id`)
+	if err != nil {
+		return nil, err
+	}
+	ended := observations[:0]
+	for _, observation := range observations {
+		if observation.Ended() {
+			ended = append(ended, observation)
+		}
+	}
+	return ended, nil
+}
+
+// observeRuns scans a run selection and then loads each run's evidence.
+func observeRuns(ctx context.Context, db queryer, query string, args ...any) ([]RunObservation, error) {
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, storageError(err)

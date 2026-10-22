@@ -1,0 +1,4 @@
+{{/* Discovery state shared by the Dashboard and the Queue. */}}
+{{define "queue-notices"}}{{if not .QueueReady}}<div class="alert alert-info"><p>Discovering ready and blocked issues on GitHub…</p></div>{{end}}
+{{if .QueueError}}<div class="alert alert-error" role="status"><p>{{.QueueError}}</p></div>{{end}}
+{{if .QueueTime}}<p class="text-sm text-base-content/70">GitHub queue last synced {{since .QueueTime}}</p>{{end}}{{end}}

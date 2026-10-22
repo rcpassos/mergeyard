@@ -14,8 +14,8 @@ func TestDashboardTemplatesSplitIntoLayoutPagesAndPartials(t *testing.T) {
 	}
 	for _, name := range []string{
 		"layout", "content", "swap", "harness-pills",
-		"queue-page", "run-detail", "settings", "boot", "locked-content",
-		"scheduler", "queue-table", "queue-group", "queue-group-row", "run-row", "human-action", "escalation", "verification", "phase-output",
+		"dashboard-page", "queue-page", "history-page", "run-detail", "settings", "boot", "locked-content",
+		"scheduler", "queue-notices", "queue-table", "queue-table-head", "queue-group-row", "run-row", "human-action", "escalation", "verification", "phase-output",
 	} {
 		if set.Lookup(name) == nil {
 			t.Errorf("template %q is not defined", name)

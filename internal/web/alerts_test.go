@@ -73,8 +73,11 @@ func assertAlerts(t *testing.T, body string, want map[string]string) {
 	}
 }
 
-func TestQueueMessagesRenderAsSeverityAlerts(t *testing.T) {
-	data := pageData{Page: "dashboard", Path: "/", Title: "Dashboard", Groups: emptyGroups(), QueueError: "GitHub discovery failed for owner/repo."}
+// The Queue and the Dashboard's Needs you rows share the Queue's dense row
+// presentation, so their messages use severity-colored text instead of alert
+// blocks. Discovery notices stay page-level alerts.
+func TestQueueMessagesRenderAsSeverityText(t *testing.T) {
+	data := pageData{Page: "queue", Path: "/queue", Title: "Queue", Groups: emptyGroups(), QueueError: "GitHub discovery failed for owner/repo."}
 	data.Groups[blockedIndex].Issues = []issueView{{Repository: "owner/repo", Issue: github.Issue{Number: 8, Title: "Refused issue"}, RefusalReason: "Untrusted label actor."}}
 	data.Groups[attentionIndex].Failures = []scheduler.Finding{{Code: "github.rate_limited", Repository: "owner/repo", Message: "GitHub rate limit reached."}}
 	data.Groups[runningIndex].Runs = []runView{{Run: workflow.Run{ID: "run-ci", Repository: "owner/repo", IssueNumber: 9, State: workflow.WaitingForCI,
@@ -88,18 +91,44 @@ func TestQueueMessagesRenderAsSeverityAlerts(t *testing.T) {
 	data.Groups[mergeIndex].Runs = []runView{{Run: workflow.Run{ID: "run-merge", Repository: "owner/repo", IssueNumber: 12, State: workflow.ReadyToMerge,
 		Escalation: &escalation.Snapshot{EvaluationWarning: "Escalation rules could not be evaluated."}}}}
 
-	assertAlerts(t, renderContent(t, data), map[string]string{
-		"Discovering ready and blocked issues":     "info",
-		"GitHub discovery failed for owner/repo.":  "error",
-		"Untrusted label actor.":                   "warning",
-		"GitHub rate limit reached.":               "error",
-		"Required check list is empty.":            "warning",
-		"Base branch moved during verification.":   "warning",
-		"Choose which migration wins.":             "error",
-		"Implementer exited with status 2.":        "error",
-		"Escalation rules could not be evaluated.": "warning",
+	body := renderContent(t, data)
+	assertAlerts(t, body, map[string]string{
+		"Discovering ready and blocked issues":    "info",
+		"GitHub discovery failed for owner/repo.": "error",
 	})
+	for text, severity := range map[string]string{
+		"Untrusted label actor.":                   "text-warning",
+		"GitHub rate limit reached.":               "text-error",
+		"Required check list is empty.":            "text-warning",
+		"Base branch moved during verification.":   "text-warning",
+		"Choose which migration wins.":             "text-error",
+		"Implementer exited with status 2.":        "text-error",
+		"Escalation rules could not be evaluated.": "text-warning",
+	} {
+		if !strings.Contains(body, text) {
+			t.Errorf("%q is not rendered", text)
+			continue
+		}
+		if class := enclosingClass(body, text); !strings.Contains(class, severity) {
+			t.Errorf("%q renders with class %q, want %q", text, class, severity)
+		}
+	}
 }
+
+// enclosingClass returns the class of the nearest opening element before text.
+func enclosingClass(body, text string) string {
+	at := strings.Index(body, text)
+	if at < 0 {
+		return ""
+	}
+	matches := markupOpening.FindAllStringSubmatch(body[:at], -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	return matches[len(matches)-1][1]
+}
+
+var markupOpening = regexp.MustCompile(`<[a-z][^>]*\bclass="([^"]*)"[^>]*>`)
 
 func TestRunDetailMessagesRenderAsSeverityAlerts(t *testing.T) {
 	cases := []struct {

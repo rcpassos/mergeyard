@@ -1,0 +1,4 @@
+{{define "history-page"}}<p class="max-w-prose text-sm text-base-content/70">Every ended run, newest first. Runs leave the Queue when they end.</p>
+<section class="card card-border bg-base-100"><div class="card-body gap-4"><h2 class="card-title">Ended runs <span class="text-sm font-normal text-base-content/70">{{len .History}}</span></h2>
+{{range .History}}{{template "run-row" .}}{{else}}<p class="text-base-content/70">No runs have ended yet.</p>{{end}}
+</div></section>{{end}}

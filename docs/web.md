@@ -186,7 +186,7 @@ registers them on the whole template set.
 
 ## Runtime pages
 
-`GET /`, `/queue`, `/runs/{id}`, and `/settings` are server-rendered pages.
+`GET /`, `/queue`, `/history`, `/runs/{id}`, and `/settings` are server-rendered pages.
 HTMX requests to the same URLs return the `#content` fragment plus an
 out-of-band refresh of the header's harness pills; responses vary
 by `HX-Request` and are never cached. A navigation without the owner session
@@ -263,9 +263,15 @@ table with status, repository (hidden when only one repository is configured),
 issue, round/attempt, updated, and PR columns, plus a filter chip per group and
 group-specific empty copy. Run rows carry the lifecycle badge; queued issues
 carry a Ready, Needs attention, Blocked, or Refused badge. The Ready empty copy
-names the enabled repositories' ready label or labels. The dashboard reuses the
-same grouped data for its cards. Pending M1 runs automatically continue into an
-independent review. Run detail is one scrolling page: a sticky header with the
+names the enabled repositories' ready label or labels. The Dashboard reads its
+KPI counts and its **Needs you** table from the same grouped data: the KPI strip
+shows the Running, Needs attention, and Waiting for your merge counts plus the
+concurrency fraction, and Needs you renders the Needs attention and Waiting for
+your merge groups with the Queue's rows, or a positive all-clear when both are
+empty. Discovery notices and the last sync time appear on both pages. The
+Queue itself carries only the table and its filter chips; the scheduler state
+and Pause/Resume control stay on the Dashboard. Pending M1 runs automatically
+continue into an independent review. Run detail is one scrolling page: a sticky header with the
 issue title, repository and number, status badge, issue and PR links (marked as
 external) and the run's eligible actions; a lifecycle stepper (Claimed →
 Implement → Review (round N) → Fix → CI → Ready → Merged); a current area holding
@@ -283,8 +289,11 @@ Review events refresh the page over SSE. Attention and manual runs also consume
 slots. Harness-waiting runs retain their slots and show account availability and
 effective reset provenance. Run history distinguishes interrupted executions and
 explicit grants from account gates where no execution started. Ready-to-merge
-runs release their slot and wait for the user's merge. Recent runs are limited to
-the latest 20 ended runs. The settings page shows the configuration path and
+runs release their slot and wait for the user's merge. The Dashboard shows at
+most the latest 10 ended runs and links to `GET /history`, which lists every
+ended run, newest first. A terminal run whose merge cleanup is still pending
+remains in Needs attention and is not yet part of that history. The settings
+page shows the configuration path and
 workspace, the resolved values as grouped key/value tables for global settings,
 agents, global roles, each repository and its roles, the raw effective YAML in a
 disclosure, and doctor results as one pass, warn or fail row per check; it has no

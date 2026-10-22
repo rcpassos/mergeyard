@@ -40,19 +40,19 @@ func TestDashboardObservationKeepsBoundedSelectionAndOlderDetail(t *testing.T) {
 	page := httptest.NewRecorder()
 	server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
 	body := page.Body.String()
-	if page.Code != 200 || !strings.Contains(body, "/runs/active-run") {
-		t.Fatalf("active run missing: %d %s", page.Code, body)
+	if page.Code != 200 || kpis(t, body)["running"] != "1" {
+		t.Fatalf("Dashboard does not count the active run: %d %s", page.Code, body)
 	}
 	previous := -1
 	for i := 1; i <= 25; i++ {
 		position := strings.Index(body, fmt.Sprintf("/runs/terminal-%02d", i))
-		if i <= 20 {
+		if i <= 10 {
 			if position < 0 || position <= previous {
-				t.Fatalf("terminal %d missing or out of order", i)
+				t.Fatalf("recent terminal %d missing or out of order", i)
 			}
 			previous = position
 		} else if position >= 0 {
-			t.Fatalf("unbounded terminal selection includes %d", i)
+			t.Fatalf("unbounded recent selection includes %d", i)
 		}
 	}
 	// A selected older run remains addressable outside the recent window.
@@ -63,5 +63,26 @@ func TestDashboardObservationKeepsBoundedSelectionAndOlderDetail(t *testing.T) {
 	server.ServeHTTP(detail, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/terminal-25", nil))
 	if detail.Code != 200 || !strings.Contains(detail.Body.String(), "terminal-25") {
 		t.Fatalf("older selected run missing: %d %s", detail.Code, detail.Body.String())
+	}
+	// Repair the older evidence, then the full history lists every ended run.
+	if _, err := rt.DB.ExecContext(context.Background(), `UPDATE runs SET role_settings_json=NULL WHERE role_settings_json='invalid'`); err != nil {
+		t.Fatal(err)
+	}
+	history := httptest.NewRecorder()
+	server.ServeHTTP(history, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/history", nil))
+	historyBody := history.Body.String()
+	if history.Code != 200 {
+		t.Fatalf("history: %d %s", history.Code, historyBody)
+	}
+	previous = -1
+	for i := 1; i <= 25; i++ {
+		position := strings.Index(historyBody, fmt.Sprintf("/runs/terminal-%02d", i))
+		if position <= previous {
+			t.Fatalf("ended history terminal %d missing or out of order", i)
+		}
+		previous = position
+	}
+	if strings.Contains(historyBody, "/runs/active-run") {
+		t.Fatal("ended history includes an open run")
 	}
 }

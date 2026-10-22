@@ -214,6 +214,16 @@ const (
 	blockedIndex
 )
 
+// Queue group keys match the filter chip values.
+const (
+	attentionGroup = "attention"
+	mergeGroup     = "merge"
+	runningGroup   = "running"
+	harnessGroup   = "harness"
+	readyGroup     = "ready"
+	blockedGroup   = "blocked"
+)
+
 const defaultReadyLabel = "ready-for-agent"
 
 type timelineEntry struct {
@@ -232,6 +242,7 @@ type pageData struct {
 	Groups                            []queueGroup
 	QueueFilter                       string
 	Recent                            []runView
+	History                           []runView
 	Run                               *runView
 	Timeline                          []timelineEntry
 	Log, LogMessage                   string
@@ -247,6 +258,40 @@ func (d pageData) ShowRepository() bool {
 	return len(d.Groups) > 0 && d.Groups[0].ShowRepository
 }
 
+// GroupCount returns how many rows the named Queue group holds. The Dashboard
+// reads its KPIs from the same groups the Queue renders, so the two cannot
+// disagree.
+func (d pageData) GroupCount(key string) int {
+	for _, group := range d.Groups {
+		if group.Key == key {
+			return group.Count()
+		}
+	}
+	return 0
+}
+
+// RunningCount, AttentionCount and MergeCount are the Dashboard KPIs.
+func (d pageData) RunningCount() int   { return d.GroupCount(runningGroup) }
+func (d pageData) AttentionCount() int { return d.GroupCount(attentionGroup) }
+func (d pageData) MergeCount() int     { return d.GroupCount(mergeGroup) }
+
+// NeedsYou returns the non-empty groups whose work waits on the owner, in
+// Queue display order.
+func (d pageData) NeedsYou() []queueGroup {
+	var groups []queueGroup
+	for _, key := range []string{attentionGroup, mergeGroup} {
+		for _, group := range d.Groups {
+			if group.Key == key && group.Count() > 0 {
+				groups = append(groups, group)
+			}
+		}
+	}
+	return groups
+}
+
+// NeedsYouClear reports whether nothing waits on the owner.
+func (d pageData) NeedsYouClear() bool { return len(d.NeedsYou()) == 0 }
+
 // pageMeta names the page and title served at path. The locked boot layout
 // uses it too, so a tab keeps the correct title and current-navigation state
 // while the dashboard script completes the page.
@@ -256,6 +301,8 @@ func pageMeta(path string) (page, title string) {
 		return "dashboard", "Dashboard"
 	case "/queue":
 		return "queue", "Queue"
+	case "/history":
+		return "history", "Run history"
 	case "/settings":
 		return "settings", "Settings & diagnostics"
 	default:
@@ -329,6 +376,10 @@ func (d *dashboard) populate(ctx context.Context, data *pageData, id string) err
 		}
 		return nil
 	}
+	if data.Page == "history" {
+		data.History, err = d.endedRuns(ctx)
+		return err
+	}
 	runs, err := d.runs(ctx, id)
 	if err != nil {
 		return err
@@ -365,6 +416,10 @@ type groupedQueue struct {
 
 // unqueuedGroup marks a run that has ended and left the Queue.
 const unqueuedGroup = -1
+
+// recentEndedLimit bounds the Dashboard's Recently ended list. The dedicated
+// history page lists every ended run.
+const recentEndedLimit = 10
 
 // queuePresentation is the configuration-derived shape of the Queue table.
 type queuePresentation struct {
@@ -408,7 +463,7 @@ func groupQueue(runs []runView, queue []scheduler.QueueIssue, failures []schedul
 	for _, run := range runs {
 		index := groupForRun(run)
 		if index == unqueuedGroup {
-			if len(result.Recent) < 20 {
+			if len(result.Recent) < recentEndedLimit {
 				result.Recent = append(result.Recent, run)
 			}
 			continue
@@ -440,7 +495,7 @@ func groupForRun(run runView) int {
 	if run.Merge != nil && run.Merge.Pending() {
 		return attentionIndex
 	}
-	if run.State.Terminal() {
+	if run.Ended() {
 		return unqueuedGroup
 	}
 	switch run.State {
@@ -485,12 +540,12 @@ func queueGroupFilter(value string) string {
 
 func emptyGroups() []queueGroup {
 	return []queueGroup{
-		{Key: "attention", Name: "Needs attention", Empty: "Nothing needs you."},
-		{Key: "merge", Name: "Waiting for your merge", Empty: "Nothing is waiting for your merge."},
-		{Key: "running", Name: "Running", Empty: "No runs are in progress."},
-		{Key: "harness", Name: "Waiting for harness", Empty: "No runs are waiting for a harness."},
-		{Key: "ready", Name: "Ready", Labels: []string{defaultReadyLabel}},
-		{Key: "blocked", Name: "Blocked", Empty: "No issues are blocked."},
+		{Key: attentionGroup, Name: "Needs attention", Empty: "Nothing needs you."},
+		{Key: mergeGroup, Name: "Waiting for your merge", Empty: "Nothing is waiting for your merge."},
+		{Key: runningGroup, Name: "Running", Empty: "No runs are in progress."},
+		{Key: harnessGroup, Name: "Waiting for harness", Empty: "No runs are waiting for a harness."},
+		{Key: readyGroup, Name: "Ready", Labels: []string{defaultReadyLabel}},
+		{Key: blockedGroup, Name: "Blocked", Empty: "No issues are blocked."},
 	}
 }
 
@@ -515,6 +570,58 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 	if err != nil {
 		return nil, err
 	}
+	runs, err := d.runViews(observations)
+	if err != nil {
+		return nil, err
+	}
+	for i := range runs {
+		runs[i].Stopping = runs[i].Stopping && runs[i].Merge == nil
+		runs[i].CanHandback = runs[i].State == workflow.Manual && runs[i].TakeoverStatus == workflow.TakeoverManual && !runs[i].Stopping && runs[i].Merge == nil
+		runs[i].CanRetry, err = d.Scheduler.RetryEligible(ctx, runs[i].Run)
+		if err != nil {
+			return nil, err
+		}
+
+		// Use the implementer's identity even when a reviewer owns the phase.
+		if runs[i].State == workflow.Manual && runs[i].TakeoverStatus == workflow.TakeoverManual {
+			_, err := d.Scheduler.ManualCommand(ctx, runs[i].ID)
+			if err == nil && d.ConfigPath != "" {
+				launcher := harness.InteractiveCommand{Executable: d.CLIExecutable, Dir: d.cliDir,
+					Args: []string{"--config", d.ConfigPath, "takeover", "--", runs[i].ID}}
+				runs[i].ResumeCommand = launcher.ShellCommand()
+			} else if err == nil {
+				runs[i].TakeoverPrerequisite = "Resume command unavailable. Start the dashboard with its configuration path so takeover can reach the owning workspace."
+			} else if runs[i].PendingHandback() != nil {
+				runs[i].TakeoverPrerequisite = "Handback publication is pending. Finish handback or Stop before resuming the implementer."
+			} else {
+				runs[i].TakeoverPrerequisite = "Resume command unavailable. Inspect the preserved worktree and implementer identity before requesting takeover again."
+			}
+		} else if !runs[i].State.Terminal() && runs[i].State != workflow.Manual && runs[i].Merge == nil && !runs[i].Stopping && runs[i].PendingRetry() == nil && runs[i].PendingHandback() == nil {
+			switch {
+			case runs[i].Worktree == "":
+				runs[i].TakeoverPrerequisite = "Takeover needs a prepared worktree."
+			case runs[i].Implementer == nil || runs[i].Implementer.SessionID == "":
+				runs[i].TakeoverPrerequisite = "Takeover needs the implementer's session identity. Wait for it to be recorded; a new conversation will not be created."
+			default:
+				runs[i].CanTakeover = true
+			}
+		}
+	}
+	return runs, nil
+}
+
+// endedRuns returns every run that has left the Queue, newest first.
+func (d *dashboard) endedRuns(ctx context.Context) ([]runView, error) {
+	observations, err := workflow.ObserveEndedRuns(ctx, d.DB)
+	if err != nil {
+		return nil, err
+	}
+	return d.runViews(observations)
+}
+
+// runViews presents persisted observations. Action eligibility is added only
+// for pages that offer actions.
+func (d *dashboard) runViews(observations []workflow.RunObservation) ([]runView, error) {
 	var runs []runView
 	for _, observation := range observations {
 		run := runView{
@@ -576,39 +683,6 @@ func (d *dashboard) runs(ctx context.Context, id string) ([]runView, error) {
 		run.CanStop = !run.State.Terminal()
 		run.Stopping = run.Stopping && run.CanStop
 		runs = append(runs, run)
-	}
-	for i := range runs {
-		runs[i].Stopping = runs[i].Stopping && runs[i].Merge == nil
-		runs[i].CanHandback = runs[i].State == workflow.Manual && runs[i].TakeoverStatus == workflow.TakeoverManual && !runs[i].Stopping && runs[i].Merge == nil
-		runs[i].CanRetry, err = d.Scheduler.RetryEligible(ctx, runs[i].Run)
-		if err != nil {
-			return nil, err
-		}
-
-		// Use the implementer's identity even when a reviewer owns the phase.
-		if runs[i].State == workflow.Manual && runs[i].TakeoverStatus == workflow.TakeoverManual {
-			_, err := d.Scheduler.ManualCommand(ctx, runs[i].ID)
-			if err == nil && d.ConfigPath != "" {
-				launcher := harness.InteractiveCommand{Executable: d.CLIExecutable, Dir: d.cliDir,
-					Args: []string{"--config", d.ConfigPath, "takeover", "--", runs[i].ID}}
-				runs[i].ResumeCommand = launcher.ShellCommand()
-			} else if err == nil {
-				runs[i].TakeoverPrerequisite = "Resume command unavailable. Start the dashboard with its configuration path so takeover can reach the owning workspace."
-			} else if runs[i].PendingHandback() != nil {
-				runs[i].TakeoverPrerequisite = "Handback publication is pending. Finish handback or Stop before resuming the implementer."
-			} else {
-				runs[i].TakeoverPrerequisite = "Resume command unavailable. Inspect the preserved worktree and implementer identity before requesting takeover again."
-			}
-		} else if !runs[i].State.Terminal() && runs[i].State != workflow.Manual && runs[i].Merge == nil && !runs[i].Stopping && runs[i].PendingRetry() == nil && runs[i].PendingHandback() == nil {
-			switch {
-			case runs[i].Worktree == "":
-				runs[i].TakeoverPrerequisite = "Takeover needs a prepared worktree."
-			case runs[i].Implementer == nil || runs[i].Implementer.SessionID == "":
-				runs[i].TakeoverPrerequisite = "Takeover needs the implementer's session identity. Wait for it to be recorded; a new conversation will not be created."
-			default:
-				runs[i].CanTakeover = true
-			}
-		}
 	}
 	return runs, nil
 }
