@@ -1,7 +1,7 @@
 {{define "run-detail"}}{{template "run-header" .}}{{template "run-stepper" .}}{{template "run-current" .}}{{template "run-history" .}}
 <div class="grid items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
 {{template "phase-output" .}}
-<section class="card card-border bg-base-100"><div class="card-body"><h2 class="card-title">Timeline</h2><p class="text-sm text-base-content/70">Latest 100 events, newest first.</p><ol class="max-h-[36rem] space-y-5 overflow-auto border-l-2 border-base-300 pl-4">{{range .Timeline}}<li><strong>{{.Type}}</strong><span class="block text-xs text-base-content/70">{{since .Time}}</span><details id="timeline-event-{{.ID}}" class="mt-1 text-sm"><summary class="cursor-pointer text-primary">Event details</summary><pre class="text-xs">{{.Details}}</pre></details></li>{{else}}<li>No events yet.</li>{{end}}</ol></div></section></div>{{end}}
+{{template "timeline" .}}</div>{{end}}
 
 {{/* The sticky header keeps the run's identity, status, links and actions at
      hand while the page scrolls. Only the actions the run's eligibility allows

@@ -1,0 +1,16 @@
+{{define "timeline"}}
+<section id="run-timeline" class="card card-border bg-base-100"><div class="card-body">
+<h2 class="card-title">Timeline</h2><p class="text-sm text-base-content/70">Latest 100 events, newest first.</p>
+<div class="flex flex-wrap gap-2" role="group" aria-label="Filter timeline by category">
+<button type="button" class="btn btn-xs btn-primary" data-timeline-filter="all" aria-pressed="true">All</button>
+{{range timelineCategories}}<button type="button" class="btn btn-xs btn-outline" data-timeline-filter="{{.Key}}" aria-pressed="false">{{.Label}}</button>{{end}}
+</div>
+<ol class="max-h-[36rem] space-y-5 overflow-auto border-l-2 border-base-300 pl-4">
+{{range .Timeline}}<li data-timeline-event data-category="{{.Category.Key}}"><div class="flex items-center gap-2"><span class="icon icon-{{.Category.Icon}}" role="img" aria-label="{{.Category.Label}}"></span><strong>{{.Name}}</strong></div>
+<span class="block text-xs text-base-content/70">{{since .Time}}</span>
+<details id="timeline-event-{{.ID}}" class="mt-1 text-sm"><summary class="cursor-pointer text-primary">Event details</summary><p>Type: <code>{{.Type}}</code></p><pre class="text-xs">{{.Details}}</pre></details></li>
+{{else}}<li>No events yet.</li>{{end}}
+</ol>
+<p data-timeline-empty class="text-sm text-base-content/70" role="status" hidden>No events in this category among the latest 100 events.</p>
+</div></section>
+{{end}}
