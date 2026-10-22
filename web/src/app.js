@@ -571,3 +571,36 @@ document.body.addEventListener('click', async (event) => {
     showCopyFallback(button.dataset.copy);
   }
 });
+
+// The category selection stays with this run across live content swaps. A
+// delegated listener also handles chips inserted by the first owner-page load.
+let timelineFilter = 'all';
+let timelinePath = location.pathname;
+function filterTimeline() {
+  if (timelinePath !== location.pathname) {
+    timelineFilter = 'all';
+    timelinePath = location.pathname;
+  }
+  const timeline = document.querySelector('#run-timeline');
+  if (!timeline) return;
+  for (const button of timeline.querySelectorAll('[data-timeline-filter]')) {
+    const selected = button.dataset.timelineFilter === timelineFilter;
+    button.setAttribute('aria-pressed', String(selected));
+    button.classList.toggle('btn-primary', selected);
+    button.classList.toggle('btn-outline', !selected);
+  }
+  const entries = [...timeline.querySelectorAll('[data-timeline-event]')];
+  for (const entry of entries) {
+    entry.hidden = timelineFilter !== 'all' && entry.dataset.category !== timelineFilter;
+  }
+  timeline.querySelector('[data-timeline-empty]').hidden = timelineFilter === 'all' || entries.some((entry) => !entry.hidden);
+}
+
+document.body.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-timeline-filter]');
+  if (!button) return;
+  timelineFilter = button.dataset.timelineFilter;
+  filterTimeline();
+});
+document.body.addEventListener('htmx:load', filterTimeline);
+filterTimeline();

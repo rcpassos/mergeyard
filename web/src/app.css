@@ -72,3 +72,18 @@
 /* A harness pill opens its dropdown; the summary needs no disclosure marker. */
 #harness-pills summary { list-style: none; }
 #harness-pills summary::-webkit-details-marker { display: none; }
+
+/* Timeline category icons share the same masks as other dashboard icons. */
+.icon-activity { mask-image: url("icons/activity.svg"); }
+.icon-layers { mask-image: url("icons/layers.svg"); }
+.icon-git-pull-request { mask-image: url("icons/git-pull-request.svg"); }
+.icon-list-checks { mask-image: url("icons/list-checks.svg"); }
+.icon-terminal { mask-image: url("icons/terminal.svg"); }
+.icon-git-merge { mask-image: url("icons/git-merge.svg"); }
+.icon-send { mask-image: url("icons/send.svg"); }
+.icon-refresh-cw { mask-image: url("icons/refresh-cw.svg"); }
+.icon-calendar-clock { mask-image: url("icons/calendar-clock.svg"); }
+.icon-info { mask-image: url("icons/info.svg"); }
+
+/* Keep filtered events out of the list even if component styles change. */
+[data-timeline-event][hidden] { display: none; }

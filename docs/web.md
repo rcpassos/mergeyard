@@ -266,7 +266,12 @@ resumes when they return to the bottom. It reads at most the last 128 KiB and
 names/result summaries, and limits rendered text to 32 KiB. Malformed or
 incomplete events are skipped. Paths and symlinks cannot escape the runtime
 workspace. Templates escape all issue, event, and log content. The timeline
-shows the latest 100 durable run events, newest first.
+shows the latest 100 durable run events, newest first, with readable names,
+category icons and local-time tooltips. Category chips narrow those events to
+Run, Phase (including review and fix), PR, CI, Harness, Merge, Publication,
+Reconcile or Scheduler; unfamiliar prefixes appear under Other. Escalation
+events belong to Run. The selected category survives live updates. Each event
+keeps its raw type and HTML-escaped payload in an Event details disclosure.
 
 Queue groups are, in display order, Needs attention, Waiting for your merge,
 Running, Waiting for harness, Ready, and Blocked. Every open run and queued
