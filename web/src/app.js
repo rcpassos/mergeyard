@@ -309,6 +309,11 @@ document.body.addEventListener('htmx:configRequest', (event) => {
 // without this script never reaches this path and submits the unchanged form
 // directly, so every action still works.
 let pendingConfirm = null;
+// HTMX keeps this context when retrying a queued request, but loses the
+// issueRequest(true) flag. Remember acceptance for this request only; a new
+// submission gets a new context and must ask again. Weak references also let
+// discarded queue entries go without leaving acceptance on the form.
+const acceptedRequests = new WeakSet();
 let refreshDeferred = false;
 
 // A modal is closed by a choice, Escape, or a programmatic dismissal. Focus
@@ -316,10 +321,13 @@ let refreshDeferred = false;
 // the request htmx held back.
 function settleConfirm(dialog, accepted) {
   if (!pendingConfirm || pendingConfirm.dialog !== dialog) return;
-  const { issueRequest, trigger } = pendingConfirm;
+  const { issueRequest, trigger, request } = pendingConfirm;
   pendingConfirm = null;
   if (trigger?.isConnected) trigger.focus();
-  if (accepted) issueRequest(true);
+  if (accepted) {
+    acceptedRequests.add(request);
+    issueRequest(true);
+  }
   if (refreshDeferred) {
     refreshDeferred = false;
     refresh();
@@ -330,6 +338,7 @@ document.body.addEventListener('htmx:confirm', (event) => {
   const confirmable = event.detail.triggeringEvent?.target?.closest?.('[data-confirm]') || event.detail.elt?.closest?.('[data-confirm]');
   const selector = confirmable?.dataset.confirm;
   if (!selector) return;
+  if (acceptedRequests.has(event.detail.etc)) return;
   event.preventDefault();
   const dialog = document.querySelector(selector);
   if (!dialog) {
@@ -339,7 +348,7 @@ document.body.addEventListener('htmx:confirm', (event) => {
     return;
   }
   dialog.returnValue = '';
-  pendingConfirm = { dialog, issueRequest: event.detail.issueRequest, trigger: event.detail.triggeringEvent?.submitter };
+  pendingConfirm = { dialog, issueRequest: event.detail.issueRequest, trigger: event.detail.triggeringEvent?.submitter, request: event.detail.etc };
   dialog.showModal();
   // Some browsers leave focus behind when a dialog opens; start on Cancel so
   // the safe choice is active and Tab stays inside the modal.
