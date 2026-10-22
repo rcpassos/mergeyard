@@ -39,6 +39,8 @@ _Avoid_: Child browser, owned browser
 - **Blocked**: an issue that cannot be claimed yet, because of open blockers or a refusal.
 _Avoid_: Section, column, lane
 
+**Ended run**: A run that has left the queue: its state is terminal and, when a merge was observed, its cleanup has finished.
+
 **Scoped GitHub failure**: A GitHub read or write failure attributed to one repository or run. It is reported on the dashboard and skips only its subject; local-state failures still stop dispatch everywhere.
 
 **Publication**: The delivery of a run's saved evidence to GitHub: a report comment, an attention comment, or the verification body of the pull request. A publication that fails permanently stops and keeps its reason until a human requeues it.

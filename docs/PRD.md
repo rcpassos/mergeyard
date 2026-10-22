@@ -1540,13 +1540,16 @@ Default address: `http://127.0.0.1:7331`. The dashboard is the primary interface
 
 ### Dashboard
 
-- scheduler running/paused state;
-- concurrency usage;
-- harness availability, including usage-limited harnesses and their reset time;
-- running runs with phase and round;
-- ready, blocked, and needs-attention issues;
-- PRs waiting for the user's merge;
-- recent completed runs.
+The Dashboard is an overview, distinct from the Queue.
+
+- a KPI strip with the Running, Needs attention, and Waiting for your merge
+  counts, plus concurrency slots in use out of the limit;
+- the scheduler's running/paused state and its Pause/Resume control;
+- **Needs you**: the Needs attention and Waiting for your merge groups, in the
+  Queue's row presentation, with a positive all-clear state when both are
+  empty;
+- **Recently ended**: at most the last 10 ended runs, with a link to the full
+  ended-run history.
 
 ### Queue
 
@@ -1567,6 +1570,11 @@ columns are status, repository (only when more than one repository is
 configured), issue number and title, round/attempt, updated, and a PR link. A
 secondary line under the title carries blockers, refusal reasons, CI or base
 warnings, and error codes.
+
+### Run history
+
+Every ended run, newest first. A terminal run whose merge cleanup is still
+pending remains in Needs attention until cleanup finishes.
 
 ### Repository page
 
@@ -1634,6 +1642,7 @@ Routes:
 ```text
 GET  /
 GET  /queue
+GET  /history
 GET  /repositories/{owner}/{repo}
 GET  /runs/{id}
 GET  /settings

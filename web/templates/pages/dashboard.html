@@ -1,0 +1,16 @@
+{{define "dashboard-page"}}{{template "queue-notices" .}}
+<div class="stats stats-vertical w-full border border-base-300 bg-base-100 sm:stats-horizontal" role="group" aria-label="Dashboard overview">
+<div class="stat"><div class="stat-title">Running</div><div class="stat-value text-info" id="kpi-running">{{.RunningCount}}</div><div class="stat-desc">Runs moving forward</div></div>
+<div class="stat"><div class="stat-title">Needs attention</div><div class="stat-value text-error" id="kpi-attention">{{.AttentionCount}}</div><div class="stat-desc">Stuck until you act</div></div>
+<div class="stat"><div class="stat-title">Waiting for your merge</div><div class="stat-value text-success" id="kpi-merge">{{.MergeCount}}</div><div class="stat-desc">Approved PRs ready</div></div>
+<div class="stat"><div class="stat-title">Concurrency</div><div class="stat-value" id="kpi-concurrency">{{.Used}} / {{.Limit}}</div><div class="stat-desc">Slots in use</div></div>
+</div>
+<section class="card card-border bg-base-100" aria-label="Scheduler">{{template "scheduler" .}}</section>
+<section class="card card-border bg-base-100" aria-labelledby="needs-you-heading"><div class="card-body gap-4"><h2 id="needs-you-heading" class="card-title">Needs you</h2>
+{{if .NeedsYouClear}}<div class="alert alert-success" role="status"><p>All clear. Nothing needs your attention and nothing is waiting for your merge.</p></div>
+{{else}}<div class="overflow-x-auto"><table class="table table-sm"><caption class="sr-only">Runs and queued issues that need you</caption>{{template "queue-table-head" .}}<tbody>{{range .NeedsYou}}{{template "queue-group-row" .}}{{end}}</tbody></table></div>{{end}}
+</div></section>
+<section class="card card-border bg-base-100" aria-labelledby="recently-ended-heading"><div class="card-body gap-4">
+<div class="flex flex-wrap items-baseline justify-between gap-2"><h2 id="recently-ended-heading" class="card-title">Recently ended</h2><a href="/history">Full ended-run history</a></div>
+{{range .Recent}}{{template "run-row" .}}{{else}}<p class="text-base-content/70">Ended runs will appear here.</p>{{end}}
+</div></section>{{end}}

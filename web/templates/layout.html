@@ -17,5 +17,5 @@
 
 {{define "content"}}<main id="content" class="space-y-4 pt-6" hx-get="{{.Path}}" hx-trigger="dashboard-update from:body" hx-target="this" hx-swap="outerHTML" hx-sync="this:queue last">
 {{if ne .Page "run"}}<h1 class="text-3xl font-semibold">{{.Title}}</h1>{{end}}
-{{if or (eq .Page "dashboard") (eq .Page "queue")}}{{template "queue-page" .}}{{else if eq .Page "run"}}{{template "run-detail" .}}{{else}}{{template "settings" .}}{{end}}
+{{if eq .Page "dashboard"}}{{template "dashboard-page" .}}{{else if eq .Page "queue"}}{{template "queue-page" .}}{{else if eq .Page "history"}}{{template "history-page" .}}{{else if eq .Page "run"}}{{template "run-detail" .}}{{else}}{{template "settings" .}}{{end}}
 </main>{{end}}

@@ -5,7 +5,7 @@
 </nav>
 <div class="overflow-x-auto"><table class="table table-sm">
 <caption class="sr-only">Open runs and queued issues by Queue group</caption>
-<thead><tr><th scope="col">Status</th>{{if .ShowRepository}}<th scope="col">Repository</th>{{end}}<th scope="col">Issue</th><th scope="col">Round / attempt</th><th scope="col">Updated</th><th scope="col">PR</th></tr></thead>
+{{template "queue-table-head" .}}
 <tbody>{{range .Groups}}{{if or (not $.QueueFilter) (eq $.QueueFilter .Key)}}{{template "queue-group-row" .}}{{end}}{{end}}</tbody>
 </table></div>
 </div></section>{{end}}

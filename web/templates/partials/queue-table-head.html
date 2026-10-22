@@ -1,0 +1,4 @@
+{{/* The Queue's columns, shared by the Queue table and the Dashboard's Needs
+     you table. The repository column appears only when several repositories
+     are configured. */}}
+{{define "queue-table-head"}}<thead><tr><th scope="col">Status</th>{{if .ShowRepository}}<th scope="col">Repository</th>{{end}}<th scope="col">Issue</th><th scope="col">Round / attempt</th><th scope="col">Updated</th><th scope="col">PR</th></tr></thead>{{end}}
