@@ -1608,6 +1608,12 @@ Repository, base branch, role configuration, concurrency, counts, active runs, e
 SHAs and session IDs render shortened with a copy control carrying the full
 value.
 
+Stop, Take over and Check availability confirm their consequence in a modal
+before submitting. Every action form shows a loading indicator and disables its
+submit control while the request is in flight. The forms keep their ordinary
+method and action, so a browser without the dashboard script still submits them
+directly.
+
 State-dependent actions:
 
 ```text

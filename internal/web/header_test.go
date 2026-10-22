@@ -87,8 +87,9 @@ func TestHarnessPillDropdownHoldsDetailsAndCheckAvailability(t *testing.T) {
 			t.Errorf("dropdown is missing %q", text)
 		}
 	}
-	// Only the eligible harness offers the check, with its quota notice.
-	if count := strings.Count(body, ">Check availability<"); count != 1 {
+	// Only the eligible harness offers the check, with its quota notice. The
+	// confirmation modal repeats the action label, so count forms instead.
+	if count := strings.Count(body, `action="/harnesses/gemini/check"`); count != 1 {
 		t.Fatalf("Check availability offered %d times", count)
 	}
 	form := body[strings.Index(body, `action="/harnesses/gemini/check"`):]

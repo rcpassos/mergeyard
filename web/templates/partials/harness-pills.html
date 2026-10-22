@@ -14,7 +14,7 @@
 <div><dt>Temporary-limit detection</dt><dd>{{if .TemporaryLimitDetection}}Available{{else}}Temporary-limit detection unavailable; usage limits consume the ordinary attempt budget.{{end}}</dd></div>
 {{if .Check}}<div><dt>Latest availability check</dt><dd>Availability check {{.Check.Status}}{{if .Check.Result}} · {{.Check.Result}}{{end}}</dd></div>{{end}}
 </dl>
-{{if .CheckEligible}}<form class="space-y-2" method="post" action="/harnesses/{{.Harness}}/check" hx-post="/harnesses/{{.Harness}}/check" hx-target="#content" hx-swap="outerHTML"><input type="hidden" name="csrf_token" value="{{$.Token}}"><p class="text-sm">Check availability uses account quota for one minimal model request with no engineering work. Stopped runs stay stopped.</p><button class="btn btn-sm btn-outline" type="submit">Check availability</button></form>{{end}}
+{{if .CheckEligible}}<form class="space-y-2" method="post" action="/harnesses/{{.Harness}}/check" hx-post="/harnesses/{{.Harness}}/check" hx-target="#content" hx-swap="outerHTML" data-confirm="#confirm-check-{{.Harness}}" hx-disabled-elt="find button"><input type="hidden" name="csrf_token" value="{{$.Token}}"><p class="text-sm">Check availability uses account quota for one minimal model request with no engineering work. Stopped runs stay stopped.</p><button class="btn btn-sm btn-outline" type="submit">{{template "action-loading"}}Check availability</button></form>{{template "confirm-check" .}}{{end}}
 </div></div></details>{{end}}{{end}}
 
 {{/* A content swap: the page content plus the header pills, refreshed out of
