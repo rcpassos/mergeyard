@@ -17,7 +17,8 @@ func templateHelpers() template.FuncMap {
 		"outcomeAlert": outcomeAlert, "doctorBadge": doctorBadge, "doctorKind": doctorKind,
 		"statusBadge": statusBadge, "issueBadge": issueBadge, "stepLabel": stepLabel, "phaseLabel": phaseLabel,
 		"since": since, "until": until,
-		"lifecycleSteps": lifecycleSteps, "shortCopy": shortCopy, "isLatest": isLatest, "currentMatters": currentMatters,
+		"timelineCategories": func() []timelineCategory { return timelineCategories },
+		"lifecycleSteps":     lifecycleSteps, "shortCopy": shortCopy, "isLatest": isLatest, "currentMatters": currentMatters,
 	}
 }
 
