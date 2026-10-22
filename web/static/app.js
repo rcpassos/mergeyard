@@ -132,10 +132,26 @@ function sameControl(candidate, original, anchor) {
   return identified || anchor !== 'content' || candidate.textContent.trim() === original.textContent.trim();
 }
 
+// A control that survives the swap can still change position when another
+// action disappears, leaving the old selector pointing at nothing. Its stable
+// attributes identify it wherever it moved.
+function findControl(root, original, anchor) {
+  const identified = ['href', 'form', 'name', 'data-copy'].some((attribute) => original.hasAttribute(attribute)) ||
+    original.closest('form[action]') !== null;
+  if (!identified) return null;
+  for (const candidate of root.querySelectorAll('a[href], area[href], button, input, select, textarea, summary, [tabindex], [contenteditable]')) {
+    if (sameControl(candidate, original, anchor)) return candidate;
+  }
+  return null;
+}
+
 function restoreFocus(root, snapshot) {
-  if (!snapshot?.selector) return;
-  const element = document.querySelector(snapshot.selector);
-  if (!element || !root.contains(element) || !sameControl(element, snapshot.element, snapshot.anchor)) return;
+  if (!snapshot?.element) return;
+  let element = snapshot.selector ? document.querySelector(snapshot.selector) : null;
+  if (!element || !root.contains(element) || !sameControl(element, snapshot.element, snapshot.anchor)) {
+    element = findControl(root, snapshot.element, snapshot.anchor);
+  }
+  if (!element) return;
   element.focus({ preventScroll: true });
   if (snapshot.start != null && element.setSelectionRange) {
     try {
