@@ -246,14 +246,18 @@ HTTP requests. Cancel and join RunUpdates before closing the runtime.
 SSE notifications refresh the current page for run, phase, PR, scheduler,
 queue and diagnostic changes. Each persisted implement attempt emits
 `phase.attempt_started`, including retries, so attempt details and logs refresh
-together. Reconnecting refreshes the snapshot, including
-when a run completes while the browser is disconnected. Run output has its own
-`GET /runs/{id}/output` fragment, polled every two seconds until the run ends.
-It reads at most the last 128 KiB and 200 events from the latest attempt's
-`events.jsonl`, renders text/tool names/result summaries, and limits rendered
-text to 32 KiB. Malformed or incomplete events are skipped. Paths and symlinks
-cannot escape the runtime workspace. Templates escape all issue, event, and
-log content. The timeline shows the latest 100 durable run events, newest first.
+together. A whole-content refresh keeps the page's scroll position, the open
+state of disclosures with stable IDs, focus, and an in-progress retry note.
+Reconnecting refreshes the snapshot, including when a run completes while the
+browser is disconnected. Run output has its own `GET /runs/{id}/output`
+fragment, polled every two seconds until the run ends. It follows new lines
+while the user is at the bottom, stops following when they scroll up, and
+resumes when they return to the bottom. It reads at most the last 128 KiB and
+200 events from the latest attempt's `events.jsonl`, renders text/tool
+names/result summaries, and limits rendered text to 32 KiB. Malformed or
+incomplete events are skipped. Paths and symlinks cannot escape the runtime
+workspace. Templates escape all issue, event, and log content. The timeline
+shows the latest 100 durable run events, newest first.
 
 Queue groups are, in display order, Needs attention, Waiting for your merge,
 Running, Waiting for harness, Ready, and Blocked. Every open run and queued
