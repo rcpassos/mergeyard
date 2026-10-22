@@ -43,6 +43,12 @@
 /* An icon inside a sentence follows the text size instead of leading it. */
 .icon-inline { width: 0.9em; height: 0.9em; vertical-align: -0.125em; }
 
+/* htmx marks the element handling a request with htmx-request. Its action
+   spinner is hidden until then, so the button shows progress and stays the
+   same size while the request is in flight. */
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { display: inline-block; }
+
 /* The shortened SHA or session ID is a copy control carrying its full value. */
 .copy-value {
   @apply font-mono text-xs underline decoration-dotted underline-offset-2;

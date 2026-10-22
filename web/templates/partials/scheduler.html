@@ -1,5 +1,5 @@
 {{define "scheduler"}}<div id="scheduler" class="card-body flex-row flex-wrap items-center justify-between gap-4"><div class="space-y-2">
 <span class="badge {{if .Paused}}badge-warning{{else}}badge-info{{end}}">{{if .Paused}}Paused{{else}}Running{{end}}</span>
 <p>{{if .Paused}}New issue claims are paused.{{else}}New issue claims are enabled.{{end}}</p><small class="text-sm text-base-content/70">Pausing leaves existing runs alone.</small></div>
-<form method="post" action="/scheduler/{{if .Paused}}resume{{else}}pause{{end}}" hx-post="/scheduler/{{if .Paused}}resume{{else}}pause{{end}}" hx-target="#scheduler" hx-swap="outerHTML">
-<input type="hidden" name="csrf_token" value="{{.Token}}"><button class="btn btn-primary" type="submit"><span class="icon {{if .Paused}}icon-play{{else}}icon-pause{{end}}" aria-hidden="true"></span>{{if .Paused}}Resume scheduler{{else}}Pause scheduler{{end}}</button></form></div>{{end}}
+<form method="post" action="/scheduler/{{if .Paused}}resume{{else}}pause{{end}}" hx-post="/scheduler/{{if .Paused}}resume{{else}}pause{{end}}" hx-target="#scheduler" hx-swap="outerHTML" hx-disabled-elt="find button">
+<input type="hidden" name="csrf_token" value="{{.Token}}"><button class="btn btn-primary" type="submit">{{template "action-loading"}}<span class="icon {{if .Paused}}icon-play{{else}}icon-pause{{end}}" aria-hidden="true"></span>{{if .Paused}}Resume scheduler{{else}}Pause scheduler{{end}}</button></form></div>{{end}}

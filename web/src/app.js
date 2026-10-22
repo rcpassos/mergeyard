@@ -302,9 +302,81 @@ document.body.addEventListener('htmx:configRequest', (event) => {
   if (session) event.detail.headers[SESSION_HEADER] = session;
 });
 
+// Destructive or quota-consuming forms open the confirmation dialog named by
+// their data-confirm attribute before htmx sends anything. The dialog is a
+// native <dialog>: the browser traps focus while it is open, Escape cancels,
+// and closing returns focus to the button that submitted the form. A browser
+// without this script never reaches this path and submits the unchanged form
+// directly, so every action still works.
+let pendingConfirm = null;
+let refreshDeferred = false;
+
+// A modal is closed by a choice, Escape, or a programmatic dismissal. Focus
+// always returns to the button that opened it; only an accepted choice issues
+// the request htmx held back.
+function settleConfirm(dialog, accepted) {
+  if (!pendingConfirm || pendingConfirm.dialog !== dialog) return;
+  const { issueRequest, trigger } = pendingConfirm;
+  pendingConfirm = null;
+  if (trigger?.isConnected) trigger.focus();
+  if (accepted) issueRequest(true);
+  if (refreshDeferred) {
+    refreshDeferred = false;
+    refresh();
+  }
+}
+
+document.body.addEventListener('htmx:confirm', (event) => {
+  const confirmable = event.detail.triggeringEvent?.target?.closest?.('[data-confirm]') || event.detail.elt?.closest?.('[data-confirm]');
+  const selector = confirmable?.dataset.confirm;
+  if (!selector) return;
+  event.preventDefault();
+  const dialog = document.querySelector(selector);
+  if (!dialog) {
+    // Never let a destructive action through just because its confirmation
+    // markup is missing or was swapped away.
+    showToast('error', 'The confirmation dialog is missing. Refresh the page and try again.');
+    return;
+  }
+  dialog.returnValue = '';
+  pendingConfirm = { dialog, issueRequest: event.detail.issueRequest, trigger: event.detail.triggeringEvent?.submitter };
+  dialog.showModal();
+  // Some browsers leave focus behind when a dialog opens; start on Cancel so
+  // the safe choice is active and Tab stays inside the modal.
+  dialog.querySelector('button')?.focus();
+});
+
+// A live refresh already in flight when the dialog opened must not replace it.
+document.body.addEventListener('htmx:beforeSwap', (event) => {
+  if (!pendingConfirm) return;
+  const target = event.detail.target?.id;
+  if (target !== 'content' && target !== 'harness-pills') return;
+  event.detail.shouldSwap = false;
+  refreshDeferred = true;
+});
+
+document.body.addEventListener('click', (event) => {
+  const choice = event.target.closest?.('[data-confirm-accept], [data-confirm-cancel]');
+  if (!choice) return;
+  const dialog = choice.closest('dialog');
+  if (!dialog || !pendingConfirm || dialog !== pendingConfirm.dialog) return;
+  event.preventDefault();
+  const accepted = choice.hasAttribute('data-confirm-accept');
+  dialog.close(accepted ? 'confirm' : 'cancel');
+  settleConfirm(dialog, accepted);
+});
+
+document.addEventListener('close', (event) => settleConfirm(event.target, false), true);
+
 let refreshTimer;
 function refresh() {
   clearTimeout(refreshTimer);
+  // A live swap would remove an open confirmation and its trigger. Hold the
+  // refresh until the modal closes, then show the latest state.
+  if (pendingConfirm) {
+    refreshDeferred = true;
+    return;
+  }
   refreshTimer = setTimeout(() => htmx.trigger(document.body, 'dashboard-update'), 100);
 }
 

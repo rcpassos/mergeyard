@@ -125,6 +125,15 @@ a modal with the text selected for a manual copy. Structured logs retain the
 action, code, and underlying cause; the cause is not sent to the browser.
 Uncoded or malformed errors use `internal.scheduler_control`.
 
+Stop, Take over and Check availability open a confirmation modal that states
+the action's consequence before htmx sends the request. The dialogs are native
+`<dialog>` elements, so the browser traps focus while one is open, Escape
+cancels, and closing returns focus to the button that submitted the form. Every
+action form shows a spinner and disables its submit control while the request
+is in flight, so a second click sends nothing. The forms keep their ordinary
+`method` and `action`: a browser without the dashboard script submits them
+directly, exactly as before.
+
 SSE carries the event type as `event`, the durable numeric ID as `id`, and the
 complete JSON event as `data`. Fresh connections start with live events.
 Reconnects with `Last-Event-ID` replay durable history and deduplicate live

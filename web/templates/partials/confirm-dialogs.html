@@ -1,0 +1,31 @@
+{{/* Confirmation modals state the consequence before their action form submits.
+     They are native <dialog> elements, so the browser traps focus while open,
+     Escape cancels, and closing returns focus to the trigger. Each action form
+     keeps its normal method/action and a real submit button, so a browser
+     without the dashboard script still submits it directly. */}}
+{{define "confirm-stop"}}<dialog id="confirm-stop" class="modal" aria-labelledby="confirm-stop-title" aria-describedby="confirm-stop-consequence">
+<div class="modal-box space-y-4">
+<h2 id="confirm-stop-title" class="text-lg font-semibold">Stop this run?</h2>
+<p id="confirm-stop-consequence">This interrupts the current phase and stops the run. Mergeyard preserves the worktree, branch and pull request so no code is lost.</p>
+<form method="dialog" class="modal-action"><button class="btn" value="cancel" data-confirm-cancel>Cancel</button><button class="btn btn-error" value="confirm" data-confirm-accept>Stop run</button></form>
+</div>
+<form method="dialog" class="modal-backdrop"><button value="cancel" data-confirm-cancel>Cancel</button></form>
+</dialog>{{end}}
+
+{{define "confirm-takeover"}}<dialog id="confirm-takeover" class="modal" aria-labelledby="confirm-takeover-title" aria-describedby="confirm-takeover-consequence">
+<div class="modal-box space-y-4">
+<h2 id="confirm-takeover-title" class="text-lg font-semibold">Take over this run?</h2>
+<p id="confirm-takeover-consequence">{{if eq . "requested"}}This finishes the takeover: Mergeyard stops the remaining processes, restores pre-review work and keeps automation suspended until you hand control back. You then resume the implementer conversation in your terminal.{{else}}This suspends automation while Mergeyard stops the running processes and restores pre-review work. You then resume the implementer conversation in your terminal.{{end}}</p>
+<form method="dialog" class="modal-action"><button class="btn" value="cancel" data-confirm-cancel>Cancel</button><button class="btn btn-primary" value="confirm" data-confirm-accept>Take over run</button></form>
+</div>
+<form method="dialog" class="modal-backdrop"><button value="cancel" data-confirm-cancel>Cancel</button></form>
+</dialog>{{end}}
+
+{{define "confirm-check"}}<dialog id="confirm-check-{{.Harness}}" class="modal" aria-labelledby="confirm-check-title-{{.Harness}}" aria-describedby="confirm-check-consequence-{{.Harness}}">
+<div class="modal-box space-y-4">
+<h2 id="confirm-check-title-{{.Harness}}" class="text-lg font-semibold">Check {{.Harness}} availability?</h2>
+<p id="confirm-check-consequence-{{.Harness}}">This uses the {{.Harness}} account quota for one minimal model request with no engineering work. Stopped runs stay stopped.</p>
+<form method="dialog" class="modal-action"><button class="btn" value="cancel" data-confirm-cancel>Cancel</button><button class="btn btn-primary" value="confirm" data-confirm-accept>Check availability</button></form>
+</div>
+<form method="dialog" class="modal-backdrop"><button value="cancel" data-confirm-cancel>Cancel</button></form>
+</dialog>{{end}}
