@@ -1593,9 +1593,9 @@ Copy worktree path
 
 ### Settings/Diagnostics
 
-Read-only: effective config path and values, doctor results, binary versions, workspace path.
+Read-only: a summary with the configuration path and workspace, the effective configuration as grouped key/value tables (global settings, agents, global roles, then each repository and its roles), the raw effective YAML in a disclosure for copying, and doctor results as pass, warn or fail rows with each check's message.
 
-Harness status distinguishes a timed usage limit from an exhausted-credit block and shows any recovery probe in progress. A blocked harness offers **Check availability** as described in section 12; configuration values remain read-only.
+Harness status distinguishes a timed usage limit from an exhausted-credit block and shows any recovery probe in progress. A blocked harness offers **Check availability** as described in section 12; configuration values remain read-only. Harness recovery and handback history appear on the affected run's page instead of Settings.
 
 ---
 

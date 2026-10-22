@@ -216,9 +216,9 @@ fix responses, CI evidence, and pending merge maintenance. Status also prints th
 owning control plane's configuration source, resolved workspace, global and
 repository caps, and configured role settings even before a role starts. These
 are its loaded values; changing the CLI's file does not reload the running
-process. Settings shows the same effective configuration and durable handback
-grants, including grants without a usage-limit wait. Both Claude and Codex
-are supported in either role. `open` prints the owning runtime's single-use
+process. Settings shows the same effective configuration; handback grants,
+including grants without a usage-limit wait, appear on the affected run's page.
+Both Claude and Codex are supported in either role. `open` prints the owning runtime's single-use
 dashboard link and hands it to the platform browser without putting the URL in a
 process command line; the browser is selected through its HTTP association, not
 the HTML file handler. The URL stays valid until it is used or expires, and the

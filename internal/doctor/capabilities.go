@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"regexp"
+	"strings"
 
 	"github.com/rcpassos/mergeyard/internal/config"
 )
@@ -43,10 +44,20 @@ func (c *checker) capabilities(cfg config.Config) {
 			c.report.add(Unverifiable, "harness.capabilities_unverifiable", assigned.scope, "cannot inspect harness help for requested model/effort capabilities")
 			continue
 		}
+		supported := true
+		var requested []string
 		for _, request := range []struct{ value, name, flag string }{{role.Model, "model", "--model"}, {role.Effort, "effort", facts.effortFlag}} {
-			if request.value != "" && !hasFlag(help[role.Agent], request.flag) {
+			if request.value == "" {
+				continue
+			}
+			requested = append(requested, request.name)
+			if !hasFlag(help[role.Agent], request.flag) {
+				supported = false
 				c.report.add(Error, "harness.capability_unsupported", assigned.scope, "harness does not advertise requested "+request.name+" selection ("+request.flag+")")
 			}
+		}
+		if supported {
+			c.report.pass("harness.capabilities_supported", assigned.scope, "requested "+strings.Join(requested, " and ")+" selection is supported")
 		}
 		// Both supported harnesses select skills through the prompt. Their
 		// minimum versions establish this capability; locations are checked

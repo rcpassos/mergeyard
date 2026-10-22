@@ -31,6 +31,7 @@ func (c *checker) skills(role config.Role, scope string, files map[string]reposi
 		}
 		projectType := files[facts.repositorySkillPath(skill)]
 		if projectType == fileRegular {
+			c.report.pass("harness.skill_ready", scope, fmt.Sprintf("skill %q is available in the repository", skill))
 			continue
 		}
 		roots, err := personalSkillRoots(role.Agent)
@@ -66,6 +67,7 @@ func (c *checker) skills(role config.Role, scope string, files map[string]reposi
 			break
 		}
 		if found {
+			c.report.pass("harness.skill_ready", scope, fmt.Sprintf("skill %q is available in a personal or system location", skill))
 			continue
 		}
 		if accessErr != nil || files == nil || projectType == fileUnverifiable {

@@ -96,9 +96,9 @@ neither reset labels nor adopt ambiguous work.
 These operational flows remain documented in their originating tickets; #72
 adds combined verification and completes their existing diagnostic surfaces.
 Status reports the control plane's loaded effective configuration, source,
-resolved workspace, caps and role settings. Run/status/settings retain reset
-sources, reasons, probe history and explicit grants; Settings also displays
-handback grants for runs without a harness-wait history.
+resolved workspace, caps and role settings. Run detail and CLI status retain
+reset sources, reasons, probe history and explicit grants, including handback
+grants for runs without a harness-wait history.
 
 ## Reproduction
 

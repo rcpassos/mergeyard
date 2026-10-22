@@ -10,6 +10,10 @@ or role. Empty groups show `none`. Exit status is `1` if any error exists and
 `0` when only warnings or unverifiable findings exist. CLI usage errors still
 exit with `2`.
 
+The report also records the checks that passed, each with a stable pass code
+and scope. The CLI output omits them; the dashboard's Settings page shows every
+recorded check as a pass, warn or fail row.
+
 For example, a repository using Codex with only `CLAUDE.md` and a missing
 running label reports:
 
@@ -71,7 +75,8 @@ using its resolved roles, labels, and base branch.
   loaded skills in its runtime `system/init` event.
 - Codex with `CLAUDE.md` but no `AGENTS.md` produces a warning. Claude below
   `2.1.277` with `AGENTS.md` but no `CLAUDE.md` also produces a warning, alongside
-  the minimum-version error.
+  the minimum-version error. An unparseable Claude version makes that
+  instruction check unverifiable.
 
 Instruction and repository skill checks inspect the fetched base branch, not
 uncommitted local files. If fetching fails, dependent checks are reported as
