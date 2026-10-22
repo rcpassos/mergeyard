@@ -17,6 +17,7 @@ func templateHelpers() template.FuncMap {
 		"outcomeAlert": outcomeAlert, "doctorBadge": doctorBadge, "doctorKind": doctorKind,
 		"statusBadge": statusBadge, "stepLabel": stepLabel, "phaseLabel": phaseLabel,
 		"since": since, "until": until,
+		"lifecycleSteps": lifecycleSteps, "shortCopy": shortCopy, "isLatest": isLatest, "currentMatters": currentMatters,
 	}
 }
 

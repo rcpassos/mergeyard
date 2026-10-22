@@ -1567,6 +1567,18 @@ Repository, base branch, role configuration, concurrency, counts, active runs, e
 
 ### Run detail
 
+- sticky header: issue title, repository and number, status badge, issue and PR
+  links marked as external, and the run's eligible actions;
+- lifecycle stepper: Claimed → Implement → Review (round N) → Fix → CI → Ready →
+  Merged, marking the current step;
+- current area: human action required, last error, active harness wait, stop in
+  progress, takeover state and resume command, and ready-to-merge escalation;
+- collapsible history: implementation attempts, review rounds, fixes, CI and
+  readiness, publications, session recoveries, recovery probes, harness
+  interruptions, retries, handbacks and run facts, with the latest of each kind
+  open and older entries collapsed;
+- long handback, credit-recovery and retry guidance behind "learn more"
+  disclosures;
 - issue link, title, body summary;
 - run ID, state, phase, round, attempt;
 - worktree path and branch;
@@ -1577,6 +1589,9 @@ Repository, base branch, role configuration, concurrency, counts, active runs, e
 - timeline/events;
 - bounded log tail;
 - last error with error code.
+
+SHAs and session IDs render shortened with a copy control carrying the full
+value.
 
 State-dependent actions:
 

@@ -39,6 +39,19 @@
 }
 .icon-play { mask-image: url("icons/play.svg"); }
 .icon-pause { mask-image: url("icons/pause.svg"); }
+.icon-external-link { mask-image: url("icons/external-link.svg"); }
+/* An icon inside a sentence follows the text size instead of leading it. */
+.icon-inline { width: 0.9em; height: 0.9em; vertical-align: -0.125em; }
+
+/* The shortened SHA or session ID is a copy control carrying its full value. */
+.copy-value {
+  @apply font-mono text-xs underline decoration-dotted underline-offset-2;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
 
 /* Every alert leads with its severity icon and keeps one content column. */
 .alert { grid-template-columns: auto minmax(0, 1fr); place-items: start; }
