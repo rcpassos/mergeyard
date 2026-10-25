@@ -22,6 +22,8 @@ GitHub is the source of truth for work. Mergeyard continuously discovers eligibl
 
 Mergeyard is not a coding agent, model gateway, IDE, terminal emulator, or remote-development platform. It coordinates existing harnesses: Claude Code and Codex in the MVP.
 
+OpenCode is now planned as a third harness with the same role model, revising its earlier deferral in sections 41–42. It will be selectable independently as implementer or reviewer, including mixed pairings with Claude Code and Codex. The agreed design and remaining compatibility investigations are recorded in [OpenCode design](opencode-design.md); this scope decision does not mean support has shipped.
+
 Mergeyard runs as one local Go process on the user's machine and exposes a browser dashboard on localhost. All work executes on that machine.
 
 The core mental model is:
@@ -558,6 +560,8 @@ credit_exhaustion_detection
 
 `structured_output` and `session_resume` are required for MVP adapters. Adapters also declare their `session_id_source`: `preassigned` (Mergeyard chooses the ID) or `discovered` (read from the harness output).
 
+For the planned OpenCode V2 adapter, the structured-result requirement may be met by an attempt-owned typed reporting tool with canonical Mergeyard validation and independent native completion evidence. This is the explicit transport exception in [ADR 0010](adr/0010-opencode-reports-through-an-attempt-owned-tool.md); JSON event output alone does not satisfy it.
+
 Configuration that requests an unsupported capability fails validation before scheduling begins. Model and effort values are passed through to the harness and are not validated against a catalog: Claude falls back to the highest supported effort at or below the requested one; Codex effort levels vary by model.
 
 ### Agent sessions
@@ -608,6 +612,8 @@ Sessions created headlessly do not appear in either harness's interactive sessio
 ---
 
 ## 12. Usage Limits
+
+The planned OpenCode integration refines the availability boundary: restrictions and recovery follow the affected allowance, balance, or budget, so independently available funding paths can continue. Verified scheduled budget resets use timed waits; depleted credits require explicit recovery. This supersedes harness-wide scope and the blanket spend-cap rule for the planned design, while the shipped behavior below remains unchanged. See [ADR 0008](adr/0008-availability-follows-the-restricted-resource.md) and [OpenCode design](opencode-design.md).
 
 Subscription-backed harnesses enforce usage limits. With verified adapter detection, a temporary limit enters the waiting flow below without consuming the ordinary attempt budget.
 
@@ -704,6 +710,8 @@ Issue, comment, PR, review, and CI text must be written to files or passed throu
 Mergeyard does not merge or reinterpret repository instruction files. Each harness reads its own: Codex reads `AGENTS.md` only; Claude Code reads `CLAUDE.md`, and reads `AGENTS.md` only when no `CLAUDE.md` exists. A repository that has only one of the two files may give the other harness no instructions; `doctor` warns about this (section 30).
 
 ### 13.2 Result
+
+The planned OpenCode V2 integration uses the reporting-tool exception in [ADR 0010](adr/0010-opencode-reports-through-an-attempt-owned-tool.md). Mergeyard owns the report path and attempt binding, applies canonical schema and semantic validation, and requires independent native completion evidence. Missing, malformed, or stale reports fail the attempt. This planned exception does not add an arbitrary agent-written file fallback to the existing adapters described below.
 
 Every phase returns a machine-readable result independent of harness prose, through the harness's **native structured output**:
 
@@ -2181,7 +2189,7 @@ Do not build:
 - automatic merging;
 - automatic issue decomposition/planning;
 - remote/SSH execution;
-- adapters beyond Claude Code and Codex;
+- adapters beyond Claude Code, Codex, and the planned OpenCode integration;
 - multiple harness accounts per harness;
 - a desktop application, TUI, embedded terminal, or IDE;
 - a React/Vue/Svelte SPA;
@@ -2201,7 +2209,7 @@ Do not build:
 After the core loop is reliable:
 
 - remote SSH runners, so runs continue while the laptop is closed;
-- OpenCode and other harness adapters;
+- further harness adapters beyond the planned OpenCode integration;
 - optional auto-merge;
 - multiple harness accounts with usage-limit-aware rotation;
 - configurable workflows and planning/spec phases;

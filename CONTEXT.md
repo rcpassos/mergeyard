@@ -4,14 +4,18 @@ Mergeyard coordinates coding agents to turn approved issues into reviewed, merge
 
 ## Language
 
-**Usage limit**: A temporary restriction on a harness's available usage, with a reported reset time or an assumed cooldown.
+**Harness**: The coding-agent application selected to perform a role's work, such as Claude Code, Codex, or OpenCode. The model is a separate role setting.
+
+**Availability scope**: The set of work affected by one restriction on an allowance, credit balance, or budget. One harness can have several scopes, and different funding paths can share a restricted resource.
+
+**Usage limit**: A temporary restriction on available usage within an availability scope, with a reported reset time or an assumed cooldown.
 
 **Limit signal**: A harness's native evidence that an execution ended because of a usage limit or exhausted credits, as distinct from the outcome Mergeyard classifies from it.
 _Avoid_: Native limit format, limit error
 
-**Exhausted-credit block**: A restriction caused by exhausted credits or a spend cap, whose recovery requires an explicit user action rather than a scheduled reset.
+**Exhausted-credit block**: A restriction caused by exhausted credits or a cap without scheduled recovery, whose recovery requires an explicit user action. A budget cap with a verified scheduled reset is a usage limit.
 
-**Recovery probe**: A user-requested attempt to establish whether a harness blocked by exhausted credits is usable again. It can perform the next work for a selected run or make a minimal availability check without engineering work.
+**Recovery probe**: A user-requested attempt to establish whether an availability scope blocked by exhausted credits is usable again. It can perform the next work for a selected run or make a minimal availability check without engineering work.
 
 **Role settings**: The harness, model, effort and skills one role (implementer or reviewer) uses throughout a run. They are resolved when the issue is claimed.
 
