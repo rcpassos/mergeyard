@@ -1,199 +1,79 @@
 # Mergeyard
 
-Mergeyard turns ready GitHub issues into draft pull requests using a local coding
-agent. It manages isolated Git worktrees and tmux sessions, tracks work in SQLite,
-and gives you a local dashboard to monitor the queue and stop runs.
+Label a GitHub issue `ready-for-agent` and let Mergeyard turn it into a reviewed,
+CI-green pull request. It runs Claude Code or Codex on your machine, gives each
+issue an isolated worktree, and coordinates implementation, independent review,
+and fixes. Follow progress in the local dashboard. You decide what merges.
 
-**Current stage: bounded review/fix loop with either harness.** The scheduler runs
-Claude Code or Codex independently as implementer and reviewer. All four role
-pairings continue through bounded fixes and re-review. CI monitoring, bounded CI
-repair, and manual merge completion are supported.
+## See it in action
+
+![An example issue moves from ready-for-agent through implementation, review and CI to Waiting for your merge on the dashboard](docs/media/issue-to-merge.gif)
+
+*Example data in the real dashboard, with time between stages shortened.*
+
+![Run detail with the lifecycle, review approval, CI results and event timeline](docs/media/run-detail.png)
 
 ## Install
 
-Prebuilt binaries target macOS and Linux, on Apple Silicon / ARM64 and Intel / AMD64.
-They include the dashboard; Go and Node.js are not required to run them.
-
-Once the first release is published:
+After the first release is published, install on macOS or Linux with:
 
 ```sh
 curl -fsSL https://github.com/rcpassos/mergeyard/releases/latest/download/install.sh | sh
 ```
 
-The installer needs `curl`, `tar`, and either `sha256sum` (Linux) or `shasum`
-(macOS). It downloads the matching binary, verifies its SHA-256 checksum, and
-installs to `~/.local/bin` without sudo. If that directory is not on your PATH,
-add this line to your shell configuration (`~/.zshrc` or `~/.bashrc`) and restart
-your terminal:
+Until then, [build from source](docs/install.md#build-from-source). Binaries
+include the dashboard. See [installation](docs/install.md) for PATH setup,
+checksums, upgrades, and version selection.
 
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
+## Quickstart
 
-Check the installation:
-
-```sh
-mergeyard --version
-```
-
-Re-run the installer to upgrade. Stop the running Mergeyard process first and
-restart it afterward. To install a specific release or choose a directory:
-
-```sh
-# Replace v0.1.0 with a published tag; this also supports prerelease tags.
-curl -fsSL https://github.com/rcpassos/mergeyard/releases/download/v0.1.0/install.sh \
-  | MERGEYARD_INSTALL_DIR="$HOME/.local/bin" sh -s -- v0.1.0
-```
-
-You can also download an archive and `checksums.txt` from
-[GitHub Releases](https://github.com/rcpassos/mergeyard/releases), verify it with
-`sha256sum` or `shasum -a 256`, and put the extracted `mergeyard` on your PATH.
-The installer source is [scripts/install.sh](scripts/install.sh).
-
-### Build from source
-
-Before the first release, or for development, use Go 1.26.10 or newer
-(the module selects the Go 1.26.10 toolchain):
-
-```sh
-git clone https://github.com/rcpassos/mergeyard.git
-cd mergeyard
-go build -o bin/mergeyard ./cmd/mergeyard
-./bin/mergeyard --help
-```
-
-The committed dashboard assets are embedded by this build. Run commands below
-with `./bin/mergeyard` if you have not added the binary to your PATH.
-
-## Get started
-
-Install `git`, [GitHub CLI](https://cli.github.com/), `tmux`, and the configured agents.
-The doctor requires Claude Code 2.1.277 or newer and, when selected, Codex CLI
-0.156.1 or newer. Authenticate GitHub CLI and the configured agents, and ensure Git can push to the repositories you want to manage.
+Have Git, [GitHub CLI](https://cli.github.com/), tmux, and your chosen agents
+installed and authenticated. Setup checks dependencies and helps configure
+Claude Code or Codex independently for the implementer and reviewer.
 
 ```sh
 gh auth login
 mergeyard init
-```
+# Choose owner/repo and accept creation of the queue labels when prompted.
 
-Choose Claude or Codex independently for the implementer and reviewer, enter an `owner/repo`, and let setup create
-the queue labels when prompted. Init writes the configuration and runs dependency,
-authentication, and repository checks. Resolve any reported errors, then start:
-
-```sh
-mergeyard doctor
+gh issue edit 123 --repo owner/repo --add-label ready-for-agent
 mergeyard start
 ```
 
-Open [the local dashboard](http://127.0.0.1:7331). Add the `ready-for-agent` label
-to an issue you want implemented. Mergeyard claims eligible issues, runs the configured implementer in
-an isolated worktree, and creates a draft PR. An independent reviewer then
-reviews the pinned PR head. Approval waits for CI; blocking findings start the bounded fix/review loop. Both retain the draft PR and consume a concurrency slot. Stop preserves
-the implemented branch, worktree, and draft PR.
+Replace `owner/repo` and `123` with your repository and issue number. Init runs
+checks; resolve any reported errors before starting. Start opens the local
+dashboard and prints a single-use link. Follow the run to **Waiting for your
+merge**, inspect its PR, and merge it yourself. See [setup](docs/setup.md) if
+you need help getting started.
 
-Mergeyard runs agents with your local permissions. The default Claude configuration
-uses `bypassPermissions` for unattended execution. Use it with repositories and
-issues you trust; see [the example configuration](mergeyard.example.yaml) for
-permission settings.
+## How it works
 
-## Everyday commands
-
-| Command | Purpose |
-| --- | --- |
-| `mergeyard init` | Set up configuration and check prerequisites |
-| `mergeyard repo add owner/repo` | Add another repository |
-| `mergeyard start` | Start the scheduler and dashboard; also the default command |
-| `mergeyard status` | Show current runs and scheduler state |
-| `mergeyard pause` / `mergeyard resume` | Disable or enable new claims |
-| `mergeyard watch <run-id>` | Attach read-only to the live tmux phase |
-| `mergeyard stop <run-id>` | Stop a run and keep its worktree, branch, and PR |
-| `mergeyard retry <run-id>` | Reconcile preserved work and explicitly continue an eligible run |
-| `mergeyard requeue <run-id>` | Retry the run's publications that stopped for good after the cause is fixed |
-| `mergeyard takeover <run-id>` | Stop automation and resume the exact implementer conversation interactively |
-| `mergeyard handback <run-id>` | Publish manual work and resume implementation or independent review |
-| `mergeyard doctor` | Check dependencies, authentication, and configuration |
-| `mergeyard reconcile` | Inspect persisted work with the control plane stopped |
-| `mergeyard --version` | Show the installed version |
-
-Status, pause, resume, watch, and stop connect to the running process. Use the
-same configuration for both. Ctrl-C shuts down the control plane; running tmux
-phases survive and are reconciled on the next startup. Takeover requires a
-prepared worktree and a recorded implementer session. Exit the interactive
-harness before handback. `open` remains reserved.
-
-Claude detects the observed headless weekly usage-limit rejection and waits
-until its reported reset or the configured cooldown before resuming. Codex
-detects its captured Plus-plan same-day rejection, using the host-local reset
-clock plus one minute or the configured cooldown. Unknown variants consume the
-ordinary attempt budget.
-Exhausted-credit detection and credit recovery controls stay unavailable for
-both harnesses until their native evidence bindings land. See [M3 acceptance and evidence](docs/m3-acceptance.md)
-for the verified recovery core, current capability gates, and offline checks.
-
-## Configuration
-
-Configuration is selected in this order: `--config <path>`, `./mergeyard.yaml`,
-then `~/.config/mergeyard/config.yaml`. Files are not merged. First-time init
-creates the home configuration when no existing file or explicit path is present.
-Runtime data defaults to `~/.mergeyard`.
-
-See [mergeyard.example.yaml](mergeyard.example.yaml) for defaults and repository
-overrides, [setup](docs/setup.md) for adding repositories, and
-[configuration](docs/configuration.md) for the complete loading rules.
-
-## Development and releases
-
-```sh
-make test   # offline preflight, script checks, Go tests and research checks
-make lint   # gofmt, go vet, and an unused-code check
-make build  # rebuild dashboard assets with Node.js 24, then compile Go
+```mermaid
+flowchart LR
+    Issue["Label an issue ready-for-agent"] --> Implementer
+    Implementer --> Reviewer["Independent reviewer"]
+    Reviewer -->|Blocking findings| Fix["Implementer fixes"]
+    Fix --> Reviewer
+    Reviewer -->|Approved| CI
+    CI -->|Failed checks| Fix
+    CI -->|Green| You["You merge"]
 ```
 
-Commit generated `web/static/` files, `site/theme.css` and `site/favicon.svg`
-with dashboard source changes.
+Fix and review rounds are bounded. When a run needs help, use the dashboard to
+stop it or take over the implementer's conversation. Work stays in its branch,
+worktree, and draft PR. [Workflow details](docs/workflow.md).
 
-`make lint` also runs the pinned Staticcheck unused-code check (`U1000`), so code
-left behind by a change fails lint instead of accumulating. It downloads Staticcheck
-on first use, so the first lint run needs network access to the Go module proxy.
+## Permissions
 
-The public project website is maintained separately in `site/` and deployed to
-GitHub Pages. See [website development and deployment](docs/website.md) for
-local preview and the one-time Pages setup.
+**Agents run with your local permissions.** The default Claude configuration
+uses `bypassPermissions` for unattended execution. Only queue issues and
+repositories you trust, and review the
+[permission settings](mergeyard.example.yaml) before starting.
 
-`make test` requires Go meeting `go.mod`, Python 3.9+, Git, tmux, writable
-temporary/build-cache paths, executable temporary files, localhost ports, and
-process inspection. Its preflight checks these before Go compilation, including
-an isolated tmux launch. Run it directly for diagnostics:
+## Documentation
 
-```sh
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_preflight.py
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p '*_test.py' -v
-```
-
-The preflight has a 30-second deadline and up to five seconds for owned-resource
-cleanup; `--timeout <seconds>` can shorten the deadline. It honors configured
-cache/temp paths and makes no service calls, authentication checks, repairs, or
-downloads. A warm read-only module cache is allowed. Missing tools, denied local
-ports/process inspection, and unusable tmux fail with a capability and remedy.
-The smoke check owns a foreground tmux server and confirms termination before
-reporting readiness, including bounded cleanup when its shutdown command fails.
-The shutdown command gets at most two of the five cleanup seconds; three seconds
-are reserved for forced termination, reaping, and owned-resource removal.
-For a denied host build cache, choose an accessible task cache, for example
-`GOCACHE=/tmp/mergeyard-go-cache make test`. For sandbox restrictions, rerun only
-in an authorized environment that permits the named capability, after the failed
-run exits. Direct focused test commands retain their existing behavior.
-
-`make test` rejects `MERGEYARD_GITHUB_INTEGRATION=1`,
-`MERGEYARD_GITHUB_PR_INTEGRATION=1`, and `MERGEYARD_SCHEDULER_INTEGRATION=1`.
-Unset them for the offline suite. Deliberate live integration checks use the
-existing recipes in [GitHub fixtures](internal/github/testdata/README.md) and
-[scheduler tests](docs/scheduler.md#tests).
-
-Pushing a version tag such as `v0.1.0` triggers tests, builds all four platform
-archives, and publishes them with checksums, the installer, and release notes.
-See [release management](docs/releases.md) for publishing and local release checks.
-
-Further documentation: [CLI](docs/cli.md), [dashboard](docs/web.md),
-[doctor](docs/doctor.md), [scheduler](docs/scheduler.md),
-[workflow](docs/workflow.md), and [product roadmap](docs/PRD.md).
+- [Commands](docs/cli.md) and [dashboard](docs/web.md)
+- [Configuration](docs/configuration.md) and [example config](mergeyard.example.yaml)
+- [Usage limits and credits](docs/usage-limits.md)
+- [Development](docs/development.md) and [website](docs/website.md)
+- [Releases](docs/releases.md)

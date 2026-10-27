@@ -20,6 +20,7 @@ archives:
       - README.md
       - mergeyard.example.yaml
       - docs/*.md
+      - docs/media/*
       - web/static/licenses/*
 
 checksum:
