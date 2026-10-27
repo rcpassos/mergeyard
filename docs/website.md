@@ -70,6 +70,24 @@ If the public domain or path changes, update the canonical link, absolute
 Open Graph/Twitter URLs, JSON-LD URLs, and sitemap together. CSS, JavaScript,
 and favicon references remain relative for project-path compatibility.
 
+### GitHub repository metadata
+
+The repository's **About** description is:
+
+> Turn ready GitHub issues into reviewed, CI-green pull requests with Claude Code or Codex. Local-first; you merge.
+
+Keep this description consistent with the page's description, Open Graph and
+Twitter descriptions, and JSON-LD. The title should describe the same shipped
+workflow; remote execution is not currently supported.
+
+Repository topics: `claude-code`, `codex`, `ai-agents`, `coding-agents`,
+`github-issues`, `pull-requests`, `developer-tools`, and `golang`.
+
+The description and topics are GitHub repository settings, not deployed website
+files. In **Settings → General → Social preview**, upload
+`site/social-preview.png` to use the same sharing image on GitHub. Update that
+upload whenever the image changes; publishing the website does not update it.
+
 ### Crawling and production verification
 
 This project is hosted under `/mergeyard/`. Crawlers read robots rules from
