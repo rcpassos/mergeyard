@@ -61,7 +61,7 @@ flowchart LR
 
 Fix and review rounds are bounded. When a run needs help, use the dashboard to
 stop it or take over the implementer's conversation. Work stays in its branch,
-worktree, and draft PR. [Workflow details](docs/workflow.md).
+worktree, and draft PR. [Scheduling and recovery details](docs/scheduler.md).
 
 ## Permissions
 
@@ -71,6 +71,9 @@ repositories you trust, and review the
 [permission settings](mergeyard.example.yaml) before starting.
 
 ## Documentation
+
+Start with the [architecture overview](docs/architecture.md) for contributor
+orientation and links to the current behavior docs.
 
 - [Commands](docs/cli.md) and [dashboard](docs/web.md)
 - [Configuration](docs/configuration.md) and [example config](mergeyard.example.yaml)

@@ -1,9 +1,17 @@
 # Mergeyard — Product Requirements Document
 
-**Status:** Implementation-ready MVP specification  
+**Status:** Frozen historical MVP specification
+
 **Version:** 0.7  
 **Product:** Mergeyard  
 **Tagline:** Turn issues into merged code.
+
+This document preserves the original specification and milestone history. It is
+frozen and is not maintained as a description of current behavior. Use the
+[current architecture overview](architecture.md) to find the operational
+`docs/*.md` pages and [ADRs](adr/) that are the source of truth for current
+behavior and design decisions. Update those pages when behavior changes; keep
+this specification as historical context.
 
 ---
 

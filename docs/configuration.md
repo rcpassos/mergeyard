@@ -3,8 +3,8 @@
 `internal/config.Load(path)` loads an explicit path. With an empty path it searches
 `./mergeyard.yaml`, then `~/.config/mergeyard/config.yaml`. Only a missing file
 falls through; unreadable or invalid files return an error. Files are selected,
-not combined. "Global config" in the PRD means top-level fields in the selected
-file. `mergeyard.example.yaml` lists all defaults and demonstrates overrides.
+not combined. Global configuration means top-level fields in the selected file.
+`mergeyard.example.yaml` lists all defaults and demonstrates overrides.
 
 `Parse(data)` and `Load(path)` return a resolved `Config` and the source
 `Document`. Top-level fields override built-in defaults; each repository inherits
@@ -544,7 +544,7 @@ Codex uses the CLI host's local time zone and adds one minute to the reported
 reset clock; an unreliable reset uses the configured cooldown. Credit detection
 remains disabled; Check availability and
 Retry-as-probe require its evidence-backed capability. See
-[M3 acceptance](m3-acceptance.md) for the gates and current evidence.
+[Recovery acceptance evidence](m3-acceptance.md) for the gates and current evidence.
 
 `mergeyard status` and Settings report the configuration loaded by the running
 control plane, its selected source path, resolved workspace, and effective

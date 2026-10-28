@@ -213,9 +213,10 @@ an existing PR or creates a draft, and persists its number and URL. The persiste
 `ACTIVE/review`, round 1 endpoint continues on the next tick into an independent
 review by the configured reviewer. Approval waits for CI; changes required enters
 `ACTIVE/fix` and continues the bounded fix/re-review loop with the configured
-implementer. Explicit user retry remains planned. These states continue consuming
-a concurrency slot. Repeated ticks and
-scheduler restarts observe persisted attempts and do not launch duplicates.
+implementer. [Explicit Retry](#explicit-retry) reconciles preserved work before
+selecting a continuation. Active phases and CI waiting consume a concurrency
+slot. Repeated ticks and scheduler restarts observe persisted attempts and do
+not launch duplicates.
 
 Blocked/invalid results, exhausted attempts, empty implementations, branch
 conflicts and other system-step failures enter `NEEDS_ATTENTION`. The scheduler
@@ -241,8 +242,9 @@ repository or issue while other work continues, and stays visible until a later
 pass observes the subject successfully. Findings persist only the fixed GitHub code and a safe human
 message; raw `gh` diagnostics stay on the error for application logs. Closed
 issues/PRs, missing worktrees, and missing sessions require attention. Manual and attention runs are never automatically
-resumed. First review progresses through the same reconciliation boundary. CI/merge
-progression remains outside this slice.
+resumed. Review, [CI and readiness](#ci-and-readiness), and
+[merge completion](#manual-merge-completion) progress through the same
+reconciliation boundary.
 
 `mergeyard reconcile [--config <path>]` loads the selected configuration and takes
 exclusive ownership of its workspace. It uses the same reconciliation boundary,
@@ -404,8 +406,8 @@ prior findings and the fix report. It independently adjudicates disputes and
 returns the complete remaining blocking list. Approval enters WAITING_FOR_CI;
 it does not make the draft ready. No fix starts without a subsequent review
 round. Exhausting max_rounds (default five) persists review.max_rounds_exceeded
-and requires attention, retaining code, reports and diagnostics. Explicit extra
-round grants belong to the later retry slice.
+and requires attention, retaining code, reports and diagnostics.
+[Explicit Retry](#explicit-retry) can grant the next independent review round.
 
 Run detail, status and events retain fix settings, findings, responses and
 publication progress across rounds. Stop uses the shared operation gate during
@@ -470,7 +472,8 @@ response is reconciled through fresh PR reads, never blindly replayed. An alread
 normal PR needs no write. `READY_TO_MERGE` displays “Waiting for your merge” and
 releases capacity. A later push produces a warning; closure without merge requires
 attention. Mergeyard never merges a PR. CI/readiness reconciliation continues while
-new claims are paused. Explicit retry remains a dependent M2 slice.
+new claims are paused. [Explicit Retry](#explicit-retry) rechecks the PR head,
+approval, and CI before selecting a continuation.
 
 ## Review and fix report comments
 
