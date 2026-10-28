@@ -3,7 +3,7 @@
 Prebuilt binaries target macOS and Linux, on Apple Silicon / ARM64 and Intel / AMD64.
 They include the dashboard; Go and Node.js are not required to run them.
 
-Once the first release is published:
+Install the latest release:
 
 ```sh
 curl -fsSL https://github.com/rcpassos/mergeyard/releases/latest/download/install.sh | sh
@@ -41,7 +41,7 @@ The installer source is [scripts/install.sh](../scripts/install.sh).
 
 ## Build from source
 
-Before the first release, or for development, use Go 1.26.10 or newer
+For development, use Go 1.26.10 or newer
 (the module selects the Go 1.26.10 toolchain):
 
 ```sh

@@ -46,8 +46,21 @@ Archives include the binary, README, example configuration, documentation, and
 embedded asset license notices. Builds disable CGO, so Linux binaries do not
 require a particular system libc. Native Windows is not a release target.
 
-The README's latest-release install command becomes available after the first
-non-prerelease is published. Before then, use the source build instructions.
+The README's install command selects the latest non-prerelease. Prereleases
+must be selected explicitly.
+
+## Release cadence
+
+Publish a release after each completed milestone, once its intended changes
+are merged and CI is green. Publish a patch release sooner for fixes that
+affect installation, security, or everyday use. There is no fixed calendar
+schedule; documentation-only changes do not require a tag.
+
+While the project is below 1.0, use minor versions for milestones and changes
+that require users to adjust their configuration or workflow, and patch
+versions for compatible fixes. Use a release candidate when a milestone needs
+broader validation before becoming the default install. Record user-visible
+changes and any upgrade steps in the release notes.
 
 ## Prereleases
 
