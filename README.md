@@ -47,6 +47,11 @@ you need help getting started.
 
 ## How it works
 
+To try the loop in a disposable private repository, build from the current source
+and run `mergeyard try` (not included in v0.1.0). It asks before creating the
+playground, supplies a sample issue and CI, and uses a separate configuration and
+workspace. See [CLI operations](docs/cli.md) for prerequisites and cleanup.
+
 ```mermaid
 flowchart LR
     Issue["Label an issue ready-for-agent"] --> Implementer
