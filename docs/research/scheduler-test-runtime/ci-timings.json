@@ -1,0 +1,1831 @@
+{
+  "commit": "cc084fe3ce64a725daa48cd952d12346eed7d35f",
+  "ci_run": "https://github.com/rcpassos/mergeyard/actions/runs/40596095428",
+  "scheduler_tests": [
+    {
+      "test": "TestFixRecoversAfterControlPlaneKill",
+      "seconds": 36.45
+    },
+    {
+      "test": "TestReviewAndFixUsageLimitsSurviveControlPlaneKill",
+      "seconds": 24.92
+    },
+    {
+      "test": "TestStopPreparingRunKeepsOrReleasesTheSubmodulesOfAnInterruptedCheckout",
+      "seconds": 15.86
+    },
+    {
+      "test": "TestMissingSessionRecoverySurvivesControlPlaneKill",
+      "seconds": 15.09
+    },
+    {
+      "test": "TestHarnessPairingsRejectInvalidPriorOutcomes",
+      "seconds": 11.89
+    },
+    {
+      "test": "TestCombinedRecoveryAcrossRepositories",
+      "seconds": 11.17
+    },
+    {
+      "test": "TestHandbackBlockedReviewerPreservesGrantAndMixedRoles",
+      "seconds": 10.76
+    },
+    {
+      "test": "TestMergeStopsChildrenAfterWrapperExitedWhileOffline",
+      "seconds": 10.36
+    },
+    {
+      "test": "TestHarnessPairingsWaitBeforeReviewOrFixLaunch",
+      "seconds": 10.3
+    },
+    {
+      "test": "TestQueueScopesRefusedIssueDeadlineAndBacksOff",
+      "seconds": 10.06
+    },
+    {
+      "test": "TestReviewAndFixWaitAllowancesAreIndependent",
+      "seconds": 9.49
+    },
+    {
+      "test": "TestTakeoverActiveCreditProbeRetainsBlockAndRestoresReviewer",
+      "seconds": 9.35
+    },
+    {
+      "test": "TestMissingSessionFreshResultAndUnrelatedStartupRemainBounded",
+      "seconds": 9.31
+    },
+    {
+      "test": "TestReviewAndFixLimitsLeaveOrdinaryAttemptsAvailable",
+      "seconds": 8.35
+    },
+    {
+      "test": "TestClearingConfiguredListsWaitsForLiveOwnedStepsAfterRestart",
+      "seconds": 7.28
+    },
+    {
+      "test": "TestRetryCommittedBaseRepairResumesPublication",
+      "seconds": 7.05
+    },
+    {
+      "test": "TestMergeCleanupRemovesSlowWorktreeBeyondMaintenanceBudget",
+      "seconds": 6.51
+    },
+    {
+      "test": "TestHungGitPublicationTimesOutAndTheNextTickProceeds",
+      "seconds": 6.3
+    },
+    {
+      "test": "TestBaseFailuresHonorCIActionPriorityAndUncertainty",
+      "seconds": 6.08
+    },
+    {
+      "test": "TestHandbackExistingPRAlwaysGetsIndependentReviewAndOneDurableRound",
+      "seconds": 6.02
+    },
+    {
+      "test": "TestMergeMaintenanceRestartsAtEachBoundary",
+      "seconds": 5.71
+    },
+    {
+      "test": "TestRetryManagedConflictPreservesMergeAndRechecksCI",
+      "seconds": 5.6
+    },
+    {
+      "test": "TestReviewRecoversAfterControlPlaneKill",
+      "seconds": 5.52
+    },
+    {
+      "test": "TestStalledVerificationPublicationReleasesReconciliationAndRetries",
+      "seconds": 5.49
+    },
+    {
+      "test": "TestBoundedReviewLoopDoesNotLaunchUnreviewableFix",
+      "seconds": 5.47
+    },
+    {
+      "test": "TestMissingRoleSessionRecoveryAcrossPhases",
+      "seconds": 5.35
+    },
+    {
+      "test": "TestExplicitRetryDoesNotReplenishMissingSessionRecovery",
+      "seconds": 5.3
+    },
+    {
+      "test": "TestStopPreparingRunReleasesAnInterruptedCreation",
+      "seconds": 5.25
+    },
+    {
+      "test": "TestStopPreparingRunKeepsHumanWorkInAnUnfinishedInitialization",
+      "seconds": 5.16
+    },
+    {
+      "test": "TestCreditRecoveryAcrossReviewAndFixPairings",
+      "seconds": 5.13
+    },
+    {
+      "test": "TestMissingSessionRecoveryAllowanceCannotBeReused",
+      "seconds": 5.07
+    },
+    {
+      "test": "TestQueueKeepsDiscoveringAfterASlowRefusedRead",
+      "seconds": 5.04
+    },
+    {
+      "test": "TestFinishedRunPublishesAfterBudgetTimeoutRecovers",
+      "seconds": 5.04
+    },
+    {
+      "test": "TestSlowVerificationPublicationDoesNotStarveHealthyPRAfterRestart",
+      "seconds": 5.04
+    },
+    {
+      "test": "TestQueueBacksOffTheWholeWindowAfterAGenuineTimeoutAcrossRepositories",
+      "seconds": 5.03
+    },
+    {
+      "test": "TestQueueReadsTheRefusalsBehindASlowOne",
+      "seconds": 5.03
+    },
+    {
+      "test": "TestQueueBacksOffTheWholeWindowAfterAGenuineTimeout",
+      "seconds": 5.02
+    },
+    {
+      "test": "TestCICheckMatrix",
+      "seconds": 4.98
+    },
+    {
+      "test": "TestHumanActionAcrossAllHarnessPairingsAndPhases",
+      "seconds": 4.91
+    },
+    {
+      "test": "TestRetryAfterBlockedRefreshesCommentsAcrossPhasesAndHarnesses",
+      "seconds": 4.76
+    },
+    {
+      "test": "TestHarnessPairingsStopAndRestart",
+      "seconds": 4.47
+    },
+    {
+      "test": "TestFixFailuresAndAttemptsStayWithinRound",
+      "seconds": 4.45
+    },
+    {
+      "test": "TestHandbackDiscountsMissingStartupInsideFreshAttemptWindow",
+      "seconds": 4.38
+    },
+    {
+      "test": "TestFixAttemptRetryDoesNotSpendReviewRound",
+      "seconds": 4.29
+    },
+    {
+      "test": "TestCIHeadRacesAndReadinessAmbiguity",
+      "seconds": 4.23
+    },
+    {
+      "test": "TestHarnessPairingsReconcileV1ReviewAfterUpgrade",
+      "seconds": 4.08
+    },
+    {
+      "test": "TestChangedHeadRetryAccountsForAcceptedSameRoundBlockers",
+      "seconds": 4.05
+    },
+    {
+      "test": "TestHarnessPairingsRejectInvalidReports",
+      "seconds": 4
+    },
+    {
+      "test": "TestCreditProbeSurvivesControlPlaneKill",
+      "seconds": 3.86
+    },
+    {
+      "test": "TestCriteriaCarryThroughAllHarnessPairings",
+      "seconds": 3.82
+    },
+    {
+      "test": "TestClaudeWeeklyLimitBindingWaitsAndRecovers",
+      "seconds": 3.75
+    },
+    {
+      "test": "TestHarnessPairingsCompleteFixLoop",
+      "seconds": 3.75
+    },
+    {
+      "test": "TestHarnessPairingsNoChangeDispute",
+      "seconds": 3.72
+    },
+    {
+      "test": "TestExplicitRetryM2Pairings",
+      "seconds": 3.59
+    },
+    {
+      "test": "TestProductionHarnessLimitFailuresConsumeAttemptBudget",
+      "seconds": 3.3
+    },
+    {
+      "test": "TestExplicitRetryChangedHeadAndPreservedEdits",
+      "seconds": 3.25
+    },
+    {
+      "test": "TestBlockedHandbackRecoversAfterControlPlaneKill",
+      "seconds": 3.2
+    },
+    {
+      "test": "TestExplicitRetryRefreshesFailedCIRepair",
+      "seconds": 3.14
+    },
+    {
+      "test": "TestReviewStatusErrorStopsRestoresAndRequiresAttention",
+      "seconds": 3.12
+    },
+    {
+      "test": "TestCodexReviewAndFixRequireCompletionAndSchema",
+      "seconds": 3.06
+    },
+    {
+      "test": "TestBaseConflictRepairsOrRequiresAttentionWithinRoundBound",
+      "seconds": 2.85
+    },
+    {
+      "test": "TestHandbackPreservesUnsafeExternalStateForAttention",
+      "seconds": 2.83
+    },
+    {
+      "test": "TestRecordedPermissionsMatchTheCommandThatRan",
+      "seconds": 2.82
+    },
+    {
+      "test": "TestReviewerMutationsRestoreAndRetryWithinSameRound",
+      "seconds": 2.8
+    },
+    {
+      "test": "TestCINonCodeOutcomesNeverLaunchRepair",
+      "seconds": 2.75
+    },
+    {
+      "test": "TestReportPublicationEnabledDisabledAndFailureDoesNotBlockLoop",
+      "seconds": 2.74
+    },
+    {
+      "test": "TestExternalPushDuringFixRequiresAttentionAndPreservesBothBranches",
+      "seconds": 2.6
+    },
+    {
+      "test": "TestCIFixInvalidOutputObeysImplementerAttemptLimit",
+      "seconds": 2.59
+    },
+    {
+      "test": "TestCodexVerifiedMissingReviewOrFixStartsFreshBoundedConversation",
+      "seconds": 2.54
+    },
+    {
+      "test": "TestHandbackCountsOrdinaryReplacementWhenMissingStartupPrecedesWindow",
+      "seconds": 2.52
+    },
+    {
+      "test": "TestCreditRetryEligibilityIgnoresHistoricalCIHead",
+      "seconds": 2.48
+    },
+    {
+      "test": "TestEscalationEvaluationHonorsSavedCIDeadline",
+      "seconds": 2.45
+    },
+    {
+      "test": "TestExplicitRetryCIOutcomes",
+      "seconds": 2.42
+    },
+    {
+      "test": "TestChecksAndCheckRepairSurviveControlPlaneRestart",
+      "seconds": 2.4
+    },
+    {
+      "test": "TestTestMergeEvidenceRacesPreserveApprovalAndDeadline",
+      "seconds": 2.35
+    },
+    {
+      "test": "TestReconcileLegacyImplementAndFixSchemas",
+      "seconds": 2.32
+    },
+    {
+      "test": "TestStopDuringSetupPreservesWorkspaceAndEndsOwnedGroup",
+      "seconds": 2.3
+    },
+    {
+      "test": "TestHistoryKeepsIdentityObservationAndPublicationInsideBudget",
+      "seconds": 2.27
+    },
+    {
+      "test": "TestBaseVerificationFailureUsesCIRepairBound",
+      "seconds": 2.25
+    },
+    {
+      "test": "TestUsageLimitedReviewRetainsPinnedHead",
+      "seconds": 2.23
+    },
+    {
+      "test": "TestEarlyReviewerDiscoveryFailuresRespectRetryPolicy",
+      "seconds": 2.22
+    },
+    {
+      "test": "TestTemporaryLimitFixPreservesPhaseBudgetAndSettings",
+      "seconds": 2.2
+    },
+    {
+      "test": "TestMissingCIFixSessionRecoveryRetainsCompleteDiagnostics",
+      "seconds": 2.19
+    },
+    {
+      "test": "TestFixAndHandbackInvalidateChecksOfChangedPinnedTrees",
+      "seconds": 2.19
+    },
+    {
+      "test": "TestHandbackIntoBlockedImplementWait",
+      "seconds": 2.16
+    },
+    {
+      "test": "TestBaseVerificationRunsOnCombinedTreeAndCleansUp",
+      "seconds": 2.15
+    },
+    {
+      "test": "TestCIFailureRequiresFixThenIndependentReview",
+      "seconds": 2.09
+    },
+    {
+      "test": "TestBlockedHandbackRepairsLabelsWithoutRepeatingPublicationOrGrant",
+      "seconds": 2.05
+    },
+    {
+      "test": "TestExplicitRetryIntentAndGrantSurviveRestart",
+      "seconds": 2.03
+    },
+    {
+      "test": "TestCodexCapturedLimitWaitsAndRecovers",
+      "seconds": 2.02
+    },
+    {
+      "test": "TestExplicitRetryDashboardAndCLIAPIShareScheduler",
+      "seconds": 2
+    },
+    {
+      "test": "TestVerificationFlowsThroughPRReviewAndDashboard",
+      "seconds": 1.9
+    },
+    {
+      "test": "TestRestartAfterControlPlaneKillPreservesImplementAttempt",
+      "seconds": 1.87
+    },
+    {
+      "test": "TestPerIssueHarnessGateSkipsOnlyRestrictedImplementers",
+      "seconds": 1.87
+    },
+    {
+      "test": "TestTakeoverRestoresReviewerBeforeOfferingImplementer",
+      "seconds": 1.85
+    },
+    {
+      "test": "TestHarnessOverrideDefaultSettingsReachFixAndReview",
+      "seconds": 1.84
+    },
+    {
+      "test": "TestHandbackOpensBoundedReviewerAttemptWindow",
+      "seconds": 1.82
+    },
+    {
+      "test": "TestInvalidAndFailedReviewAttemptsAreBoundedAndBlockedDoesNotRetry",
+      "seconds": 1.81
+    },
+    {
+      "test": "TestSuccessfulNativeInvalidReportsBypassClassifier",
+      "seconds": 1.81
+    },
+    {
+      "test": "TestPendingRetryCannotDelayStopDuringPROutage",
+      "seconds": 1.78
+    },
+    {
+      "test": "TestFixAndDisputeResumeIndependentReview",
+      "seconds": 1.74
+    },
+    {
+      "test": "TestBlockedActionSurvivesFailedAttemptRestart",
+      "seconds": 1.72
+    },
+    {
+      "test": "TestHarnessCheckSurvivesControlPlaneKill",
+      "seconds": 1.65
+    },
+    {
+      "test": "TestChecksAlsoRepairCIFixesBeforePush",
+      "seconds": 1.63
+    },
+    {
+      "test": "TestManagedBaseMergeIntentRecoversBeforeAgentLaunch",
+      "seconds": 1.61
+    },
+    {
+      "test": "TestMixedRolesWaitBeforeFirstReviewExecution",
+      "seconds": 1.56
+    },
+    {
+      "test": "TestDashboardCopiedTakeoverProtectsLiveWorktree",
+      "seconds": 1.54
+    },
+    {
+      "test": "TestCIReadinessAfterMergedImplementerFlows",
+      "seconds": 1.52
+    },
+    {
+      "test": "TestCIFixRequiresAvailableReviewRound",
+      "seconds": 1.5
+    },
+    {
+      "test": "TestUnpublishedEditsAfterFixPushRequireAttention",
+      "seconds": 1.47
+    },
+    {
+      "test": "TestTemporaryLimitGatesAcrossRepositoriesAndRetainsSlots",
+      "seconds": 1.44
+    },
+    {
+      "test": "TestNonSuccessImplementVerificationSurvivesManualPRHandback",
+      "seconds": 1.43
+    },
+    {
+      "test": "TestFixCommentsIdentifyLocalCheckRetryAttempts",
+      "seconds": 1.41
+    },
+    {
+      "test": "TestChecksGateFixRetriesWithinOneReviewRound",
+      "seconds": 1.41
+    },
+    {
+      "test": "TestMergedAttentionAndManualRunsCompleteButStoppedRunsStayStopped",
+      "seconds": 1.39
+    },
+    {
+      "test": "TestReviewerAdjudicatesDisputesAndSuppliesRemainingBlockers",
+      "seconds": 1.37
+    },
+    {
+      "test": "TestHandbackAndFixChecksKeepDistinctOwnedSessionsInSameRound",
+      "seconds": 1.35
+    },
+    {
+      "test": "TestCIFixAndReviewerAttemptsDoNotSpendExtraRounds",
+      "seconds": 1.33
+    },
+    {
+      "test": "TestTemporaryLimitRestoresReviewerAndResumesSameRound",
+      "seconds": 1.28
+    },
+    {
+      "test": "TestHandbackNoPRPublishesUnchangedOrEditedWorkForEitherHarness",
+      "seconds": 1.27
+    },
+    {
+      "test": "TestHandbackPublicationAndGrantRecoverAfterRestart",
+      "seconds": 1.26
+    },
+    {
+      "test": "TestRetryChangedHeadAfterFixUsesReconciledReviewTarget",
+      "seconds": 1.24
+    },
+    {
+      "test": "TestChecksRetryGrantsOneRepairAndRechecksManualCorrectionFirst",
+      "seconds": 1.24
+    },
+    {
+      "test": "TestCreditProbeRequiresModelCompletionAndHonorsCapability",
+      "seconds": 1.23
+    },
+    {
+      "test": "TestReviewRetryPreservesExistingIgnoredArtifacts",
+      "seconds": 1.23
+    },
+    {
+      "test": "TestCreditProbeStopTakeoverRetryRace",
+      "seconds": 1.23
+    },
+    {
+      "test": "TestUnchangedTreeCannotClaimFindingFixed",
+      "seconds": 1.22
+    },
+    {
+      "test": "TestBaseConflictRepairCanPreserveFilesWhileMergingBaseAncestry",
+      "seconds": 1.22
+    },
+    {
+      "test": "TestHarnessCheckKeepsRestrictionsWithoutCompletion",
+      "seconds": 1.19
+    },
+    {
+      "test": "TestReviewRetryKeepsVerificationFromAlreadyAdjudicatedFix",
+      "seconds": 1.19
+    },
+    {
+      "test": "TestTemporaryLimitSurvivesControlPlaneKill",
+      "seconds": 1.18
+    },
+    {
+      "test": "TestCodexFreshFixLaunchFailureCanUseRemainingAttempt",
+      "seconds": 1.18
+    },
+    {
+      "test": "TestStoredRoleSettingsSurviveUsageResumeAndCreditRetry",
+      "seconds": 1.15
+    },
+    {
+      "test": "TestTemporaryLimitRetryGrantsExactlyOneWait",
+      "seconds": 1.14
+    },
+    {
+      "test": "TestHarnessCheckFailureDoesNotBlockOtherRuns",
+      "seconds": 1.14
+    },
+    {
+      "test": "TestChecksRetryRequiresPortsBeforeGrantingRepair",
+      "seconds": 1.13
+    },
+    {
+      "test": "TestExplicitRetryGrantsCIRepairRound",
+      "seconds": 1.13
+    },
+    {
+      "test": "TestTakeoverFixPreservesPartialImplementerChanges",
+      "seconds": 1.12
+    },
+    {
+      "test": "TestOlderProbeCompletionCannotClearNewCreditRestriction",
+      "seconds": 1.11
+    },
+    {
+      "test": "TestHandbackAfterCheckRepairOpensOrdinaryAttemptBudget",
+      "seconds": 1.11
+    },
+    {
+      "test": "TestCreditRetrySavedFixDoesNotReserveProbe",
+      "seconds": 1.1
+    },
+    {
+      "test": "TestStopCompletesWhenGitHangsOnTheLeftovers",
+      "seconds": 1.09
+    },
+    {
+      "test": "TestCodexPermissionDisplayUsesEffectiveNetworkAccess",
+      "seconds": 1.09
+    },
+    {
+      "test": "TestMergeCleanupRecoversInterruptedWorktreeRemoval",
+      "seconds": 1.09
+    },
+    {
+      "test": "TestCreditRetrySelectedRunRecoversWithoutReset",
+      "seconds": 1.08
+    },
+    {
+      "test": "TestTakeoverRecoversAfterControlPlaneKill",
+      "seconds": 1.07
+    },
+    {
+      "test": "TestStoredRoleSettingsSurviveRestartLabelsAndFix",
+      "seconds": 1.07
+    },
+    {
+      "test": "TestAttentionCommentRetriesAfterRestartWithoutDuplicating",
+      "seconds": 1.06
+    },
+    {
+      "test": "TestAmbiguousMergeCleanupDoesNotRedispatchSourceIssue",
+      "seconds": 1.04
+    },
+    {
+      "test": "TestSetupRestartObservesLiveFinishedAndUnknownOutcomes",
+      "seconds": 1.04
+    },
+    {
+      "test": "TestTierSelectionSurvivesRestartFixAndPublication",
+      "seconds": 1.04
+    },
+    {
+      "test": "TestSchedulerUsesHeadApprovalAndCurrentTestMergeCI",
+      "seconds": 1.02
+    },
+    {
+      "test": "TestCIRecoversWaitAndReadinessAfterControlPlaneKill",
+      "seconds": 1.02
+    },
+    {
+      "test": "TestIncompatibleHarnessOverridesRemainCorrectableBeforeClaim",
+      "seconds": 1.02
+    },
+    {
+      "test": "TestCreditRetryEligibilityUsesSelectedHarness",
+      "seconds": 1.01
+    },
+    {
+      "test": "TestAgentPortEnvironmentReachesImplementReviewAndFixWrappers",
+      "seconds": 1.01
+    },
+    {
+      "test": "TestUsageLimitResumeUsesExistingMissingSessionRecovery",
+      "seconds": 1
+    },
+    {
+      "test": "TestCreditRetryReconcilesWorkOnOtherHarness",
+      "seconds": 1
+    },
+    {
+      "test": "TestRepositoryExclusionsReachStagingAndPhaseDiagnostics",
+      "seconds": 0.99
+    },
+    {
+      "test": "TestCompletedRunStopsRetryingReportPublicationAfterFailure",
+      "seconds": 0.99
+    },
+    {
+      "test": "TestAmbiguousReportPublicationReplaysOnActiveRun",
+      "seconds": 0.99
+    },
+    {
+      "test": "TestHarnessOverridePersistsThroughCIFix",
+      "seconds": 0.98
+    },
+    {
+      "test": "TestHarnessCheckCompletionCannotClearNewRestriction",
+      "seconds": 0.97
+    },
+    {
+      "test": "TestQueueKeepsEveryRepositoryWhenRefusedIssuesExpireTogether",
+      "seconds": 0.97
+    },
+    {
+      "test": "TestReviewStartupFailureHonorsRoleAttemptLimit",
+      "seconds": 0.97
+    },
+    {
+      "test": "TestStopReleasesLeftoversOfAnUnownedRunInAnyState",
+      "seconds": 0.97
+    },
+    {
+      "test": "TestVerificationBodyRetriesLatestReportOnRestartWithCommentsDisabled",
+      "seconds": 0.97
+    },
+    {
+      "test": "TestHandbackChecksFailurePreservesManualWorkAndNeverAutofixes",
+      "seconds": 0.95
+    },
+    {
+      "test": "TestFixReportsVisibleInDetailStatusAndEvents",
+      "seconds": 0.94
+    },
+    {
+      "test": "TestAllPhasesUseAuthorizedIssueSnapshot",
+      "seconds": 0.94
+    },
+    {
+      "test": "TestUntrustedReportTextIsLiteralLocallyAndInComment",
+      "seconds": 0.94
+    },
+    {
+      "test": "TestEveryPhaseAttemptFetchesIssueComments",
+      "seconds": 0.93
+    },
+    {
+      "test": "TestMatchingHarnessOverridesRetainConfiguredSettings",
+      "seconds": 0.91
+    },
+    {
+      "test": "TestPhaseRetryIsBoundedAndKeepsOneRun",
+      "seconds": 0.9
+    },
+    {
+      "test": "TestHandbackRequiresInteractiveAndOwnedProcessesExited",
+      "seconds": 0.89
+    },
+    {
+      "test": "TestCodexReviewRestoresMutationsAndPermitsBuildOutput",
+      "seconds": 0.89
+    },
+    {
+      "test": "TestReviewCanceledStatusLeavesAttemptAvailableForObservation",
+      "seconds": 0.88
+    },
+    {
+      "test": "TestCreditRetryAfterTemporaryProbeWaitExhaustion",
+      "seconds": 0.87
+    },
+    {
+      "test": "TestImplementationCriteriaHistorySurvivesRetryAndRestart",
+      "seconds": 0.87
+    },
+    {
+      "test": "TestCodexBaseConflictRepairOnlyEditsFilesAndPreservesHeadTree",
+      "seconds": 0.86
+    },
+    {
+      "test": "TestTemporaryLimitPreservesWorkAndResumesAfterRestart",
+      "seconds": 0.85
+    },
+    {
+      "test": "TestSystemStepExplicitFailureKeepsExitCodeDespiteLogout",
+      "seconds": 0.83
+    },
+    {
+      "test": "TestBlockedHarnessCanProbeUsingPendingCheckRepair",
+      "seconds": 0.83
+    },
+    {
+      "test": "TestInvalidTierSelectionRefusesClaimOnceAndAllowsCorrection",
+      "seconds": 0.83
+    },
+    {
+      "test": "TestRetryNeverReusesChecksThatChangedThePinnedTree",
+      "seconds": 0.82
+    },
+    {
+      "test": "TestRetryBeforePRChecksPublishedBranchAncestry",
+      "seconds": 0.82
+    },
+    {
+      "test": "TestReviewInputUsesThePublishedImplementAttempt",
+      "seconds": 0.81
+    },
+    {
+      "test": "TestRetryGuidanceSurvivesRestartAndReachesLaterPhases",
+      "seconds": 0.8
+    },
+    {
+      "test": "TestCreditProbeTakeoverRecoversAfterControlPlaneKill",
+      "seconds": 0.79
+    },
+    {
+      "test": "TestFixMissingSessionRecoveryIsBoundedAndReappliesFullInput",
+      "seconds": 0.78
+    },
+    {
+      "test": "TestInvalidHarnessOverridesRequireLabelCorrection",
+      "seconds": 0.78
+    },
+    {
+      "test": "TestBaseVerificationSurvivesRestartAndBaseMovement",
+      "seconds": 0.76
+    },
+    {
+      "test": "TestChecksTimeoutIdentifiesInterruptedCommandAndSkipsLaterCommands",
+      "seconds": 0.76
+    },
+    {
+      "test": "TestReadyWarningsClosureCapacityAndHTTP",
+      "seconds": 0.76
+    },
+    {
+      "test": "TestDirtyMergeCleanupPreservesWorkAndDispatchesAnotherIssue",
+      "seconds": 0.76
+    },
+    {
+      "test": "TestFixCompletionRoundAndEventRollBackTogether",
+      "seconds": 0.74
+    },
+    {
+      "test": "TestImplementFailuresPreserveWorkspaceAndRequireAttention",
+      "seconds": 0.74
+    },
+    {
+      "test": "TestReviewerResumeFailureStartsFreshIndependentSession",
+      "seconds": 0.74
+    },
+    {
+      "test": "TestOrphansRemainVisibleAndPreservedBehindDispatchGates",
+      "seconds": 0.73
+    },
+    {
+      "test": "TestUsageLimitDuringCheckRepairRetainsItsAllowance",
+      "seconds": 0.72
+    },
+    {
+      "test": "TestStopSerializesWithFixPushAndPreventsNextReview",
+      "seconds": 0.72
+    },
+    {
+      "test": "TestEarlyMergePreservesLocallyCommittedUnpublishedFix",
+      "seconds": 0.71
+    },
+    {
+      "test": "TestCodexFailuresStayVisibleAndDoNotPublish",
+      "seconds": 0.7
+    },
+    {
+      "test": "TestCreditProbeDoesNotHideCIOnlyDashboardRetry",
+      "seconds": 0.7
+    },
+    {
+      "test": "TestHandbackOpensConfiguredImplementAttemptWindow",
+      "seconds": 0.7
+    },
+    {
+      "test": "TestCreditReviewDiscoveryFailureReleasesProbe",
+      "seconds": 0.69
+    },
+    {
+      "test": "TestFixRetainsImplementerCommitsAndIgnoredArtifacts",
+      "seconds": 0.68
+    },
+    {
+      "test": "TestExplicitRetryStillRunningAndStopRace",
+      "seconds": 0.66
+    },
+    {
+      "test": "TestHandbackReconcilesLabelsAfterPublicationSelection",
+      "seconds": 0.64
+    },
+    {
+      "test": "TestBaseVerificationTimeoutRetainsCommandEvidenceAndCleansScratch",
+      "seconds": 0.63
+    },
+    {
+      "test": "TestEscalationReadinessRestartAndSurfaces",
+      "seconds": 0.63
+    },
+    {
+      "test": "TestCriteriaMismatchUsesInvalidResultRetryPath",
+      "seconds": 0.63
+    },
+    {
+      "test": "TestMalformedEarlyReviewerOutputRetriesAfterStopAndRestore",
+      "seconds": 0.63
+    },
+    {
+      "test": "TestStopKeepsLeftoversThatHoldWorkOfAnUnownedRunInAnyState",
+      "seconds": 0.62
+    },
+    {
+      "test": "TestEarlyMergeWaitsForProcessExitBeforeReleasingCapacity",
+      "seconds": 0.61
+    },
+    {
+      "test": "TestHandbackPublishesManualWorkWithoutPRAndResumesImplementer",
+      "seconds": 0.61
+    },
+    {
+      "test": "TestCreditProbeConcurrentSelectionStopAndWaitingRetry",
+      "seconds": 0.6
+    },
+    {
+      "test": "TestPendingRetryGuidanceSurvivesRestartWithoutReplacement",
+      "seconds": 0.6
+    },
+    {
+      "test": "TestRetryKeepsAllGuidanceWithoutDuplicatingOrReplacingNotes",
+      "seconds": 0.6
+    },
+    {
+      "test": "TestHarnessCheckConfigurationInspectionCannotProveAvailability",
+      "seconds": 0.58
+    },
+    {
+      "test": "TestTakeoverStopsImplementerAndResumesExactConversation",
+      "seconds": 0.58
+    },
+    {
+      "test": "TestReadyMergeAndCompletedPublicationRemainIndependent",
+      "seconds": 0.57
+    },
+    {
+      "test": "TestDashboardHandbackUsesProtectedSharedOperation",
+      "seconds": 0.56
+    },
+    {
+      "test": "TestMergeCleanupWaitsForInteractiveTakeoverExit",
+      "seconds": 0.56
+    },
+    {
+      "test": "TestHandbackInvalidatesApprovalAndPreservesManualCommits",
+      "seconds": 0.55
+    },
+    {
+      "test": "TestPendingHandbackChecksAreWatchableAndStoppable",
+      "seconds": 0.54
+    },
+    {
+      "test": "TestRepeatedEscalationFailuresAddNoEventRows",
+      "seconds": 0.54
+    },
+    {
+      "test": "TestPublicationWarningDoesNotBlockCIReadiness",
+      "seconds": 0.54
+    },
+    {
+      "test": "TestStopFixPreservesEditsAndPreventsPush",
+      "seconds": 0.54
+    },
+    {
+      "test": "TestBaseConflictWithoutSyntheticMergeStillEntersManagedRepair",
+      "seconds": 0.53
+    },
+    {
+      "test": "TestHandbackPreservesUnsavedClosedAndMergedPRs",
+      "seconds": 0.53
+    },
+    {
+      "test": "TestHarnessCheckAndRetryShareOneProbe",
+      "seconds": 0.53
+    },
+    {
+      "test": "TestCINoChecksWindowAndRestartWhilePaused",
+      "seconds": 0.52
+    },
+    {
+      "test": "TestEveryConfiguredCheckRequiresDurablePassingEvidence",
+      "seconds": 0.51
+    },
+    {
+      "test": "TestReportedAccountResetWinsOverCooldownInEitherOrder",
+      "seconds": 0.51
+    },
+    {
+      "test": "TestMergeObservedDuringCIRepairEvidenceCompletesWithoutFix",
+      "seconds": 0.51
+    },
+    {
+      "test": "TestEveryNonterminalStateConsumesSlotExceptReadyToMerge",
+      "seconds": 0.51
+    },
+    {
+      "test": "TestHandbackAfterRetryReviewsNewestManualCommitWithFractionalTimestamp",
+      "seconds": 0.5
+    },
+    {
+      "test": "TestCodexReviewerIdentityBeforeNextPoll",
+      "seconds": 0.5
+    },
+    {
+      "test": "TestBaseRepairCannotStartIfPRReadCrossesDeadline",
+      "seconds": 0.5
+    },
+    {
+      "test": "TestCreditRetrySavedImplementationDoesNotReserveProbe",
+      "seconds": 0.5
+    },
+    {
+      "test": "TestInteractiveResumeCannotLaunchDuringMergeCleanup",
+      "seconds": 0.5
+    },
+    {
+      "test": "TestOrdinaryFailureAfterLimitStillHasOrdinaryAttemptBudget",
+      "seconds": 0.49
+    },
+    {
+      "test": "TestFinalBaseVerificationCannotMarkReadyAfterDeadline",
+      "seconds": 0.49
+    },
+    {
+      "test": "TestExplicitRetryRecognizesCompletedImplementation",
+      "seconds": 0.49
+    },
+    {
+      "test": "TestReadyBaseWarningsAreReadOnlyAndReachDashboard",
+      "seconds": 0.48
+    },
+    {
+      "test": "TestBaseScratchCleanupResumesWithoutReplayingCompletedCommands",
+      "seconds": 0.48
+    },
+    {
+      "test": "TestHandbackReusesUnfinishedReviewRound",
+      "seconds": 0.48
+    },
+    {
+      "test": "TestObservedMergeCompletesCoding",
+      "seconds": 0.48
+    },
+    {
+      "test": "TestExplicitRetryRejectionDoesNotExposeUnderlyingCause",
+      "seconds": 0.48
+    },
+    {
+      "test": "TestChangedChecksWaitForLiveListThenRequireNewListBeforePublication",
+      "seconds": 0.47
+    },
+    {
+      "test": "TestFirstReviewApprovesPinnedHeadWithIndependentSettings",
+      "seconds": 0.47
+    },
+    {
+      "test": "TestSetupRetryRunsConfiguredListBeforeImplementer",
+      "seconds": 0.47
+    },
+    {
+      "test": "TestFailedPRReadDoesNotBypassExpiredCIWait",
+      "seconds": 0.46
+    },
+    {
+      "test": "TestPlanMatchesNextPoll",
+      "seconds": 0.45
+    },
+    {
+      "test": "TestReviewFinishesOfflineAndPublishesOnRestart",
+      "seconds": 0.45
+    },
+    {
+      "test": "TestLegacyCodexFixRequestsPreserveHarnessOwnership",
+      "seconds": 0.45
+    },
+    {
+      "test": "TestSystemStepLoginStartupAndSharedCommandsIgnoreLogoutFailure",
+      "seconds": 0.45
+    },
+    {
+      "test": "TestLegacyReviewWithoutAvailablePortsLeavesRestartUsable",
+      "seconds": 0.44
+    },
+    {
+      "test": "TestStopAndWatchReviewUseSharedOperations",
+      "seconds": 0.44
+    },
+    {
+      "test": "TestIssueToDraftPRAndRepeatedTicksAfterRestart",
+      "seconds": 0.44
+    },
+    {
+      "test": "TestReviewChangesRequiredPreparesFix",
+      "seconds": 0.44
+    },
+    {
+      "test": "TestMergeRecoversRunningAttemptThatNeverLaunched",
+      "seconds": 0.43
+    },
+    {
+      "test": "TestConcurrentTicksProduceOneRunAndAttempt",
+      "seconds": 0.43
+    },
+    {
+      "test": "TestIncompleteNativeExecutionReachesAdapterClassifier",
+      "seconds": 0.43
+    },
+    {
+      "test": "TestChecksResumeSamePhaseBeforePublicationWithoutSpendingAttempts",
+      "seconds": 0.42
+    },
+    {
+      "test": "TestExternalHeadChangeStopsReviewAndDiscardsApproval",
+      "seconds": 0.42
+    },
+    {
+      "test": "TestBlockedReviewAndAttentionRollBackTogether",
+      "seconds": 0.42
+    },
+    {
+      "test": "TestStopKeepsIgnoredFilesOfAnUnownedRunInAnyState",
+      "seconds": 0.42
+    },
+    {
+      "test": "TestExplicitRetryDefaultAttemptKeepsRunAndHistory",
+      "seconds": 0.41
+    },
+    {
+      "test": "TestStopCompletesWhenTheManagedBaseIsGone",
+      "seconds": 0.41
+    },
+    {
+      "test": "TestReviewPreservesPreexistingWorkAndPermitsIgnoredBuildOutput",
+      "seconds": 0.41
+    },
+    {
+      "test": "TestHandbackPendingPublicationIsVisibleAndStopCancelsIt",
+      "seconds": 0.4
+    },
+    {
+      "test": "TestReviewerLeftOnDetachedHeadRequiresAttention",
+      "seconds": 0.4
+    },
+    {
+      "test": "TestStopDuringBaseVerificationStopsProcessesAndReconcilesScratch",
+      "seconds": 0.39
+    },
+    {
+      "test": "TestReviewerReceivesPassedLocalCheckCommandsAndOutput",
+      "seconds": 0.39
+    },
+    {
+      "test": "TestDelayedVerificationPreservesPublishedEscalation",
+      "seconds": 0.39
+    },
+    {
+      "test": "TestEscalationPermanentPublicationFailureStops",
+      "seconds": 0.39
+    },
+    {
+      "test": "TestHarnessCheckRecoversWithAllRunsStopped",
+      "seconds": 0.39
+    },
+    {
+      "test": "TestExplicitRetryRenewsCIWithoutAgentOrRound",
+      "seconds": 0.39
+    },
+    {
+      "test": "TestExplicitRetryCILabelFailureDoesNotBypassDeadline",
+      "seconds": 0.39
+    },
+    {
+      "test": "TestHarnessCheckBrowserControlsAndProtections",
+      "seconds": 0.39
+    },
+    {
+      "test": "TestStopCompletesWhenTheLeftoversCannotBeChecked",
+      "seconds": 0.39
+    },
+    {
+      "test": "TestAgentPortExhaustionKeepsRetryFailedAndReconcilesStop",
+      "seconds": 0.38
+    },
+    {
+      "test": "TestReviewStartsAfterSuccessfulSetupRetry",
+      "seconds": 0.38
+    },
+    {
+      "test": "TestUsageLimitClassifierNeverSeesSuccessfulNativeResults",
+      "seconds": 0.38
+    },
+    {
+      "test": "TestSuccessfulImplementContinuationWorksWithoutResultFile",
+      "seconds": 0.38
+    },
+    {
+      "test": "TestFinishedChecksRecoverPerCommandEvidenceAfterRestart",
+      "seconds": 0.38
+    },
+    {
+      "test": "TestSetupRunsAgainForRecreatedWorktree",
+      "seconds": 0.37
+    },
+    {
+      "test": "TestClearedChecksStillSupplyRecordedResultsToReview",
+      "seconds": 0.37
+    },
+    {
+      "test": "TestFailingChecksNeverPublishImplementation",
+      "seconds": 0.37
+    },
+    {
+      "test": "TestSetupTimeoutNeedsAttentionWithoutStartingAgent",
+      "seconds": 0.37
+    },
+    {
+      "test": "TestTakeoverPreservesAmbiguousReviewerGitState",
+      "seconds": 0.37
+    },
+    {
+      "test": "TestExpiredTemporaryResetDoesNotDescribeCreditProbeDelay",
+      "seconds": 0.36
+    },
+    {
+      "test": "TestCodexRetryUsesExactIdentityAndFullInput",
+      "seconds": 0.36
+    },
+    {
+      "test": "TestEscalationUnavailableDiffDoesNotBlockAndRetries",
+      "seconds": 0.35
+    },
+    {
+      "test": "TestMergeCleanupPendingIsVisible",
+      "seconds": 0.35
+    },
+    {
+      "test": "TestFailedPRReadDoesNotBypassPersistedStop",
+      "seconds": 0.35
+    },
+    {
+      "test": "TestCodexIdentityPersistsBeforeNextGitHubPoll",
+      "seconds": 0.34
+    },
+    {
+      "test": "TestPrepareRecoversAfterOwnershipSaveFails",
+      "seconds": 0.34
+    },
+    {
+      "test": "TestCITimeoutRetainsDeadlineAcrossUnknownAndRestart",
+      "seconds": 0.33
+    },
+    {
+      "test": "TestHumanActionRoundExhaustionNamesCurrentBlockers",
+      "seconds": 0.33
+    },
+    {
+      "test": "TestReviewHTTPDetailStatusAndLiveUpdates",
+      "seconds": 0.33
+    },
+    {
+      "test": "TestRetryRequeuesStoppedPublications",
+      "seconds": 0.32
+    },
+    {
+      "test": "TestCodexEarlyIdentityRestartAndStop",
+      "seconds": 0.32
+    },
+    {
+      "test": "TestCodexIssueToDraftPR",
+      "seconds": 0.31
+    },
+    {
+      "test": "TestUnexplainedMissingMergeWorktreeRequiresAttention",
+      "seconds": 0.31
+    },
+    {
+      "test": "TestSchedulerRestartObservesExistingTmuxAttempt",
+      "seconds": 0.31
+    },
+    {
+      "test": "TestPauseContinuesExistingRunAndResumeClaimsNewIssue",
+      "seconds": 0.29
+    },
+    {
+      "test": "TestCodexAvailabilityCheckPreservesReportedReset",
+      "seconds": 0.29
+    },
+    {
+      "test": "TestStopKeepsTheWorktreeOfASavedOwnershipInAnyState",
+      "seconds": 0.28
+    },
+    {
+      "test": "TestDashboardTakeoverPreparesAndDisplaysEscapedExactCommand",
+      "seconds": 0.28
+    },
+    {
+      "test": "TestImplementerLaunchFailurePreservesSuccessfulSetupOnRetry",
+      "seconds": 0.27
+    },
+    {
+      "test": "TestHarnessCheckPreparationFailureReleasesProbe",
+      "seconds": 0.27
+    },
+    {
+      "test": "TestPreparedRunReleasesItsIntentOnceOwnershipIsSaved",
+      "seconds": 0.27
+    },
+    {
+      "test": "TestHarnessCheckWaitHonorsCancellation",
+      "seconds": 0.27
+    },
+    {
+      "test": "TestStopWithoutAnIntentChangesNothingInAnyState",
+      "seconds": 0.26
+    },
+    {
+      "test": "TestTakeoverWaitsForLifecycleOperationAndConcurrentRequestsAreIdempotent",
+      "seconds": 0.25
+    },
+    {
+      "test": "TestRunDetailShowsStoredRolesBeforeReviewerStarts",
+      "seconds": 0.25
+    },
+    {
+      "test": "TestLegacyRunContinuesReadingRoleConfiguration",
+      "seconds": 0.25
+    },
+    {
+      "test": "TestLegacyCodexRestartDoesNotSendSessionToAnotherHarness",
+      "seconds": 0.24
+    },
+    {
+      "test": "TestExcludedOnlyPhaseRetainsDiagnosticsOnNoChanges",
+      "seconds": 0.24
+    },
+    {
+      "test": "TestShutdownKeepsLiveImplementAndReconcileReusesIt",
+      "seconds": 0.24
+    },
+    {
+      "test": "TestHandbackPreservesAmbiguousUnsavedPRHistory",
+      "seconds": 0.24
+    },
+    {
+      "test": "TestTakeoverIntentFinishesAfterRestart",
+      "seconds": 0.23
+    },
+    {
+      "test": "TestRetryReleasesTheIntentAfterAFailedConfirmation",
+      "seconds": 0.22
+    },
+    {
+      "test": "TestStopLiveImplementPreservesCodeAndUpdatesLabels",
+      "seconds": 0.22
+    },
+    {
+      "test": "TestManualResumeRejectsWorktreeReplacementAndPreservesBothRepositories",
+      "seconds": 0.22
+    },
+    {
+      "test": "TestRetryRequeueCommitsWithTheIntent",
+      "seconds": 0.21
+    },
+    {
+      "test": "TestMissingOwnedWorktreeRequiresAttentionWithoutReportingAnOrphan",
+      "seconds": 0.2
+    },
+    {
+      "test": "TestSetupFailureNeverStartsImplementer",
+      "seconds": 0.2
+    },
+    {
+      "test": "TestDashboardRetryGuidanceIsOptionalAndEscapedInHistory",
+      "seconds": 0.18
+    },
+    {
+      "test": "TestHarnessOverrideUsesDefaultsAndConfiguredSkills",
+      "seconds": 0.18
+    },
+    {
+      "test": "TestTakeoverPrerequisitesDoNotInterruptOrCreateConversation",
+      "seconds": 0.18
+    },
+    {
+      "test": "TestBlockedImplementationDisplaysCriteriaBeforeReview",
+      "seconds": 0.17
+    },
+    {
+      "test": "TestStopClearsLeftoversThatARetryRemoved",
+      "seconds": 0.17
+    },
+    {
+      "test": "TestCorrectedHarnessOverridesCancelAmbiguousRefusalDelivery",
+      "seconds": 0.17
+    },
+    {
+      "test": "TestStopKeepsLeftoversThatARetryStillFinds",
+      "seconds": 0.16
+    },
+    {
+      "test": "TestStopIntentSurvivesLabelFailureAndRestart",
+      "seconds": 0.15
+    },
+    {
+      "test": "TestLocalAPISharesControlsAndRequiresCSRFForStop",
+      "seconds": 0.15
+    },
+    {
+      "test": "TestVerificationPublicationStopsOnPermanentFailure",
+      "seconds": 0.15
+    },
+    {
+      "test": "TestCurrentImplementReportUsesSavedEligibility",
+      "seconds": 0.14
+    },
+    {
+      "test": "TestTakeoverAmbiguousExitPreservesWorkForAttention",
+      "seconds": 0.14
+    },
+    {
+      "test": "TestCodexPersistsAttemptBeforeLaunchAndBoundsStartupRetries",
+      "seconds": 0.13
+    },
+    {
+      "test": "TestOrphanedWorktreeAndSessionAreReportedAndPreservedWhilePaused",
+      "seconds": 0.12
+    },
+    {
+      "test": "TestRepeatedStopRecordsTheSameLeftoversOnce",
+      "seconds": 0.11
+    },
+    {
+      "test": "TestVerificationPublicationBacksOffRecoverableFailures",
+      "seconds": 0.1
+    },
+    {
+      "test": "TestLimitedImplementerHarnessSpendsNoPerIssueCalls",
+      "seconds": 0.1
+    },
+    {
+      "test": "TestOrderingAndGlobalAndRepositoryLimits",
+      "seconds": 0.1
+    },
+    {
+      "test": "TestPermanentRefusalStopsPublicationWithWarning",
+      "seconds": 0.09
+    },
+    {
+      "test": "TestPendingRefusalPreservesTrustedRelabelAfterRestart",
+      "seconds": 0.09
+    },
+    {
+      "test": "TestDashboardQueuePlacesStatesAndIssuesInSixGroups",
+      "seconds": 0.09
+    },
+    {
+      "test": "TestTimelineReadableEvents",
+      "seconds": 0.09
+    },
+    {
+      "test": "TestClaimOrderAndLabelFailureAbortPreparation",
+      "seconds": 0.08
+    },
+    {
+      "test": "TestEnabledRepositoryGitHubFailureDoesNotBlockOtherRepositories",
+      "seconds": 0.08
+    },
+    {
+      "test": "TestListingWaiterReturnsWhenItsDeadlineExpires",
+      "seconds": 0.08
+    },
+    {
+      "test": "TestQueueReportsLastGoodListingWhenRefreshDeadlineExpires",
+      "seconds": 0.08
+    },
+    {
+      "test": "TestLimitedHarnessStillSettlesARelabelledRefusal",
+      "seconds": 0.08
+    },
+    {
+      "test": "TestDashboardObservationKeepsBoundedSelectionAndOlderDetail",
+      "seconds": 0.08
+    },
+    {
+      "test": "TestDashboardOverviewKPIsNeedsYouAndQueueCountsAgree",
+      "seconds": 0.07
+    },
+    {
+      "test": "TestRequeueDeliversStoppedAttentionPublicationAfterTheCauseIsFixed",
+      "seconds": 0.07
+    },
+    {
+      "test": "TestRequeueDeliversStoppedReportPublicationAfterTheCauseIsFixed",
+      "seconds": 0.07
+    },
+    {
+      "test": "TestDashboardRequeuesStoppedPublications",
+      "seconds": 0.07
+    },
+    {
+      "test": "TestHarnessOverrideRequiresDestinationCapabilities",
+      "seconds": 0.07
+    },
+    {
+      "test": "TestTakeoverDuringPreparationPreservesManualState",
+      "seconds": 0.07
+    },
+    {
+      "test": "TestTickRunsFollowsEveryMaintenancePendingStep",
+      "seconds": 0.06
+    },
+    {
+      "test": "TestRuntimeDashboardControlSharesDispatchGate",
+      "seconds": 0.06
+    },
+    {
+      "test": "TestReportPublicationStopsOnPermanentFailure",
+      "seconds": 0.06
+    },
+    {
+      "test": "TestDeferredGitHubFailureStillGatesClaimsUntilReconcileSucceeds",
+      "seconds": 0.06
+    },
+    {
+      "test": "TestDashboardRecentlyEndedLinksToFullHistory",
+      "seconds": 0.06
+    },
+    {
+      "test": "TestRunGitHubFailureDoesNotBlockOtherRepositories",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestInvalidHarnessOverrideDeliverySurvivesRestart",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestUpgradeDoesNotRepublishLegacyImplementEvidence",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestRunFinishingAfterTransientFailureStopsReportPublication",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestDisabledRepositoryGitHubFailureDoesNotBlockDispatch",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestFinishedRunStopsRetryingUnresolvableVerificationFailure",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestThrottledReportCommentBacksOffAndIsDelivered",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestRecoveredClaimWithoutSnapshotCannotExecuteUntrustedBody",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestRunFinishingAfterTransientFailureStopsVerificationPublication",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestTickRunsKeepsPendingWorkAndSkipsFinishedHistory",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestReportPublicationBacksOffTransientFailure",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestAttentionPublicationStopsOnPermanentFailure",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestRequeueAPIAndDashboardShareTheScheduler",
+      "seconds": 0.05
+    },
+    {
+      "test": "TestRejectedFixKeepsItsPublicationIntent",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestLimitedHarnessStillRefusesAnUnresolvableOverride",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestEarlyStopRetriesReadyRemovalBeforeBecomingTerminal",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestAttentionPublicationBacksOffTransientFailure",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestRunWithMissingContextKeepsItsOrphanedClaim",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestRequeueDeliversStoppedVerificationBodyAfterTheCauseIsFixed",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestRunDetailHTTPRendersHeaderStepperCurrentAndHistoryForEveryState",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestTrustedRelabelClearsPreviousRefusal",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestFailingVerificationPublicationKeepsAttemptsBounded",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestDashboardRendersRefusedIssueReason",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestInterruptedVerificationAttemptStaysRetryableForFinishedRun",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestRunDetailHTTPConfirmsActionsAndShowsLoading",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestRepeatedStopDoesNotChangeNewerRunLabels",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestClaimRechecksTheGateOnTheFreshSnapshot",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestPollListsLabeledIssuesOnceAndSharesTheListing",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestPlanHTTPReadsOnly",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestFinishedRunStopsRetryingAttentionPublication",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestOrphanedClaimIsReportedWithoutDispatchOrLabelChanges",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestPendingHandbackDuringOutageDefersInsteadOfRefusingStartup",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestBlockedAndUnreadyIssuesAreNeverClaimed",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestRunPollsImmediatelyAndPeriodically",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestStoppedClaimDoesNotRedispatch",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestRunFinishingAfterTransientFailureStopsAttentionPublication",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestRequeueFindsAnAlreadyDeliveredComment",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestTrustedIssueCanBeClaimed",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestFinishedRunStopsRetryingTransientVerificationFailure",
+      "seconds": 0.04
+    },
+    {
+      "test": "TestClaimSnapshotRecoveryReadsAnOpenIssueWithoutLabels",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestStopWithoutCreatedWorkDoesNotAddAttention",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestFinishedRunStopsRetryingReportPublication",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestQueueCachesRefusedIssueSnapshotsAcrossRefreshes",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestQueueForgetsOnlyRefusalsNothingCanFinish",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestConcurrentListingReadersShareOneFetch",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestPlanUsesResolvedRoleSettingsAndImplementerGate",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestQueueReportKeepsReadableRepositoriesWhenOneFails",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestScopedGitHubFindingsDoNotPersistRawDiagnostics",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestRequeueReportsAnUnknownRun",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestBlockedImplementContinuationUsesSavedReport",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestQueueScopesUnreadableRefusedIssues",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestQueueDoesNotCacheRefusedReadCancellation",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestPlanRepositoryFilterRetainsEarlierGlobalReservations",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestQueueKeepsSnapshotWhenTheRefreshCannotAffordARead",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestAuthorizationChangedBeforeClaimIsRefused",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestSuccessfulImplementContinuationUsesSavedReport",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestQueueReusesBlockerReadsForUnchangedIssues",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestQueueKeepsRefusalReasonsWhenTheRefreshCannotAffordReads",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestQueueDoesNotStartRefusedReadsTheRefreshCannotAffordAcrossRepositories",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestPauseDuringEligibilityStopsPendingClaim",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestSettingsRendersConfigurationTablesAndStructuredDoctorResults",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestUntrustedIssueNeverClaimedAndRefusalVisible",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestUnreadableAuthorizationFailsClosed",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestRefusalFinishesAfterRestartWithoutDuplicateComment",
+      "seconds": 0.03
+    },
+    {
+      "test": "TestStatusExposesLoadedEffectiveConfigurationAndSource",
+      "seconds": 0.02
+    },
+    {
+      "test": "TestDashboardNeedsYouAllClear",
+      "seconds": 0.02
+    },
+    {
+      "test": "TestQueueKeepsLastRefusedSnapshotWhenRereadFails",
+      "seconds": 0.02
+    },
+    {
+      "test": "TestPlanReservesSlotsInSchedulingOrderAndProjectsRepository",
+      "seconds": 0.02
+    },
+    {
+      "test": "TestQueueRetriesARefusedReadCutShortByTheRefreshBudget",
+      "seconds": 0.02
+    },
+    {
+      "test": "TestQueueDoesNotStartARefusedReadTheRefreshCannotAfford",
+      "seconds": 0.02
+    },
+    {
+      "test": "TestUntrustedTitleEditRefusesClaimWithExplanation",
+      "seconds": 0.02
+    },
+    {
+      "test": "TestDashboardUpdatesReachSubscribersWithoutPersisting",
+      "seconds": 0.02
+    },
+    {
+      "test": "TestQueueUsesRelabelledIssueFromListing",
+      "seconds": 0.02
+    },
+    {
+      "test": "TestPlanExpiredHarnessLimitAndEmptyJSON",
+      "seconds": 0.02
+    },
+    {
+      "test": "TestPollingRunStopsOnCancellation",
+      "seconds": 0.01
+    },
+    {
+      "test": "TestCombinedControlPlaneProcess",
+      "seconds": 0
+    },
+    {
+      "test": "TestManualLimitControlPlaneProcess",
+      "seconds": 0
+    },
+    {
+      "test": "TestReconciliationControlPlaneProcess",
+      "seconds": 0
+    },
+    {
+      "test": "TestListingCacheDropsFetchesFromEarlierPolls",
+      "seconds": 0
+    },
+    {
+      "test": "TestLatestEligibleVerificationUsesSavedEligibility",
+      "seconds": 0
+    },
+    {
+      "test": "TestGitHubFailureClassification",
+      "seconds": 0
+    },
+    {
+      "test": "TestCIControlPlaneProcess",
+      "seconds": 0
+    },
+    {
+      "test": "TestReviewControlPlaneProcess",
+      "seconds": 0
+    },
+    {
+      "test": "TestUsageLimitControlPlaneProcess",
+      "seconds": 0
+    }
+  ],
+  "skipped": [
+    "TestGitHubSchedulerIntegration"
+  ],
+  "shard_package_seconds": [
+    151.365,
+    182.161,
+    161.064,
+    179.892
+  ]
+}

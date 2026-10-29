@@ -3,41 +3,30 @@ package scheduler_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"github.com/rcpassos/mergeyard/internal/app"
-	"github.com/rcpassos/mergeyard/internal/ci"
-	"github.com/rcpassos/mergeyard/internal/fault"
-	"github.com/rcpassos/mergeyard/internal/runner"
-	"github.com/rcpassos/mergeyard/internal/scheduler"
-	"github.com/rcpassos/mergeyard/internal/sessions"
-	"github.com/rcpassos/mergeyard/internal/web"
-	"html"
-	"io"
-	"net"
 	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
-	"sync"
-	"syscall"
 	"testing"
 	"time"
 
-	managedgit "github.com/rcpassos/mergeyard/internal/git"
+	"github.com/rcpassos/mergeyard/internal/ci"
+	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/scheduler"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
+	"github.com/rcpassos/mergeyard/internal/web"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
 func TestObservedMergeCompletesCoding(t *testing.T) {
-	s, runtime, api, _, _, _ := localFlow(t, successfulScript)
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	pr := api.prs["mergeyard/issue-7"]
+	t.Parallel()
+
+	flow := testkit.NewScenario(t)
+	s, runtime, api, _, _, _ := flow.Parts()
+	run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
+	pr := api.Prs["mergeyard/issue-7"]
 	pr.State, pr.Merged = github.Closed, true
-	api.issues["owner/repo"][0].State = github.Closed
+	api.Issues["owner/repo"][0].State = github.Closed
 	if _, err := s.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -48,10 +37,13 @@ func TestObservedMergeCompletesCoding(t *testing.T) {
 }
 
 func TestMergeCleanupPendingIsVisible(t *testing.T) {
-	s, runtime, api, _, cfg, _ := localFlow(t, successfulScript)
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	api.mutate = func(string, string, int, string) error { return fmt.Errorf("GitHub unavailable <script>") }
+	t.Parallel()
+
+	flow := testkit.NewScenario(t)
+	s, runtime, api, _, cfg, _ := flow.Parts()
+	run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
+	api.Prs["mergeyard/issue-7"].State, api.Prs["mergeyard/issue-7"].Merged = github.Closed, true
+	api.Mutate = func(string, string, int, string) error { return fmt.Errorf("GitHub unavailable <script>") }
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +57,7 @@ func TestMergeCleanupPendingIsVisible(t *testing.T) {
 	}
 	for _, path := range []string{"/", "/runs/" + run.ID} {
 		res := httptest.NewRecorder()
-		server.ServeHTTP(res, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331"+path, nil))
+		server.ServeHTTP(res, testkit.DashboardRequest(t, server, "GET", "http://127.0.0.1:7331"+path, nil))
 		if res.Code != 200 || !strings.Contains(strings.ToLower(res.Body.String()), "cleanup pending") {
 			t.Fatalf("merge missing from %s", path)
 		}
@@ -74,273 +66,33 @@ func TestMergeCleanupPendingIsVisible(t *testing.T) {
 		}
 	}
 	res := httptest.NewRecorder()
-	server.ServeHTTP(res, apiRequest(t, runtime.Workspace.Root, "GET", "http://127.0.0.1:7331/api/status"))
+	server.ServeHTTP(res, testkit.ApiRequest(t, runtime.Workspace.Root, "GET", "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if err := json.Unmarshal(res.Body.Bytes(), &status); err != nil || len(status.Runs) != 1 || status.Runs[0].Merge == nil || !status.Runs[0].Merge.Pending() {
 		t.Fatal("status lost maintenance")
 	}
 }
 
-type mergeGitHub struct {
-	*ciGitHub
-	closeCalls   int
-	closeError   error
-	applyClose   bool
-	removeBudget time.Duration
-}
-
-func (f *mergeGitHub) RemoveLabel(ctx context.Context, repo string, n int, label string) error {
-	if deadline, ok := ctx.Deadline(); ok {
-		f.removeBudget = time.Until(deadline)
-	}
-	return f.ciGitHub.RemoveLabel(ctx, repo, n, label)
-}
-
-func (f *mergeGitHub) CloseIssue(_ context.Context, repo string, n int) error {
-	f.closeCalls++
-	if f.applyClose {
-		for i := range f.issues[repo] {
-			if f.issues[repo][i].Number == n {
-				f.issues[repo][i].State = github.Closed
-			}
-		}
-	}
-	return f.closeError
-}
-
-type pendingStopRunner struct {
-	runner.Runner
-	pending bool
-	stopped int
-}
-
-func (r *pendingStopRunner) StopSession(ctx context.Context, ref runner.SessionRef) error {
-	r.stopped++
-	if r.pending {
-		return nil
-	}
-	return r.Runner.StopSession(ctx, ref)
-}
-
-func TestEarlyMergeWaitsForProcessExitBeforeReleasingCapacity(t *testing.T) {
-	_, runtime, base, remote, cfg, realRunner := localFlow(t, reviewScript(`printf tampered > feature.txt; /bin/sleep 60`))
-	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
-	r := &pendingStopRunner{Runner: realRunner, pending: true}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := finish(t, s, workflow.Active, workflow.Review)
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	ref, err := s.Watch(context.Background(), run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	head := gitCommand(t, remote, "rev-parse", "mergeyard/issue-7")
-	base.prs["mergeyard/issue-7"].State, base.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	base.issues["owner/repo"] = append(base.issues["owner/repo"], ready(8))
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	runs, _ := s.Runs(context.Background())
-	if len(runs) != 1 || runs[0].State != workflow.Active || runs[0].Merge == nil || runs[0].Merge.ProcessExited || !runs[0].Merge.Early {
-		t.Fatalf("released before exit: %+v", runs)
-	}
-	server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res := httptest.NewRecorder()
-	server.ServeHTTP(res, dashboardRequest(t, server, "GET", "http://127.0.0.1:7331/runs/"+run.ID, nil))
-	if !strings.Contains(res.Body.String(), "Stop owned phase and verify exit") || strings.Contains(res.Body.String(), "Retry Stop") {
-		t.Fatal("pending merge shows ordinary stop instructions")
-	}
-	// Failed stop survives a scheduler restart and Stop cannot change merge intent to STOPPED.
-	root := runtime.Workspace.Root
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := app.Open(context.Background(), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	r.pending = false
-	s, err = scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Stop(context.Background(), run.ID); err != nil {
-		t.Fatal(err)
-	}
-	saved, _ := reopened.Workflow.Get(context.Background(), run.ID)
-	status, err := realRunner.SessionStatus(context.Background(), ref)
-	if err != nil || status.State == runner.SessionRunning || saved.State != workflow.Completed || saved.Merge.Pending() {
-		t.Fatalf("merge stop: %+v %+v %v", saved, saved.Merge, err)
-	}
-	if gitCommand(t, remote, "rev-parse", "mergeyard/issue-7") != head {
-		t.Fatal("pushed after merge")
-	}
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	runs, _ = s.Runs(context.Background())
-	if len(runs) != 2 {
-		t.Fatal("exit did not release capacity")
-	}
-}
-
-func TestDirtyMergeCleanupPreservesWorkAndDispatchesAnotherIssue(t *testing.T) {
-	_, runtime, base, remote, cfg, r := localFlow(t, successfulScript)
-	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	var path string
-	if err := runtime.DB.QueryRow("SELECT worktree_path FROM runs WHERE id=?", run.ID).Scan(&path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(path, "human.txt"), []byte("keep me"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	base.prs["mergeyard/issue-7"].State, base.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	base.issues["owner/repo"] = append(base.issues["owner/repo"], ready(8))
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	runs, _ := s.Runs(context.Background())
-	saved, _ := runtime.Workflow.Get(context.Background(), run.ID)
-	if len(runs) != 2 || saved.State != workflow.Completed || !saved.Merge.Pending() || saved.Merge.WorktreeRemoved || !strings.Contains(saved.Merge.Error, "preserved") {
-		t.Fatalf("dirty merge: %+v %+v", runs, saved.Merge)
-	}
-	data, err := os.ReadFile(filepath.Join(path, "human.txt"))
-	if err != nil || string(data) != "keep me" {
-		t.Fatal("lost dirty work")
-	}
-	// Retry after a real database reopen, with the control plane paused.
-	root := runtime.Workspace.Root
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := app.Open(context.Background(), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	s, err = scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(path, "human.txt")); err != nil {
-		t.Fatal(err)
-	}
-	s.Pause(context.Background(), true)
-	for range 2 {
-		if err := s.Tick(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	saved, _ = reopened.Workflow.Get(context.Background(), run.ID)
-	if saved.Merge.Pending() || saved.Merge.Error != "" {
-		t.Fatalf("retry incomplete: %+v", saved.Merge)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatal("tree not removed")
-	}
-	if gitCommand(t, remote, "rev-parse", "mergeyard/issue-7") == "" {
-		t.Fatal("remote branch removed")
-	}
-}
-
-func TestMergeMaintenanceRestartsAtEachBoundary(t *testing.T) {
-	for _, boundary := range []string{"merge_observed", "process_exited", "coding_completed", "ready_removed", "running_removed", "attention_removed", "issue_closed", "review_restored", "worktree_started", "worktree_removed", "branch_deleted"} {
-		t.Run(boundary, func(t *testing.T) {
-			_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
-			api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
-			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-			if err != nil {
-				t.Fatal(err)
-			}
-			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-			pr := base.prs["mergeyard/issue-7"]
-			pr.State, pr.Merged = github.Closed, true
-			condition := fmt.Sprintf("NEW.type='merge.cleanup_updated' AND NEW.payload_json LIKE '%%\"%s\":true%%'", boundary)
-			if boundary == "merge_observed" {
-				condition = "NEW.type='pr.merge_observed'"
-			}
-			if boundary == "coding_completed" {
-				condition = "NEW.type='run.completed'"
-			}
-			if _, err := runtime.DB.Exec("CREATE TRIGGER reject_merge BEFORE INSERT ON events WHEN " + condition + " BEGIN SELECT RAISE(FAIL,'interrupted acknowledgement'); END"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := s.Reconcile(context.Background()); err == nil {
-				t.Fatal("boundary did not reject acknowledgement")
-			}
-			root := runtime.Workspace.Root
-			if err := runtime.Close(); err != nil {
-				t.Fatal(err)
-			}
-			reopened, err := app.Open(context.Background(), root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer reopened.Close()
-			if _, err := reopened.DB.Exec("DROP TRIGGER reject_merge"); err != nil {
-				t.Fatal(err)
-			}
-			s, err = scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
-			if err != nil {
-				t.Fatal(err)
-			}
-			s.Pause(context.Background(), true)
-			for range 2 {
-				if _, err := s.Reconcile(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-			}
-			saved, err := reopened.Workflow.Get(context.Background(), run.ID)
-			if err != nil || saved.State != workflow.Completed || saved.Merge == nil || saved.Merge.Pending() || saved.Merge.Error != "" {
-				t.Fatalf("restart: %+v merge=%+v %v", saved, saved.Merge, err)
-			}
-			var path, branch string
-			basePath := filepath.Join(root, "repos", "owner-repo", "base")
-			if err := reopened.DB.QueryRow("SELECT worktree_path,branch FROM runs WHERE id=?", run.ID).Scan(&path, &branch); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Fatal("worktree retained")
-			}
-			if got := gitCommand(t, basePath, "branch", "--list", branch); got != "" {
-				t.Fatal("local branch retained")
-			}
-			var attempts int
-			if err := reopened.DB.QueryRow("SELECT count(*) FROM phase_attempts WHERE run_id=?", run.ID).Scan(&attempts); err != nil || attempts != 2 {
-				t.Fatal("restart relaunched work")
-			}
-		})
-	}
-}
-
 func TestAmbiguousMergeCleanupDoesNotRedispatchSourceIssue(t *testing.T) {
+	t.Parallel()
+
 	for _, applied := range []bool{false, true} {
 		t.Run(fmt.Sprint(applied), func(t *testing.T) {
-			_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
-			api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: applied, closeError: fmt.Errorf("lost close response")}
-			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+			t.Parallel()
+
+			flow := testkit.NewScenario(t)
+			_, runtime, base, _, cfg, r := flow.Parts()
+			api := &testkit.MergeGitHub{CiGitHub: &testkit.CiGitHub{FakeGitHub: base}, ApplyClose: applied, CloseError: fmt.Errorf("lost close response")}
+			s, err := flow.New(cfg, scheduler.Dependencies{GitHub: api, Runner: r})
 			if err != nil {
 				t.Fatal(err)
 			}
-			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-			base.prs["mergeyard/issue-7"].State, base.prs["mergeyard/issue-7"].Merged = github.Closed, true
+			run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
+			base.Prs["mergeyard/issue-7"].State, base.Prs["mergeyard/issue-7"].Merged = github.Closed, true
 			// The ready removal fails while other label removals succeed: pending
 			// maintenance must still exclude this source issue from dispatch.
-			base.issues["owner/repo"][0].Labels = append(base.issues["owner/repo"][0].Labels, github.Label{Name: "ready-for-agent"})
-			base.mutate = func(action, repo string, n int, label string) error {
+			base.Issues["owner/repo"][0].Labels = append(base.Issues["owner/repo"][0].Labels, github.Label{Name: "ready-for-agent"})
+			base.Mutate = func(action, repo string, n int, label string) error {
 				if n == 7 && label == "ready-for-agent" {
 					return fmt.Errorf("remove unavailable")
 				}
@@ -353,7 +105,7 @@ func TestAmbiguousMergeCleanupDoesNotRedispatchSourceIssue(t *testing.T) {
 			if saved.State != workflow.Completed || !saved.Merge.Pending() {
 				t.Fatal("ambiguous closure lost")
 			}
-			base.issues["owner/repo"] = append(base.issues["owner/repo"], ready(8))
+			base.Issues["owner/repo"] = append(base.Issues["owner/repo"], testkit.Ready(8))
 			if err := s.Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -366,13 +118,13 @@ func TestAmbiguousMergeCleanupDoesNotRedispatchSourceIssue(t *testing.T) {
 					t.Fatal("redispatched merged issue")
 				}
 			}
-			calls := api.closeCalls
+			calls := api.CloseCalls
 			if applied && calls != 1 {
 				t.Fatal("applied closure was replayed")
 			}
-			base.mutate = nil
-			api.applyClose = true
-			api.closeError = nil
+			base.Mutate = nil
+			api.ApplyClose = true
+			api.CloseError = nil
 			for range 2 {
 				if _, err := s.Reconcile(context.Background()); err != nil {
 					t.Fatal(err)
@@ -387,10 +139,15 @@ func TestAmbiguousMergeCleanupDoesNotRedispatchSourceIssue(t *testing.T) {
 }
 
 func TestMergedAttentionAndManualRunsCompleteButStoppedRunsStayStopped(t *testing.T) {
+	t.Parallel()
+
 	for _, state := range []workflow.State{workflow.NeedsAttention, workflow.Manual, workflow.Stopped} {
 		t.Run(string(state), func(t *testing.T) {
-			s, runtime, api, _, _, _ := localFlow(t, successfulScript)
-			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+			t.Parallel()
+
+			flow := testkit.NewScenario(t)
+			s, runtime, api, _, _, _ := flow.Parts()
+			run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
 			trigger := workflow.OperationFailed
 			if state == workflow.Manual {
 				trigger = workflow.TakeOver
@@ -402,8 +159,8 @@ func TestMergedAttentionAndManualRunsCompleteButStoppedRunsStayStopped(t *testin
 			} else if _, err := runtime.Workflow.Transition(context.Background(), run.ID, workflow.Request{Trigger: trigger, Failure: &fault.Error{Code: "test.attention", Message: "Inspect work"}}); err != nil {
 				t.Fatal(err)
 			}
-			api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-			api.issues["owner/repo"][0].State = github.Closed
+			api.Prs["mergeyard/issue-7"].State, api.Prs["mergeyard/issue-7"].Merged = github.Closed, true
+			api.Issues["owner/repo"][0].State = github.Closed
 			if _, err := s.Reconcile(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -419,40 +176,22 @@ func TestMergedAttentionAndManualRunsCompleteButStoppedRunsStayStopped(t *testin
 	}
 }
 
-func TestUnexplainedMissingMergeWorktreeRequiresAttention(t *testing.T) {
-	s, runtime, api, _, _, _ := localFlow(t, successfulScript)
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	var path string
-	runtime.DB.QueryRow("SELECT worktree_path FROM runs WHERE id=?", run.ID).Scan(&path)
-	if err := os.RemoveAll(path); err != nil {
-		t.Fatal(err)
-	}
-	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	api.issues["owner/repo"][0].State = github.Closed
-	for range 2 {
-		if _, err := s.Reconcile(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	saved, _ := runtime.Workflow.Get(context.Background(), run.ID)
-	if saved.State != workflow.Completed || saved.Merge.WorktreeStarted || saved.Merge.WorktreeRemoved || saved.Merge.BranchDeleted || saved.Merge.Error == "" {
-		t.Fatalf("unexplained loss treated as cleanup: %+v", saved.Merge)
-	}
-}
-
 func TestReadyMergeAndCompletedPublicationRemainIndependent(t *testing.T) {
-	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+	t.Parallel()
+
+	flow := testkit.NewScenario(t)
+	_, runtime, base, _, cfg, r := flow.Parts()
 	// Queue the report without delivering it, so its first attempt happens
 	// after completion. A completed run still gets that never-attempted chance.
 	cfg.PRComments = false
-	publisher := &reportGitHub{branchGitHub: branchGitHub{base}}
-	api := &mergedPublisher{mergeGitHub: &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base, applyReady: true, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}, applyClose: true}, publisher: publisher}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	publisher := &testkit.ReportGitHub{BranchGitHub: testkit.BranchGitHub{FakeGitHub: base}}
+	api := &testkit.MergedPublisher{MergeGitHub: &testkit.MergeGitHub{CiGitHub: &testkit.CiGitHub{FakeGitHub: base, ApplyReady: true, Evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}, ApplyClose: true}, Publisher: publisher}
+	s, err := flow.New(cfg, scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := finish(t, s, workflow.ReadyToMerge, workflow.Review)
-	base.prs["mergeyard/issue-7"].State, base.prs["mergeyard/issue-7"].Merged = github.Closed, true
+	run := flow.Until(s, workflow.ReadyToMerge, workflow.Review)
+	base.Prs["mergeyard/issue-7"].State, base.Prs["mergeyard/issue-7"].Merged = github.Closed, true
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +200,7 @@ func TestReadyMergeAndCompletedPublicationRemainIndependent(t *testing.T) {
 		t.Fatalf("ready merge: %+v %+v", saved, saved.Merge)
 	}
 	cfg.PRComments = true
-	s, err = scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	s, err = flow.New(cfg, scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,131 +210,25 @@ func TestReadyMergeAndCompletedPublicationRemainIndependent(t *testing.T) {
 		}
 	}
 	saved, _ = runtime.Workflow.Get(context.Background(), run.ID)
-	if len(publisher.bodies) != 1 || saved.Publications[0].State != "published" || saved.State != workflow.Completed {
+	if len(publisher.Bodies) != 1 || saved.Publications[0].State != "published" || saved.State != workflow.Completed {
 		t.Fatal("cleanup blocked completed publication")
 	}
 }
 
-type mergedPublisher struct {
-	*mergeGitHub
-	publisher *reportGitHub
-}
-
-func (f *mergedPublisher) EnsureReportComment(ctx context.Context, repo string, n int, body string) (*github.Comment, error) {
-	return f.publisher.EnsureReportComment(ctx, repo, n, body)
-}
-
-func TestMergeStopsChildrenAfterWrapperExitedWhileOffline(t *testing.T) {
-	// The reviewer starts a child that outlives its command and ignores soft
-	// signals. exit.json and disappearance of tmux alone cannot prove exit.
-	script := reviewScript(`case "$*" in *review-*) (trap '' INT TERM HUP; while :; do /bin/sleep 0.02; done) & printf '%s' "$!" > child.pid;; esac
-` + approvedReview)
-	s, runtime, api, _, cfg, r := localFlow(t, script)
-	run := finish(t, s, workflow.Active, workflow.Review)
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	var path string
-	runtime.DB.QueryRow("SELECT worktree_path FROM runs WHERE id=?", run.ID).Scan(&path)
-	ref, err := s.Watch(context.Background(), run.ID)
-	// A quick exit may already make Watch unavailable; use its recorded phase dir.
-	if err != nil {
-		ref = runner.SessionRef{PhaseDir: filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "review-1-1")}
-	}
-	waitFor(t, func() bool { _, err := os.Stat(filepath.Join(ref.PhaseDir, "exit.json")); return err == nil })
-	data, err := os.ReadFile(filepath.Join(path, "child.pid"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(string(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) })
-	if err := syscall.Kill(pid, 0); err != nil {
-		t.Fatal("test child did not survive wrapper")
-	}
-	root := runtime.Workspace.Root
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := app.Open(context.Background(), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	api.issues["owner/repo"][0].State = github.Closed
-	s, err = scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Reconcile(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	saved, _ := reopened.Workflow.Get(context.Background(), run.ID)
-	if saved.State != workflow.Completed {
-		t.Fatalf("merge did not finish: %+v", saved.Merge)
-	}
-	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("completed with live owned child: %v", err)
-	}
-}
-
-type unstartedReviewRunner struct{ runner.Runner }
-
-func (r unstartedReviewRunner) StartSession(ctx context.Context, req runner.SessionRequest) (runner.SessionRef, error) {
-	if req.Phase == "review" {
-		return runner.SessionRef{Name: sessions.Name(req), PhaseDir: req.PhaseDir}, fmt.Errorf("interrupted before wrapper launch")
-	}
-	return r.Runner.StartSession(ctx, req)
-}
-func TestMergeRecoversRunningAttemptThatNeverLaunched(t *testing.T) {
-	_, runtime, api, _, cfg, realRunner := localFlow(t, successfulScript)
-	r := unstartedReviewRunner{realRunner}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := finish(t, s, workflow.Active, workflow.Review)
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	root := runtime.Workspace.Root
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := app.Open(context.Background(), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	api.issues["owner/repo"][0].State = github.Closed
-	s, err = scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: realRunner})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Reconcile(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	saved, _ := reopened.Workflow.Get(context.Background(), run.ID)
-	if saved.State != workflow.Completed || !saved.Merge.ProcessExited || saved.Merge.Pending() {
-		t.Fatalf("unstarted attempt blocked merge: %+v", saved.Merge)
-	}
-}
-
 func TestMergeObservedDuringCIRepairEvidenceCompletesWithoutFix(t *testing.T) {
-	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
-	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base, evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "failure"}}}}, applyClose: true}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
+	t.Parallel()
+
+	flow := testkit.NewScenario(t)
+	_, runtime, base, _, cfg, r := flow.Parts()
+	api := &testkit.MergeGitHub{CiGitHub: &testkit.CiGitHub{FakeGitHub: base, Evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "failure"}}}}, ApplyClose: true}
+	s, err := flow.New(cfg, scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	api.afterEvidence = func() {
-		base.prs["mergeyard/issue-7"].State, base.prs["mergeyard/issue-7"].Merged = github.Closed, true
-		base.issues["owner/repo"][0].State = github.Closed
+	run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
+	api.AfterEvidence = func() {
+		base.Prs["mergeyard/issue-7"].State, base.Prs["mergeyard/issue-7"].Merged = github.Closed, true
+		base.Issues["owner/repo"][0].State = github.Closed
 	}
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
@@ -609,572 +242,23 @@ func TestMergeObservedDuringCIRepairEvidenceCompletesWithoutFix(t *testing.T) {
 	}
 }
 
-func TestEarlyMergePreservesLocallyCommittedUnpublishedFix(t *testing.T) {
-	s, runtime, api, remote, cfg, r := localFlow(t, loopScript(`printf fixed > feature.txt; `+fixedReport))
-	run := finish(t, s, workflow.Active, workflow.Fix)
-	advanceFixUntil(t, s, runtime, run.ID, func(v workflow.Run) bool { return v.Fix != nil && v.Fix.CommitSHA != "" && !v.Fix.Pushed })
-	saved, _ := runtime.Workflow.Get(context.Background(), run.ID)
-	unpublished := saved.Fix.CommitSHA
-	published := gitCommand(t, remote, "rev-parse", "mergeyard/issue-7")
-	if unpublished == published {
-		t.Fatal("fixture already pushed fix")
-	}
-	var path string
-	runtime.DB.QueryRow("SELECT worktree_path FROM runs WHERE id=?", run.ID).Scan(&path)
-	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	api.issues["owner/repo"][0].State = github.Closed
-	for range 2 {
-		if _, err := s.Reconcile(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	saved, _ = runtime.Workflow.Get(context.Background(), run.ID)
-	if saved.State != workflow.Completed || saved.Merge == nil || !saved.Merge.Pending() || saved.Merge.WorktreeRemoved || saved.Merge.BranchDeleted {
-		t.Fatalf("unpublished fix cleanup: %+v", saved.Merge)
-	}
-	if gitCommand(t, path, "rev-parse", "HEAD") != unpublished || gitCommand(t, remote, "rev-parse", "mergeyard/issue-7") != published {
-		t.Fatal("lost or pushed unpublished commit")
-	}
-	if data, err := os.ReadFile(filepath.Join(path, "feature.txt")); err != nil || string(data) != "fixed" {
-		t.Fatal("lost unpublished source")
-	}
-	root := runtime.Workspace.Root
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := app.Open(context.Background(), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	next, err := scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := next.Reconcile(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if gitCommand(t, path, "rev-parse", "HEAD") != unpublished {
-		t.Fatal("restart lost unpublished work")
-	}
-}
-
-type failedPRReadGitHub struct {
-	*mergeGitHub
-	readError    error
-	partialMerge bool
-}
-
-func (f *failedPRReadGitHub) GetPullRequest(ctx context.Context, repo string, n int) (*github.PullRequest, error) {
-	if f.readError != nil {
-		if f.partialMerge {
-			pr, err := f.mergeGitHub.GetPullRequest(ctx, repo, n)
-			if err != nil {
-				return nil, err
-			}
-			partial := *pr
-			partial.Merged = true
-			return &partial, f.readError
-		}
-		return nil, f.readError
-	}
-	return f.mergeGitHub.GetPullRequest(ctx, repo, n)
-}
 func TestFailedPRReadDoesNotBypassExpiredCIWait(t *testing.T) {
-	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
+	t.Parallel()
+
+	flow := testkit.NewScenario(t)
+	_, runtime, base, _, cfg, r := flow.Parts()
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
-	api := &failedPRReadGitHub{mergeGitHub: &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r, Now: func() time.Time { return now }})
+	api := &testkit.FailedPRReadGitHub{MergeGitHub: &testkit.MergeGitHub{CiGitHub: &testkit.CiGitHub{FakeGitHub: base}, ApplyClose: true}}
+	s, err := flow.New(cfg, scheduler.Dependencies{GitHub: api, Runner: r, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
 	now = run.CI.Deadline
-	api.readError = fmt.Errorf("PR read unavailable")
+	api.ReadError = fmt.Errorf("PR read unavailable")
 	_, reconcileErr := s.Reconcile(context.Background())
 	saved, err := runtime.Workflow.Get(context.Background(), run.ID)
 	if err != nil || saved.State != workflow.NeedsAttention || saved.LastErrorCode != "ci.wait_timeout" || saved.CI.QueryError == "" {
 		t.Fatalf("failed PR read bypassed deadline: state=%s code=%s reconcile=%v get=%v", saved.State, saved.LastErrorCode, reconcileErr, err)
-	}
-}
-func TestFailedPRReadDoesNotBypassPersistedStop(t *testing.T) {
-	_, runtime, base, _, cfg, r := localFlow(t, reviewScript(`/bin/sleep 60`))
-	api := &failedPRReadGitHub{mergeGitHub: &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := finish(t, s, workflow.Active, workflow.Review)
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	base.mutate = func(string, string, int, string) error { return fmt.Errorf("label removal unavailable") }
-	if err := s.Stop(context.Background(), run.ID); err == nil {
-		t.Fatal("fixture stop already completed")
-	}
-	base.mutate = nil
-	api.readError = fmt.Errorf("PR read unavailable")
-	api.partialMerge = true
-	root := runtime.Workspace.Root
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := app.Open(context.Background(), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	s, err = scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, reconcileErr := s.Reconcile(context.Background())
-	saved, err := reopened.Workflow.Get(context.Background(), run.ID)
-	if err != nil || saved.State != workflow.Stopped {
-		t.Fatalf("failed PR read bypassed stop: state=%s reconcile=%v get=%v", saved.State, reconcileErr, err)
-	}
-}
-
-func TestMergeCleanupWaitsForInteractiveTakeoverExit(t *testing.T) {
-	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
-	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	if _, err := s.Takeover(ctx, run.ID); err != nil {
-		t.Fatal(err)
-	}
-	worktree := runWorktree(t, runtime.Workspace.Root, run)
-	gate := t.TempDir()
-	started, release := filepath.Join(gate, "started"), filepath.Join(gate, "release")
-	interactiveCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	t.Cleanup(func() { os.WriteFile(release, nil, 0600) })
-	done := make(chan error, 1)
-	go func() {
-		done <- runner.RunInteractive(interactiveCtx, runtime.Workspace.Root, run.ID, runner.ExecRequest{
-			Executable: "/bin/sh", Dir: worktree,
-			Args: []string{"-c", `printf ready > "$1"; while [ ! -f "$2" ]; do sleep 0.02; done`, "interactive", started, release},
-		}, nil, io.Discard, io.Discard)
-	}()
-	waitFor(t, func() bool { _, err := os.Stat(started); return err == nil })
-	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	if _, err := s.Reconcile(ctx); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-done:
-		t.Fatalf("interactive child exited before release: %v", err)
-	default:
-	}
-	if _, err := os.Stat(worktree); err != nil {
-		t.Fatalf("merge removed worktree while interactive child was still alive: %v", err)
-	}
-	saved, err := runtime.Workflow.Get(ctx, run.ID)
-	if err != nil || saved.State != workflow.Completed || !saved.Merge.Pending() || saved.Merge.WorktreeRemoved || saved.Merge.BranchDeleted || !saved.Merge.IssueClosed {
-		t.Fatalf("interactive merge cleanup: %+v %v", saved, err)
-	}
-	if gitCommand(t, worktree, "branch", "--show-current") != "mergeyard/issue-7" {
-		t.Fatal("removed interactive branch")
-	}
-
-	// Ownership survives a control-plane restart while the same child is alive.
-	root := runtime.Workspace.Root
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := app.Open(ctx, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	next, err := scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if _, err := next.Reconcile(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := os.Stat(worktree); err != nil {
-		t.Fatalf("restart removed live interactive worktree: %v", err)
-	}
-	if err := os.WriteFile(release, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("interactive child did not exit")
-	}
-	for range 2 {
-		if _, err := next.Reconcile(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	saved, err = reopened.Workflow.Get(ctx, run.ID)
-	if err != nil || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted || saved.Merge.Error != "" {
-		t.Fatalf("cleanup did not resume after interactive exit: %+v %v", saved.Merge, err)
-	}
-	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
-		t.Fatalf("merged worktree was not cleaned after exit: %v", err)
-	}
-}
-
-type heldMergeCleanupGit struct {
-	*managedgit.Manager
-	started chan struct{}
-	release chan struct{}
-}
-
-func (g *heldMergeCleanupGit) CleanupWorktree(ctx context.Context, run managedgit.Run) error {
-	close(g.started)
-	select {
-	case <-g.release:
-		return g.Manager.CleanupWorktree(ctx, run)
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// installGitWrapper puts a shell wrapper first in PATH. A matching invocation
-// runs body instead of Git and then delegates unless the body exits; every
-// other invocation goes straight to the real Git resolved before PATH changed.
-func installGitWrapper(t *testing.T, match, body string) {
-	t.Helper()
-	real, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git is unavailable")
-	}
-	dir := t.TempDir()
-	script := "#!/bin/sh\ncase \" $* \" in\n*\" " + match + " \"*)\n" + body + "\n;;\nesac\nexec " + real + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-func TestMergeCleanupRemovesSlowWorktreeBeyondMaintenanceBudget(t *testing.T) {
-	_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
-	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	worktree := runWorktree(t, runtime.Workspace.Root, run)
-	marker := filepath.Join(t.TempDir(), "removal-started")
-	// Removal is slower than the optional GitHub maintenance budget. The
-	// marker proves the Git step ran instead of being cancelled at five
-	// seconds, as it was when both kinds of cleanup shared one deadline.
-	installGitWrapper(t, "worktree remove", `printf started > "`+marker+`"; /bin/sleep 6`)
-	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	saved, err := runtime.Workflow.Get(context.Background(), run.ID)
-	if err != nil || saved.State != workflow.Completed || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted || saved.Merge.Error != "" {
-		t.Fatalf("slow removal: %+v %v", saved.Merge, err)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatal("worktree removal was not exercised")
-	}
-	if api.removeBudget <= 0 || api.removeBudget > 5*time.Second {
-		t.Fatalf("GitHub maintenance budget = %s", api.removeBudget)
-	}
-	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
-		t.Fatal("worktree retained")
-	}
-}
-
-func TestMergeCleanupRecoversInterruptedWorktreeRemoval(t *testing.T) {
-	for _, linkGone := range []bool{false, true} {
-		name := "link survives"
-		if linkGone {
-			name = "link removed"
-		}
-		t.Run(name, func(t *testing.T) {
-			_, runtime, base, _, cfg, r := localFlow(t, successfulScript)
-			api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
-			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-			if err != nil {
-				t.Fatal(err)
-			}
-			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-			worktree := runWorktree(t, runtime.Workspace.Root, run)
-			control := filepath.Join(t.TempDir(), "interrupt")
-			if err := os.WriteFile(control, nil, 0600); err != nil {
-				t.Fatal(err)
-			}
-			// The first removal deletes tracked files and may or may not reach
-			// the link, then fails; later removals go straight to the real Git.
-			remove := `rm -f "$last/README.md"`
-			if linkGone {
-				remove += `; rm -f "$last/.git"`
-			}
-			installGitWrapper(t, "worktree remove", `if [ -f "`+control+`" ]; then
-  rm -f "`+control+`"
-  for last; do :; done
-  `+remove+`
-  exit 1
-fi`)
-			api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-			if err := s.Tick(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			saved, err := runtime.Workflow.Get(context.Background(), run.ID)
-			if err != nil || saved.State != workflow.Completed || !saved.Merge.WorktreeStarted || saved.Merge.WorktreeRemoved || saved.Merge.Error == "" {
-				t.Fatalf("interrupted removal not recorded: %+v %v", saved.Merge, err)
-			}
-			_, linkErr := os.Stat(filepath.Join(worktree, ".git"))
-			if linkGone && !os.IsNotExist(linkErr) {
-				t.Fatalf("fixture did not remove the worktree link: %v", linkErr)
-			}
-			if !linkGone && linkErr != nil {
-				t.Fatalf("fixture did not keep the worktree link: %v", linkErr)
-			}
-			if _, err := os.Stat(worktree); err != nil {
-				t.Fatalf("fixture removed the whole worktree: %v", err)
-			}
-			intent := filepath.Join(filepath.Dir(worktree), run.ID+".cleanup")
-			if _, err := os.Stat(intent); err != nil {
-				t.Fatalf("removal boundary not recorded: %v", err)
-			}
-			// A later tick finishes the authorized removal without manual steps.
-			if err := s.Tick(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			saved, err = runtime.Workflow.Get(context.Background(), run.ID)
-			if err != nil || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted || saved.Merge.Error != "" {
-				t.Fatalf("interrupted removal did not recover: %+v %v", saved.Merge, err)
-			}
-			if _, err := os.Stat(worktree); !os.IsNotExist(err) {
-				t.Fatal("worktree retained")
-			}
-			if _, err := os.Stat(intent); !os.IsNotExist(err) {
-				t.Fatal("cleanup intent retained")
-			}
-		})
-	}
-}
-
-func TestInteractiveResumeCannotLaunchDuringMergeCleanup(t *testing.T) {
-	s, runtime, base, _, cfg, r := localFlow(t, successfulScript)
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-	if _, err := s.Takeover(context.Background(), run.ID); err != nil {
-		t.Fatal(err)
-	}
-	worktree := runWorktree(t, runtime.Workspace.Root, run)
-	held := &heldMergeCleanupGit{Manager: managedgit.New(runtime.Workspace), started: make(chan struct{}), release: make(chan struct{})}
-	var once sync.Once
-	release := func() { once.Do(func() { close(held.release) }) }
-	defer release()
-	api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Git: held, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-	done := make(chan error, 1)
-	go func() { _, err := s.Reconcile(context.Background()); done <- err }()
-	select {
-	case <-held.started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("merge cleanup did not start")
-	}
-	started := filepath.Join(t.TempDir(), "interactive-started")
-	err = runner.RunInteractive(context.Background(), runtime.Workspace.Root, run.ID, runner.ExecRequest{
-		Executable: "/bin/sh", Dir: worktree,
-		Args: []string{"-c", `printf started > "$1"`, "interactive", started},
-	}, nil, io.Discard, io.Discard)
-	var failure *fault.Error
-	if !errors.As(err, &failure) || failure.Code != "takeover.interactive_running" {
-		t.Fatalf("interactive launch raced cleanup: %v", err)
-	}
-	if _, err := os.Stat(started); !os.IsNotExist(err) {
-		t.Fatalf("interactive process launched during cleanup: %v", err)
-	}
-	release()
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	saved, err := runtime.Workflow.Get(context.Background(), run.ID)
-	if err != nil || saved.Merge.Pending() || !saved.Merge.WorktreeRemoved || !saved.Merge.BranchDeleted {
-		t.Fatalf("cleanup did not finish: %+v %v", saved.Merge, err)
-	}
-}
-
-func TestDashboardCopiedTakeoverProtectsLiveWorktree(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "mergeyard's <launcher>")
-	build := exec.Command("go", "build", "-o", binary, "../../cmd/mergeyard")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build CLI fixture: %s %v", output, err)
-	}
-	for _, agent := range []string{"claude", "codex"} {
-		t.Run(agent, func(t *testing.T) {
-			flow, script := localFlow, successfulScript
-			if agent == "codex" {
-				flow, script = codexFlow, codexImplementation
-			}
-			_, runtime, base, _, cfg, r := flow(t, script)
-			api := &mergeGitHub{ciGitHub: &ciGitHub{fakeGitHub: base}, applyClose: true}
-			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx := context.Background()
-			run := finish(t, s, workflow.WaitingForCI, workflow.Review)
-			listener, err := web.Listen("127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			cwd, err := os.Getwd()
-			if err != nil {
-				t.Fatal(err)
-			}
-			relativeWorkspace, err := filepath.Rel(cwd, runtime.Workspace.Root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			configPath := filepath.Join(t.TempDir(), "config's <source>.yaml")
-			relativeConfig, err := filepath.Rel(cwd, configPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			port := listener.Addr().(*net.TCPAddr).Port
-			// The CLI rebuilds the resume invocation from its own configuration,
-			// so the copied command's config must name the same harness executables
-			// as the runtime's in-memory configuration.
-			configText := fmt.Sprintf("workspace: %q\nport: %d\nagents:\n  claude:\n    executable: %q\n  codex:\n    executable: %q\n",
-				relativeWorkspace, port, cfg.Agents.Claude.Executable, cfg.Agents.Codex.Executable)
-			if err := os.WriteFile(configPath, []byte(configText), 0600); err != nil {
-				t.Fatal(err)
-			}
-			server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{
-				DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg,
-				ConfigPath: relativeConfig, CLIExecutable: binary,
-			})
-			if err != nil {
-				listener.Close()
-				t.Fatal(err)
-			}
-			httpServer := httptest.NewUnstartedServer(server)
-			httpServer.Listener = listener
-			httpServer.Start()
-			defer httpServer.Close()
-			statusResponse := httptest.NewRecorder()
-			server.ServeHTTP(statusResponse, apiRequest(t, runtime.Workspace.Root, "GET", httpServer.URL+"/api/status"))
-			var status web.Status
-			if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
-				t.Fatal(err)
-			}
-			request := dashboardRequest(t, server, "POST", httpServer.URL+"/runs/"+run.ID+"/takeover", nil)
-			request.Header.Set("Origin", httpServer.URL)
-			request.Header.Set("X-CSRF-Token", status.Token)
-			request.Header.Set("HX-Request", "true")
-			response := httptest.NewRecorder()
-			server.ServeHTTP(response, request)
-			if response.Code != 200 {
-				t.Fatalf("dashboard takeover: %d %s", response.Code, response.Body.String())
-			}
-			matches := regexp.MustCompile(`data-copy="([^"]*)">Copy resume command</button>`).FindStringSubmatch(response.Body.String())
-			if len(matches) != 2 {
-				t.Fatal("dashboard did not offer a copyable resume command")
-			}
-			copied := html.UnescapeString(matches[1])
-			command, err := s.ManualCommand(ctx, run.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			gate := t.TempDir()
-			started, release, arguments := filepath.Join(gate, "started"), filepath.Join(gate, "release"), filepath.Join(gate, "arguments")
-			quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
-			fake := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$PWD\" \"$@\" > %s\nprintf ready > %s\nwhile [ ! -f %s ]; do /bin/sleep 0.02; done\n", quote(arguments), quote(started), quote(release))
-			if err := os.WriteFile(command.Executable, []byte(fake), 0700); err != nil {
-				t.Fatal(err)
-			}
-			child := exec.Command("/bin/sh", "-c", copied)
-			child.Dir = t.TempDir()
-			child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			child.Stdout, child.Stderr = io.Discard, io.Discard
-			if err := child.Start(); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				os.WriteFile(release, nil, 0600)
-				if child.ProcessState == nil {
-					syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
-					child.Wait()
-				}
-			})
-			waitFor(t, func() bool { _, err := os.Stat(started); return err == nil })
-			data, err := os.ReadFile(arguments)
-			expectedArgs := []string{"--resume", run.Implementer.SessionID, "--permission-mode", "default"}
-			if agent == "codex" {
-				expectedArgs = []string{"resume", "-C", command.Dir, "-a", "on-request", "-s", "workspace-write", "--", run.Implementer.SessionID}
-			}
-			if err != nil || string(data) != command.Dir+"\n"+strings.Join(expectedArgs, "\n")+"\n" {
-				t.Fatalf("copied command lost exact session, directory or permissions: %q %v", data, err)
-			}
-			api.prs["mergeyard/issue-7"].State, api.prs["mergeyard/issue-7"].Merged = github.Closed, true
-			if _, err := s.Reconcile(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if err := syscall.Kill(-child.Process.Pid, 0); err != nil {
-				t.Fatalf("copied-command process exited before release: %v", err)
-			}
-			if _, err := os.Stat(command.Dir); err != nil {
-				t.Fatalf("dashboard command left live worktree unprotected: %v", err)
-			}
-			saved, err := runtime.Workflow.Get(ctx, run.ID)
-			if err != nil || !saved.Merge.Pending() || saved.Merge.WorktreeRemoved || saved.Merge.BranchDeleted {
-				t.Fatalf("dashboard merge cleanup: %+v %v", saved.Merge, err)
-			}
-			httpServer.Close()
-			root := runtime.Workspace.Root
-			if err := runtime.Close(); err != nil {
-				t.Fatal(err)
-			}
-			reopened, err := app.Open(ctx, root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer reopened.Close()
-			next, err := scheduler.New(cfg, schedulerResources(reopened), scheduler.Dependencies{GitHub: api, Runner: r})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := next.Reconcile(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(command.Dir); err != nil {
-				t.Fatalf("restart removed dashboard session's worktree: %v", err)
-			}
-			if err := os.WriteFile(release, nil, 0600); err != nil {
-				t.Fatal(err)
-			}
-			if err := child.Wait(); err != nil {
-				t.Fatal(err)
-			}
-			for range 2 {
-				if _, err := next.Reconcile(ctx); err != nil {
-					t.Fatal(err)
-				}
-			}
-			saved, err = reopened.Workflow.Get(ctx, run.ID)
-			if err != nil || saved.Merge.Pending() {
-				t.Fatalf("dashboard cleanup did not finish after exit: %+v %v", saved.Merge, err)
-			}
-			if _, err := os.Stat(command.Dir); !os.IsNotExist(err) {
-				t.Fatalf("worktree retained after dashboard session exit: %v", err)
-			}
-		})
 	}
 }

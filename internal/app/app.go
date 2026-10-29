@@ -51,8 +51,7 @@ func Open(ctx context.Context, path string) (*Runtime, error) {
 	}
 	db, err := store.Open(ctx, w.DatabasePath())
 	if err != nil {
-		lock.Close()
-		return nil, err
+		return nil, errors.Join(err, releaseLock(lock))
 	}
 	bus := events.New(db, nil)
 	return &Runtime{Workspace: w, DB: db, Events: bus, Workflow: workflow.New(db, bus), Scheduler: scheduler.NewControl(bus), lock: lock}, nil
@@ -63,9 +62,15 @@ func Open(ctx context.Context, path string) (*Runtime, error) {
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {
 		r.Events.Close()
-		if err := errors.Join(r.DB.Close(), r.lock.Close()); err != nil {
+		if err := errors.Join(r.DB.Close(), releaseLock(r.lock)); err != nil {
 			r.closeErr = &fault.Error{Code: "internal.shutdown", Path: r.Workspace.Root, Err: err}
 		}
 	})
 	return r.closeErr
+}
+
+func releaseLock(lock *os.File) error {
+	// A concurrent fork can retain the open file description until exec. Closing
+	// our descriptor alone would leave ownership held by that inherited copy.
+	return errors.Join(syscall.Flock(int(lock.Fd()), syscall.LOCK_UN), lock.Close())
 }

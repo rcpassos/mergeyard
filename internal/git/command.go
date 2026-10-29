@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,15 +33,15 @@ func command(ctx context.Context, dir, code string, args ...string) (string, err
 	return commandWithEnv(ctx, dir, code, nil, args...)
 }
 
-// sshEnvironment keeps unattended SSH non-interactive without replacing a
+// sshEnvironmentFor keeps unattended SSH non-interactive without replacing a
 // transport the machine already selected. Git ranks GIT_SSH_COMMAND above
 // core.sshCommand, so a configured core.sshCommand must be resolved before the
 // default is applied.
-func sshEnvironment(dir string) []string {
-	if os.Getenv("GIT_SSH_COMMAND") != "" || os.Getenv("GIT_SSH") != "" {
+func sshEnvironmentFor(dir string, env []string) []string {
+	if environmentValue(env, "GIT_SSH_COMMAND") != "" || environmentValue(env, "GIT_SSH") != "" {
 		return nil
 	}
-	if configuredSSHCommand(dir) != "" {
+	if configuredSSHCommandFor(dir, env) != "" {
 		return nil
 	}
 	return []string{"GIT_SSH_COMMAND=" + NonInteractiveSSH}
@@ -60,9 +61,9 @@ var sshProbe = struct {
 	entries map[string]string
 }{entries: map[string]string{}}
 
-// configuredSSHCommand reads core.sshCommand for one command directory.
-func configuredSSHCommand(dir string) string {
-	key := dir + "\x00" + sshConfigKey()
+// configuredSSHCommandFor reads core.sshCommand for one command directory.
+func configuredSSHCommandFor(dir string, env []string) string {
+	key := dir + "\x00" + sshConfigKeyFor(env)
 	sshProbe.mu.Lock()
 	defer sshProbe.mu.Unlock()
 	if value, ok := sshProbe.entries[key]; ok {
@@ -74,7 +75,7 @@ func configuredSSHCommand(dir string) string {
 		Executable: "git",
 		Args:       []string{"config", "--get", "core.sshCommand"},
 		Dir:        dir,
-		Env:        append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"),
+		Env:        append(append([]string(nil), env...), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"),
 	})
 	value := strings.TrimSpace(string(result.Stdout))
 	if len(sshProbe.entries) >= sshProbeLimit {
@@ -84,11 +85,25 @@ func configuredSSHCommand(dir string) string {
 	return value
 }
 
-// sshConfigKey identifies the configuration the probe reads.
-func sshConfigKey() string {
+// sshConfigKeyFor identifies the configuration the probe reads.
+func sshConfigKeyFor(env []string) string {
+	names := map[string]bool{"HOME": true, "XDG_CONFIG_HOME": true}
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if name == "GIT_CONFIG" || strings.HasPrefix(name, "GIT_CONFIG_") {
+			names[name] = true
+		}
+	}
+	ordered := make([]string, 0, len(names))
+	for name := range names {
+		ordered = append(ordered, name)
+	}
+	sort.Strings(ordered)
 	var key strings.Builder
-	for _, name := range []string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "XDG_CONFIG_HOME", "HOME"} {
-		key.WriteString(os.Getenv(name))
+	for _, name := range ordered {
+		key.WriteString(name)
+		key.WriteByte(0)
+		key.WriteString(environmentValue(env, name))
 		key.WriteByte(0)
 	}
 	return key.String()
@@ -113,8 +128,9 @@ func commandBytes(ctx context.Context, dir, code string, env []string, args ...s
 // caller that needs only the beginning of a large file holds only that much.
 // A zero limit keeps all of it.
 func commandPrefix(ctx context.Context, dir, code string, env []string, limit int, args ...string) ([]byte, error) {
-	commandEnv := append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"), env...)
-	commandEnv = append(commandEnv, sshEnvironment(dir)...)
+	commandEnv := append(commandEnvironment(ctx), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	commandEnv = append(commandEnv, env...)
+	commandEnv = append(commandEnv, sshEnvironmentFor(dir, commandEnv)...)
 	result, err := proc.Run(ctx, proc.Request{Executable: "git", Args: args, Dir: dir, Env: commandEnv, StdoutLimit: limit})
 	if ctx.Err() != nil {
 		return result.Stdout, contextFailure(ctx, code, dir, ctx.Err())
@@ -129,6 +145,32 @@ func commandPrefix(ctx context.Context, dir, code string, env []string, limit in
 		return result.Stdout, failure(code, dir, fmt.Errorf("%s: %w", strings.TrimSpace(string(result.Stderr)), err))
 	}
 	return result.Stdout, nil
+}
+
+type environmentKey struct{}
+
+func commandEnvironment(ctx context.Context) []string {
+	env := os.Environ()
+	overrides, _ := ctx.Value(environmentKey{}).(map[string]string)
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		env = append(env, name+"="+overrides[name])
+	}
+	return env
+}
+
+// Overrides are appended last; lookup must agree with exec's last-value rule.
+func environmentValue(env []string, name string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		if value, ok := strings.CutPrefix(env[i], name+"="); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 // contextFailure reports why a managed operation stopped. A deadline is a

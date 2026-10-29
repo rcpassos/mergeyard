@@ -2,249 +2,35 @@ package scheduler_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/rcpassos/mergeyard/internal/app"
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
 	"github.com/rcpassos/mergeyard/internal/github"
-	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
-type fakeGitHub struct {
-	getIssue         func(string, int) (github.Issue, error)
-	comments         func(string, int, []string) (github.IssueComments, error)
-	trust            func(github.Issue) (github.TrustDecision, error)
-	trustComments    map[int]string
-	overrideComments map[int]string
-	leftoverComments map[int]leftoverComment
-	issues           map[string][]github.Issue
-	blockers         map[int][]github.Issue
-	prs              map[string]*github.PullRequest
-	creations        int
-	head             func(string) string
-	mutate           func(action, repo string, n int, label string) error
-	listHook         func()             // runs inside each label-filtered listing request
-	listError        func(string) error // fails one repository's label-filtered listing
-	calls            githubCalls
-	listings         []listingRequest
-}
-
-// leftoverComment records the explanation a stopped preparation left on an
-// issue.
-type leftoverComment struct {
-	RunID, Branch, Worktree, Reason string
-	Unverified                      bool
-}
-
-// listingRequest records one label-filtered listing request.
-type listingRequest struct {
-	repo   string
-	labels []string
-}
-
-// githubCalls records boundary traffic so tests can assert what a tick spends.
-type githubCalls struct {
-	issueListings, issueReads, blockerReads int
-	trustVerifications, trustRechecks       int
-}
-
-func (f *fakeGitHub) ListIssueComments(_ context.Context, repo string, n int, trusted []string) (github.IssueComments, error) {
-	if f.comments != nil {
-		return f.comments(repo, n, trusted)
-	}
-	return github.IssueComments{}, nil
-}
-
-func (f *fakeGitHub) VerifyIssueTrust(_ context.Context, _ string, issue github.Issue, _ string, _ []string) (github.TrustDecision, error) {
-	f.calls.trustVerifications++
-	return f.trustDecision(issue)
-}
-func (f *fakeGitHub) RecheckIssueTrust(_ context.Context, _ string, issue github.Issue, _ string, _ []string) (github.TrustDecision, error) {
-	f.calls.trustRechecks++
-	return f.trustDecision(issue)
-}
-func (f *fakeGitHub) trustDecision(issue github.Issue) (github.TrustDecision, error) {
-	if f.trust != nil {
-		return f.trust(issue)
-	}
-	return github.TrustDecision{Allowed: true}, nil
-}
-func (f *fakeGitHub) EnsureTrustRefusalComment(_ context.Context, _ string, n int, reason string) error {
-	if f.trustComments == nil {
-		f.trustComments = make(map[int]string)
-	}
-	if _, exists := f.trustComments[n]; !exists {
-		f.trustComments[n] = reason
-	}
-	return nil
-}
-
-// EnsureStopLeftoversComment records the explanation of the leftovers a
-// stopped preparation left behind.
-func (f *fakeGitHub) EnsureStopLeftoversComment(_ context.Context, _ string, n int, runID string, leftovers github.StoppedLeftovers) error {
-	if f.leftoverComments == nil {
-		f.leftoverComments = make(map[int]leftoverComment)
-	}
-	if _, exists := f.leftoverComments[n]; !exists {
-		f.leftoverComments[n] = leftoverComment{RunID: runID, Branch: leftovers.Branch, Worktree: leftovers.Worktree, Reason: leftovers.Reason, Unverified: leftovers.Unverified}
-	}
-	return nil
-}
-
-// ListLabeledIssues mirrors GitHub's label filter: the repository's open
-// issues carrying any requested label, in adapter-owned order.
-func (f *fakeGitHub) ListLabeledIssues(_ context.Context, repo string, labels []string) ([]github.Issue, error) {
-	if f.listHook != nil {
-		f.listHook()
-	}
-	if f.listError != nil {
-		if err := f.listError(repo); err != nil {
-			return nil, err
-		}
-	}
-	f.calls.issueListings++
-	f.listings = append(f.listings, listingRequest{repo: repo, labels: append([]string(nil), labels...)})
-	var issues []github.Issue
-	for _, issue := range f.issues[repo] {
-		if issue.State != github.Open {
-			continue
-		}
-		for _, label := range labels {
-			if has(issue, label) {
-				issues = append(issues, issue)
-				break
-			}
-		}
-	}
-	return issues, nil
-}
-func (f *fakeGitHub) GetIssue(_ context.Context, repo string, n int) (github.Issue, error) {
-	f.calls.issueReads++
-	if f.getIssue != nil {
-		return f.getIssue(repo, n)
-	}
-	for _, issue := range f.issues[repo] {
-		if issue.Number == n {
-			return issue, nil
-		}
-	}
-	return github.Issue{}, &fault.Error{Code: "github.not_found", Message: "Issue not found"}
-}
-func (f *fakeGitHub) GetPullRequest(_ context.Context, _ string, n int) (*github.PullRequest, error) {
-	for _, pr := range f.prs {
-		if pr.Number == n {
-			return pr, nil
-		}
-	}
-	return nil, &fault.Error{Code: "github.not_found", Message: "PR not found"}
-}
-func (f *fakeGitHub) UnresolvedBlockers(_ context.Context, _ string, n int) ([]github.Issue, error) {
-	f.calls.blockerReads++
-	return f.blockers[n], nil
-}
-func (f *fakeGitHub) AddLabel(_ context.Context, repo string, n int, label string) error {
-	if f.mutate != nil {
-		if err := f.mutate("add", repo, n, label); err != nil {
-			return err
-		}
-	}
-	for i := range f.issues[repo] {
-		if f.issues[repo][i].Number == n {
-			if !has(f.issues[repo][i], label) {
-				f.issues[repo][i].Labels = append(f.issues[repo][i].Labels, github.Label{Name: label})
-			}
-		}
-	}
-	return nil
-}
-func (f *fakeGitHub) RemoveLabel(_ context.Context, repo string, n int, label string) error {
-	if f.mutate != nil {
-		if err := f.mutate("remove", repo, n, label); err != nil {
-			return err
-		}
-	}
-	for i := range f.issues[repo] {
-		if f.issues[repo][i].Number == n {
-			var labels []github.Label
-			for _, l := range f.issues[repo][i].Labels {
-				if l.Name != label {
-					labels = append(labels, l)
-				}
-			}
-			f.issues[repo][i].Labels = labels
-		}
-	}
-	return nil
-}
-func (f *fakeGitHub) FindOpenPullRequest(_ context.Context, _ string, branch string) (*github.PullRequest, error) {
-	return f.prs[branch], nil
-}
-func (f *fakeGitHub) FindPullRequest(_ context.Context, _ string, branch string) (*github.PullRequest, error) {
-	return f.prs[branch], nil
-}
-func (f *fakeGitHub) CreateDraftPullRequest(_ context.Context, repo, branch, base string, content github.PullRequestContent) (*github.PullRequest, error) {
-	f.creations++
-	if f.prs == nil {
-		f.prs = map[string]*github.PullRequest{}
-	}
-	pr := &github.PullRequest{Number: 100 + f.creations, URL: "https://github.com/" + repo + "/pull/101", Draft: true, State: github.Open}
-	pr.Base.Ref = base
-	pr.Head.Ref = branch
-	if f.head != nil {
-		pr.Head.SHA = f.head(branch)
-	}
-	pr.Head.Repo.FullName = repo
-	body, err := github.GeneratePullRequestBody(content)
-	if err != nil {
-		return nil, err
-	}
-	pr.Body = body
-	f.prs[branch] = pr
-	return pr, nil
-}
-func ready(n int) github.Issue {
-	return github.Issue{Number: n, Title: "Implement this", State: github.Open, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Labels: []github.Label{{Name: "ready-for-agent"}}}
-}
-func fixture(t *testing.T, api *fakeGitHub) (*scheduler.Scheduler, *app.Runtime) {
-	t.Helper()
-	runtime, err := app.Open(context.Background(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { runtime.Close() })
-	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s, runtime
-}
 func TestBlockedAndUnreadyIssuesAreNeverClaimed(t *testing.T) {
-	unready := ready(2)
+	t.Parallel()
+
+	unready := testkit.Ready(2)
 	unready.Labels = nil
-	running := ready(3)
+	running := testkit.Ready(3)
 	running.Labels = append(running.Labels, github.Label{Name: "agent-running"})
-	attention := ready(4)
+	attention := testkit.Ready(4)
 	attention.Labels = append(attention.Labels, github.Label{Name: "agent-needs-attention"})
-	closed := ready(5)
+	closed := testkit.Ready(5)
 	closed.State = github.Closed
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(1), unready, running, attention, closed}}, blockers: map[int][]github.Issue{1: {ready(99)}}}
-	s, _ := fixture(t, api)
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(1), unready, running, attention, closed}}, Blockers: map[int][]github.Issue{1: {testkit.Ready(99)}}}
+	s, _ := testkit.Fixture(t, api)
 	for range 3 {
 		if err := s.Tick(context.Background()); err != nil {
 			t.Fatal(err)
@@ -256,207 +42,11 @@ func TestBlockedAndUnreadyIssuesAreNeverClaimed(t *testing.T) {
 	}
 }
 
-func gitCommand(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v: %s: %v", args, out, err)
-	}
-	return strings.TrimSpace(string(out))
-}
-func localFlow(t *testing.T, script string) (*scheduler.Scheduler, *app.Runtime, *fakeGitHub, string, config.Config, runner.Runner) {
-	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux required")
-	}
-	root := t.TempDir()
-	remote := filepath.Join(root, "remote.git")
-	seed := filepath.Join(root, "seed")
-	gitCommand(t, root, "init", "--bare", "--initial-branch=main", remote)
-	gitCommand(t, root, "init", "--initial-branch=main", seed)
-	configPath := filepath.Join(root, "gitconfig")
-	gitCommand(t, root, "config", "--file", configPath, "user.name", "Mergeyard Test")
-	gitCommand(t, root, "config", "--file", configPath, "user.email", "mergeyard-test@example.com")
-	gitCommand(t, root, "config", "--file", configPath, "url."+remote+".insteadOf", "https://github.com/owner/repo.git")
-	t.Setenv("GIT_CONFIG_GLOBAL", configPath)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("initial\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	gitCommand(t, seed, "add", ".")
-	gitCommand(t, seed, "commit", "-m", "initial")
-	gitCommand(t, seed, "remote", "add", "origin", remote)
-	gitCommand(t, seed, "push", "origin", "main")
-	if !strings.Contains(script, "review-") {
-		script = `case "$*" in *review-*)
-` + approvedReview + `
-;; *)
-` + script + `
-;; esac`
-	}
-	executable := filepath.Join(root, "fake-claude")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := app.Open(context.Background(), filepath.Join(root, "workspace"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { runtime.Close() })
-	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Agents.Claude.Executable = executable
-	socket := fmt.Sprintf("mergeyard-scheduler-test-%d", time.Now().UnixNano())
-	t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
-	r := runner.NewLocal(runner.Options{SocketName: socket})
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}, head: func(branch string) string { return gitCommand(t, remote, "rev-parse", "refs/heads/"+branch) }}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s, runtime, api, remote, cfg, r
-}
-
-const successfulScript = `printf '%s\n' 'implemented' > feature.txt
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":"Added feature"}}'`
-
-func finish(t *testing.T, s *scheduler.Scheduler, state workflow.State, phase workflow.Phase) workflow.Run {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if err := s.Tick(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		runs, err := s.Runs(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(runs) == 1 && runs[0].State == state && runs[0].Phase == phase {
-			return runs[0]
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("flow did not reach %s/%s: %+v", state, phase, runs)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-func TestIssueToDraftPRAndRepeatedTicksAfterRestart(t *testing.T) {
-	s, runtime, api, remote, cfg, r := localFlow(t, successfulScript)
-	run := finish(t, s, workflow.Active, workflow.Review)
-	if run.PRNumber != 101 || run.ReviewRound != 1 {
-		t.Fatalf("M1 endpoint metadata: %+v", run)
-	}
-	if api.creations != 1 || !api.prs["mergeyard/issue-7"].Draft || !strings.Contains(api.prs["mergeyard/issue-7"].Body, "Closes #7") {
-		t.Fatal("expected one draft PR with closing reference")
-	}
-	if got := gitCommand(t, remote, "rev-list", "--count", "main..mergeyard/issue-7"); got != "1" {
-		t.Fatalf("implementation commits = %s", got)
-	}
-	if got := gitCommand(t, remote, "show", "mergeyard/issue-7:feature.txt"); got != "implemented" {
-		t.Fatalf("pushed contents = %s", got)
-	}
-	issue := api.issues["owner/repo"][0]
-	if !has(issue, "agent-running") || has(issue, "ready-for-agent") {
-		t.Fatalf("claim labels = %+v", issue.Labels)
-	}
-	history, err := runtime.Events.History(context.Background(), 0, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var transitions []string
-	for _, e := range history {
-		if e.Type == "run.claimed" || e.Type == "run.preparing" || e.Type == "phase.started" {
-			transitions = append(transitions, e.Type)
-		}
-	}
-	if strings.Join(transitions, ",") != "run.claimed,run.preparing,phase.started" {
-		t.Fatalf("lifecycle = %v", transitions)
-	}
-	// Simulate an accidental ready label and a fresh control plane using the same DB.
-	api.issues["owner/repo"][0].Labels = []github.Label{{Name: "ready-for-agent"}}
-	restarted, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range 5 {
-		if err := restarted.Tick(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	runs, err := restarted.Runs(context.Background())
-	if err != nil || len(runs) != 1 || runs[0].ID != run.ID || api.creations != 1 {
-		t.Fatalf("duplicate run/PR after restart: %+v, %v, PRs=%d", runs, err, api.creations)
-	}
-	treePaths, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", "*"))
-	if len(treePaths) != 1 {
-		t.Fatalf("worktrees = %v", treePaths)
-	}
-	phasePaths, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "*"))
-	if len(phasePaths) != 2 {
-		t.Fatalf("expected implement and first review attempts: %v", phasePaths)
-	}
-	input, err := os.ReadFile(filepath.Join(phasePaths[0], "input.md"))
-	if err != nil || !strings.Contains(string(input), "Implement this") {
-		t.Fatalf("phase input missing: %s, %v", input, err)
-	}
-	result, err := os.ReadFile(filepath.Join(phasePaths[0], "result.json"))
-	var parsed map[string]any
-	if err != nil || json.Unmarshal(result, &parsed) != nil || parsed["status"] != "success" {
-		t.Fatalf("parsed phase result missing: %s, %v", result, err)
-	}
-}
-func has(issue github.Issue, label string) bool {
-	for _, l := range issue.Labels {
-		if l.Name == label {
-			return true
-		}
-	}
-	return false
-}
-
-func TestImplementFailuresPreserveWorkspaceAndRequireAttention(t *testing.T) {
-	cases := []struct{ name, script, code string }{
-		{"blocked", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]},"status":"blocked","summary":"Need a product decision"}}'`, "phase.blocked"},
-		{"invalid", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"status":"success"}}'`, "phase.result_invalid"},
-		{"failed", `exit 1`, "phase.retries_exhausted"},
-		{"no-changes", `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":"Nothing to do"}}'`, "git.no_changes"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s, runtime, api, remote, _, _ := localFlow(t, tc.script)
-			run := finish(t, s, workflow.NeedsAttention, workflow.Implement)
-			if run.LastErrorCode != tc.code || run.LastErrorMessage == "" {
-				t.Fatalf("failure = %+v", run)
-			}
-			issue := api.issues["owner/repo"][0]
-			if has(issue, "agent-running") || has(issue, "ready-for-agent") || !has(issue, "agent-needs-attention") {
-				t.Fatalf("attention labels = %+v", issue.Labels)
-			}
-			trees, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", "*"))
-			if len(trees) != 1 {
-				t.Fatal("attention discarded worktree")
-			}
-			if api.creations != 0 || gitCommand(t, remote, "branch", "--list", "mergeyard/issue-7") != "" {
-				t.Fatal("failed implementation published work")
-			}
-			for range 2 {
-				if err := s.Tick(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-			}
-			phases, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "*"))
-			if len(phases) != 1 {
-				t.Fatal("attention retried without user action")
-			}
-		})
-	}
-}
 func TestPauseContinuesExistingRunAndResumeClaimsNewIssue(t *testing.T) {
-	s, runtime, api, _, _, _ := localFlow(t, successfulScript)
+	t.Parallel()
+
+	flow := testkit.NewScenario(t)
+	s, runtime, api, _, _, _ := flow.Parts()
 	if err := s.Pause(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
@@ -476,14 +66,14 @@ func TestPauseContinuesExistingRunAndResumeClaimsNewIssue(t *testing.T) {
 	if err := s.Pause(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	run := finish(t, s, workflow.Active, workflow.Review)
+	run := flow.Until(s, workflow.Active, workflow.Review)
 	// READY_TO_MERGE releases a slot; global pause still blocks new issues.
 	for _, trigger := range []workflow.Trigger{workflow.ReviewApproved, workflow.CIPassed} {
 		if _, err := runtime.Workflow.Transition(context.Background(), run.ID, workflow.Request{Trigger: trigger}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	api.issues["owner/repo"] = append(api.issues["owner/repo"], ready(8))
+	api.Issues["owner/repo"] = append(api.Issues["owner/repo"], testkit.Ready(8))
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -503,61 +93,17 @@ func TestPauseContinuesExistingRunAndResumeClaimsNewIssue(t *testing.T) {
 	}
 }
 
-type rejectingGit struct {
-	prepare func(managedgit.PrepareRequest)
-}
-
-func (rejectingGit) Inspect(context.Context, managedgit.Run) error   { return nil }
-func (rejectingGit) ListWorktrees(context.Context) ([]string, error) { return nil, nil }
-func (rejectingGit) ConfirmOwnership(context.Context, managedgit.Run) error {
-	return nil
-}
-
-func (rejectingGit) DiscardPreparation(context.Context, managedgit.PrepareRequest) (managedgit.Leftovers, error) {
-	return managedgit.Leftovers{}, nil
-}
-
-func (g rejectingGit) Prepare(_ context.Context, req managedgit.PrepareRequest) (managedgit.Run, error) {
-	if g.prepare != nil {
-		g.prepare(req)
-	}
-	return managedgit.Run{}, &fault.Error{Code: "git.branch_conflict", Message: "Branch already belongs to someone else"}
-}
-func (rejectingGit) CommitAndPush(context.Context, managedgit.Run, managedgit.Phase) (managedgit.CommitResult, error) {
-	panic("unexpected push")
-}
-func configured(t *testing.T, api scheduler.GitHub, yaml string, g scheduler.Git) (*scheduler.Scheduler, *app.Runtime) {
-	return configuredAt(t, api, yaml, g, nil)
-}
-
-// configuredAt additionally controls the scheduler clock, so tests can age
-// discovery snapshots without waiting.
-func configuredAt(t *testing.T, api scheduler.GitHub, yaml string, g scheduler.Git, now func() time.Time) (*scheduler.Scheduler, *app.Runtime) {
-	t.Helper()
-	runtime, err := app.Open(context.Background(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { runtime.Close() })
-	cfg, _, err := config.Parse([]byte(yaml))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Git: g, Now: now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s, runtime
-}
 func TestOrderingAndGlobalAndRepositoryLimits(t *testing.T) {
-	older := ready(9)
+	t.Parallel()
+
+	older := testkit.Ready(9)
 	older.CreatedAt = older.CreatedAt.Add(-time.Hour)
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7), older, ready(2)}, "owner/second": {ready(3), ready(1)}, "owner/disabled": {ready(4)}}}
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(7), older, testkit.Ready(2)}, "owner/second": {testkit.Ready(3), testkit.Ready(1)}, "owner/disabled": {testkit.Ready(4)}}}
 	var claims []string
-	g := rejectingGit{prepare: func(req managedgit.PrepareRequest) {
+	g := testkit.RejectingGit{PrepareHook: func(req managedgit.PrepareRequest) {
 		claims = append(claims, fmt.Sprintf("%s#%d", req.Repository, req.IssueNumber))
 	}}
-	s, _ := configured(t, api, "concurrency: 3\nrepositories:\n  - repo: owner/repo\n    concurrency: 2\n  - repo: owner/second\n  - repo: owner/disabled\n    enabled: false\n", g)
+	s, _ := testkit.Configured(t, api, "concurrency: 3\nrepositories:\n  - repo: owner/repo\n    concurrency: 2\n  - repo: owner/second\n  - repo: owner/disabled\n    enabled: false\n", g)
 	for range 3 {
 		if err := s.Tick(context.Background()); err != nil {
 			t.Fatal(err)
@@ -578,13 +124,15 @@ func TestOrderingAndGlobalAndRepositoryLimits(t *testing.T) {
 	}
 }
 func TestClaimOrderAndLabelFailureAbortPreparation(t *testing.T) {
+	t.Parallel()
+
 	for _, failure := range []string{"", "add", "remove"} {
 		t.Run("failure-"+failure, func(t *testing.T) {
-			api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
+			api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(7)}}}
 			var s *scheduler.Scheduler
 			prepared := false
 			var actions []string
-			api.mutate = func(action, repo string, n int, label string) error {
+			api.Mutate = func(action, repo string, n int, label string) error {
 				if label == "agent-needs-attention" || (action == "remove" && label == "agent-running") {
 					return nil
 				}
@@ -592,7 +140,7 @@ func TestClaimOrderAndLabelFailureAbortPreparation(t *testing.T) {
 				if err != nil || len(runs) != 1 || runs[0].State != workflow.Claiming {
 					t.Fatalf("labels changed before durable CLAIMING: %+v, %v", runs, err)
 				}
-				if action == "remove" && !has(api.issues[repo][0], "agent-running") {
+				if action == "remove" && !testkit.Has(api.Issues[repo][0], "agent-running") {
 					t.Fatal("ready removed before running was added")
 				}
 				actions = append(actions, action+":"+label)
@@ -601,14 +149,14 @@ func TestClaimOrderAndLabelFailureAbortPreparation(t *testing.T) {
 				}
 				return nil
 			}
-			g := rejectingGit{prepare: func(req managedgit.PrepareRequest) {
+			g := testkit.RejectingGit{PrepareHook: func(req managedgit.PrepareRequest) {
 				prepared = true
 				runs, _ := s.Runs(context.Background())
-				if runs[0].State != workflow.Preparing || has(api.issues[req.Repository][0], "ready-for-agent") || !has(api.issues[req.Repository][0], "agent-running") {
+				if runs[0].State != workflow.Preparing || testkit.Has(api.Issues[req.Repository][0], "ready-for-agent") || !testkit.Has(api.Issues[req.Repository][0], "agent-running") {
 					t.Fatal("preparation began before successful claim")
 				}
 			}}
-			s, _ = configured(t, api, "repositories:\n  - repo: owner/repo\n", g)
+			s, _ = testkit.Configured(t, api, "repositories:\n  - repo: owner/repo\n", g)
 			if err := s.Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -626,73 +174,13 @@ func TestClaimOrderAndLabelFailureAbortPreparation(t *testing.T) {
 	}
 }
 
-func TestPhaseRetryIsBoundedAndKeepsOneRun(t *testing.T) {
-	for _, success := range []bool{true, false} {
-		t.Run(map[bool]string{true: "succeeds", false: "exhausted"}[success], func(t *testing.T) {
-			script := `if [ ! -f retry-marker ]; then
- printf '%s\n' 'first attempt' > retry-marker
- printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"failed","summary":"Temporary failure"}}'
- else
- ` + successfulScript + `
- fi`
-			if !success {
-				script = `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"failed","summary":"Persistent failure"}}'`
-			}
-			_, runtime, api, _, cfg, r := localFlow(t, script)
-			cfg.Repositories[0].Implementer.MaxAttempts = 2
-			s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-			if err != nil {
-				t.Fatal(err)
-			}
-			state, phase := workflow.Active, workflow.Review
-			if !success {
-				state, phase = workflow.NeedsAttention, workflow.Implement
-			}
-			run := finish(t, s, state, phase)
-			for range 3 {
-				if err := s.Tick(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-			}
-			history, err := runtime.Events.History(context.Background(), 0, 100)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var attempts []int
-			for _, event := range history {
-				if event.RunID == run.ID && event.Type == "phase.attempt_started" && strings.Contains(string(event.Payload), `"phase":"implement"`) {
-					var payload struct {
-						Attempt int `json:"attempt"`
-					}
-					if err := json.Unmarshal(event.Payload, &payload); err != nil {
-						t.Fatal(err)
-					}
-					attempts = append(attempts, payload.Attempt)
-				}
-			}
-			if len(attempts) != 2 || attempts[0] != 1 || attempts[1] != 2 {
-				t.Fatalf("attempt-start notifications = %v; want [1 2]", attempts)
-			}
-			phases, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "*"))
-			want := 2
-			if success {
-				want = 3
-			}
-			if len(phases) != want {
-				t.Fatalf("phase attempts = %v", phases)
-			}
-			runs, _ := s.Runs(context.Background())
-			if len(runs) != 1 {
-				t.Fatal("retry created another run")
-			}
-		})
-	}
-}
 func TestEveryNonterminalStateConsumesSlotExceptReadyToMerge(t *testing.T) {
+	t.Parallel()
+
 	for _, state := range []workflow.State{workflow.Claiming, workflow.Preparing, workflow.Active, workflow.Manual, workflow.NeedsAttention, workflow.WaitingForHarness, workflow.WaitingForCI, workflow.ReadyToMerge, workflow.Completed, workflow.Failed, workflow.Stopped} {
 		t.Run(string(state), func(t *testing.T) {
-			api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
-			s, runtime := configured(t, api, "repositories:\n  - repo: owner/repo\n", rejectingGit{})
+			api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(7)}}}
+			s, runtime := testkit.Configured(t, api, "repositories:\n  - repo: owner/repo\n", testkit.RejectingGit{})
 			ctx := context.Background()
 			w := runtime.Workflow
 			requests := []workflow.Request{{Trigger: workflow.IssueClaimed, Repository: "owner/old", IssueNumber: 1}}
@@ -743,41 +231,28 @@ func TestEveryNonterminalStateConsumesSlotExceptReadyToMerge(t *testing.T) {
 	}
 }
 
-type gatedGitHub struct {
-	*fakeGitHub
-	entered chan struct{}
-	release chan struct{}
-}
-
-func (g gatedGitHub) UnresolvedBlockers(ctx context.Context, repo string, n int) ([]github.Issue, error) {
-	g.entered <- struct{}{}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-g.release:
-	}
-	return g.fakeGitHub.UnresolvedBlockers(ctx, repo, n)
-}
 func TestPauseDuringEligibilityStopsPendingClaim(t *testing.T) {
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
-	_, runtime := fixture(t, api)
+	t.Parallel()
+
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(7)}}}
+	_, runtime := testkit.Fixture(t, api)
 	cfg, _, _ := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
-	g := gatedGitHub{fakeGitHub: api, entered: make(chan struct{}, 1), release: make(chan struct{})}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: g, Git: rejectingGit{}})
+	g := testkit.GatedGitHub{FakeGitHub: api, Entered: make(chan struct{}, 1), Release: make(chan struct{})}
+	s, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: g, Git: testkit.RejectingGit{}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- s.Tick(context.Background()) }()
 	select {
-	case <-g.entered:
+	case <-g.Entered:
 	case <-time.After(2 * time.Second):
 		t.Fatal("tick did not reach blockers")
 	}
 	if err := s.Pause(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	close(g.release)
+	close(g.Release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -786,42 +261,12 @@ func TestPauseDuringEligibilityStopsPendingClaim(t *testing.T) {
 		t.Fatal("pause returned but pending eligibility check still claimed an issue")
 	}
 }
-func TestSchedulerRestartObservesExistingTmuxAttempt(t *testing.T) {
-	script := `while [ ! -f release ]; do /bin/sleep 0.02; done
- ` + successfulScript
-	s, runtime, api, _, cfg, r := localFlow(t, script)
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	runs, _ := s.Runs(context.Background())
-	if len(runs) != 1 || runs[0].Phase != workflow.Implement {
-		t.Fatalf("running attempt = %+v", runs)
-	}
-	restarted, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if err := restarted.Tick(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	paths, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "worktrees", "owner-repo", "*"))
-	if len(paths) != 1 {
-		t.Fatal("duplicate worktree after restart")
-	}
-	if err := os.WriteFile(filepath.Join(paths[0], "release"), nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	run := finish(t, restarted, workflow.Active, workflow.Review)
-	phases, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "*"))
-	if len(phases) != 1 {
-		t.Fatalf("restart duplicated running process: %v", phases)
-	}
-}
+
 func TestPollingRunStopsOnCancellation(t *testing.T) {
-	api := &fakeGitHub{issues: map[string][]github.Issue{}}
-	s, _ := fixture(t, api)
+	t.Parallel()
+
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{}}
+	s, _ := testkit.Fixture(t, api)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := s.Run(ctx); !errors.Is(err, context.Canceled) {
@@ -832,24 +277,14 @@ func TestPollingRunStopsOnCancellation(t *testing.T) {
 	}
 }
 
-type observingGitHub struct {
-	*fakeGitHub
-	polls chan struct{}
-}
-
-func (o observingGitHub) ListLabeledIssues(ctx context.Context, repo string, labels []string) ([]github.Issue, error) {
-	select {
-	case o.polls <- struct{}{}:
-	default:
-	}
-	return o.fakeGitHub.ListLabeledIssues(ctx, repo, labels)
-}
 func TestRunPollsImmediatelyAndPeriodically(t *testing.T) {
-	api := &fakeGitHub{issues: map[string][]github.Issue{}}
-	_, runtime := fixture(t, api)
+	t.Parallel()
+
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{}}
+	_, runtime := testkit.Fixture(t, api)
 	cfg, _, _ := config.Parse([]byte("poll_interval: 10ms\nrepositories:\n  - repo: owner/repo\n"))
-	observed := observingGitHub{fakeGitHub: api, polls: make(chan struct{}, 4)}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: observed})
+	observed := testkit.ObservingGitHub{FakeGitHub: api, Polls: make(chan struct{}, 4)}
+	s, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: observed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -859,7 +294,7 @@ func TestRunPollsImmediatelyAndPeriodically(t *testing.T) {
 	go func() { done <- s.Run(ctx) }()
 	for range 2 {
 		select {
-		case <-observed.polls:
+		case <-observed.Polls:
 		case <-time.After(2 * time.Second):
 			t.Fatal("Run did not poll")
 		}
@@ -874,7 +309,10 @@ func TestRunPollsImmediatelyAndPeriodically(t *testing.T) {
 }
 
 func TestConcurrentTicksProduceOneRunAndAttempt(t *testing.T) {
-	s, runtime, api, _, _, _ := localFlow(t, successfulScript)
+	t.Parallel()
+
+	flow := testkit.NewScenario(t)
+	s, runtime, api, _, _, _ := flow.Parts()
 	done := make(chan error, 6)
 	for range 6 {
 		go func() { done <- s.Tick(context.Background()) }()
@@ -884,21 +322,23 @@ func TestConcurrentTicksProduceOneRunAndAttempt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	run := finish(t, s, workflow.WaitingForCI, workflow.Review)
+	run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
 	runs, _ := s.Runs(context.Background())
 	phases, _ := filepath.Glob(filepath.Join(runtime.Workspace.Root, "runs", run.ID, "phases", "*"))
-	if len(runs) != 1 || len(phases) != 2 || api.creations != 1 {
-		t.Fatalf("concurrent ticks duplicated work: runs=%d, attempts=%d, PRs=%d", len(runs), len(phases), api.creations)
+	if len(runs) != 1 || len(phases) != 2 || api.Creations != 1 {
+		t.Fatalf("concurrent ticks duplicated work: runs=%d, attempts=%d, PRs=%d", len(runs), len(phases), api.Creations)
 	}
 }
 
 func TestTakeoverDuringPreparationPreservesManualState(t *testing.T) {
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
+	t.Parallel()
+
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(7)}}}
 	entered := make(chan managedgit.PrepareRequest, 1)
 	release := make(chan struct{})
 	takeoverDone := make(chan error, 1)
-	g := rejectingGit{prepare: func(req managedgit.PrepareRequest) { entered <- req; <-release }}
-	s, runtime := configured(t, api, "repositories:\n  - repo: owner/repo\n", g)
+	g := testkit.RejectingGit{PrepareHook: func(req managedgit.PrepareRequest) { entered <- req; <-release }}
+	s, runtime := testkit.Configured(t, api, "repositories:\n  - repo: owner/repo\n", g)
 	tickDone := make(chan error, 1)
 	go func() { tickDone <- s.Tick(context.Background()) }()
 	req := <-entered
@@ -932,13 +372,11 @@ func TestTakeoverDuringPreparationPreservesManualState(t *testing.T) {
 	}
 }
 
-func schedulerResources(runtime *app.Runtime) scheduler.Resources {
-	return scheduler.Resources{DB: runtime.DB, Events: runtime.Events, Workflow: runtime.Workflow, Workspace: runtime.Workspace, Control: runtime.Scheduler}
-}
-
 func TestRuntimeDashboardControlSharesDispatchGate(t *testing.T) {
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
-	s, runtime := configured(t, api, "repositories:\n  - repo: owner/repo\n", rejectingGit{})
+	t.Parallel()
+
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(7)}}}
+	s, runtime := testkit.Configured(t, api, "repositories:\n  - repo: owner/repo\n", testkit.RejectingGit{})
 	ctx := context.Background()
 	if err := runtime.Scheduler.Pause(ctx); err != nil {
 		t.Fatal(err)
@@ -963,20 +401,4 @@ func TestRuntimeDashboardControlSharesDispatchGate(t *testing.T) {
 	if len(runs) != 1 {
 		t.Fatal("shared gate did not resume dispatch")
 	}
-}
-
-// blockedReport retains the current contract when a success fixture becomes blocked.
-func blockedReport(report string) string {
-	report = strings.Replace(report, `"status":"success"`, `"status":"blocked"`, 1)
-	return strings.Replace(report, `"human_action":null`, `"human_action":{"decision":"Clarify the required behavior","files":[],"options":[]}`, 1)
-}
-
-func (f *fakeGitHub) EnsureHarnessOverrideComment(_ context.Context, _ string, n int, reason string) error {
-	if f.overrideComments == nil {
-		f.overrideComments = make(map[int]string)
-	}
-	if _, exists := f.overrideComments[n]; !exists {
-		f.overrideComments[n] = reason
-	}
-	return nil
 }

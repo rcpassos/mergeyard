@@ -8,11 +8,14 @@ import (
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
 	"github.com/rcpassos/mergeyard/internal/web"
 )
 
 func TestStatusExposesLoadedEffectiveConfigurationAndSource(t *testing.T) {
-	s, rt := fixture(t, &fakeGitHub{})
+	t.Parallel()
+
+	s, rt := testkit.Fixture(t, &testkit.FakeGitHub{})
 	cfg, _, err := config.Parse([]byte("concurrency: 4\nrepositories:\n  - repo: owner/repo\n    concurrency: 2\n    implementer:\n      agent: codex\n      model: implementation\n    reviewer:\n      model: independent-review\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +26,7 @@ func TestStatusExposesLoadedEffectiveConfigurationAndSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, apiRequest(t, rt.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
+	server.ServeHTTP(response, testkit.ApiRequest(t, rt.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/status"))
 	var status web.Status
 	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &status) != nil || status.Config == nil || status.ConfigPath != path || status.Workspace != rt.Workspace.Root || status.Config.Concurrency != 4 {
 		t.Fatalf("effective configuration absent: %d %s", response.Code, response.Body.String())

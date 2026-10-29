@@ -11,12 +11,15 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/harness"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
 	"github.com/rcpassos/mergeyard/internal/web"
+	// The dashboard HTTP surface carries the confirmation markup and loading state
+	// for every destructive or quota-consuming action.
 )
 
-// The dashboard HTTP surface carries the confirmation markup and loading state
-// for every destructive or quota-consuming action.
 func TestRunDetailHTTPConfirmsActionsAndShowsLoading(t *testing.T) {
+	t.Parallel()
+
 	runtime, err := app.Open(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -26,9 +29,9 @@ func TestRunDetailHTTPConfirmsActionsAndShowsLoading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &creditHarness{classifiedHarness: &classifiedHarness{HarnessAdapter: harness.NewClaude(cfg.Agents.Claude)}, detection: true}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{
-		GitHub: &fakeGitHub{}, Harnesses: map[string]harness.HarnessAdapter{"claude": h},
+	h := &testkit.CreditHarness{ClassifiedHarness: &testkit.ClassifiedHarness{HarnessAdapter: harness.NewClaude(cfg.Agents.Claude)}, Detection: true}
+	s, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{
+		GitHub: &testkit.FakeGitHub{}, Harnesses: map[string]harness.HarnessAdapter{"claude": h},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +55,7 @@ func TestRunDetailHTTPConfirmsActionsAndShowsLoading(t *testing.T) {
 	}
 
 	page := httptest.NewRecorder()
-	server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/run-actions", nil))
+	server.ServeHTTP(page, testkit.DashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/run-actions", nil))
 	body := page.Body.String()
 	if page.Code != http.StatusOK {
 		t.Fatalf("run detail = %d: %s", page.Code, body)
@@ -87,7 +90,7 @@ func TestRunDetailHTTPConfirmsActionsAndShowsLoading(t *testing.T) {
 	}
 
 	dashboard := httptest.NewRecorder()
-	server.ServeHTTP(dashboard, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
+	server.ServeHTTP(dashboard, testkit.DashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
 	if dashboard.Code != http.StatusOK || !strings.Contains(dashboard.Body.String(), `action="/scheduler/pause"`) ||
 		!strings.Contains(dashboard.Body.String(), "hx-disabled-elt=") || !strings.Contains(dashboard.Body.String(), "htmx-indicator") {
 		t.Fatalf("scheduler action has no loading state: %d %s", dashboard.Code, dashboard.Body.String())

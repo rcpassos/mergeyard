@@ -8,13 +8,16 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/doctor"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
 	"github.com/rcpassos/mergeyard/internal/web"
+	// Dashboard discovery notifications are live-only: they must still reach
+	// subscribed browsers, but they are UI state, not durable run history.
 )
 
-// Dashboard discovery notifications are live-only: they must still reach
-// subscribed browsers, but they are UI state, not durable run history.
 func TestDashboardUpdatesReachSubscribersWithoutPersisting(t *testing.T) {
-	s, rt := fixture(t, &fakeGitHub{issues: map[string][]github.Issue{}})
+	t.Parallel()
+
+	s, rt := testkit.Fixture(t, &testkit.FakeGitHub{Issues: map[string][]github.Issue{}})
 	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
 	if err != nil {
 		t.Fatal(err)

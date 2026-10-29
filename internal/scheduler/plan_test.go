@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/rcpassos/mergeyard/internal/scheduler"
-	"github.com/rcpassos/mergeyard/internal/store"
-	"github.com/rcpassos/mergeyard/internal/web"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,10 +15,16 @@ import (
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/fault"
 	"github.com/rcpassos/mergeyard/internal/github"
+	"github.com/rcpassos/mergeyard/internal/scheduler"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
+	"github.com/rcpassos/mergeyard/internal/store"
+	"github.com/rcpassos/mergeyard/internal/web"
 	"github.com/rcpassos/mergeyard/internal/workflow"
 )
 
 func TestPlanMatchesNextPoll(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name, yaml, label, decision, reason string
 		active, paused, limited             bool
@@ -43,16 +46,16 @@ func TestPlanMatchesNextPoll(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			issue := ready(7)
+			issue := testkit.Ready(7)
 			if tc.label != "" {
 				issue.Labels = append(issue.Labels, github.Label{Name: tc.label})
 			}
-			api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {issue}}}
+			api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {issue}}}
 			if tc.name == "blocked" {
-				api.blockers = map[int][]github.Issue{7: {ready(99), ready(42)}}
+				api.Blockers = map[int][]github.Issue{7: {testkit.Ready(99), testkit.Ready(42)}}
 			}
 			if tc.name == "untrusted" || tc.trustErr {
-				api.trust = func(github.Issue) (github.TrustDecision, error) {
+				api.Trust = func(github.Issue) (github.TrustDecision, error) {
 					if tc.trustErr {
 						return github.TrustDecision{}, errors.New("unreadable history")
 					}
@@ -64,12 +67,12 @@ func TestPlanMatchesNextPoll(t *testing.T) {
 				global = 1
 			}
 			yaml := "concurrency: " + strconv.Itoa(global) + "\nrepositories:\n  - repo: owner/repo\n" + tc.yaml
-			s, rt := configured(t, api, yaml, rejectingGit{})
+			s, rt := testkit.Configured(t, api, yaml, testkit.RejectingGit{})
 			if tc.active {
 				if tc.name != "active" {
-					other := ready(8)
+					other := testkit.Ready(8)
 					other.Labels = nil
-					api.issues["owner/repo"] = append(api.issues["owner/repo"], other)
+					api.Issues["owner/repo"] = append(api.Issues["owner/repo"], other)
 				}
 				number := 8
 				if tc.name == "active" {
@@ -83,7 +86,7 @@ func TestPlanMatchesNextPoll(t *testing.T) {
 				}
 			}
 			if tc.limited {
-				limitedHarness(t, rt, "claude", time.Now().Add(time.Hour))
+				testkit.LimitedHarness(t, rt, "claude", time.Now().Add(time.Hour))
 			}
 			if tc.paused {
 				if err := s.Pause(ctx, true); err != nil {
@@ -91,7 +94,7 @@ func TestPlanMatchesNextPoll(t *testing.T) {
 				}
 			}
 			before, _ := rt.Events.History(ctx, 0, 100)
-			original, _ := json.Marshal(api.issues)
+			original, _ := json.Marshal(api.Issues)
 			if _, err := rt.DB.Exec("PRAGMA query_only=1"); err != nil {
 				t.Fatal(err)
 			}
@@ -121,8 +124,8 @@ func TestPlanMatchesNextPoll(t *testing.T) {
 				t.Fatalf("blockers=%v", report.Issues[0].Blockers)
 			}
 			after, _ := rt.Events.History(ctx, 0, 100)
-			observed, _ := json.Marshal(api.issues)
-			if string(original) != string(observed) || len(api.trustComments) != 0 || len(api.overrideComments) != 0 || !reflect.DeepEqual(before, after) {
+			observed, _ := json.Marshal(api.Issues)
+			if string(original) != string(observed) || len(api.TrustComments) != 0 || len(api.OverrideComments) != 0 || !reflect.DeepEqual(before, after) {
 				t.Fatal("plan mutated GitHub or store")
 			}
 			if _, err := rt.DB.Exec("PRAGMA query_only=0"); err != nil {
@@ -149,15 +152,17 @@ func TestPlanMatchesNextPoll(t *testing.T) {
 }
 
 func TestPlanReservesSlotsInSchedulingOrderAndProjectsRepository(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
-	older := ready(3)
+	older := testkit.Ready(3)
 	older.CreatedAt = older.CreatedAt.Add(-time.Hour)
-	unready := ready(4)
+	unready := testkit.Ready(4)
 	unready.Labels = nil
-	closed := ready(5)
+	closed := testkit.Ready(5)
 	closed.State = github.Closed
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/first": {ready(2), closed, ready(1), older, unready}, "owner/second": {ready(10)}}}
-	s, _ := configured(t, api, "concurrency: 2\nrepositories:\n  - repo: owner/first\n    concurrency: 1\n  - repo: owner/second\n", rejectingGit{})
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/first": {testkit.Ready(2), closed, testkit.Ready(1), older, unready}, "owner/second": {testkit.Ready(10)}}}
+	s, _ := testkit.Configured(t, api, "concurrency: 2\nrepositories:\n  - repo: owner/first\n    concurrency: 1\n  - repo: owner/second\n", testkit.RejectingGit{})
 	plan, err := s.Plan(ctx, "")
 	if err != nil {
 		t.Fatal(err)
@@ -178,16 +183,18 @@ func TestPlanReservesSlotsInSchedulingOrderAndProjectsRepository(t *testing.T) {
 	if _, err := s.Plan(ctx, "owner/missing"); err == nil {
 		t.Fatal("unknown repository accepted")
 	}
-	if api.issues["owner/first"][0].Number != 2 {
+	if api.Issues["owner/first"][0].Number != 2 {
 		t.Fatal("adapter-owned issue order changed")
 	}
 }
 
 func TestPlanUsesResolvedRoleSettingsAndImplementerGate(t *testing.T) {
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
-	api.issues["owner/repo"][0].Labels = append(api.issues["owner/repo"][0].Labels, github.Label{Name: "mergeyard:implementer=codex"})
-	s, rt := configured(t, api, "repositories:\n  - repo: owner/repo\n    implementer:\n      agent: claude\n      model: original\n      effort: high\n      skills: [implement]\n    reviewer:\n      model: review-model\n      effort: medium\n      skills: [review]\n", rejectingGit{})
-	limitedHarness(t, rt, "claude", time.Now().Add(time.Hour))
+	t.Parallel()
+
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(7)}}}
+	api.Issues["owner/repo"][0].Labels = append(api.Issues["owner/repo"][0].Labels, github.Label{Name: "mergeyard:implementer=codex"})
+	s, rt := testkit.Configured(t, api, "repositories:\n  - repo: owner/repo\n    implementer:\n      agent: claude\n      model: original\n      effort: high\n      skills: [implement]\n    reviewer:\n      model: review-model\n      effort: medium\n      skills: [review]\n", testkit.RejectingGit{})
+	testkit.LimitedHarness(t, rt, "claude", time.Now().Add(time.Hour))
 	plan, err := s.Plan(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
@@ -199,8 +206,10 @@ func TestPlanUsesResolvedRoleSettingsAndImplementerGate(t *testing.T) {
 }
 
 func TestPlanHTTPReadsOnly(t *testing.T) {
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
-	s, rt := configured(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{})
+	t.Parallel()
+
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(7)}}}
+	s, rt := testkit.Configured(t, api, "repositories: [{repo: owner/repo}]", testkit.RejectingGit{})
 	server, err := web.NewWithOperations(rt.Events, rt.Scheduler, s, rt.Workspace.Root)
 	if err != nil {
 		t.Fatal(err)
@@ -209,19 +218,21 @@ func TestPlanHTTPReadsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, apiRequest(t, rt.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/plan?repo=owner%2Frepo"))
+	server.ServeHTTP(response, testkit.ApiRequest(t, rt.Workspace.Root, http.MethodGet, "http://127.0.0.1:7331/api/plan?repo=owner%2Frepo"))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"decision":"would_claim"`) {
 		t.Fatalf("HTTP plan=%d %s", response.Code, response.Body)
 	}
 	history, err := rt.Events.History(context.Background(), 0, 100)
-	if err != nil || len(history) != 0 || len(api.trustComments) != 0 || len(api.overrideComments) != 0 {
+	if err != nil || len(history) != 0 || len(api.TrustComments) != 0 || len(api.OverrideComments) != 0 {
 		t.Fatalf("plan wrote history=%v err=%v", history, err)
 	}
 }
 
 func TestPlanRepositoryFilterRetainsEarlierGlobalReservations(t *testing.T) {
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/first": {ready(1)}, "owner/second": {ready(2)}}}
-	s, _ := configured(t, api, "concurrency: 1\nrepositories: [{repo: owner/first}, {repo: owner/second}]", rejectingGit{})
+	t.Parallel()
+
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/first": {testkit.Ready(1)}, "owner/second": {testkit.Ready(2)}}}
+	s, _ := testkit.Configured(t, api, "concurrency: 1\nrepositories: [{repo: owner/first}, {repo: owner/second}]", testkit.RejectingGit{})
 	report, err := s.Plan(context.Background(), "owner/second")
 	if err != nil || len(report.Issues) != 1 || report.Issues[0].Decision != "waiting" || report.Issues[0].Reason != "concurrency_full" {
 		t.Fatalf("filter=%+v err=%v", report, err)
@@ -229,8 +240,10 @@ func TestPlanRepositoryFilterRetainsEarlierGlobalReservations(t *testing.T) {
 }
 
 func TestPlanExpiredHarnessLimitAndEmptyJSON(t *testing.T) {
-	api := &fakeGitHub{issues: map[string][]github.Issue{"owner/repo": {ready(7)}}}
-	s, rt := configured(t, api, "repositories: [{repo: owner/repo}]", rejectingGit{})
+	t.Parallel()
+
+	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(7)}}}
+	s, rt := testkit.Configured(t, api, "repositories: [{repo: owner/repo}]", testkit.RejectingGit{})
 	_, err := rt.DB.Exec("INSERT INTO harness_limits(harness_type,limited_until,reset_time_source,signal_source) VALUES('claude',?,'reported','fixture')", time.Now().Add(-time.Hour).Format(time.RFC3339Nano))
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +252,7 @@ func TestPlanExpiredHarnessLimitAndEmptyJSON(t *testing.T) {
 	if err != nil || len(report.Issues) != 1 || report.Issues[0].Decision != "would_claim" {
 		t.Fatalf("expired gate=%+v err=%v", report, err)
 	}
-	api.issues["owner/repo"] = nil
+	api.Issues["owner/repo"] = nil
 	report, err = s.Plan(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
