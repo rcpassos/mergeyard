@@ -13,7 +13,37 @@ it never falls back to the HTML file association. On Linux the launcher runs
 detached, in its own session and process group, and is never waited for:
 `mergeyard open` returns at once and the browser outlives the command that
 opened it. Launch failures are reported without stopping the runtime.
-`--config <path>` works with every command.
+`--config <path>` selects configuration for commands other than `try`, which
+creates its own configuration.
+
+`mergeyard try` asks before creating a private, uniquely named
+`<you>/mergeyard-playground-<id>` repository on GitHub.com. It includes a small
+POSIX shell project, a passing test suite, a GitHub Actions workflow, queue
+labels, and one ready sample issue. Choose the installed agents for implementation
+and review; the command runs doctor and starts the dashboard. The sample asks the
+agent to add a name argument to a greeting and extend the tests. Review proceeds
+normally, including fixes when needed; the demo does not force a review finding.
+You decide whether to merge the resulting PR.
+
+Install and authenticate the same prerequisites as `init` first. Git must be
+able to push, and your GitHub credentials must allow creating a private repository
+and pushing workflow files. The playground uses the default Mergeyard agent
+permissions and consumes agent and GitHub Actions allowances.
+
+Each invocation creates a fresh directory under
+`~/.local/share/mergeyard/playgrounds/`, containing `config.yaml`, `source/`, and
+the runtime `workspace/`. It uses an available local port, opens the browser,
+and polls every five seconds. The command ignores your normal configuration;
+`--config` is rejected. It prints the generated config path for subsequent
+`start`, `doctor`, and other commands with `--config <printed-path>`.
+
+Recovery and cleanup instructions appear before repository creation, including
+when setup fails partway. Stop the sample run in the dashboard and resolve any
+reported leftovers before pressing Ctrl-C: stopping the runtime alone leaves
+agent sessions alive. Review anything you want to keep, then use the printed
+`gh repo delete` and `rm -rf` commands to remove the playground repository and
+directory. Nothing is deleted automatically. Re-running `try` creates a new
+playground; resume a completed setup using the printed `start` command instead.
 
 Every command that contacts a running control plane first reads the workspace's
 owner-only `runtime.secret` and proves knowledge of it on each request; the

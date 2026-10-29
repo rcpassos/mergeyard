@@ -37,6 +37,7 @@ var commands = []command{
 	{name: "version", summary: "show the installed version"},
 	{name: "start", summary: "start the scheduler and dashboard (default)"},
 	{name: "init", summary: "interactive setup: writes config, checks tools"},
+	{name: "try", summary: "create a private playground and try the full loop"},
 	{name: "repo add", args: "<owner/repo>", summary: "add a repository to the config"},
 	{name: "plan", summary: "preview claims and explain the ready queue (read-only)"},
 	{name: "status", summary: "show scheduler and run status"},
@@ -124,6 +125,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if cmd.name == "version" {
 		fmt.Fprintf(stdout, "mergeyard %s\n", version)
 		return 0
+	}
+	if cmd.name == "try" {
+		if opts.configPath != "" {
+			fmt.Fprintln(stderr, "mergeyard try: --config is not supported; the playground uses its own config")
+			return 2
+		}
+		return tryPlayground(stdout, stderr)
 	}
 	if cmd.name == "start" {
 		return start(opts.configPath, stdout, stderr)
