@@ -1,6 +1,8 @@
 package scheduler_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -31,7 +33,13 @@ func TestReviewAndFixUsageLimitsSurviveDurableBoundaries(t *testing.T) {
 						}
 						failed := testkit.ScenarioOutcome{Exit: 1, Apply: testkit.ScenarioWrite(t, "partial.txt", "partial")}
 						recovered := testkit.NativeOutcome(testkit.FixedReport)
-						recovered.Apply = testkit.ScenarioWrite(t, "feature.txt", "fixed")
+						recovered.Apply = func(req runner.SessionRequest) {
+							partial, err := os.ReadFile(filepath.Join(req.Command.Dir, "partial.txt"))
+							if err != nil || string(partial) != "partial" {
+								t.Fatalf("interrupted fix work did not survive into attempt %d: %q, %v", req.Attempt, partial, err)
+							}
+							testkit.ScenarioWrite(t, "feature.txt", "fixed")(req)
+						}
 						if phase == workflow.Review {
 							failed.Apply = testkit.ScenarioWrite(t, "feature.txt", "contaminated")
 							recovered = testkit.NativeOutcome(testkit.ApprovedReview)

@@ -140,7 +140,7 @@ func TestReconciliationControlPlaneProcess(t *testing.T) {
 	}
 	defer runtime.Close()
 	api := &testkit.FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {testkit.Ready(7)}}}
-	r := runner.NewLocal(runner.Options{SocketName: input.Socket})
+	r := testkit.NewLocalRunner(t, runner.Options{SocketName: input.Socket})
 	s, err := testkit.TestScheduler(input.Config, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +224,7 @@ func TestRestartAfterControlPlaneKillPreservesImplementAttempt(t *testing.T) {
 				if len(trees) != 1 {
 					t.Fatalf("initial worktree count: %v", trees)
 				}
-				r := runner.NewLocal(runner.Options{SocketName: socket})
+				r := testkit.NewLocalRunner(t, runner.Options{SocketName: socket})
 				var runtime *app.Runtime
 				if finishedOffline {
 					if err := os.WriteFile(filepath.Join(trees[0], "release"), nil, 0600); err != nil {

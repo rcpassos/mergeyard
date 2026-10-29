@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"github.com/rcpassos/mergeyard/internal/github"
 	"github.com/rcpassos/mergeyard/internal/runner"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
-	"github.com/rcpassos/mergeyard/internal/sessions"
 )
 
 var TmuxScenarioSlots = make(chan struct{}, 16)
@@ -74,68 +72,11 @@ func TmuxFlow(t *testing.T, script string) (*scheduler.Scheduler, *app.Runtime, 
 	cfg.Agents.Claude.Executable = executable
 	socket := fmt.Sprintf("mergeyard-scheduler-test-%d", time.Now().UnixNano())
 	t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
-	r := runner.NewLocal(runner.Options{SocketName: socket})
-	t.Cleanup(func() { StopFixtureSessions(t, runtime.Workspace.Root, socket) })
+	r := NewLocalRunner(t, runner.Options{SocketName: socket})
 	api := &FakeGitHub{Issues: map[string][]github.Issue{"owner/repo": {Ready(7)}}, Head: func(branch string) string { return GitCommand(t, remote, "rev-parse", "refs/heads/"+branch) }}
 	s, err := TestScheduler(cfg, SchedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: r})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s, runtime, api, remote, cfg, r
-}
-
-// StopFixtureSessions verifies owned process groups have exited before TempDir
-// cleanup. Killing the server alone can leave a wrapper writing its last files.
-func StopFixtureSessions(t *testing.T, root, socket string) {
-	t.Helper()
-	dirs, err := filepath.Glob(filepath.Join(root, "runs", "*", "phases", "*"))
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	checks, err := filepath.Glob(filepath.Join(root, "harness-checks", "*"))
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	dirs = append(dirs, checks...)
-	cleanup := runner.NewLocal(runner.Options{SocketName: socket, GracePeriod: 50 * time.Millisecond})
-	for _, dir := range dirs {
-		if _, err := os.Stat(filepath.Join(dir, "process-group.json")); os.IsNotExist(err) {
-			continue
-		} else if err != nil {
-			t.Error(err)
-			continue
-		}
-		req := runner.SessionRequest{PhaseDir: dir}
-		if filepath.Base(filepath.Dir(dir)) == "harness-checks" {
-			req.RunID = filepath.Base(dir)
-			req.Phase = "harness-check"
-			req.Attempt = 1
-		} else {
-			parts := strings.Split(filepath.Base(dir), "-")
-			if len(parts) < 3 {
-				t.Errorf("unexpected phase directory %s", dir)
-				continue
-			}
-			req.RunID = filepath.Base(filepath.Dir(filepath.Dir(dir)))
-			req.Phase = strings.Join(parts[:len(parts)-2], "-")
-			req.Round, err = strconv.Atoi(parts[len(parts)-2])
-			if err != nil {
-				t.Error(err)
-				continue
-			}
-			req.Attempt, err = strconv.Atoi(parts[len(parts)-1])
-			if err != nil {
-				t.Error(err)
-				continue
-			}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := cleanup.StopSession(ctx, runner.SessionRef{Name: sessions.Name(req), PhaseDir: dir})
-		cancel()
-		if err != nil {
-			t.Errorf("stop owned fixture session: %v", err)
-		}
-	}
 }

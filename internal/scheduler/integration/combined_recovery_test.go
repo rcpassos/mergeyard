@@ -36,7 +36,7 @@ func TestCombinedRecoveryAcrossRepositories(t *testing.T) {
 				_, rt, base, remote, cfg, _ := testkit.TmuxPairingFlow(t, blocked, other, testkit.DisputedReport)
 				socket := fmt.Sprintf("mergeyard-combined-%d", time.Now().UnixNano())
 				t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
-				r := runner.NewLocal(runner.Options{SocketName: socket})
+				r := testkit.NewLocalRunner(t, runner.Options{SocketName: socket})
 				cfg.Concurrency = 3
 				cfg.Repositories[0].Concurrency = 1
 				remotes := map[string]string{"mergeyard/issue-7": remote}

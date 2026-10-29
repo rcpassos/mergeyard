@@ -53,7 +53,7 @@ func TestReviewControlPlaneProcess(t *testing.T) {
 	if input.KillDuringFix == "commit" || input.KillDuringFix == "push" {
 		g = testkit.InterruptedFixGit{Manager: testkit.TestGitManager(runtime.Workspace), Stage: input.KillDuringFix}
 	}
-	var phaseRunner runner.Runner = runner.NewLocal(runner.Options{SocketName: input.Socket})
+	var phaseRunner runner.Runner = testkit.NewLocalRunner(t, runner.Options{SocketName: input.Socket})
 	if input.TakeoverCrash == "stopped" {
 		phaseRunner = testkit.TakeoverCrashRunner{Runner: phaseRunner}
 	}
@@ -180,7 +180,7 @@ func TestReviewRecoversAfterControlPlaneKill(t *testing.T) {
 						t.Fatal(err)
 					}
 					t.Cleanup(func() { runtime.Close() })
-					restarted, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: runner.NewLocal(runner.Options{SocketName: socket})})
+					restarted, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: testkit.NewLocalRunner(t, runner.Options{SocketName: socket})})
 					if err != nil {
 						t.Fatal(err)
 					}

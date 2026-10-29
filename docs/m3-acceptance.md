@@ -42,7 +42,7 @@ and bounded missing-session recovery without spending the ordinary attempt budge
 
 ## Combined offline acceptance
 
-The [combined recovery matrix](../internal/scheduler/combined_recovery_test.go)
+The [combined recovery matrix](../internal/scheduler/integration/combined_recovery_test.go)
 uses real temporary SQLite, four distinct local bare Git repositories and their
 managed worktrees, an isolated tmux server, fake GitHub, fake harness executables,
 and the injected clock. Only fake adapters return normalized restrictions. This
@@ -66,7 +66,7 @@ temporary limits and exhausted-credit blocks. Each scenario establishes:
   resumes the exact implementer and a separate reviewer without spending a new
   engineering attempt allowance or creating duplicate PRs/commits.
 
-The [subprocess fixture](../internal/scheduler/combined_restart_test.go) kills
+The [subprocess fixture](../internal/scheduler/integration/combined_restart_test.go) kills
 and reaps a real control plane, then reopens the same locked workspace at three
 cross-feature boundaries: observing manual/waiting/live independent work;
 after handback push before its journal finishes; and after resumed execution

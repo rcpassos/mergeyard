@@ -42,7 +42,7 @@ func TestManualLimitControlPlaneProcess(t *testing.T) {
 	api.Head = func(branch string) string {
 		return testkit.GitCommand(t, input.Remote, "rev-parse", "refs/heads/"+branch)
 	}
-	var r runner.Runner = runner.NewLocal(runner.Options{SocketName: input.Socket})
+	var r runner.Runner = testkit.NewLocalRunner(t, runner.Options{SocketName: input.Socket})
 	if input.Boundary == "takeover" {
 		r = testkit.TakeoverCrashRunner{Runner: r}
 	}
@@ -77,7 +77,7 @@ func TestBlockedHandbackRecoversAfterControlPlaneKill(t *testing.T) {
 					testkit.ReplacePhaseScript(t, cfg, workflow.Fix, `printf partial > partial.txt; exit 1`)
 					socket := fmt.Sprintf("mergeyard-manual-limit-%d", time.Now().UnixNano())
 					t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
-					r := runner.NewLocal(runner.Options{SocketName: socket})
+					r := testkit.NewLocalRunner(t, runner.Options{SocketName: socket})
 					now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 					h := testkit.ManualLimitHarness(cfg, agent, kind)
 					deps := scheduler.Dependencies{GitHub: testkit.BranchGitHub{FakeGitHub: api}, Runner: r, Now: func() time.Time { return now }, Harnesses: map[string]harness.HarnessAdapter{agent: h}}
@@ -151,7 +151,7 @@ func TestCreditProbeTakeoverRecoversAfterControlPlaneKill(t *testing.T) {
 			testkit.ReplacePhaseScript(t, cfg, workflow.Fix, `exit 1`)
 			socket := fmt.Sprintf("mergeyard-probe-takeover-%d", time.Now().UnixNano())
 			t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
-			r := runner.NewLocal(runner.Options{SocketName: socket})
+			r := testkit.NewLocalRunner(t, runner.Options{SocketName: socket})
 			h := testkit.ManualLimitHarness(cfg, agent, harness.CreditsExhausted)
 			deps := scheduler.Dependencies{GitHub: api, Runner: r, Harnesses: map[string]harness.HarnessAdapter{agent: h}}
 			s, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(rt), deps)

@@ -245,6 +245,7 @@ func GitCommand(t *testing.T, dir string, args ...string) string {
 const SuccessfulScript = `printf '%s\n' 'implemented' > feature.txt
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"human_action":null,"status":"success","summary":"Added feature"}}'`
 
+// Finish observes real process progress. Controlled scenarios use Scenario.Until.
 func Finish(t *testing.T, s *scheduler.Scheduler, state workflow.State, phase workflow.Phase) workflow.Run {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)

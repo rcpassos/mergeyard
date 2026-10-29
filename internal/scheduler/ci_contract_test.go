@@ -1,4 +1,4 @@
-package integration_test
+package scheduler_test
 
 import (
 	"context"
@@ -28,20 +28,21 @@ func TestSchedulerUsesHeadApprovalAndCurrentTestMergeCI(t *testing.T) {
 	} {
 		t.Run(tc.MergeState, func(t *testing.T) {
 
-			_, runtime, api, remote, cfg, runner := testkit.TmuxFlow(t, testkit.SuccessfulScript)
+			flow := testkit.NewScenario(t)
+			_, runtime, api, _, cfg, runner := flow.Parts()
 			commands := &testkit.CiContractRunner{Api: api, MergeState: tc.MergeState}
 			boundary := testkit.ContractCIGitHub{FakeGitHub: api, Client: github.New(commands)}
 			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
-			s, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: boundary, Runner: runner, Now: func() time.Time { return now }})
+			s, err := flow.New(cfg, scheduler.Dependencies{GitHub: boundary, Runner: runner, Now: func() time.Time { return now }})
 			if err != nil {
 				t.Fatal(err)
 			}
-			run := testkit.Finish(t, s, workflow.WaitingForCI, workflow.Review)
+			run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
 			pr := api.Prs["mergeyard/issue-7"]
 			yes := true
 			pr.Mergeable = &yes
 			pr.MergeCommitSHA = "test-merge"
-			pr.Base.SHA = testkit.GitCommand(t, remote, "rev-parse", "main")
+			pr.Base.SHA = flow.Git.Runs[run.ID].BaseSHA
 			if err := s.Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}

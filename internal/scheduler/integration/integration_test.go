@@ -75,7 +75,7 @@ func TestGitHubSchedulerIntegration(t *testing.T) {
 	}
 	cfg.Agents.Claude.Executable = executable
 	socket := fmt.Sprintf("mergeyard-live-test-%d", time.Now().UnixNano())
-	r := runner.NewLocal(runner.Options{SocketName: socket})
+	r := testkit.NewLocalRunner(t, runner.Options{SocketName: socket})
 	t.Cleanup(func() { exec.Command("tmux", "-L", socket, "kill-server").Run() })
 	// Register cleanup before dispatch: an interrupted API response may hide a PR.
 	t.Cleanup(func() {

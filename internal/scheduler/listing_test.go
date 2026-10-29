@@ -606,15 +606,15 @@ func TestQueueReportsLastGoodListingWhenRefreshDeadlineExpires(t *testing.T) {
 		<-started
 
 		type result struct {
-			report  scheduler.QueueSnapshot
-			ErrHook error
+			report scheduler.QueueSnapshot
+			Err    error
 		}
 		refreshCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 		done := make(chan result, 1)
 		go func() {
 			report, err := s.QueueReport(refreshCtx)
-			done <- result{report: report, ErrHook: err}
+			done <- result{report: report, Err: err}
 		}()
 		start := time.Now()
 		select {
@@ -622,8 +622,8 @@ func TestQueueReportsLastGoodListingWhenRefreshDeadlineExpires(t *testing.T) {
 			if elapsed := time.Since(start); elapsed > 5*time.Second {
 				t.Fatalf("refresh returned after %s", elapsed)
 			}
-			if got.ErrHook != nil {
-				t.Fatalf("refresh error = %v, want the last good listing", got.ErrHook)
+			if got.Err != nil {
+				t.Fatalf("refresh error = %v, want the last good listing", got.Err)
 			}
 			if !got.report.Stale {
 				t.Fatal("expired refresh did not report a stale snapshot")

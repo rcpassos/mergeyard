@@ -32,22 +32,32 @@ func RegisterGitConfig(t *testing.T, path string) {
 		FixtureGitConfigs.Unlock()
 	})
 }
+
+// TestGitConfig returns only configuration owned by this test or an ancestor.
 func TestGitConfig(t *testing.T) string {
 	t.Helper()
+	path := registeredGitConfig(t.Name())
+	if path == "" {
+		t.Fatal("no isolated Git configuration registered for this test")
+	}
+	return path
+}
+
+func registeredGitConfig(name string) string {
 	FixtureGitConfigs.Lock()
 	defer FixtureGitConfigs.Unlock()
-	for name := t.Name(); ; {
+	for {
 		if path := FixtureGitConfigs.Paths[name]; path != "" {
 			return path
 		}
 		index := strings.LastIndexByte(name, '/')
 		if index < 0 {
-			break
+			return ""
 		}
 		name = name[:index]
 	}
-	return os.Getenv("GIT_CONFIG_GLOBAL")
 }
+
 func FixtureConfigAt(path string) string {
 	for dir := path; ; dir = filepath.Dir(dir) {
 		configPath := filepath.Join(dir, "gitconfig")
@@ -60,12 +70,12 @@ func FixtureConfigAt(path string) string {
 	}
 }
 func TestGitEnvironment(t *testing.T, dir string) []string {
-	path := TestGitConfig(t)
+	path := registeredGitConfig(t.Name())
 	if path == "" {
 		path = FixtureConfigAt(dir)
 	}
 	if path == "" {
-		return nil
+		path = os.DevNull
 	}
 	return []string{"GIT_CONFIG_GLOBAL=" + path, "GIT_CONFIG_NOSYSTEM=1"}
 }
@@ -73,7 +83,7 @@ func TestGitManager(w *workspace.Workspace) *managedgit.Manager {
 	return TestGitManagerWithTimeouts(w, managedgit.Timeouts{})
 }
 func TestGitManagerWithTimeouts(w *workspace.Workspace, timeouts managedgit.Timeouts) *managedgit.Manager {
-	env := map[string]string{}
+	env := map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1"}
 	if path := FixtureConfigAt(w.Root); path != "" {
 		env["GIT_CONFIG_GLOBAL"] = path
 		env["GIT_CONFIG_NOSYSTEM"] = "1"

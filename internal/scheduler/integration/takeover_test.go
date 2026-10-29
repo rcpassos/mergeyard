@@ -438,7 +438,7 @@ func TestTakeoverRecoversAfterControlPlaneKill(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			phaseRunner := runner.NewLocal(runner.Options{SocketName: socket})
+			phaseRunner := testkit.NewLocalRunner(t, runner.Options{SocketName: socket})
 			setupScheduler, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(setup), scheduler.Dependencies{GitHub: api, Runner: phaseRunner})
 			if err != nil {
 				t.Fatal(err)
@@ -533,7 +533,7 @@ func TestTakeoverWaitsForLifecycleOperationAndConcurrentRequestsAreIdempotent(t 
 	<-held
 	type result struct {
 		prepared workflow.Run
-		ErrHook  error
+		Err      error
 	}
 	results := make(chan result, 2)
 	for range 2 {
@@ -553,7 +553,7 @@ func TestTakeoverWaitsForLifecycleOperationAndConcurrentRequestsAreIdempotent(t 
 		t.Fatal(err)
 	}
 	first, second := <-results, <-results
-	if first.ErrHook != nil || second.ErrHook != nil || first.prepared.ID != id || first.prepared.State != workflow.Manual || !reflect.DeepEqual(first.prepared.Implementer, second.prepared.Implementer) {
+	if first.Err != nil || second.Err != nil || first.prepared.ID != id || first.prepared.State != workflow.Manual || !reflect.DeepEqual(first.prepared.Implementer, second.prepared.Implementer) {
 		t.Fatalf("concurrent takeover: %+v %+v", first, second)
 	}
 	history, err := runtime.Events.History(ctx, 0, 100)

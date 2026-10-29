@@ -68,9 +68,9 @@ func (g *RepositoryFailureGitHub) ListLabeledIssues(ctx context.Context, repo st
 // returns the same conclusive GitHub error.
 type FailingPullRequests struct {
 	*FakeGitHub
-	ErrHook error
+	Err error
 }
 
 func (g *FailingPullRequests) GetPullRequest(context.Context, string, int) (*github.PullRequest, error) {
-	return nil, g.ErrHook
+	return nil, g.Err
 }

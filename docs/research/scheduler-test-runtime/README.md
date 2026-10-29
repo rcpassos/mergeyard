@@ -1,10 +1,15 @@
 # Scheduler test runtime (#295)
 
-The fast scheduler package passed all **158 tests in 15.952 seconds** on
-2026-10-29 (Go 1.26.10, macOS/arm64, uncached test execution). The separate
-integration package contains 300 tests.
-The one-minute target applies to `go test ./internal/scheduler/`. The full
-recursive suite still includes the real-process integration package.
+The fast scheduler package passed all **161 tests in 18.961 seconds** after
+review fixes on 2026-10-29 (Go 1.26.10, macOS/arm64, uncached test execution).
+The separate integration package contains 298 tests. The one-minute target
+applies to `go test ./internal/scheduler/`; the recursive suite includes the
+native integration package.
+
+The local runtime target is met. The issue's broader request for a small native
+suite remains open: the three policy-only examples from review now use
+controlled fixtures, but the remaining integration suite has not been fully
+audited for further conversions. This PR addresses #295 without closing it.
 
 ## Test layout
 
@@ -137,3 +142,17 @@ The temporary profiling probes were removed from the active test tree and from
 this report's deliverables. No debug instrumentation is retained.
 
 [ci]: https://github.com/rcpassos/mergeyard/actions/runs/40596095428
+
+## Review follow-up
+
+- Fix-phase recovery checks that `partial.txt` survives into attempt 2 before
+  applying the recovered edit. An injected deletion makes this assertion fail.
+- Permission journaling, head/merge CI evidence, and merged-implementer readiness
+  tests now use controlled sessions and Git outcomes with the real adapters.
+- Publication timeout cases use virtual time, and all fast CI scenarios use
+  bounded ticks. `Finish` retains wall-clock polling only for native processes.
+- Native cleanup records launch/adoption references through `NewLocalRunner`.
+  A real-session regression checks both paths outside the production layout.
+- Unregistered Git configuration lookup fails instead of using the developer's
+  global configuration. Fixture Git defaults ignore global/system config.
+- Plain errors use `Err`, and retained smoke tests contain only exercised modes.

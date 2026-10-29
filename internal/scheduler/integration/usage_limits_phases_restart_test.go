@@ -58,7 +58,7 @@ printf fixed > feature.txt
 						}
 						t.Cleanup(func() { runtime.Close() })
 						fake := testkit.ClassifiedAdapter(agent, harness.NewClaude(cfg.Agents.Claude), harness.NewCodex(cfg.Agents.Codex))
-						restarted, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: testkit.BranchGitHub{FakeGitHub: api}, Runner: runner.NewLocal(runner.Options{SocketName: socket}), Now: func() time.Time { return now }, Harnesses: map[string]harness.HarnessAdapter{agent: fake}})
+						restarted, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: testkit.BranchGitHub{FakeGitHub: api}, Runner: testkit.NewLocalRunner(t, runner.Options{SocketName: socket}), Now: func() time.Time { return now }, Harnesses: map[string]harness.HarnessAdapter{agent: fake}})
 						if err != nil {
 							t.Fatal(err)
 						}

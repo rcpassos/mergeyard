@@ -3,9 +3,6 @@ package testkit
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -48,29 +45,18 @@ func (r *CommandRecorder) Ran(phase string, round, attempt int) (runner.SessionR
 // permissionFlow runs one implement-review-fix loop through a recording runner.
 func PermissionFlow(t *testing.T, agent string, configure func(*config.Config)) (*CommandRecorder, *app.Runtime) {
 	t.Helper()
-	script := LoopScript(`printf fixed > feature.txt; ` + FixedReport)
-	_, runtime, api, _, cfg, r := TmuxFlow(t, script)
+	flow := NewPairingScenario(t, agent, agent, FixedReport)
+	cfg := flow.Cfg
 	configure(&cfg)
-	// The shared Codex fixture asserts the sandbox flags it receives; pass the
-	// literal flags the adapter emits for this configuration.
-	codexScript := strings.Replace(NativeCodexScript(script),
-		`-s workspace-write -c approval_policy="never" -c sandbox_workspace_write.network_access=true`,
-		fmt.Sprintf(`-s %s -c approval_policy="never" -c sandbox_workspace_write.network_access=%t`, cfg.Agents.Codex.Sandbox, cfg.Agents.Codex.NetworkAccess), 1)
-	executable := filepath.Join(t.TempDir(), "fake-codex")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+codexScript), 0700); err != nil {
-		t.Fatal(err)
-	}
-	cfg.Agents.Codex.Executable = executable
-	cfg.Repositories[0].Implementer = config.Role{Agent: agent, Model: "implement-model", Effort: "medium", Skills: []string{"implement"}, MaxAttempts: 1}
-	cfg.Repositories[0].Reviewer = config.Role{Agent: agent, Model: "review-model", Effort: "low", Skills: []string{"review"}, MaxAttempts: 1}
-	recorder := &CommandRecorder{Runner: r}
-	s, err := TestScheduler(cfg, SchedulerResources(runtime), scheduler.Dependencies{GitHub: BranchGitHub{api}, Runner: recorder})
+	recorder := &CommandRecorder{Runner: flow.Runner}
+	s, err := flow.New(cfg, scheduler.Dependencies{GitHub: BranchGitHub{FakeGitHub: flow.Api}, Runner: recorder})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run := Finish(t, s, workflow.WaitingForCI, workflow.Review); run.ReviewRound != 2 || run.Fix == nil {
+	if run := flow.Until(s, workflow.WaitingForCI, workflow.Review); run.ReviewRound != 2 || run.Fix == nil {
 		t.Fatalf("flow did not finish a fix round: %+v", run)
 	}
+	runtime := flow.Runtime
 	return recorder, runtime
 }
 

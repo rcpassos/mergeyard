@@ -39,7 +39,7 @@ func TestCombinedControlPlaneProcess(t *testing.T) {
 	api.Head = func(branch string) string {
 		return testkit.GitCommand(t, input.Remotes[branch], "rev-parse", "refs/heads/"+branch)
 	}
-	var r runner.Runner = runner.NewLocal(runner.Options{SocketName: input.Socket})
+	var r runner.Runner = testkit.NewLocalRunner(t, runner.Options{SocketName: input.Socket})
 	if input.Boundary == "resume" {
 		r = testkit.RecoveryCrashRunner{Runner: r, Phase: workflow.Implement, Mode: "after-launch"}
 	}

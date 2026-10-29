@@ -2,11 +2,9 @@ package scheduler_test
 
 import (
 	"context"
-
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-
 	"strings"
 	"testing"
 	"time"
@@ -51,19 +49,19 @@ func TestCreditProbeConcurrentSelectionStopAndWaitingRetry(t *testing.T) {
 		}
 	}
 	type selection struct {
-		run     workflow.Run
-		ErrHook error
+		run workflow.Run
+		Err error
 	}
 	results := make(chan selection, 2)
 	for _, run := range runs {
 		go func(id string) { v, err := s.Retry(context.Background(), id); results <- selection{v, err} }(run.ID)
 	}
 	first, second := <-results, <-results
-	if (first.ErrHook == nil) == (second.ErrHook == nil) {
-		t.Fatalf("exclusive selection: %v %v", first.ErrHook, second.ErrHook)
+	if (first.Err == nil) == (second.Err == nil) {
+		t.Fatalf("exclusive selection: %v %v", first.Err, second.Err)
 	}
 	winner := first.run
-	if first.ErrHook != nil {
+	if first.Err != nil {
 		winner = second.run
 	}
 	if err := s.Tick(context.Background()); err != nil {

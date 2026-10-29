@@ -103,9 +103,9 @@ func TestGitHubFailureClassification(t *testing.T) {
 	store := &fault.Error{Code: "internal.run_store", Message: "Could not persist or read the run", Err: sql.ErrConnDone}
 	tmux := &fault.Error{Code: "phase.tmux_failed", Message: "tmux failed", Err: errors.New("exit status 1")}
 	for _, tc := range []struct {
-		name    string
-		ErrHook error
-		want    bool
+		name string
+		Err  error
+		want bool
 	}{
 		{"none", nil, false},
 		{"unreachable GitHub", unavailable, true},
@@ -132,8 +132,8 @@ func TestGitHubFailureClassification(t *testing.T) {
 		{"GitHub failure joined with local state", errors.Join(unavailable, ownership), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := scheduler.GitHubFailure(tc.ErrHook); got != tc.want {
-				t.Fatalf("GitHubFailure(%v) = %v, want %v", tc.ErrHook, got, tc.want)
+			if got := scheduler.GitHubFailure(tc.Err); got != tc.want {
+				t.Fatalf("GitHubFailure(%v) = %v, want %v", tc.Err, got, tc.want)
 			}
 		})
 	}
@@ -351,7 +351,7 @@ func TestRunGitHubFailureDoesNotBlockOtherRepositories(t *testing.T) {
 		"owner/stuck": {},
 		"owner/ok":    {testkit.Ready(2)},
 	}}
-	failing := &testkit.FailingPullRequests{FakeGitHub: api, ErrHook: &fault.Error{Code: "github.forbidden", Message: "Resource not accessible by integration"}}
+	failing := &testkit.FailingPullRequests{FakeGitHub: api, Err: &fault.Error{Code: "github.forbidden", Message: "Resource not accessible by integration"}}
 	s, runtime := testkit.Configured(t, failing, "concurrency: 2\nrepositories:\n  - repo: owner/stuck\n  - repo: owner/ok\n", testkit.RejectingGit{})
 
 	run, err := runtime.Workflow.Transition(ctx, "stuck-run", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/stuck", IssueNumber: 1})

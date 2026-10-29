@@ -50,7 +50,7 @@ func TestUsageLimitControlPlaneProcess(t *testing.T) {
 	if phase == "" {
 		phase = workflow.Implement
 	}
-	var r runner.Runner = runner.NewLocal(runner.Options{SocketName: input.Socket})
+	var r runner.Runner = testkit.NewLocalRunner(t, runner.Options{SocketName: input.Socket})
 	if input.Boundary == "resuming" {
 		r = testkit.RecoveryCrashRunner{Runner: r, Phase: phase, Mode: "after-launch"}
 	}
@@ -178,7 +178,7 @@ func TestTemporaryLimitSurvivesControlPlaneKill(t *testing.T) {
 					adapter = harness.NewCodex(cfg.Agents.Codex)
 				}
 				fake := &testkit.ClassifiedHarness{HarnessAdapter: adapter, Outcome: harness.FailureClassification{Kind: harness.TemporaryLimit}}
-				s, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: runner.NewLocal(runner.Options{SocketName: socket}), Now: func() time.Time { return now }, Harnesses: map[string]harness.HarnessAdapter{agent: fake}})
+				s, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: api, Runner: testkit.NewLocalRunner(t, runner.Options{SocketName: socket}), Now: func() time.Time { return now }, Harnesses: map[string]harness.HarnessAdapter{agent: fake}})
 				if err != nil {
 					t.Fatal(err)
 				}

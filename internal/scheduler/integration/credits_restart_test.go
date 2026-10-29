@@ -49,7 +49,7 @@ func TestCreditProbeSurvivesControlPlaneKill(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { rt.Close() })
-				restarted, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(rt), scheduler.Dependencies{GitHub: api, Runner: runner.NewLocal(runner.Options{SocketName: socket}), Harnesses: map[string]harness.HarnessAdapter{agent: h}})
+				restarted, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(rt), scheduler.Dependencies{GitHub: api, Runner: testkit.NewLocalRunner(t, runner.Options{SocketName: socket}), Harnesses: map[string]harness.HarnessAdapter{agent: h}})
 				if err != nil {
 					t.Fatal(err)
 				}

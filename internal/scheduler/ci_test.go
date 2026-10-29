@@ -30,7 +30,7 @@ func TestCINoChecksWindowAndRestartWhilePaused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := testkit.Finish(t, s, workflow.WaitingForCI, workflow.Review)
+	run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
 	if run.CI == nil || !run.CI.StartedAt.Equal(now) || !run.CI.Deadline.Equal(now.Add(time.Hour)) {
 		t.Fatalf("wait not started with approval: %+v", run.CI)
 	}
@@ -101,7 +101,7 @@ func TestCICheckMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			run := testkit.Finish(t, s, workflow.WaitingForCI, workflow.Review)
+			run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
 			now = now.Add(3 * time.Minute)
 			if err := s.Tick(context.Background()); err != nil {
 				t.Fatal(err)
@@ -136,7 +136,7 @@ func TestCITimeoutRetainsDeadlineAcrossUnknownAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := testkit.Finish(t, s, workflow.WaitingForCI, workflow.Review)
+	run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
 	now = now.Add(30 * time.Minute)
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestCIHeadRacesAndReadinessAmbiguity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			run := testkit.Finish(t, s, workflow.WaitingForCI, workflow.Review)
+			run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
 			pr := base.Prs["mergeyard/issue-7"]
 			switch mode {
 			case "before checks":
@@ -265,7 +265,7 @@ func TestReadyWarningsClosureCapacityAndHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := testkit.Finish(t, s, workflow.WaitingForCI, workflow.Review)
+	run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestTestMergeEvidenceRacesPreserveApprovalAndDeadline(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			run := testkit.Finish(t, s, workflow.WaitingForCI, workflow.Review)
+			run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
 			pr := api.Prs["mergeyard/issue-7"]
 			yes := true
 			pr.Mergeable = &yes
@@ -385,6 +385,46 @@ func TestTestMergeEvidenceRacesPreserveApprovalAndDeadline(t *testing.T) {
 			}
 			if saved.State != expected || saved.ApprovedSHA != run.ApprovedSHA || !saved.CI.Deadline.Equal(run.CI.Deadline) || api.ReadyCalls != calls || (expected == workflow.WaitingForCI && saved.CI.QueryError == "") {
 				t.Fatalf("stale merge readiness: %+v CI=%+v calls=%d", saved, saved.CI, api.ReadyCalls)
+			}
+		})
+	}
+}
+
+func TestCIReadinessAfterMergedImplementerFlows(t *testing.T) {
+
+	for _, mode := range []string{"Claude fix and re-review", "Codex implementation"} {
+		t.Run(mode, func(t *testing.T) {
+			var flow *testkit.Scenario
+			if mode == "Codex implementation" {
+				flow = testkit.NewScenario(t)
+				flow.Cfg.Repositories[0].Implementer.Agent = "codex"
+			} else {
+				flow = testkit.NewPairingScenario(t, "claude", "claude", testkit.FixedReport)
+			}
+			_, runtime, base, _, cfg, r := flow.Parts()
+			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+			api := &testkit.CiGitHub{FakeGitHub: base, ApplyReady: true, Evidence: ci.Evidence{Checks: []ci.Check{{Name: "build", Source: "check", Status: "completed", Conclusion: "success"}}}}
+			s, err := flow.New(cfg, scheduler.Dependencies{GitHub: testkit.CiBranchGitHub{CiGitHub: api}, Runner: r, Now: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := flow.Until(s, workflow.WaitingForCI, workflow.Review)
+			if run.CI == nil || run.CI.SHA != run.ApprovedSHA || !run.CI.StartedAt.Equal(now) {
+				t.Fatal("approval did not start a pinned CI wait")
+			}
+			if mode == "Claude fix and re-review" {
+				if run.ReviewRound != 2 || run.Fix == nil || !run.Fix.Pushed {
+					t.Fatal("fix history lost")
+				}
+			} else if run.Implementer == nil || run.Implementer.Agent != "codex" || run.Implementer.SessionID != testkit.CodexID {
+				t.Fatal("Codex session lost")
+			}
+			if _, err := s.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := runtime.Workflow.Get(context.Background(), run.ID)
+			if err != nil || saved.State != workflow.ReadyToMerge || api.ReadyCalls != 1 || saved.CI.CurrentHead != saved.ApprovedSHA {
+				t.Fatalf("merged flow readiness: %+v %v", saved, err)
 			}
 		})
 	}
