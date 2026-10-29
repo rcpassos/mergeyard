@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/doctor"
 )
 
 func playgroundTools(t *testing.T) (string, string) {
@@ -40,16 +41,16 @@ esac
 }
 
 func TestPlaygroundRequiresConsentBeforeAnyMutations(t *testing.T) {
-	for _, input := range []string{"n\n", "\n", "", "y\n"} {
+	for _, input := range []string{"\n\nn\n", "\n\n\n", "\n\n", "\n", ""} {
 		t.Run(input, func(t *testing.T) {
 			home, log := playgroundTools(t)
 			var out bytes.Buffer
-			path, _ := preparePlayground(context.Background(), strings.NewReader(input), &out)
+			path, _ := preparePlayground(context.Background(), strings.NewReader(input), &out, doctor.Options{EffectiveUID: func() int { return 1000 }})
 			if path != "" {
 				t.Fatalf("unexpected config: %s", path)
 			}
 			commands, err := os.ReadFile(log)
-			if err != nil || string(commands) != "gh api --hostname github.com user\n" {
+			if err != nil || strings.Contains(string(commands), "gh repo create") || strings.Contains(string(commands), "gh label create") || strings.Contains(string(commands), "gh issue create") || strings.Contains(string(commands), "init --initial-branch") {
 				t.Fatalf("mutated without completed confirmation/agent choices: %s (%v)", commands, err)
 			}
 			if _, err := os.Stat(filepath.Join(home, ".local")); !os.IsNotExist(err) {
@@ -72,7 +73,7 @@ func TestPlaygroundCreatesIsolatedConfigAndOneReadyIssue(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	path, err := preparePlayground(context.Background(), strings.NewReader("y\n\n\n"), &out)
+	path, err := preparePlayground(context.Background(), strings.NewReader("\n\ny\n"), &out, doctor.Options{EffectiveUID: func() int { return 1000 }})
 	if err != nil {
 		t.Fatalf("prepare: %v\n%s", err, &out)
 	}
@@ -118,7 +119,7 @@ func TestPlaygroundFailureKeepsRecoveryInstructionsAndDoesNotQueueIssue(t *testi
 	_, log := playgroundTools(t)
 	t.Setenv("PLAYGROUND_FAIL", "repo create")
 	var out bytes.Buffer
-	path, err := preparePlayground(context.Background(), strings.NewReader("y\n\n\n"), &out)
+	path, err := preparePlayground(context.Background(), strings.NewReader("\n\ny\n"), &out, doctor.Options{EffectiveUID: func() int { return 1000 }})
 	if err == nil || path != "" || !strings.Contains(out.String(), "gh repo delete") || !strings.Contains(out.String(), "rm -rf --") {
 		t.Fatalf("failure recovery: path=%s err=%v output=%s", path, err, &out)
 	}
@@ -174,7 +175,7 @@ func TestPlaygroundCommitsTemplateInNewGitRepository(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	var out bytes.Buffer
-	path, err := preparePlayground(context.Background(), strings.NewReader("y\n\n\n"), &out)
+	path, err := preparePlayground(context.Background(), strings.NewReader("\n\ny\n"), &out, doctor.Options{EffectiveUID: func() int { return 1000 }})
 	if err != nil {
 		t.Fatalf("prepare with real git: %v\n%s", err, &out)
 	}
@@ -188,5 +189,81 @@ func TestPlaygroundCommitsTemplateInNewGitRepository(t *testing.T) {
 	data, err = cmd.Output()
 	if err != nil || len(data) != 0 {
 		t.Fatalf("source worktree dirty: %s (%v)", data, err)
+	}
+}
+
+func TestPlaygroundRejectsAgentProblemsBeforeCreation(t *testing.T) {
+	for _, tc := range []struct {
+		name, agent, script, code string
+	}{
+		{"claude not logged in", "claude", "case \"$1\" in --version) echo '2.1.277';; auth) exit 1;; esac", "harness.not_logged_in"},
+		{"claude too old", "claude", "case \"$1\" in --version) echo '2.1.0';; esac", "harness.version_unsupported"},
+		{"codex not logged in", "codex", "case \"$1\" in --version) echo 'codex-cli 0.156.1';; login) exit 1;; esac", "harness.not_logged_in"},
+		{"codex too old", "codex", "case \"$1\" in --version) echo 'codex-cli 0.100.0';; esac", "harness.version_unsupported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, log := playgroundTools(t)
+			temporary := t.TempDir()
+			t.Setenv("TMPDIR", temporary)
+			if err := os.WriteFile(filepath.Join(os.Getenv("PATH"), tc.agent), []byte("#!/bin/sh\n"+tc.script+"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			input := tc.agent + "\n" + tc.agent + "\ny\n"
+			var out bytes.Buffer
+			path, err := preparePlayground(context.Background(), strings.NewReader(input), &out, doctor.Options{EffectiveUID: func() int { return 1000 }})
+			if err == nil || path != "" || !strings.Contains(out.String(), tc.code) {
+				t.Errorf("agent problem did not fail preflight: path=%s err=%v output=%s", path, err, &out)
+			}
+			commands, _ := os.ReadFile(log)
+			for _, mutation := range []string{"gh repo create", "gh label create", "gh issue create", "init --initial-branch"} {
+				if strings.Contains(string(commands), mutation) {
+					t.Errorf("agent problem left playground artifacts: %s", commands)
+					break
+				}
+			}
+			if _, err := os.Stat(filepath.Join(home, ".local")); !os.IsNotExist(err) {
+				t.Errorf("agent problem left a playground directory: %v", err)
+			}
+			if strings.Contains(out.String(), "Create this playground") {
+				t.Error("creation was offered before agent preflight passed")
+			}
+			if files, err := os.ReadDir(temporary); err != nil || len(files) != 0 {
+				t.Errorf("preflight temporary files were not removed: %v (%v)", files, err)
+			}
+		})
+	}
+}
+
+func TestPlaygroundPreflightUsesSelectedRolesForRootCheck(t *testing.T) {
+	for _, tc := range []struct{ implementer, reviewer string }{
+		{"claude", "codex"},
+		{"codex", "claude"},
+		{"codex", "codex"},
+	} {
+		t.Run(tc.implementer+"/"+tc.reviewer, func(t *testing.T) {
+			home, log := playgroundTools(t)
+			if err := os.WriteFile(filepath.Join(os.Getenv("PATH"), "codex"), []byte("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.156.1'; fi\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			input := tc.implementer + "\n" + tc.reviewer + "\ny\n"
+			path, err := preparePlayground(context.Background(), strings.NewReader(input), &out, doctor.Options{EffectiveUID: func() int { return 0 }})
+			if tc.implementer == "codex" && tc.reviewer == "codex" {
+				if err != nil || path == "" {
+					t.Fatalf("unselected Claude blocked Codex: %v\n%s", err, &out)
+				}
+				return
+			}
+			if err == nil || path != "" || !strings.Contains(out.String(), "harness.root_bypass_permissions") {
+				t.Fatalf("root check did not stop setup: path=%s err=%v output=%s", path, err, &out)
+			}
+			commands, _ := os.ReadFile(log)
+			if strings.Contains(string(commands), "gh repo create") || strings.Contains(out.String(), "Create this playground") {
+				t.Fatalf("root check ran after creation was offered: %s\n%s", commands, &out)
+			}
+			if _, err := os.Stat(filepath.Join(home, ".local")); !os.IsNotExist(err) {
+				t.Fatalf("root check left a playground directory: %v", err)
+			}
+		})
 	}
 }

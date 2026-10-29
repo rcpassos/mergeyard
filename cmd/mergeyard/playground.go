@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/doctor"
 	"github.com/rcpassos/mergeyard/internal/harness/registry"
 	"github.com/rcpassos/mergeyard/internal/repository"
 )
@@ -79,7 +80,7 @@ This is a disposable Mergeyard demonstration. Open a PR; the user decides what m
 func tryPlayground(stdout, stderr io.Writer) int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	path, err := preparePlayground(ctx, os.Stdin, stdout)
+	path, err := preparePlayground(ctx, os.Stdin, stdout, doctor.Options{})
 	if err != nil {
 		fmt.Fprintf(stderr, "mergeyard try: %v\n", err)
 		return 1
@@ -100,7 +101,7 @@ func tryPlayground(stdout, stderr io.Writer) int {
 // preparePlayground never loads the user's normal config and only mutates the
 // newly named repository after confirmation. Every invocation creates a fresh
 // playground so an existing repository can never be mistaken for disposable data.
-func preparePlayground(ctx context.Context, input io.Reader, output io.Writer) (string, error) {
+func preparePlayground(ctx context.Context, input io.Reader, output io.Writer, doctorOptions doctor.Options) (string, error) {
 	var agents []string
 	for _, name := range []string{"git", "gh", "tmux"} {
 		if _, err := exec.LookPath(name); err != nil {
@@ -127,15 +128,6 @@ func preparePlayground(ctx context.Context, input io.Reader, output io.Writer) (
 	}
 	repo := account.Login + "/mergeyard-playground-" + uuid.NewString()[:8]
 	prompts := setupPrompts{ctx, bufio.NewReader(input), output}
-	fmt.Fprintf(output, "Create private GitHub repository %s with a small shell project, tests, CI, queue labels, and one sample issue.\nAgents use Mergeyard defaults: Claude bypassPermissions; Codex workspace-write with network access.\nThis uses your agent allowance and GitHub Actions allowance.\nA separate config and workspace will be used. You decide whether to merge the resulting PR.\n", repo)
-	confirmed, err := prompts.confirm("Create this playground and start its agents?")
-	if err != nil {
-		return "", err
-	}
-	if !confirmed {
-		fmt.Fprintln(output, "Playground cancelled.")
-		return "", nil
-	}
 	implementer, err := prompts.agent("Implementer", agents)
 	if err != nil {
 		return "", err
@@ -149,6 +141,48 @@ func preparePlayground(ctx context.Context, input io.Reader, output io.Writer) (
 		return "", err
 	}
 	root := filepath.Join(home, ".local", "share", "mergeyard", "playgrounds", strings.TrimPrefix(repo, account.Login+"/"))
+	cfg, doc, err := config.Parse([]byte("{}"))
+	if err != nil {
+		return "", err
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		return "", err
+	}
+	if err := doc.SetRoleAgents(implementer, reviewer); err != nil {
+		return "", err
+	}
+	for _, setting := range []struct {
+		key   string
+		value any
+	}{
+		{"workspace", filepath.Join(root, "workspace")},
+		{"port", port},
+		{"poll_interval", "5s"},
+		{"trusted_labelers", []string{account.Login}},
+	} {
+		if err := doc.Set([]string{setting.key}, setting.value); err != nil {
+			return "", err
+		}
+	}
+	// No repositories yet: doctor checks the machine and the selected global
+	// roles without probing a remote repository that does not exist.
+	if err := playgroundPreflight(ctx, doc, output, doctorOptions); err != nil {
+		return "", err
+	}
+	fmt.Fprintf(output, "Create private GitHub repository %s with a small shell project, tests, CI, queue labels, and one sample issue.\nAgents use Mergeyard defaults: Claude bypassPermissions; Codex workspace-write with network access.\nThis uses your agent allowance and GitHub Actions allowance.\nA separate config and workspace will be used. You decide whether to merge the resulting PR.\n", repo)
+	confirmed, err := prompts.confirm("Create this playground and start its agents?")
+	if err != nil {
+		return "", err
+	}
+	if !confirmed {
+		fmt.Fprintln(output, "Playground cancelled.")
+		return "", nil
+	}
 	if err := os.MkdirAll(filepath.Dir(root), 0700); err != nil {
 		return "", err
 	}
@@ -181,37 +215,11 @@ func preparePlayground(ctx context.Context, input io.Reader, output io.Writer) (
 	if _, err := setupGH(ctx, "repo", "create", "github.com/"+repo, "--private", "--disable-wiki", "--description", "Disposable Mergeyard playground", "--source", source, "--push"); err != nil {
 		return "", fmt.Errorf("create/push playground (check Git credentials and permission to push workflow files): %w", err)
 	}
-	cfg, doc, err := config.Parse([]byte("{}"))
-	if err != nil {
-		return "", err
-	}
 	if err := createSetupLabels(ctx, repo, cfg.Labels); err != nil {
 		return "", err
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
+	if err := doc.Set([]string{"repositories"}, []map[string]any{{"repo": repo, "base_branch": "main", "checks": []string{"sh test.sh"}}}); err != nil {
 		return "", err
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		return "", err
-	}
-	if err := doc.SetRoleAgents(implementer, reviewer); err != nil {
-		return "", err
-	}
-	for _, setting := range []struct {
-		key   string
-		value any
-	}{
-		{"workspace", filepath.Join(root, "workspace")},
-		{"port", port},
-		{"poll_interval", "5s"},
-		{"trusted_labelers", []string{account.Login}},
-		{"repositories", []map[string]any{{"repo": repo, "base_branch": "main", "checks": []string{"sh test.sh"}}}},
-	} {
-		if err := doc.Set([]string{setting.key}, setting.value); err != nil {
-			return "", err
-		}
 	}
 	if err := doc.Write(path); err != nil {
 		return "", err
@@ -222,6 +230,27 @@ func preparePlayground(ctx context.Context, input io.Reader, output io.Writer) (
 	}
 	fmt.Fprintf(output, "Sample issue: %s\nRunning doctor, then starting the playground dashboard. Press Ctrl-C to stop.\n", strings.TrimSpace(string(issue)))
 	return path, nil
+}
+
+func playgroundPreflight(ctx context.Context, doc *config.Document, output io.Writer, options doctor.Options) error {
+	dir, err := os.MkdirTemp("", "mergeyard-playground-preflight-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "config.yaml")
+	if err := doc.Write(path); err != nil {
+		return err
+	}
+	fmt.Fprintln(output, "Checking machine and selected agents before creating a playground.")
+	report := doctor.Check(ctx, path, options)
+	if err := report.Write(output); err != nil {
+		return err
+	}
+	if report.HasErrors() {
+		return errors.New("prerequisite checks failed; fix doctor findings before creating a playground")
+	}
+	return ctx.Err()
 }
 
 func playgroundGit(ctx context.Context, dir string, args ...string) error {

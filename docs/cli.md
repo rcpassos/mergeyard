@@ -20,8 +20,13 @@ creates its own configuration.
 `<you>/mergeyard-playground-<id>` repository on GitHub.com. It includes a small
 POSIX shell project, a passing test suite, a GitHub Actions workflow, queue
 labels, and one ready sample issue. Choose the installed agents for implementation
-and review; the command runs doctor and starts the dashboard. The sample asks the
-agent to add a name argument to a greeting and extend the tests. Review proceeds
+and review first. Before offering to create the repository, the command runs
+doctor's machine and selected-agent checks using a temporary config with no
+repositories. Authentication, minimum-version, and root permission errors stop
+setup without leaving a playground directory or writing to GitHub. The temporary
+config is removed on success, failure, or cancellation. After confirmation and
+creation, the command runs the full repository checks and starts the dashboard.
+The sample asks the agent to add a name argument to a greeting and extend the tests. Review proceeds
 normally, including fixes when needed; the demo does not force a review finding.
 You decide whether to merge the resulting PR.
 
