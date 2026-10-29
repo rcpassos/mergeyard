@@ -104,7 +104,8 @@ including its isolated configuration file and local remote rewrite. This removes
 process-wide `t.Setenv` from ordinary fixtures. The regression
 `TestManagersKeepConcurrentCommandEnvironmentsIsolated` checks simultaneous
 managers using different remotes and authors, including defensive copying of
-configuration overrides.
+configuration overrides. A second regression checks that inline `core.sshCommand`
+overrides on a reused workspace have independent probe-cache entries.
 
 Parallel execution exposed a workspace-lock release bug. An in-flight fork can
 retain the lock's open file description until exec. Closing the runtime's file

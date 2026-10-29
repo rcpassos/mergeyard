@@ -87,8 +87,22 @@ func configuredSSHCommandFor(dir string, env []string) string {
 
 // sshConfigKeyFor identifies the configuration the probe reads.
 func sshConfigKeyFor(env []string) string {
+	names := map[string]bool{"HOME": true, "XDG_CONFIG_HOME": true}
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if name == "GIT_CONFIG" || strings.HasPrefix(name, "GIT_CONFIG_") {
+			names[name] = true
+		}
+	}
+	ordered := make([]string, 0, len(names))
+	for name := range names {
+		ordered = append(ordered, name)
+	}
+	sort.Strings(ordered)
 	var key strings.Builder
-	for _, name := range []string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "XDG_CONFIG_HOME", "HOME"} {
+	for _, name := range ordered {
+		key.WriteString(name)
+		key.WriteByte(0)
 		key.WriteString(environmentValue(env, name))
 		key.WriteByte(0)
 	}

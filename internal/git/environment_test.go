@@ -3,7 +3,9 @@ package git_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	managedgit "github.com/rcpassos/mergeyard/internal/git"
@@ -71,5 +73,39 @@ func TestManagersKeepConcurrentCommandEnvironmentsIsolated(t *testing.T) {
 		if got := git(t, remote, "show", "-s", "--format=%an", "mergeyard/issue-7"); got != fmt.Sprintf("Fixture %d", i) {
 			t.Fatalf("manager %d inherited another identity: %q", i, got)
 		}
+	}
+}
+
+func TestManagerEnvironmentKeepsInlineSSHConfigurationIndependent(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("GIT_SSH_COMMAND", "")
+	t.Setenv("GIT_SSH", "")
+	trace := filepath.Join(t.TempDir(), "ssh-environments")
+	installGitWrapper(t, "fetch", fmt.Sprintf("printf '%%s\\n' \"${GIT_SSH_COMMAND:-UNSET}\" >> '%s'", trace))
+	w, err := workspace.Open(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := func(value string) managedgit.Options {
+		return managedgit.Options{Environment: map[string]string{"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.sshCommand", "GIT_CONFIG_VALUE_0": value}}
+	}
+	first, err := managedgit.NewWithOptions(w, options("")).Prepare(t.Context(), f.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := f.request
+	request.RunID = "run-2"
+	request.IssueNumber = 8
+	request.KnownRuns = []managedgit.Run{first}
+	if _, err := managedgit.NewWithOptions(w, options("fixture-custom-ssh")).Prepare(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	output, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) != 2 || lines[0] != managedgit.NonInteractiveSSH || lines[1] != "UNSET" {
+		t.Fatalf("inline SSH configuration was overridden: %q", lines)
 	}
 }
