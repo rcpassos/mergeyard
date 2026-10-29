@@ -1,0 +1,285 @@
+package integration_test
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/rcpassos/mergeyard/internal/app"
+	"github.com/rcpassos/mergeyard/internal/contract"
+	"github.com/rcpassos/mergeyard/internal/fault"
+	"github.com/rcpassos/mergeyard/internal/scheduler"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
+	"github.com/rcpassos/mergeyard/internal/web"
+	"github.com/rcpassos/mergeyard/internal/workflow"
+)
+
+func TestHumanActionAcrossAllHarnessPairingsAndPhases(t *testing.T) {
+	t.Parallel()
+
+	for _, implementer := range []string{"claude", "codex"} {
+		for _, reviewer := range []string{"claude", "codex"} {
+			for _, phase := range []workflow.Phase{workflow.Implement, workflow.Review, workflow.Fix} {
+				t.Run(implementer+"/"+reviewer+"/"+string(phase), func(t *testing.T) {
+					t.Parallel()
+
+					blockedFix := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"status":"blocked","summary":"Need a decision",` + testkit.BlockedAction + `,"responses":[]}}'`
+					s, runtime, _, _, cfg, _ := testkit.TmuxPairingFlow(t, implementer, reviewer, blockedFix)
+					script := testkit.LoopScript(blockedFix)
+					if phase == workflow.Implement {
+						script = strings.Replace(script, testkit.SuccessfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"status":"blocked","summary":"Need a decision",`+testkit.BlockedAction+`}}'`, 1)
+					}
+					if phase == workflow.Review {
+						script = strings.Replace(script, testkit.ChangesReview, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"criteria":[],"status":"blocked","summary":"",`+testkit.BlockedAction+`,"findings":[],"prior_findings":[]}}'`, 1)
+					}
+					testkit.ReplacePhaseScript(t, cfg, phase, script)
+					run := testkit.Finish(t, s, workflow.NeedsAttention, phase)
+					expected := &fault.HumanAction{Decision: "Reject duplicates or overwrite <script>them</script>?", Files: []string{"feature.txt"}, Options: []string{"Reject", "Overwrite"}}
+					if run.LastErrorCode != "phase.blocked" || !reflect.DeepEqual(run.HumanAction, expected) {
+						t.Fatalf("agent action lost: %+v", run)
+					}
+					server, err := web.NewDashboard(runtime.Events, runtime.Scheduler, web.DashboardOptions{DB: runtime.DB, Workspace: runtime.Workspace, Scheduler: s, Config: cfg})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, path := range []string{"/", "/runs/" + run.ID} {
+						response := httptest.NewRecorder()
+						server.ServeHTTP(response, testkit.DashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331"+path, nil))
+						// The Dashboard's Needs you row carries the decision; the
+						// full action stays on run detail.
+						want := []string{"Reject duplicates or overwrite &lt;script&gt;them&lt;/script&gt;?"}
+						if path != "/" {
+							want = append(want, "Human action required", "feature.txt", "Overwrite")
+						}
+						for _, text := range want {
+							if !strings.Contains(response.Body.String(), text) {
+								t.Fatalf("missing %q in %s: %s", text, path, response.Body.String())
+							}
+						}
+						if strings.Contains(response.Body.String(), "<script>them</script>") {
+							t.Fatal("unescaped agent text")
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestAttentionCommentRetriesAfterRestartWithoutDuplicating(t *testing.T) {
+	t.Parallel()
+
+	for _, withPR := range []bool{false, true} {
+		t.Run(map[bool]string{false: "issue", true: "PR"}[withPR], func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			_, initial, api, _, cfg, r := testkit.TmuxFlow(t, testkit.LoopScript(testkit.DisputedReport))
+			cfg.PRComments = true
+			publisher := &testkit.ReportGitHub{BranchGitHub: testkit.BranchGitHub{FakeGitHub: api}}
+			s, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(initial), scheduler.Dependencies{GitHub: publisher, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var run workflow.Run
+			if withPR {
+				run = testkit.Finish(t, s, workflow.WaitingForCI, workflow.Review)
+			} else {
+				run, err = initial.Workflow.Transition(ctx, "preparation-block", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 7})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			action := &fault.HumanAction{Decision: "Choose `reject` or overwrite <!-- marker -->", Files: []string{"feature.txt"}, Options: []string{"Reject", "Overwrite"}}
+			if _, err := initial.Workflow.Transition(ctx, run.ID, workflow.Request{Trigger: workflow.OperationFailed, Failure: &fault.Error{Code: "phase.blocked", Message: "Need decision", HumanAction: action}}); err != nil {
+				t.Fatal(err)
+			}
+			publisher.Ambiguous = true
+			if _, err := s.Reconcile(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var frozen string
+			var target int
+			if err := initial.DB.QueryRow(`SELECT body,issue_number FROM attention_publications WHERE run_id=?`, run.ID).Scan(&frozen, &target); err != nil {
+				t.Fatal(err)
+			}
+			want := 7
+			if withPR {
+				want = run.PRNumber
+			}
+			if target != want {
+				t.Fatalf("comment target %d want %d", target, want)
+			}
+			for _, text := range []string{"Human action required", `"human_action"`, `"files"`, `"options"`, "Choose \\u0060reject\\u0060 or overwrite"} {
+				if !strings.Contains(frozen, text) {
+					t.Fatalf("comment missing %q: %s", text, frozen)
+				}
+			}
+			count := len(publisher.Bodies)
+			root := initial.Workspace.Root
+			if err := initial.Close(); err != nil {
+				t.Fatal(err)
+			}
+			restarted, err := app.Open(ctx, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer restarted.Close()
+			publisher.Failure = false
+			s, err = testkit.TestScheduler(cfg, testkit.SchedulerResources(restarted), scheduler.Dependencies{GitHub: publisher, Runner: r})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The pending comment survives clearing the current fault. Age the
+			// failed attempt past its backoff so the ambiguous write is replayed.
+			if _, err := restarted.DB.ExecContext(ctx, `UPDATE attention_publications SET last_attempt_at='2000-01-01T00:00:00Z' WHERE run_id=?`, run.ID); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 2; i++ {
+				if _, err := s.Reconcile(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var state, body string
+			if err := restarted.DB.QueryRow(`SELECT state,body FROM attention_publications WHERE run_id=?`, run.ID).Scan(&state, &body); err != nil {
+				t.Fatal(err)
+			}
+			if state != "published" || body != frozen || len(publisher.Bodies) != count {
+				t.Fatalf("comment replay changed: %s %d/%d", state, len(publisher.Bodies), count)
+			}
+		})
+	}
+}
+
+func TestHumanActionRoundExhaustionNamesCurrentBlockers(t *testing.T) {
+	t.Parallel()
+
+	_, runtime, api, _, cfg, r := testkit.TmuxFlow(t, testkit.LoopScript(testkit.DisputedReport))
+	cfg.MaxRounds = 1
+	s, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: testkit.BranchGitHub{FakeGitHub: api}, Runner: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := testkit.Finish(t, s, workflow.NeedsAttention, workflow.Review)
+	if run.LastErrorCode != "review.max_rounds_exceeded" || run.HumanAction == nil || !strings.Contains(run.HumanAction.Decision, "F1, F2") || !reflect.DeepEqual(run.HumanAction.Files, []string{"feature.txt"}) || len(run.HumanAction.Options) != 2 {
+		t.Fatalf("missing blockers: %+v", run)
+	}
+}
+
+func TestReconcileLegacyImplementAndFixSchemas(t *testing.T) {
+	t.Parallel()
+
+	for _, agent := range []string{"claude", "codex"} {
+		for _, phase := range []workflow.Phase{workflow.Implement, workflow.Fix} {
+			t.Run(agent+"/"+string(phase), func(t *testing.T) {
+				t.Parallel()
+
+				gate := filepath.Join(t.TempDir(), "release")
+				fix := `printf fixed > feature.txt; ` + testkit.FixedReport
+				s, initial, api, _, cfg, r := testkit.TmuxPairingFlow(t, agent, "claude", fix)
+				legacy := strings.ReplaceAll(testkit.LoopScript(fix), `"schema_version":4,"verification":[],"criteria":[],"human_action":null,`, `"schema_version":1,`)
+				held := `while [ ! -f '` + gate + `' ]; do /bin/sleep 0.02; done; `
+				// Gate only the phase whose schema is being restored.
+				if phase == workflow.Implement {
+					legacy = strings.Replace(legacy, strings.ReplaceAll(testkit.SuccessfulScript, `"schema_version":4,"verification":[],"criteria":[],"human_action":null,`, `"schema_version":1,`), held+strings.ReplaceAll(testkit.SuccessfulScript, `"schema_version":4,"verification":[],"criteria":[],"human_action":null,`, `"schema_version":1,`), 1)
+				} else {
+					legacy = strings.Replace(legacy, strings.ReplaceAll(fix, `"schema_version":4,"verification":[],"criteria":[],"human_action":null,`, `"schema_version":1,`), held+strings.ReplaceAll(fix, `"schema_version":4,"verification":[],"criteria":[],"human_action":null,`, `"schema_version":1,`), 1)
+				}
+				// Other phases must emit their current contract.
+				if phase == workflow.Fix {
+					legacy = strings.Replace(legacy, strings.ReplaceAll(testkit.SuccessfulScript, `"schema_version":4,"verification":[],"criteria":[],"human_action":null,`, `"schema_version":1,`), testkit.SuccessfulScript, 1)
+				}
+				testkit.ReplacePhaseScript(t, cfg, phase, legacy)
+				run := testkit.WaitForPhase(t, s, phase)
+				dir := filepath.Join(initial.Workspace.Root, "runs", run.ID, "phases", string(phase)+"-0-1")
+				if phase == workflow.Fix {
+					dir = filepath.Join(initial.Workspace.Root, "runs", run.ID, "phases", "fix-1-1")
+				}
+				schema, err := os.ReadFile(filepath.Join(dir, "schema.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				schema = []byte(strings.Replace(string(schema), `"const":`+strconv.Itoa(contract.CurrentVersion), `"const":1`, 1))
+				// Only the const is read on reconciliation; original outputs retain their strict v1 shape.
+				if err := os.WriteFile(filepath.Join(dir, "schema.json"), schema, 0600); err != nil {
+					t.Fatal(err)
+				}
+				root := initial.Workspace.Root
+				if err := initial.Close(); err != nil {
+					t.Fatal(err)
+				}
+				runtime, err := app.Open(context.Background(), root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer runtime.Close()
+				restarted, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: testkit.BranchGitHub{FakeGitHub: api}, Runner: r})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(gate, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if phase == workflow.Implement {
+					testkit.Finish(t, restarted, workflow.Active, workflow.Review)
+				} else {
+					testkit.Finish(t, restarted, workflow.WaitingForCI, workflow.Review)
+				}
+			})
+		}
+	}
+}
+
+func TestBlockedActionSurvivesFailedAttemptRestart(t *testing.T) {
+	t.Parallel()
+
+	for _, agent := range []string{"claude", "codex"} {
+		for _, phase := range []workflow.Phase{workflow.Implement, workflow.Fix} {
+			t.Run(agent+"/"+string(phase), func(t *testing.T) {
+				t.Parallel()
+
+				blocked := `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"status":"blocked","summary":"Need decision",` + testkit.BlockedAction + `,"responses":[]}}'`
+				s, initial, api, _, cfg, r := testkit.TmuxPairingFlow(t, agent, "claude", blocked)
+				if phase == workflow.Implement {
+					testkit.ReplacePhaseScript(t, cfg, phase, strings.Replace(testkit.LoopScript(blocked), testkit.SuccessfulScript, `printf '%s\n' '{"type":"result","is_error":false,"structured_output":{"schema_version":4,"verification":[],"criteria":[],"status":"blocked","summary":"Need decision",`+testkit.BlockedAction+`}}'`, 1))
+				}
+				run := testkit.Finish(t, s, workflow.NeedsAttention, phase)
+				expected := run.HumanAction
+				// Continue from the attempt report, never the phase directory.
+				if phase == workflow.Implement {
+					if err := os.Remove(filepath.Join(initial.Workspace.Root, "runs", run.ID, "phases", "implement-0-1", "result.json")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Recreate the durable boundary after the failed-attempt commit but before
+				// its attention transition. The saved report and attempt fault remain.
+				if _, err := initial.DB.Exec(`UPDATE runs SET state='ACTIVE',last_error_code=NULL,last_error_message=NULL,human_action_json=NULL WHERE id=?`, run.ID); err != nil {
+					t.Fatal(err)
+				}
+				root := initial.Workspace.Root
+				if err := initial.Close(); err != nil {
+					t.Fatal(err)
+				}
+				runtime, err := app.Open(context.Background(), root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer runtime.Close()
+				restarted, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: testkit.BranchGitHub{FakeGitHub: api}, Runner: r})
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumed := testkit.Finish(t, restarted, workflow.NeedsAttention, phase)
+				if !reflect.DeepEqual(resumed.HumanAction, expected) {
+					t.Fatalf("blocked action lost across failed-attempt restart: got %+v want %+v", resumed.HumanAction, expected)
+				}
+			})
+		}
+	}
+}

@@ -9,20 +9,23 @@ import (
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
 	"github.com/rcpassos/mergeyard/internal/web"
+	// Run detail is one scrolling page at the dashboard HTTP surface: a sticky
+	// header, the lifecycle stepper, the current area, and collapsible history for
+	// every state the scheduler persists.
 )
 
-// Run detail is one scrolling page at the dashboard HTTP surface: a sticky
-// header, the lifecycle stepper, the current area, and collapsible history for
-// every state the scheduler persists.
 func TestRunDetailHTTPRendersHeaderStepperCurrentAndHistoryForEveryState(t *testing.T) {
-	s, rt := configured(t, &fakeGitHub{}, "repositories:\n  - repo: owner/repo\n", rejectingGit{})
+	t.Parallel()
+
+	s, rt := testkit.Configured(t, &testkit.FakeGitHub{}, "repositories:\n  - repo: owner/repo\n", testkit.RejectingGit{})
 	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
-		id, state, phase, step string
+		id, state, Phase, step string
 		round                  int
 	}{
 		{"claiming", "CLAIMING", "", "Claimed", 0},
@@ -41,7 +44,7 @@ func TestRunDetailHTTPRendersHeaderStepperCurrentAndHistoryForEveryState(t *test
 	}
 	for i, tc := range cases {
 		if _, err := rt.DB.Exec(`INSERT INTO runs(id,repository,issue_number,state,current_phase,review_round) VALUES (?, 'owner/repo', ?, ?, ?, ?)`,
-			tc.id, 100+i, tc.state, tc.phase, tc.round); err != nil {
+			tc.id, 100+i, tc.state, tc.Phase, tc.round); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -53,7 +56,7 @@ func TestRunDetailHTTPRendersHeaderStepperCurrentAndHistoryForEveryState(t *test
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
 			page := httptest.NewRecorder()
-			server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+tc.id, nil))
+			server.ServeHTTP(page, testkit.DashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+tc.id, nil))
 			body := page.Body.String()
 			if page.Code != http.StatusOK {
 				t.Fatalf("run detail = %d: %s", page.Code, body)

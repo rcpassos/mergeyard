@@ -14,4 +14,6 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/
 
 ## Testing
 
-CI owns the Go test suite: it runs in four parallel jobs, while a local `go test ./...` or `make test` takes many minutes (`internal/scheduler` alone). Verify a change by pushing it and reading `gh pr checks`. Locally, run `make lint` and, at most, the specific tests you wrote or changed: `go test -run '<TestName>' ./<package>/`.
+Locally, run `make lint` and `go test -count=1 ./internal/scheduler/` for scheduler policy and journal changes. Real Git, tmux, and process-restart tests live in `internal/scheduler/integration/`; run the specific integration tests you changed with `go test -run '<TestName>' ./internal/scheduler/integration/`.
+
+CI owns the full `go test ./...` suite and runs both packages in four shards. Verify a change by pushing it and reading `gh pr checks`.

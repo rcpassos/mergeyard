@@ -285,7 +285,7 @@ must not already exist. Configure local Git identity and GitHub authentication.
 MERGEYARD_SCHEDULER_INTEGRATION=1 \
 MERGEYARD_GITHUB_TEST_REPO=owner/mergeyard-integration-test \
 MERGEYARD_GITHUB_TEST_ISSUE=1 \
-go test ./internal/scheduler -run TestGitHubSchedulerIntegration -v
+go test ./internal/scheduler/integration -run TestGitHubSchedulerIntegration -v
 ```
 
 The test exercises GitHub labels and draft PR creation with real Git/tmux and a

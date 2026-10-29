@@ -105,7 +105,7 @@ grants for runs without a harness-wait history.
 Run from the repository root with the offline preflight prerequisites available:
 
 ```sh
-go test ./internal/scheduler -run '^(TestCombinedRecoveryAcrossRepositories|TestOrphansRemainVisibleAndPreservedBehindDispatchGates|TestProductionHarnessLimitFailuresConsumeAttemptBudget|TestStatusExposesLoadedEffectiveConfigurationAndSource)$' -count=1 -timeout=5m
+go test ./internal/scheduler/... -run '^(TestCombinedRecoveryAcrossRepositories|TestOrphansRemainVisibleAndPreservedBehindDispatchGates|TestProductionHarnessLimitFailuresConsumeAttemptBudget|TestStatusExposesLoadedEffectiveConfigurationAndSource)$' -count=1 -timeout=5m
 go test ./cmd/mergeyard -run '^TestCLIStatus' -count=1
 make test
 make lint

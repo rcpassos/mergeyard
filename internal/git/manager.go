@@ -22,8 +22,9 @@ import (
 // workspace lock and supply persisted run ownership when preparing a run.
 // Operations are serialized so base checkout and worktree metadata cannot race.
 type Manager struct {
-	root     string
-	timeouts Timeouts
+	root        string
+	timeouts    Timeouts
+	environment map[string]string
 	// mu serializes operations through a cancellation-aware gate so a caller
 	// that gives up is released instead of waiting for the operation in flight.
 	mu gate.Gate
@@ -56,10 +57,24 @@ const (
 	defaultPushTimeout     = 30 * time.Minute
 )
 
-func New(w *workspace.Workspace) *Manager { return NewWithTimeouts(w, Timeouts{}) }
+func New(w *workspace.Workspace) *Manager { return NewWithOptions(w, Options{}) }
+
+// Options selects operation deadlines and per-manager command environment
+// overrides. A nil Environment retains the invoking process's environment.
+type Options struct {
+	Timeouts    Timeouts
+	Environment map[string]string
+}
 
 // NewWithTimeouts selects operation deadlines; tests use shorter ones.
 func NewWithTimeouts(w *workspace.Workspace, timeouts Timeouts) *Manager {
+	return NewWithOptions(w, Options{Timeouts: timeouts})
+}
+
+// NewWithOptions copies environment overrides so independent managers can use
+// different configuration files without changing process-wide environment.
+func NewWithOptions(w *workspace.Workspace, options Options) *Manager {
+	timeouts := options.Timeouts
 	if timeouts.Metadata <= 0 {
 		timeouts.Metadata = defaultMetadataTimeout
 	}
@@ -75,7 +90,11 @@ func NewWithTimeouts(w *workspace.Workspace, timeouts Timeouts) *Manager {
 	if timeouts.Push <= 0 {
 		timeouts.Push = defaultPushTimeout
 	}
-	return &Manager{root: w.Root, timeouts: timeouts}
+	environment := make(map[string]string, len(options.Environment))
+	for name, value := range options.Environment {
+		environment[name] = value
+	}
+	return &Manager{root: w.Root, timeouts: timeouts, environment: environment}
 }
 
 // Budget class names attached to phase contexts.
@@ -119,6 +138,9 @@ func withBudget(ctx context.Context, name string, limit time.Duration) context.C
 // deadline, and releases a caller that has already given up. Callers must call
 // the returned release function.
 func (m *Manager) begin(ctx context.Context, timeout time.Duration) (context.Context, func(), error) {
+	if len(m.environment) > 0 {
+		ctx = context.WithValue(ctx, environmentKey{}, m.environment)
+	}
 	if err := m.mu.Lock(ctx); err != nil {
 		return nil, nil, contextFailure(ctx, "git.wait", "", err)
 	}

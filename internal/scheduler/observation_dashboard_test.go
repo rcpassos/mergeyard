@@ -9,11 +9,14 @@ import (
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/config"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
 	"github.com/rcpassos/mergeyard/internal/web"
 )
 
 func TestDashboardObservationKeepsBoundedSelectionAndOlderDetail(t *testing.T) {
-	s, rt := configured(t, &fakeGitHub{}, "repositories:\n  - repo: owner/repo\n", rejectingGit{})
+	t.Parallel()
+
+	s, rt := testkit.Configured(t, &testkit.FakeGitHub{}, "repositories:\n  - repo: owner/repo\n", testkit.RejectingGit{})
 	cfg, _, err := config.Parse([]byte("repositories:\n  - repo: owner/repo\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -38,9 +41,9 @@ func TestDashboardObservationKeepsBoundedSelectionAndOlderDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := httptest.NewRecorder()
-	server.ServeHTTP(page, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
+	server.ServeHTTP(page, testkit.DashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/", nil))
 	body := page.Body.String()
-	if page.Code != 200 || kpis(t, body)["running"] != "1" {
+	if page.Code != 200 || testkit.Kpis(t, body)["running"] != "1" {
 		t.Fatalf("Dashboard does not count the active run: %d %s", page.Code, body)
 	}
 	previous := -1
@@ -60,7 +63,7 @@ func TestDashboardObservationKeepsBoundedSelectionAndOlderDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	detail := httptest.NewRecorder()
-	server.ServeHTTP(detail, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/terminal-25", nil))
+	server.ServeHTTP(detail, testkit.DashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/terminal-25", nil))
 	if detail.Code != 200 || !strings.Contains(detail.Body.String(), "terminal-25") {
 		t.Fatalf("older selected run missing: %d %s", detail.Code, detail.Body.String())
 	}
@@ -69,7 +72,7 @@ func TestDashboardObservationKeepsBoundedSelectionAndOlderDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	history := httptest.NewRecorder()
-	server.ServeHTTP(history, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/history", nil))
+	server.ServeHTTP(history, testkit.DashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/history", nil))
 	historyBody := history.Body.String()
 	if history.Code != 200 {
 		t.Fatalf("history: %d %s", history.Code, historyBody)

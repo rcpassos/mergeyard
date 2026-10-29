@@ -12,13 +12,16 @@ import (
 	"testing"
 
 	"github.com/rcpassos/mergeyard/internal/events"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
 	"github.com/rcpassos/mergeyard/internal/web"
 	"github.com/rcpassos/mergeyard/internal/workflow"
+	// These expectations describe the owner's timeline, including the phase and
+	// escalation prefixes whose categories do not simply repeat their prefix.
 )
 
-// These expectations describe the owner's timeline, including the phase and
-// escalation prefixes whose categories do not simply repeat their prefix.
 func TestTimelineReadableEvents(t *testing.T) {
+	t.Parallel()
+
 	groups := []struct {
 		category, icon string
 		events         map[string]string
@@ -92,7 +95,7 @@ func TestTimelineReadableEvents(t *testing.T) {
 			"custom.<script>event</script>": "Custom &lt;script&gt;event&lt;/script&gt;"}},
 	}
 	ctx := context.Background()
-	s, rt := configured(t, &fakeGitHub{}, "repositories:\n  - repo: owner/repo\n", rejectingGit{})
+	s, rt := testkit.Configured(t, &testkit.FakeGitHub{}, "repositories:\n  - repo: owner/repo\n", testkit.RejectingGit{})
 	run, err := rt.Workflow.Transition(ctx, "timeline", workflow.Request{Trigger: workflow.IssueClaimed, Repository: "owner/repo", IssueNumber: 7})
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +139,7 @@ func TestTimelineReadableEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
+	server.ServeHTTP(response, testkit.DashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/runs/"+run.ID, nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("dashboard status %d: %s", response.Code, response.Body.String())
 	}

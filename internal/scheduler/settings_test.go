@@ -3,42 +3,24 @@ package scheduler_test
 import (
 	"context"
 	"encoding/hex"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/rcpassos/mergeyard/internal/config"
 	"github.com/rcpassos/mergeyard/internal/doctor"
 	"github.com/rcpassos/mergeyard/internal/runtimeauth"
 	"github.com/rcpassos/mergeyard/internal/scheduler"
+	"github.com/rcpassos/mergeyard/internal/scheduler/testkit"
 	"github.com/rcpassos/mergeyard/internal/web"
 )
-
-// settingsPage starts the dashboard updates for one server and returns the
-// rendered Settings page once the doctor report has arrived.
-func settingsPage(t *testing.T, server *web.Server, ready string) string {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); server.RunUpdates(ctx) }()
-	defer func() { cancel(); <-done }()
-	var body string
-	waitForWithin(t, 10*time.Second, func() bool {
-		response := httptest.NewRecorder()
-		server.ServeHTTP(response, dashboardRequest(t, server, http.MethodGet, "http://127.0.0.1:7331/settings", nil))
-		body = response.Body.String()
-		return response.Code == http.StatusOK && strings.Contains(body, ready)
-	})
-	return body
-}
 
 // Settings presents the loaded configuration and the startup doctor report as
 // read-only tables. Recovery and handback history belong to each run's page.
 func TestSettingsRendersConfigurationTablesAndStructuredDoctorResults(t *testing.T) {
-	_, runtime := fixture(t, &fakeGitHub{})
+	t.Parallel()
+
+	_, runtime := testkit.Fixture(t, &testkit.FakeGitHub{})
 	cfg, _, err := config.Parse([]byte(`
 port: 7444
 concurrency: 3
@@ -60,7 +42,7 @@ repositories:
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := scheduler.New(cfg, schedulerResources(runtime), scheduler.Dependencies{GitHub: &fakeGitHub{}})
+	s, err := testkit.TestScheduler(cfg, testkit.SchedulerResources(runtime), scheduler.Dependencies{GitHub: &testkit.FakeGitHub{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +67,7 @@ repositories:
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := settingsPage(t, server, "github.label_missing")
+	body := testkit.SettingsPage(t, server, "github.label_missing")
 	for _, want := range []string{
 		"Edit the YAML configuration and restart Mergeyard",
 		"Configuration path", configPath, "Workspace", runtime.Workspace.Root,
@@ -139,7 +121,7 @@ repositories:
 	if err != nil {
 		t.Fatal(err)
 	}
-	clean := settingsPage(t, cleanServer, "configuration loaded and validated")
+	clean := testkit.SettingsPage(t, cleanServer, "configuration loaded and validated")
 	if !strings.Contains(clean, `<span class="badge badge-success">Pass</span>`) {
 		t.Errorf("clean settings has no pass row")
 	}
