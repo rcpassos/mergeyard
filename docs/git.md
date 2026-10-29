@@ -1,8 +1,9 @@
 # Managed Git operations
 
-`internal/git` implements PRD sections 10 and 16. Use one `git.Manager` per
-locked `workspace.Workspace`; the manager serializes Git operations. It invokes
-the installed Git executable directly, inherits the machine's Git identity and
+`internal/git` owns managed bases, run worktrees, commits, pushes, and cleanup.
+Use one `git.Manager` per locked `workspace.Workspace`; the manager serializes
+Git operations. It invokes the installed Git executable directly, inherits the
+machine's Git identity and
 credentials, honors transport URL rewrites, and disables terminal prompts.
 
 ## Deadlines and non-interactive transport

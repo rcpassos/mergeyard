@@ -1,5 +1,8 @@
 # Development
 
+Start with the [architecture overview](architecture.md) for component boundaries
+and the current behavior references.
+
 For a source build, see [installation](install.md#build-from-source). Use Go
 1.26.10 or newer, Node.js 24 for dashboard assets, and Python 3.9+ for script
 checks. The public website has its own [preview guide](website.md).

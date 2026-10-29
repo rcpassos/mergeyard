@@ -288,9 +288,10 @@ concurrency fraction, and Needs you renders the Needs attention and Waiting for
 your merge groups with the Queue's rows, or a positive all-clear when both are
 empty. Discovery notices and the last sync time appear on both pages. The
 Queue itself carries only the table and its filter chips; the scheduler state
-and Pause/Resume control stay on the Dashboard. Pending M1 runs automatically
-continue into an independent review. Run detail is one scrolling page: a sticky header with the
-issue title, repository and number, status badge, issue and PR links (marked as
+and Pause/Resume control stay on the Dashboard. After implementation is
+published, runs continue into an independent review. Run detail is one scrolling
+page: a sticky header with the issue title, repository and number, status badge,
+issue and PR links (marked as
 external) and the run's eligible actions; a lifecycle stepper (Claimed →
 Implement → Review (round N) → Fix → CI → Ready → Merged); a current area holding
 the human action, last error, active harness wait, stop in progress, takeover

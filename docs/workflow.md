@@ -6,9 +6,8 @@ and dashboard handlers must use `Workflow.Transition` for all lifecycle writes.
 Transitions preserve component-owned metadata unless the caller supplies an
 atomic `Request.Metadata` patch.
 
-States, phases, and triggers are typed strings in `internal/workflow`. The
-central rules implement PRD §21. An `ACTIVE` run always has an `implement`,
-`review`, or `fix` phase. Waiting for a harness preserves that phase. Other
+States, phases, and triggers are typed strings in `internal/workflow`. An
+`ACTIVE` run always has an `implement`, `review`, or `fix` phase. Waiting for a harness preserves that phase. Other
 transitions retain the last phase for history unless reconciliation chooses a
 new phase. Terminal transitions set `completed_at`; retry clears it when the
 destination is non-terminal.
@@ -20,9 +19,10 @@ only `implement` (no PR) or `review` (PR exists), as reconciled by the caller.
 for `ACTIVE` or `WAITING_FOR_HARNESS`. Reconciliation may choose `CLAIMING`,
 `PREPARING`, `ACTIVE`, `WAITING_FOR_CI`, `WAITING_FOR_HARNESS`, `READY_TO_MERGE`,
 or `COMPLETED`. The caller must first verify the relevant GitHub, Git, harness,
-and CI facts as specified in PRD §22–23. Other triggers reject destination
-overrides. `Run.RetryAllowed` accepts `NEEDS_ATTENTION` (§21), `FAILED` (§22),
-and `WAITING_FOR_HARNESS` specifically for exhausted credits. Ordinary timed
+and CI facts through [scheduler reconciliation](scheduler.md#explicit-retry).
+Other triggers reject destination overrides. `Run.RetryAllowed` accepts
+`NEEDS_ATTENTION`, `FAILED`, and `WAITING_FOR_HARNESS` specifically for exhausted
+credits. Ordinary timed
 waiting cannot be bypassed by Retry.
 Stop, internal failure, and takeover apply only to non-terminal runs, so a
 completed run cannot be revived and a failed run keeps its error and retry path.
@@ -41,17 +41,18 @@ errors retain `internal.run_store` or `internal.event_store`.
 
 Each accepted transition records one lifecycle event in the same SQLite
 transaction as the run write. Its payload contains the prior state and phase,
-the trigger, and the resulting run snapshot. Event types use the core §25
-vocabulary. Reconciled retries emit the destination's event (for example,
-`run.completed` or `phase.started`), with `retry` retained as the payload trigger.
+the trigger, and the resulting run snapshot. Reconciled retries emit the
+destination's event (for example, `run.completed` or `phase.started`), with `retry`
+retained as the payload trigger.
 The other retry destinations emit `run.claimed`, `run.preparing`, `ci.updated`,
 `run.waiting_for_harness`, or `pr.ready_for_review`. A run entering
 `WAITING_FOR_HARNESS` through limit detection or Retry emits
 `run.waiting_for_harness`. Handback emits `run.handed_back`, with its selected
 active or waiting state in the snapshot. Resuming a waiting run emits
-`phase.started` because §21 starts a new attempt. Harness restriction writes belong to the workflow's harness-limit and credit-probe
-components. Timed detection and expiration events are application-wide and omit
-`run_id`; credit recovery events can identify the selected run. In particular,
+`phase.started` when a new attempt starts. Harness restriction writes belong
+to the workflow's harness-limit and credit-probe components. Timed detection and
+expiration events are application-wide and omit `run_id`; credit recovery events
+can identify the selected run. In particular,
 `harness.available` carries a run ID when a recovery probe proves availability.
 
 | Event | Meaning | Run ID |
@@ -133,7 +134,8 @@ Report persistence, attempt completion, approved SHA, lifecycle and event share
 one transaction. MetadataPatch.ReviewRejection similarly commits a nonretryable
 report/failed attempt with its attention transition; event failure rolls back both.
 Run snapshots include the latest durable reviewer settings/report/diagnostics for
-status output and transition events. M1 histories without a review remain readable.
+status output and transition events. Older histories without a review remain
+readable.
 
 ## Fix completion
 

@@ -228,8 +228,8 @@ Both production adapters enable temporary-limit detection for their captured
 signals: Claude's headless weekly rejection and Codex's Plus-plan same-day
 rejection. These enter the waiting flow below. Unknown variants and credit
 failures consume the ordinary attempt budget; exhausted-credit detection remains
-disabled. [M3 acceptance](m3-acceptance.md) records the supported evidence and
-remaining gates.
+disabled. [Recovery acceptance evidence](m3-acceptance.md) records the supported
+evidence and remaining gates.
 
 `mergeyard reconcile` runs the same reconciliation without claiming new work.
 It acquires the configured workspace lock, so stop the control plane first if
