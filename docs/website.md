@@ -124,7 +124,7 @@ and [Open Graph metadata](https://ogp.me/).
 ## Product content
 
 Keep public product claims and setup commands aligned with the README and
-current behavior. The initial page uses a source build because no release was
-published when it was created. Switch to a binary installer only after its
-release URL is available. The workflow illustration is an example, not a live
-dashboard or a claim about a particular run.
+current behavior. The setup commands install the latest stable binary, which
+includes the dashboard and requires neither Go nor Node.js. Keep the installer
+URL aligned with the README and installation guide. The workflow illustration
+is an example, not a live dashboard or a claim about a particular run.

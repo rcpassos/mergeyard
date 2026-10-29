@@ -146,22 +146,21 @@
         <div class="setup-heading"><div><p class="section-kicker">Start on your machine</p><h2 id="setup-title">Put an issue on track.</h2></div><p>One local Go process, your existing GitHub repositories, and the coding agents you already use.</p></div>
         <div class="setup-layout">
           <div class="setup-instructions">
-            <h3>Build it. Set it up. Start it.</h3>
-            <p>Build from source with Go 1.26.10 or newer. The dashboard assets are included in the repository.</p>
+            <h3>Install it. Set it up. Start it.</h3>
+            <p>Install a binary for macOS or Linux. The dashboard is included; Go and Node.js are not required. See the <a href="https://github.com/rcpassos/mergeyard/blob/main/docs/install.md" target="_blank" rel="noopener noreferrer">installation guide</a> for PATH setup and other options.</p>
             <p>Have Git, <a href="https://cli.github.com/" target="_blank" rel="noopener noreferrer">GitHub CLI</a>, tmux, and your chosen agents installed and authenticated. Setup checks prerequisites and helps configure your first repository and both agent roles.</p>
             <p class="setup-next">Replace <code>owner/repo</code> and <code>123</code> with your repository and issue number. Accept queue-label creation during init and resolve any reported errors. Start opens the dashboard and prints a single-use link. Follow the run to <strong>Waiting for your merge</strong>, then inspect and merge its PR.</p>
             <a class="text-link" href="https://github.com/rcpassos/mergeyard/blob/main/docs/setup.md" target="_blank" rel="noopener noreferrer">Full setup guide</a>
           </div>
           <div class="terminal">
-            <div class="terminal-heading"><span>Build &amp; run</span><button class="copy-button" type="button" hidden>Copy commands</button></div>
-            <pre><code id="setup-commands">git clone https://github.com/rcpassos/mergeyard.git
-cd mergeyard
-go build -o bin/mergeyard ./cmd/mergeyard
+            <div class="terminal-heading"><span>Install &amp; run</span><button class="copy-button" type="button" hidden>Copy commands</button></div>
+            <pre><code id="setup-commands">curl -fsSL https://github.com/rcpassos/mergeyard/releases/latest/download/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 
 gh auth login
-./bin/mergeyard init
+mergeyard init
 gh issue edit 123 --repo owner/repo --add-label ready-for-agent
-./bin/mergeyard start</code></pre>
+mergeyard start</code></pre>
             <p class="copy-status" role="status"></p>
           </div>
         </div>

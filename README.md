@@ -15,15 +15,14 @@ and fixes. Follow progress in the local dashboard. You decide what merges.
 
 ## Install
 
-After the first release is published, install on macOS or Linux with:
+Install on macOS or Linux with:
 
 ```sh
 curl -fsSL https://github.com/rcpassos/mergeyard/releases/latest/download/install.sh | sh
 ```
 
-Until then, [build from source](docs/install.md#build-from-source). Binaries
-include the dashboard. See [installation](docs/install.md) for PATH setup,
-checksums, upgrades, and version selection.
+Binaries include the dashboard. See [installation](docs/install.md) for PATH
+setup, checksums, upgrades, version selection, and building from source.
 
 ## Quickstart
 
